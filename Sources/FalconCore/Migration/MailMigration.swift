@@ -43,6 +43,91 @@ public struct MigrationReport: Sendable {
     public var failed = 0
     public var skippedFolders = 0
     public var createdFolders: [String] = []
+    public var bytesUploaded = 0
+}
+
+public struct MigrationOptions: Sendable {
+    public var bufferBytes = MigrationOptions.defaultBufferBytes
+    public var uploaders = 5
+    public var decoders = 3
+    public var labelMigrated = true
+    public var labelName = "Migrated"
+
+    public init() {}
+
+    public static var defaultBufferBytes: Int {
+        let physical = Int(ProcessInfo.processInfo.physicalMemory)
+        return min(1024 * 1024 * 1024, max(64 * 1024 * 1024, physical / 8))
+    }
+}
+
+struct MigrationItem: Sendable {
+    var key: String
+    var messageID: String
+    var folderKind: SourceFolderKind
+    var isRead: Bool
+    var isFlagged: Bool
+    var date: Date?
+    var payload: Data?
+    var targetPath: String
+    var scope: String
+}
+
+actor PayloadQueue {
+    private var items: [MigrationItem] = []
+    private var bytes = 0
+    private let limit: Int
+    private var consumers: [CheckedContinuation<MigrationItem?, Never>] = []
+    private var producers: [CheckedContinuation<Void, Never>] = []
+    private var finished = false
+
+    init(limit: Int) { self.limit = limit }
+
+    func push(_ item: MigrationItem) async {
+        while bytes >= limit && !finished {
+            await withCheckedContinuation { producers.append($0) }
+        }
+        guard !finished else { return }
+        items.append(item)
+        bytes += item.payload?.count ?? 0
+        if !consumers.isEmpty { consumers.removeFirst().resume(returning: items.removeFirst()) }
+    }
+
+    func pop() async -> MigrationItem? {
+        if !items.isEmpty {
+            let item = items.removeFirst()
+            bytes -= item.payload?.count ?? 0
+            if !producers.isEmpty { producers.removeFirst().resume() }
+            return item
+        }
+        if finished { return nil }
+        return await withCheckedContinuation { consumers.append($0) }
+    }
+
+    func finish() {
+        finished = true
+        for c in consumers { c.resume(returning: nil) }
+        consumers.removeAll()
+        for p in producers { p.resume() }
+        producers.removeAll()
+    }
+
+    func cancel() {
+        items.removeAll()
+        bytes = 0
+        finish()
+    }
+}
+
+actor Cursor<T: Sendable> {
+    private var items: [T]
+    private var index = 0
+    init(_ items: [T]) { self.items = items }
+    func next() -> T? {
+        guard index < items.count else { return nil }
+        defer { index += 1 }
+        return items[index]
+    }
 }
 
 public actor MigrationRunner {
@@ -58,19 +143,15 @@ public actor MigrationRunner {
     private var knownIDs: [String: Set<String>] = [:]
     private var created = Set<String>()
     private var report = MigrationReport()
+    private var processed = 0
+    private var total = 0
     private let prefetchLimit = 40_000
-    public var labelName = "Migrated"
-    public var labelMigrated = true
+    public var options = MigrationOptions()
     private var pendingLabel: [String: [UInt32]] = [:]
 
     public static func stateURL(source: MigrationSource, account: AccountInfo, layout: FileLayout) -> URL {
         let safe = source.identifier.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
         return layout.root.appendingPathComponent("Migrations", isDirectory: true).appendingPathComponent("\(safe)-\(account.id.uuidString).json")
-    }
-
-    public func setLabel(_ enabled: Bool, name: String) {
-        labelMigrated = enabled
-        if !name.trimmed.isEmpty { labelName = name.trimmed }
     }
 
     public init(source: MigrationSource, account: AccountInfo, client: IMAPClient, reconnect: @escaping @Sendable () async throws -> IMAPClient,
@@ -87,6 +168,8 @@ public actor MigrationRunner {
         appendedRecords = state.appended
     }
 
+    public func setOptions(_ o: MigrationOptions) { options = o }
+
     public var appendedCount: Int { appendedRecords.count }
 
     private var delimiter: String { existingFolders.first(where: { !$0.delimiter.isEmpty })?.delimiter ?? "/" }
@@ -95,95 +178,200 @@ public actor MigrationRunner {
 
     public func run(dryRun: Bool, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws -> MigrationReport {
         report = MigrationReport()
+        processed = 0
         let plan = source.folders.compactMap { folder -> (SourceFolder, String)? in
             guard let path = mapping[folder.id]?.path else { report.skippedFolders += 1; return nil }
             return (folder, path)
         }
-        let total = plan.reduce(0) { $0 + $1.0.messageCount }
-        var processed = 0
-        var seenThisRun = Set<String>()
+        total = plan.reduce(0) { $0 + $1.0.messageCount }
         for (folder, targetPath) in plan {
             try Task.checkCancellation()
             progress(.folder("\(folder.path) → \(targetPath)"))
             if !dryRun { try await ensureFolder(targetPath) }
             let messages = try source.messages(in: folder)
-            let dedupeScope = isGmail ? (allMailPath ?? targetPath) : targetPath
-            try await preloadKnownIDs(in: dedupeScope, dryRun: dryRun)
-            for message in messages {
-                try Task.checkCancellation()
-                processed += 1
-                defer { progress(.count(done: processed, total: total, appended: report.appended, existing: report.existing, failed: report.failed)) }
-                var messageID = message.messageID
-                var raw: Data?
-                if messageID.isEmpty {
-                    guard let data = try? message.load() else { report.failed += 1; continue }
-                    raw = data
-                    messageID = MIMENormalizer.messageID(in: data)
-                    if messageID.isEmpty { messageID = MigrationRunner.syntheticID(for: data) }
-                }
-                let key = folder.id + "|" + messageID
-                if done.contains(key) { report.existing += 1; continue }
-                if try await exists(messageID, in: dedupeScope, dryRun: dryRun) {
-                    if isGmail, !seenThisRun.contains(messageID), !dryRun, let all = allMailPath, all != targetPath {
-                        try await labelExisting(messageID, allMail: all, target: targetPath)
-                    }
-                    report.existing += 1
-                    seenThisRun.insert(messageID)
-                    markDone(key)
-                    continue
-                }
-                if dryRun { report.appended += 1; continue }
-                do {
-                    let data = try raw ?? message.load()
-                    let payload = MigrationRunner.ensureMessageID(data, messageID)
-                    var flags: MessageFlags = []
-                    if message.isRead { flags.insert(.seen) }
-                    if message.isFlagged { flags.insert(.flagged) }
-                    if folder.kind == .drafts { flags.insert(.draft) }
-                    let date = message.date ?? MIMEParser.parseHeaders(payload).first("Date").flatMap(RFC5322Date.parse)
-                    let uid = try await appendWithRetry(mailbox: targetPath, message: payload, flags: flags.imapFlags, date: date)
-                    if let uid, labelMigrated { pendingLabel[targetPath, default: []].append(uid) }
-                    if pendingLabel[targetPath, default: []].count >= 200 { try await flushLabels(for: targetPath) }
-                    knownIDs[dedupeScope, default: []].insert(messageID)
-                    seenThisRun.insert(messageID)
-                    report.appended += 1
-                    appendedRecords.append(MigrationAppended(folder: targetPath, messageID: messageID))
-                    markDone(key)
-                } catch {
-                    report.failed += 1
-                    Log.info("migration", "failed \(folder.path) \(messageID): \(error.localizedDescription)")
-                    progress(.log("Failed: \(folder.path) \(messageID): \(error.localizedDescription)"))
-                }
+            let scope = isGmail ? (allMailPath ?? targetPath) : targetPath
+            try await preloadKnownIDs(in: scope)
+            if dryRun {
+                try await dryRunFolder(folder, messages: messages, scope: scope, progress: progress)
+            } else {
+                try await uploadFolder(folder, messages: messages, targetPath: targetPath, scope: scope, progress: progress)
+                try await flushLabels(for: targetPath)
+                persist()
             }
         }
-        if !dryRun { try await flushAllLabels() }
+        persist()
         progress(.status(dryRun ? "Dry run complete" : "Migration complete"))
         return report
     }
 
-    private func flushAllLabels() async throws {
-        for folder in Array(pendingLabel.keys) { try await flushLabels(for: folder) }
-    }
-
-    private func flushLabels(for folder: String) async throws {
-        guard let uids = pendingLabel[folder], !uids.isEmpty else { return }
-        pendingLabel[folder] = []
-        if isGmail { try await ensureFolder(labelName) }
-        if await client.selectedMailbox != folder { _ = try await client.select(folder) }
-        if isGmail {
-            try await client.copy(uids: uids, to: labelName)
-        } else {
-            try await client.store(uids: uids, add: true, flags: ["$" + labelName.replacingOccurrences(of: " ", with: "")])
+    private func dryRunFolder(_ folder: SourceFolder, messages: [SourceMessage], scope: String, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {
+        for message in messages {
+            try Task.checkCancellation()
+            processed += 1
+            let messageID = try resolveMessageID(message)
+            let alreadyDone = done.contains(folder.id + "|" + messageID)
+            let present = alreadyDone ? true : try await existsOn(client, messageID, in: scope)
+            if present { report.existing += 1 } else { report.appended += 1 }
+            emit(progress)
         }
     }
 
-    private func appendWithRetry(mailbox: String, message: Data, flags: [String], date: Date?) async throws -> UInt32? {
-        do {
-            return try await client.append(mailbox: mailbox, message: message, flags: flags, date: date)
-        } catch FalconError.network {
-            await client.logout()
-            client = try await reconnect()
-            return try await client.append(mailbox: mailbox, message: message, flags: flags, date: date)
+    private func uploadFolder(_ folder: SourceFolder, messages: [SourceMessage], targetPath: String, scope: String,
+                              progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {
+        let queue = PayloadQueue(limit: options.bufferBytes)
+        let cursor = Cursor(messages)
+        let preloaded = knownIDs[scope] != nil
+        let decoders = max(1, options.decoders)
+        let uploaders = max(1, options.uploaders)
+        try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    await withTaskGroup(of: Void.self) { inner in
+                        for _ in 0..<decoders {
+                            inner.addTask { await self.decode(from: cursor, folder: folder, targetPath: targetPath, scope: scope, preloaded: preloaded, into: queue, progress: progress) }
+                        }
+                    }
+                    await queue.finish()
+                }
+                for i in 0..<uploaders {
+                    group.addTask { try await self.upload(from: queue, index: i, preloaded: preloaded, progress: progress) }
+                }
+                try await group.waitForAll()
+            }
+        } onCancel: {
+            Task { await queue.cancel() }
+        }
+    }
+
+    private func decode(from cursor: Cursor<SourceMessage>, folder: SourceFolder, targetPath: String, scope: String, preloaded: Bool,
+                        into queue: PayloadQueue, progress: @escaping @Sendable (MigrationProgress) -> Void) async {
+        while let message = await cursor.next(), !Task.isCancelled {
+            var raw: Data?
+            var messageID = message.messageID
+            if messageID.isEmpty {
+                guard let data = try? message.load() else { await noteFailed(progress, "\(folder.path): unreadable message"); continue }
+                raw = data
+                messageID = MIMENormalizer.messageID(in: data)
+                if messageID.isEmpty { messageID = MigrationRunner.syntheticID(for: data) }
+            }
+            let key = folder.id + "|" + messageID
+            if await isDone(key) { await noteExisting(progress); continue }
+            if preloaded, await isKnown(messageID, in: scope) {
+                await markDone(key)
+                if isGmail, let all = allMailPath, all != targetPath {
+                    await queue.push(MigrationItem(key: key, messageID: messageID, folderKind: folder.kind, isRead: message.isRead, isFlagged: message.isFlagged,
+                                                   date: message.date, payload: nil, targetPath: targetPath, scope: scope))
+                } else {
+                    await noteExisting(progress)
+                }
+                continue
+            }
+            let data: Data
+            do { data = try raw ?? message.load() } catch {
+                await noteFailed(progress, "\(folder.path) \(messageID): \(error.localizedDescription)")
+                continue
+            }
+            let payload = MigrationRunner.ensureMessageID(data, messageID)
+            await queue.push(MigrationItem(key: key, messageID: messageID, folderKind: folder.kind, isRead: message.isRead, isFlagged: message.isFlagged,
+                                           date: message.date, payload: payload, targetPath: targetPath, scope: scope))
+        }
+    }
+
+    private func upload(from queue: PayloadQueue, index: Int, preloaded: Bool, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {
+        var connection: IMAPClient? = index == 0 ? nil : try await reconnect()
+        defer { if let c = connection { Task { await c.logout() } } }
+        func current() async throws -> IMAPClient {
+            if let c = connection { return c }
+            return await client
+        }
+        while let item = await queue.pop() {
+            try Task.checkCancellation()
+            do {
+                var c = try await current()
+                if item.payload == nil {
+                    if let all = allMailPath { try await labelExisting(on: c, item.messageID, allMail: all, target: item.targetPath) }
+                    await noteExisting(progress)
+                    continue
+                }
+                if !preloaded, try await existsOn(c, item.messageID, in: item.scope) {
+                    await markDone(item.key)
+                    await noteExisting(progress)
+                    continue
+                }
+                var flags: MessageFlags = []
+                if item.isRead { flags.insert(.seen) }
+                if item.isFlagged { flags.insert(.flagged) }
+                if item.folderKind == .drafts { flags.insert(.draft) }
+                let payload = item.payload ?? Data()
+                let date = item.date ?? MIMEParser.parseHeaders(payload).first("Date").flatMap(RFC5322Date.parse)
+                let uid: UInt32?
+                do {
+                    uid = try await c.append(mailbox: item.targetPath, message: payload, flags: flags.imapFlags, date: date)
+                } catch FalconError.network {
+                    await c.logout()
+                    c = try await reconnect()
+                    if index == 0 { client = c } else { connection = c }
+                    uid = try await c.append(mailbox: item.targetPath, message: payload, flags: flags.imapFlags, date: date)
+                }
+                await noteAppended(item, uid: uid, bytes: payload.count, progress: progress)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                await noteFailed(progress, "\(item.targetPath) \(item.messageID): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func isDone(_ key: String) -> Bool { done.contains(key) }
+    private func isKnown(_ id: String, in scope: String) -> Bool { knownIDs[scope]?.contains(id) ?? false }
+
+    private func emit(_ progress: @escaping @Sendable (MigrationProgress) -> Void) {
+        progress(.count(done: processed, total: total, appended: report.appended, existing: report.existing, failed: report.failed))
+    }
+
+    private func noteExisting(_ progress: @escaping @Sendable (MigrationProgress) -> Void) {
+        processed += 1
+        report.existing += 1
+        emit(progress)
+    }
+
+    private func noteFailed(_ progress: @escaping @Sendable (MigrationProgress) -> Void, _ text: String) {
+        processed += 1
+        report.failed += 1
+        Log.info("migration", "failed " + text)
+        progress(.log("Failed: " + text))
+        emit(progress)
+    }
+
+    private func noteAppended(_ item: MigrationItem, uid: UInt32?, bytes: Int, progress: @escaping @Sendable (MigrationProgress) -> Void) {
+        processed += 1
+        report.appended += 1
+        report.bytesUploaded += bytes
+        knownIDs[item.scope]?.insert(item.messageID)
+        appendedRecords.append(MigrationAppended(folder: item.targetPath, messageID: item.messageID))
+        if let uid, options.labelMigrated { pendingLabel[item.targetPath, default: []].append(uid) }
+        markDone(item.key)
+        emit(progress)
+    }
+
+    private func resolveMessageID(_ message: SourceMessage) throws -> String {
+        if !message.messageID.isEmpty { return message.messageID }
+        let data = try message.load()
+        let id = MIMENormalizer.messageID(in: data)
+        return id.isEmpty ? MigrationRunner.syntheticID(for: data) : id
+    }
+
+    private func flushLabels(for folder: String) async throws {
+        guard options.labelMigrated, let uids = pendingLabel[folder], !uids.isEmpty else { return }
+        pendingLabel[folder] = []
+        if isGmail { try await ensureFolder(options.labelName) }
+        if await client.selectedMailbox != folder { _ = try await client.select(folder) }
+        for chunk in stride(from: 0, to: uids.count, by: 500).map({ Array(uids[$0..<min($0 + 500, uids.count)]) }) {
+            if isGmail {
+                try await client.copy(uids: chunk, to: options.labelName)
+            } else {
+                try await client.store(uids: chunk, add: true, flags: ["$" + options.labelName.replacingOccurrences(of: " ", with: "")])
+            }
         }
     }
 
@@ -191,7 +379,7 @@ public actor MigrationRunner {
         var removed = 0
         let trash = existingFolders.first { $0.role == .trash }?.path
         let groups = Dictionary(grouping: appendedRecords, by: \.folder)
-        let total = appendedRecords.count
+        let count = appendedRecords.count
         for (folder, records) in groups {
             try Task.checkCancellation()
             progress(.folder("Removing from \(folder)"))
@@ -217,7 +405,7 @@ public actor MigrationRunner {
                 removed += 1
                 appendedRecords.removeAll { $0 == record }
                 done = done.filter { !$0.hasSuffix("|" + record.messageID) }
-                progress(.count(done: removed, total: total, appended: 0, existing: 0, failed: 0))
+                progress(.count(done: removed, total: count, appended: 0, existing: 0, failed: 0))
             }
         }
         persist()
@@ -237,7 +425,7 @@ public actor MigrationRunner {
         }
     }
 
-    private func preloadKnownIDs(in mailbox: String, dryRun: Bool) async throws {
+    private func preloadKnownIDs(in mailbox: String) async throws {
         guard knownIDs[mailbox] == nil else { return }
         guard existingFolders.contains(where: { $0.path == mailbox }) || created.contains(mailbox) else {
             knownIDs[mailbox] = []
@@ -251,23 +439,23 @@ public actor MigrationRunner {
         knownIDs[mailbox] = Set(try await client.fetchMessageIDs(uidRange: "1:*"))
     }
 
-    private func exists(_ messageID: String, in mailbox: String, dryRun: Bool) async throws -> Bool {
+    private func existsOn(_ c: IMAPClient, _ messageID: String, in mailbox: String) async throws -> Bool {
         if let known = knownIDs[mailbox] { return known.contains(messageID) }
         guard existingFolders.contains(where: { $0.path == mailbox }) || created.contains(mailbox) else { return false }
-        if await client.selectedMailbox != mailbox { _ = try await client.select(mailbox) }
-        return !(try await client.uidSearch("HEADER Message-ID \(MigrationRunner.quote(messageID))")).isEmpty
+        if await c.selectedMailbox != mailbox { _ = try await c.select(mailbox) }
+        return !(try await c.uidSearch("HEADER Message-ID \(MigrationRunner.quote(messageID))")).isEmpty
     }
 
-    private func labelExisting(_ messageID: String, allMail: String, target: String) async throws {
-        _ = try await client.select(allMail)
-        let uids = try await client.uidSearch("HEADER Message-ID \(MigrationRunner.quote(messageID))")
+    private func labelExisting(on c: IMAPClient, _ messageID: String, allMail: String, target: String) async throws {
+        if await c.selectedMailbox != allMail { _ = try await c.select(allMail) }
+        let uids = try await c.uidSearch("HEADER Message-ID \(MigrationRunner.quote(messageID))")
         guard let uid = uids.first else { return }
-        try await client.copy(uids: [uid], to: target)
+        try await c.copy(uids: [uid], to: target)
     }
 
     private func markDone(_ key: String) {
         done.insert(key)
-        if done.count % 50 == 0 { persist() }
+        if done.count % 100 == 0 { persist() }
     }
 
     public func persist() {

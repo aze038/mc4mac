@@ -34,7 +34,7 @@ struct MigrationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Migrate mail to Google Workspace").font(.title2.bold())
-            Text("Reads your Outlook for Mac mailbox or an .olm archive and uploads every message to the matching folder. Messages that already exist in the target are skipped, so it is safe to run again.")
+            Text("Reads your Outlook for Mac mailbox or an .olm archive and uploads every message straight to the matching folder over \(MigrationOptions().uploaders) parallel connections, using up to \(ByteCountFormatter.string(fromByteCount: Int64(MigrationOptions.defaultBufferBytes), countStyle: .memory)) of memory and no disk space. Messages that already exist in the target are skipped, so it is safe to run again.")
                 .foregroundStyle(.secondary)
             sourceSection
             targetSection
@@ -308,7 +308,9 @@ struct MigrationView: View {
                 let client = try await syncer.openArchiveSourceClient()
                 let runner = MigrationRunner(source: source, account: account, client: client, reconnect: { try await syncer.openArchiveSourceClient() },
                                              existingFolders: folders, mapping: mapping, layout: model.layout)
-                await runner.setLabel(labelMigrated, name: "Migrated")
+                var options = MigrationOptions()
+                options.labelMigrated = labelMigrated
+                await runner.setOptions(options)
                 do {
                     let report = try await runner.run(dryRun: dryRun) { p in
                         Task { @MainActor in
@@ -324,7 +326,7 @@ struct MigrationView: View {
                     await client.logout()
                     status = dryRun
                         ? "Dry run: \(report.appended) messages would be uploaded, \(report.existing) already present"
-                        : "Done: \(report.appended) uploaded, \(report.existing) already present, \(report.failed) failed" + (report.createdFolders.isEmpty ? "" : ", created \(report.createdFolders.count) folders")
+                        : "Done: \(report.appended) uploaded (\(ByteCountFormatter.string(fromByteCount: Int64(report.bytesUploaded), countStyle: .file))), \(report.existing) already present, \(report.failed) failed" + (report.createdFolders.isEmpty ? "" : ", created \(report.createdFolders.count) folders")
                     if !dryRun { model.syncNow() }
                     refreshUndoAvailability()
                 } catch is CancellationError {
