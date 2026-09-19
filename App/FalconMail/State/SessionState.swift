@@ -10,8 +10,6 @@ struct SessionState: Codable {
     var savedAt = Date()
 }
 
-extension SidebarSelection: Codable {}
-
 struct SessionStore {
     let layout: FileLayout
     var stateURL: URL { layout.root.appendingPathComponent("session.json") }

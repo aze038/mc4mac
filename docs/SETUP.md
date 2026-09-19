@@ -30,11 +30,17 @@ the app's account setup window; they are then kept in the Keychain.
 
 ## 3. Build
 
+One-time setup:
+
 ```sh
-brew install xcodegen
-xcodegen generate
+./scripts/setup.sh
 open FalconMail.xcodeproj
 ```
+
+This installs XcodeGen, generates the project, and enables git hooks that
+regenerate it after every `git pull`, checkout or rebase. New files under
+`App/` are picked up without any manual step. If a build ever complains about a
+missing type right after a pull, run `make project`.
 
 Select your team under Signing & Capabilities, then Run. The library tests run
 with `swift test` or from the Xcode test navigator.
