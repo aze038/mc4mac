@@ -16,6 +16,7 @@ public struct OutlookProfile: MigrationSource {
         var read: Bool
         var flagged: Bool
         var received: Double?
+        var sent: Double?
         var sourceUUID: String?
     }
 
@@ -43,7 +44,7 @@ public struct OutlookProfile: MigrationSource {
         title = "Outlook · " + (accountEmail.isEmpty ? profileName : accountEmail)
 
         let folderRows = try OutlookProfile.query(snapshot, "select Record_RecordID as id, Folder_ParentID as parent, Folder_SpecialFolderType as special, Folder_Name as name, Record_AccountUID as account from Folders")
-        let mailRows = try OutlookProfile.query(snapshot, "select Record_RecordID as id, Record_FolderID as folder, Message_MessageID as mid, Message_ReadFlag as read, Record_FlagStatus as flag, Message_TimeReceived as received from Mail")
+        let mailRows = try OutlookProfile.query(snapshot, "select Record_RecordID as id, Record_FolderID as folder, Message_MessageID as mid, Message_ReadFlag as read, Record_FlagStatus as flag, Message_TimeReceived as received, Message_TimeSent as sent from Mail")
         let blockRows = try OutlookProfile.query(snapshot, "select Record_RecordID as id, hex(BlockID) as block from Mail_OwnedBlocks where BlockTag = 1297314403")
 
         var blocks: [Int: String] = [:]
@@ -55,7 +56,7 @@ public struct OutlookProfile: MigrationSource {
             guard let id = OutlookProfile.int(m["id"]), let folder = OutlookProfile.int(m["folder"]) else { continue }
             rows.append(OutlookMailRow(recordID: id, folderID: folder, messageID: (m["mid"] as? String ?? "").trimmed,
                                        read: OutlookProfile.int(m["read"]) == 1, flagged: (OutlookProfile.int(m["flag"]) ?? 0) > 0,
-                                       received: m["received"] as? Double, sourceUUID: blocks[id]))
+                                       received: m["received"] as? Double, sent: m["sent"] as? Double, sourceUUID: blocks[id]))
         }
         self.rows = rows
 
@@ -96,10 +97,15 @@ public struct OutlookProfile: MigrationSource {
         return rows.filter { $0.folderID == folderID }.compactMap { row in
             guard let uuid = row.sourceUUID, let url = sourcesByUUID[uuid] else { return nil }
             return SourceMessage(folderID: folder.id, messageID: row.messageID, isRead: row.read, isFlagged: row.flagged,
-                                 date: row.received.map { Date(timeIntervalSince1970: $0) }) {
+                                 date: OutlookProfile.validDate(row.received) ?? OutlookProfile.validDate(row.sent)) {
                 try OutlookProfile.mime(at: url)
             }
         }
+    }
+
+    static func validDate(_ seconds: Double?) -> Date? {
+        guard let seconds, seconds > 978_393_600 else { return nil }
+        return Date(timeIntervalSince1970: seconds)
     }
 
     static func mime(at url: URL) throws -> Data {

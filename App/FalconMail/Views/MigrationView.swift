@@ -54,7 +54,7 @@ struct MigrationView: View {
             Button("Remove", role: .destructive) { undo() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(undoAvailable) messages uploaded by the last migration into \(targetEmail) will be removed. On Gmail they are moved to Trash.")
+            Text("\(undoAvailable) messages uploaded by the last migration into \(targetEmail) will be permanently removed from that mailbox.")
         }
         .onChange(of: targetAccountID) { _, _ in refreshUndoAvailability() }
         .onAppear {

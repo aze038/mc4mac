@@ -200,8 +200,16 @@ public actor MigrationRunner {
             for record in records {
                 let uids = try await client.uidSearch("HEADER Message-ID \(MigrationRunner.quote(record.messageID))")
                 if !uids.isEmpty {
-                    if isGmail, let trash { try await client.move(uids: uids, to: trash) }
-                    else {
+                    if isGmail, let trash {
+                        try await client.move(uids: uids, to: trash)
+                        _ = try await client.select(trash)
+                        let trashed = try await client.uidSearch("HEADER Message-ID \(MigrationRunner.quote(record.messageID))")
+                        if !trashed.isEmpty {
+                            try await client.store(uids: trashed, add: true, flags: ["\\Deleted"])
+                            try await client.expunge()
+                        }
+                        _ = try await client.select(scope)
+                    } else {
                         try await client.store(uids: uids, add: true, flags: ["\\Deleted"])
                         try await client.expunge()
                     }
@@ -213,7 +221,7 @@ public actor MigrationRunner {
             }
         }
         persist()
-        progress(.status("Removed \(removed) migrated messages" + (isGmail ? " (moved to Trash)" : "")))
+        progress(.status("Removed \(removed) migrated messages"))
         return removed
     }
 
