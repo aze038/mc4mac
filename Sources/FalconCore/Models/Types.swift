@@ -50,11 +50,19 @@ public struct AccountInfo: Codable, Hashable, Sendable, Identifiable {
     public var signature: String
     public var isEnabled: Bool
     public var createdAt: Date
+    public var authMethod: String?
+    public var username: String?
+
+    public var usesPassword: Bool { authMethod == "password" }
+    public var loginName: String { username?.isEmpty == false ? username! : email }
 
     public init(id: UUID = UUID(), email: String, displayName: String, provider: String = "google",
                 imapHost: String = "imap.gmail.com", imapPort: UInt16 = 993,
                 smtpHost: String = "smtp.gmail.com", smtpPort: UInt16 = 465,
-                signature: String = "", isEnabled: Bool = true, createdAt: Date = Date()) {
+                signature: String = "", isEnabled: Bool = true, createdAt: Date = Date(),
+                authMethod: String? = nil, username: String? = nil) {
+        self.authMethod = authMethod
+        self.username = username
         self.id = id
         self.email = email
         self.displayName = displayName
@@ -69,7 +77,13 @@ public struct AccountInfo: Codable, Hashable, Sendable, Identifiable {
     }
 
     public static func google(email: String, displayName: String) -> AccountInfo {
-        AccountInfo(email: email, displayName: displayName)
+        AccountInfo(email: email, displayName: displayName, authMethod: "oauth")
+    }
+
+    public static func custom(email: String, displayName: String, imapHost: String, imapPort: UInt16,
+                              smtpHost: String, smtpPort: UInt16, username: String) -> AccountInfo {
+        AccountInfo(email: email, displayName: displayName, provider: "imap", imapHost: imapHost, imapPort: imapPort,
+                    smtpHost: smtpHost, smtpPort: smtpPort, authMethod: "password", username: username)
     }
 }
 

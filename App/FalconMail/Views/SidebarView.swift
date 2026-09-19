@@ -3,7 +3,7 @@ import FalconCore
 
 struct SidebarView: View {
     @EnvironmentObject var model: AppModel
-    @State private var addingAccount = false
+    @State private var showAddAccount = false
 
     private var selectionBinding: Binding<SidebarSelection?> {
         Binding(get: { model.selection }, set: { model.select($0) })
@@ -33,6 +33,7 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) { addAccountBar }
+        .sheet(isPresented: $showAddAccount) { AddAccountSheet().environmentObject(model) }
     }
 
     private var topSection: some View {
@@ -60,24 +61,14 @@ struct SidebarView: View {
 
     private var addAccountBar: some View {
         HStack {
-            Button(action: addAccount) {
-                Label(model.accounts.isEmpty ? "Add Google Workspace account" : "Add account", systemImage: "plus.circle")
+            Button { showAddAccount = true } label: {
+                Label(model.accounts.isEmpty ? "Add your email account" : "Add account", systemImage: "plus.circle")
             }
             .buttonStyle(.plain)
-            .disabled(addingAccount)
-            if addingAccount { ProgressView().controlSize(.small) }
             Spacer()
         }
         .padding(10)
         .background(.bar)
-    }
-
-    private func addAccount() {
-        addingAccount = true
-        Task {
-            defer { addingAccount = false }
-            do { try await model.addGoogleAccount() } catch { model.errorMessage = error.localizedDescription }
-        }
     }
 }
 

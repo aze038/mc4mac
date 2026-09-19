@@ -96,10 +96,14 @@ public actor AccountSyncer {
     }
 
     private func makeClient() async throws -> IMAPClient {
-        let token = try await tokens.validAccessToken(for: account.id)
         let c = IMAPClient(host: account.imapHost, port: account.imapPort)
         try await c.connect()
-        try await c.authenticateXOAuth2(user: account.email, accessToken: token)
+        if account.usesPassword {
+            try await c.login(user: account.loginName, password: try await tokens.password(for: account.id))
+        } else {
+            let token = try await tokens.validAccessToken(for: account.id)
+            try await c.authenticateXOAuth2(user: account.email, accessToken: token)
+        }
         return c
     }
 

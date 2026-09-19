@@ -66,6 +66,25 @@ public actor IMAPClient {
         }
     }
 
+    public func login(user: String, password: String) async throws {
+        if capabilities.contains(where: { $0.uppercased() == "AUTH=PLAIN" }) {
+            let raw = "\u{00}\(user)\u{00}\(password)"
+            let tag = try await sendCommand("AUTHENTICATE PLAIN \(Data(raw.utf8).base64EncodedString())")
+            while true {
+                let r = try await readResponse()
+                if case .continuation = r { try await connection?.send(line: ""); continue }
+                if case .tagged(let t, let status, _, let text) = r, t == tag {
+                    guard status == .ok else { throw FalconError.notAuthenticatedWith(text) }
+                    break
+                }
+            }
+        } else {
+            _ = try await run("LOGIN \(quote(user)) \(quote(password))")
+        }
+        let caps = try await run("CAPABILITY")
+        for c in caps { if case .capability(let list) = c { capabilities = list } }
+    }
+
     public func listFolders() async throws -> [IMAPFolderInfo] {
         let responses = try await run("LIST \"\" \"*\"")
         return responses.compactMap { if case .list(let f) = $0 { return f } else { return nil } }
