@@ -35,6 +35,8 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
         FalconUpdateRepository: aze038/mc4mac
+        FalconGoogleClientID: ""
+        FalconGoogleClientSecret: ""
     entitlements:
       path: App/FalconMail/FalconMail.entitlements
       properties:

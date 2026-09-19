@@ -60,10 +60,14 @@ public struct SMTPSender: MessageSender {
 
     public func send(accountID: UUID, from: String, recipients: [String], message: Data) async throws {
         guard let account = await store.account(accountID) else { throw FalconError.storage("account missing") }
-        let token = try await tokens.validAccessToken(for: accountID)
         let smtp = SMTPClient(host: account.smtpHost, port: account.smtpPort)
         try await smtp.connect()
-        try await smtp.authenticateXOAuth2(user: account.email, accessToken: token)
+        if account.usesPassword {
+            try await smtp.authenticatePlain(user: account.loginName, password: try await tokens.password(for: accountID))
+        } else {
+            let token = try await tokens.validAccessToken(for: accountID)
+            try await smtp.authenticateXOAuth2(user: account.email, accessToken: token)
+        }
         try await smtp.send(from: from, recipients: recipients, message: message)
         await smtp.quit()
     }

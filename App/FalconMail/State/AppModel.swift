@@ -325,21 +325,43 @@ final class AppModel: ObservableObject {
         Task { try? await outbox.cancel(item.id) }
     }
 
-    func addGoogleAccount() async throws {
+    func addGoogleAccount(loginHint: String? = nil) async throws {
         guard let config = OAuthConfigLoader.load() else {
-            throw FalconError.invalidInput("Add your Google OAuth client ID in Settings → Google first.")
+            throw FalconError.invalidInput("This build has no Google sign-in configured. Use a build from GitHub Releases, or set the values under Settings → Advanced.")
         }
         let flow = GoogleSignInFlow(config: config)
         let result = try await flow.run(openURL: { url in
             DispatchQueue.main.async { _ = NSWorkspace.shared.open(url) }
-        })
-        let account = accounts.first { $0.email.caseInsensitiveCompare(result.email) == .orderedSame }
+        }, loginHint: loginHint)
+        var account = accounts.first { $0.email.caseInsensitiveCompare(result.email) == .orderedSame }
             ?? AccountInfo.google(email: result.email, displayName: result.name)
+        account.authMethod = "oauth"
         try await tokens.save(result.token, for: account.id)
         try await store.saveAccount(account)
         await refreshAccounts()
         await coordinator.start(account: account)
         Task { await syncContacts() }
+        if let hint = loginHint, hint.caseInsensitiveCompare(result.email) != .orderedSame {
+            statusText = "Signed in as \(result.email), not \(hint)"
+        }
+    }
+
+    func addCustomAccount(email: String, displayName: String, settings: CustomServerSettings) async throws {
+        var account = accounts.first { $0.email.caseInsensitiveCompare(email) == .orderedSame }
+            ?? AccountInfo.custom(email: email, displayName: displayName, imapHost: settings.imapHost, imapPort: settings.imapPort,
+                                  smtpHost: settings.smtpHost, smtpPort: settings.smtpPort, username: settings.username)
+        account.provider = "imap"
+        account.authMethod = "password"
+        account.imapHost = settings.imapHost
+        account.imapPort = settings.imapPort
+        account.smtpHost = settings.smtpHost
+        account.smtpPort = settings.smtpPort
+        account.username = settings.username
+        if !displayName.isEmpty { account.displayName = displayName }
+        try await tokens.savePassword(settings.password, for: account.id)
+        try await store.saveAccount(account)
+        await refreshAccounts()
+        await coordinator.start(account: account)
     }
 
     func removeAccount(_ account: AccountInfo) {

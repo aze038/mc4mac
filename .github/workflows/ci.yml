@@ -30,6 +30,19 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
+      - name: Embed Google OAuth client
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ]; then
+            plutil -replace FalconGoogleClientID -string "$GOOGLE_OAUTH_CLIENT_ID" App/FalconMail/Info.plist
+            plutil -replace FalconGoogleClientSecret -string "${GOOGLE_OAUTH_CLIENT_SECRET:-}" App/FalconMail/Info.plist
+            echo "Google sign-in embedded"
+          else
+            echo "::warning::GOOGLE_OAUTH_CLIENT_ID secret is not set; this build has no Google sign-in"
+          fi
+
       - name: FalconCore tests
         run: |
           set -o pipefail
