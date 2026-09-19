@@ -74,6 +74,13 @@ struct FalconMailApp: App {
                 Divider()
                 filterCommands
                 Toggle("Group by Conversation", isOn: $model.groupByThread)
+                Divider()
+                Button("Expand All Conversations") { model.expandAll() }.disabled(!model.hasExpandableThreads)
+                Button("Collapse All Conversations") { model.collapseAll() }.disabled(!model.canCollapseSomething)
+                Divider()
+                Button("Mail") { model.showModule(.mail) }.keyboardShortcut("1", modifiers: .command)
+                Button("Calendar") { model.showModule(.calendar) }.keyboardShortcut("2", modifiers: .command)
+                Button("People") { model.showModule(.people) }.keyboardShortcut("3", modifiers: .command)
             }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { Task { await model.updates.check(userInitiated: true) } }
@@ -305,6 +312,7 @@ extension Task where Success == Void, Failure == Never {
 
 extension Notification.Name {
     static let falconAddAccount = Notification.Name("falcon.addAccount")
+    static let falconNewMeeting = Notification.Name("falcon.newMeeting")
     static let falconImport = Notification.Name("falcon.import")
     static let falconExport = Notification.Name("falcon.export")
     static let falconArchive = Notification.Name("falcon.archive")

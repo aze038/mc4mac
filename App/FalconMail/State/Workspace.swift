@@ -148,56 +148,17 @@ struct WorkspaceTabContent: View {
 
 struct MessageTabView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
     let messageID: String
     @State private var message: MessageSummary?
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
             if let message {
-                HStack(spacing: 10) {
-                    Button { reply(message, all: false) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
-                    Button { reply(message, all: true) } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }
-                    Button { forward(message) } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
-                    Divider().frame(height: 16)
-                    Button { model.archive([message]); model.closeTab(.message(messageID)) } label: { Label("Archive", systemImage: "archivebox") }
-                    Button { model.delete([message]); model.closeTab(.message(messageID)) } label: { Label("Delete", systemImage: "trash") }
-                    Button { model.setFlagged([message], !message.isFlagged) } label: { Label("Flag", systemImage: message.isFlagged ? "flag.fill" : "flag") }
-                    Spacer()
-                    Button { openWindow(value: messageID) } label: { Label("Separate Window", systemImage: "macwindow.on.rectangle") }
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .padding(8)
-                Divider()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(message.subject.isEmpty ? "(no subject)" : message.subject)
-                            .font(.title3.bold())
-                            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
-                        MessageCard(message: message, expanded: true)
-                    }
-                }
+                MessageReaderView(message: message, context: .tab, onDidAct: { model.closeTab(.message(messageID)) })
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .task(id: messageID) { message = try? await model.store.message(id: messageID) }
-    }
-
-    private func reply(_ message: MessageSummary, all: Bool) {
-        guard let account = model.account(for: message) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: message)
-            model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all))
-        }
-    }
-
-    private func forward(_ message: MessageSummary) {
-        guard let account = model.account(for: message) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: message)
-            model.openCompose(.forward(message, parsed: parsed, account: account))
-        }
     }
 }

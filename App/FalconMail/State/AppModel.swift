@@ -104,6 +104,8 @@ final class AppModel {
     var messages: [MessageSummary] = []
     var threads: [MessageThread] = []
     var selectedMessageIDs = Set<String>()
+    var expandedThreadIDs = Set<String>()
+    @ObservationIgnored var lastMailSelection: SidebarSelection?
     var isSearching = false
     var statusText = "Ready"
     var online: [UUID: Bool] = [:]
@@ -157,6 +159,11 @@ final class AppModel {
         }
     }
 
+    private var listSortStorage = Preferences.string("listSort", default: ListSort.newest.rawValue)
+    var listSort: String {
+        get { listSortStorage }
+        set { listSortStorage = newValue; Preferences.set(newValue, "listSort"); rebuildThreads() }
+    }
     private var groupByThreadStorage = Preferences.bool("groupByThread", default: true)
     var groupByThread: Bool {
         get { groupByThreadStorage }
@@ -314,7 +321,8 @@ final class AppModel {
         await reloadMessages()
         if let s = restoredState {
             let ids = Set(s.selectedMessageIDs)
-            selectedMessageIDs = ids.filter { id in threads.contains { $0.id == id } }
+            let rowIDs = Set(rows.map(\.id))
+            selectedMessageIDs = ids.filter { rowIDs.contains($0) }
             await restoreTabs(s.openTabs, minimized: s.minimizedTabs, active: s.activeTab)
         }
         Task { await syncContacts() }
@@ -573,12 +581,10 @@ final class AppModel {
         } else {
             grouped = visible.map { MessageThread(messages: [$0]) }
         }
-        if filtersStorage.isEmpty {
-            threads = grouped
-        } else {
-            threads = grouped.filter { passesFilters($0) || selectedMessageIDs.contains($0.id) }
-        }
-        let valid = selectedMessageIDs.filter { id in threads.contains { $0.id == id } }
+        let filtered = filtersStorage.isEmpty ? grouped : grouped.filter { passesFilters($0) || selectedMessageIDs.contains($0.id) }
+        threads = ListSort(rawValue: listSortStorage)?.apply(filtered) ?? filtered
+        let rowIDs = Set(rows.map(\.id))
+        let valid = selectedMessageIDs.filter { rowIDs.contains($0) }
         if valid != selectedMessageIDs { selectedMessageIDs = valid }
     }
 
@@ -658,6 +664,11 @@ final class AppModel {
         cancelPendingRead()
         selection = s
         selectedMessageIDs = []
+        expandedThreadIDs = []
+        switch s {
+        case .unified, .folder, .archive, .outbox: lastMailSelection = s
+        default: break
+        }
         resetSearch()
         if !pinFilters { filtersStorage = [] }
         Task { await reloadMessages() }
@@ -665,8 +676,20 @@ final class AppModel {
     }
 
     var selectedThreads: [MessageThread] { threads.filter { selectedMessageIDs.contains($0.id) } }
-    var selectedMessages: [MessageSummary] { selectedThreads.flatMap { $0.messages } }
-    var firstSelectedMessage: MessageSummary? { threads.first { selectedMessageIDs.contains($0.id) }?.messages.first }
+    var selectedMessages: [MessageSummary] {
+        var seen = Set<String>()
+        var out: [MessageSummary] = []
+        for row in rows where selectedMessageIDs.contains(row.id) {
+            switch row {
+            case .thread(let thread):
+                for m in thread.messages where seen.insert(m.id).inserted { out.append(m) }
+            case .message(let m, _):
+                if seen.insert(m.id).inserted { out.append(m) }
+            }
+        }
+        return out
+    }
+    var firstSelectedMessage: MessageSummary? { selectedMessages.first }
 
     private var junkFolderIDs: Set<UUID> {
         var ids = Set<UUID>()
@@ -677,17 +700,18 @@ final class AppModel {
     }
 
     var selectionIsAllInJunk: Bool {
-        guard !selectedMessageIDs.isEmpty else { return false }
-        let junk = junkFolderIDs
-        guard !junk.isEmpty else { return false }
-        var sawAny = false
-        for thread in threads where selectedMessageIDs.contains(thread.id) {
-            guard thread.messages.allSatisfy({ junk.contains($0.folderID) }) else { return false }
-            sawAny = true
-        }
-        return sawAny
+        let list = selectedMessages
+        return !list.isEmpty && list.allSatisfy { folder($0.folderID)?.role == .junk }
     }
-    var currentThread: MessageThread? { selectedMessageIDs.count == 1 ? threads.first { $0.id == selectedMessageIDs.first! } : nil }
+    var currentThread: MessageThread? {
+        guard selectedMessageIDs.count == 1, let id = selectedMessageIDs.first else { return nil }
+        if let thread = threads.first(where: { $0.id == id }) { return thread }
+        guard let messageID = ListRow.childMessageID(id) else { return nil }
+        for thread in threads {
+            if let message = thread.messages.first(where: { $0.id == messageID }) { return MessageThread(messages: [message]) }
+        }
+        return nil
+    }
 
     func account(for message: MessageSummary) -> AccountInfo? { accounts.first { $0.id == message.accountID } }
     func folder(_ id: UUID) -> FolderInfo? { folders.values.flatMap { $0 }.first { $0.id == id } }
@@ -703,47 +727,6 @@ final class AppModel {
         if let id = selectedMessages.first?.accountID { return id }
         if case .folder(let id) = selection, let f = folder(id) { return f.accountID }
         return accounts.first?.id
-    }
-
-    private var selectionBounds: (first: Int, last: Int)? {
-        let indices = threads.indices.filter { selectedMessageIDs.contains(threads[$0].id) }
-        guard let first = indices.min(), let last = indices.max() else { return nil }
-        return (first, last)
-    }
-
-    private func selectThread(at index: Int) {
-        guard threads.indices.contains(index) else { return }
-        selectedMessageIDs = [threads[index].id]
-    }
-
-    func selectNextThread() {
-        guard !threads.isEmpty else { return }
-        guard let bounds = selectionBounds else { return selectThread(at: 0) }
-        selectThread(at: min(bounds.last + 1, threads.count - 1))
-    }
-
-    func selectPreviousThread() {
-        guard !threads.isEmpty else { return }
-        guard let bounds = selectionBounds else { return selectThread(at: threads.count - 1) }
-        selectThread(at: max(bounds.first - 1, 0))
-    }
-
-    func selectNextUnread() {
-        let start = selectionBounds.map { $0.last + 1 } ?? 0
-        guard start < threads.count, let next = threads[start...].first(where: { $0.unreadCount > 0 }) else {
-            statusText = "No more unread conversations"
-            return
-        }
-        selectedMessageIDs = [next.id]
-    }
-
-    func selectPreviousUnread() {
-        let end = min(selectionBounds.map { $0.first } ?? threads.count, threads.count)
-        guard let previous = threads[..<end].last(where: { $0.unreadCount > 0 }) else {
-            statusText = "No earlier unread conversations"
-            return
-        }
-        selectedMessageIDs = [previous.id]
     }
 
     func toggleReadOnSelection() {
@@ -1067,20 +1050,27 @@ final class AppModel {
         perform(list) { try await $0.setFlag(.flagged, on: $1, enabled: flagged) }
     }
 
-    private func advanceTarget(removing ids: Set<String>) -> String? {
+    private func rowVanishes(_ row: ListRow, removing ids: Set<String>) -> Bool {
+        switch row {
+        case .thread(let thread): return thread.messages.allSatisfy { ids.contains($0.id) }
+        case .message(let message, _): return ids.contains(message.id)
+        }
+    }
+
+    private func advanceTarget(removing ids: Set<String>, in current: [ListRow]) -> String? {
         guard advancePolicy != .list else { return nil }
-        guard !ids.isDisjoint(with: selectedMessageIDs) else { return nil }
-        let affected = threads.indices.filter { ids.contains(threads[$0].id) }
-        guard let first = affected.min(), let last = affected.max() else { return nil }
-        let forward = threads[threads.index(after: last)...].first { !ids.contains($0.id) }?.id
-        let backward = threads[..<first].last { !ids.contains($0.id) }?.id
+        let vanishing = current.indices.filter { rowVanishes(current[$0], removing: ids) }
+        guard let first = vanishing.min(), let last = vanishing.max() else { return nil }
+        let forward = current[current.index(after: last)...].first { !rowVanishes($0, removing: ids) }?.id
+        let backward = current[..<first].last { !rowVanishes($0, removing: ids) }?.id
         return advancePolicy == .next ? (forward ?? backward) : (backward ?? forward)
     }
 
     private func removeFromList(_ list: [MessageSummary]) {
         let ids = Set(list.map(\.id))
-        let touchesSelection = !ids.isDisjoint(with: selectedMessageIDs)
-        let target = advanceTarget(removing: ids)
+        let current = rows
+        let touchesSelection = current.contains { selectedMessageIDs.contains($0.id) && rowVanishes($0, removing: ids) }
+        let target = touchesSelection ? advanceTarget(removing: ids, in: current) : nil
         messages.removeAll { ids.contains($0.id) }
         rebuildThreads()
         guard touchesSelection else { return }

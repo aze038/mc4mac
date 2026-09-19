@@ -3,92 +3,218 @@ import AppKit
 import WebKit
 import FalconCore
 
-struct MessageDetailView: View {
-    @Environment(AppModel.self) private var model
-    let thread: MessageThread
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(thread.latest.subject.isEmpty ? "(no subject)" : thread.latest.subject)
-                    .font(.title3.bold())
-                    .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
-                ForEach(Array(thread.messages.reversed().enumerated()), id: \.element.id) { index, message in
-                    MessageCard(message: message, expanded: index == thread.messages.count - 1 || thread.messages.count == 1)
-                    Divider()
-                }
-            }
-        }
-        .id(thread.id)
-    }
+enum ReaderContext {
+    case pane, tab, window
 }
 
-struct MessageCard: View {
+struct MessageReaderView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     let message: MessageSummary
+    var conversation: MessageThread? = nil
+    var context: ReaderContext = .pane
+    var onDidAct: (() -> Void)? = nil
 
-    private var renderKey: String { "\(expanded)|\(allowRemoteImages)|\(model.loadRemoteImages)" }
-    @State var expanded: Bool
     @State private var parsed: MIMEMessage?
+    @State private var rendered: String?
     @State private var loading = false
     @State private var allowRemoteImages = false
-    @State private var rendered: String?
     @State private var hasRemote = false
+    @State private var showDetails = false
+
+    private var renderKey: String { "\(message.id)|\(allowRemoteImages)|\(model.loadRemoteImages)" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(message.from.displayName).font(.headline)
-                    if !message.from.name.isEmpty { Text(message.from.address).font(.caption).foregroundStyle(.secondary) }
-                    if expanded {
-                        Text("To: " + message.to.map { $0.displayName }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
-                        if !message.cc.isEmpty { Text("Cc: " + message.cc.map { $0.displayName }.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            content
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+        .task(id: renderKey) { await load() }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(message.subject.isEmpty ? "(no subject)" : message.subject)
+                .font(.system(size: 20, weight: .semibold))
+                .textSelection(.enabled)
+            HStack(alignment: .top, spacing: 12) {
+                AvatarView(name: message.from.displayName, address: message.from.address, size: 40)
+                senderBlock
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text(message.date.formatted(date: .abbreviated, time: .shortened))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    actions
                 }
-                Spacer()
-                Text(message.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
             }
-            .contentShape(Rectangle())
-            .onTapGesture { expanded.toggle() }
-            .contextMenu {
-                Button("Open in Tab") { model.openMessageTab(message) }
-                Button("Open in Separate Window") { openWindow(value: message.id) }
-            }
-            if expanded {
-                if let parsed, let rendered {
-                    if !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments) }
-                    if !model.loadRemoteImages && !allowRemoteImages && hasRemote {
-                        RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
-                    }
-                    HTMLView(html: rendered)
-                        .frame(minHeight: 200)
-                } else if loading {
-                    ProgressView().padding()
-                } else {
-                    Text(message.snippet).foregroundStyle(.secondary)
-                }
-            } else {
-                Text(message.snippet).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            conversationHint
+            if let parsed, !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments) }
+            if !model.loadRemoteImages && !allowRemoteImages && hasRemote {
+                RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
             }
         }
-        .padding(.horizontal, 20).padding(.vertical, 12)
-        .task(id: renderKey) {
-            guard expanded else { return }
-            if parsed == nil {
-                loading = true
-                parsed = await model.parsedBody(for: message)
-                loading = false
+        .padding(.horizontal, 22)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
+    }
+
+    private var senderBlock: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(message.from.displayName).font(.system(size: 14, weight: .semibold))
+            if !message.from.name.isEmpty {
+                Text(message.from.address).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
             }
-            guard let parsed else { return }
-            let allow = model.loadRemoteImages || allowRemoteImages
-            let result = await Task.detached(priority: .userInitiated) {
-                (MessageRenderer.html(for: parsed, allowRemote: allow), MessageRenderer.hasRemoteImages(parsed))
-            }.value
-            rendered = result.0
-            hasRemote = result.1
+            HStack(spacing: 4) {
+                Text("To: " + recipientLine(message.to))
+                    .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(showDetails ? nil : 1)
+                Button(showDetails ? "Hide" : "Details") { showDetails.toggle() }
+                    .buttonStyle(.link).font(.system(size: 11))
+            }
+            if showDetails {
+                if !message.cc.isEmpty {
+                    Text("Cc: " + recipientLine(message.cc)).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                Text(message.date.formatted(date: .complete, time: .standard)).font(.system(size: 12)).foregroundStyle(.secondary)
+                if let folder = model.folder(message.folderID) {
+                    Text("Folder: " + folder.path).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
         }
+    }
+
+    private func recipientLine(_ list: [EmailAddress]) -> String {
+        showDetails ? list.map { $0.rfc5322 }.joined(separator: ", ") : list.map { $0.displayName }.joined(separator: ", ")
+    }
+
+    private var actions: some View {
+        HStack(spacing: 2) {
+            ReaderActionButton("Reply", "arrowshape.turn.up.left") { reply(all: false) }
+            ReaderActionButton("Reply All", "arrowshape.turn.up.left.2") { reply(all: true) }
+            ReaderActionButton("Forward", "arrowshape.turn.up.right") { forward() }
+            ReaderActionButton(message.isFlagged ? "Unflag" : "Flag", message.isFlagged ? "flag.fill" : "flag") { model.setFlagged([message], !message.isFlagged) }
+            Menu { moreMenu } label: { Image(systemName: "ellipsis.circle").font(.system(size: 15)) }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More actions")
+        }
+    }
+
+    @ViewBuilder private var moreMenu: some View {
+        Button("Archive") { model.archive([message]); onDidAct?() }
+        Button("Delete") { model.delete([message]); onDidAct?() }
+        Button(message.isFlagged ? "Unflag" : "Flag") { model.setFlagged([message], !message.isFlagged) }
+        Button(message.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead([message], !message.isRead) }
+        if context == .pane {
+            Button("Move to Folder…") { model.openMovePalette() }
+        }
+        Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { model.toggleJunk([message]) }
+        Button(model.isMuted(thread) ? "Unmute Conversation" : "Mute Conversation") { model.toggleMute(thread) }
+        Divider()
+        if context != .tab { Button("Open in Tab") { model.openMessageTab(message) } }
+        if context != .window { Button("Open in Separate Window") { openWindow(value: message.id) } }
+        Divider()
+        Button("Save as .eml…") { saveAsEML() }
+    }
+
+    private var thread: MessageThread { conversation ?? MessageThread(messages: [message]) }
+
+    @ViewBuilder private var conversationHint: some View {
+        if let conversation, conversation.messages.count > 1, !model.isExpanded(conversation), context == .pane {
+            HStack(spacing: 8) {
+                Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
+                Text("\(conversation.messages.count) messages in this conversation. Showing the latest.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Button("Show all") { model.expand(conversation) }.buttonStyle(.link).font(.system(size: 12))
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if let rendered {
+            HTMLView(html: rendered)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if loading {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                Text(message.snippet).foregroundStyle(.secondary).padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func load() async {
+        if parsed == nil {
+            loading = true
+            parsed = await model.parsedBody(for: message)
+            loading = false
+        }
+        guard let parsed else { return }
+        let allow = model.loadRemoteImages || allowRemoteImages
+        let result = await Task.detached(priority: .userInitiated) {
+            (MessageRenderer.html(for: parsed, allowRemote: allow), MessageRenderer.hasRemoteImages(parsed))
+        }.value
+        rendered = result.0
+        hasRemote = result.1
+    }
+
+    private func reply(all: Bool) {
+        guard let account = model.account(for: message) else { return }
+        Task {
+            let parsed = await model.parsedBody(for: message)
+            model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all))
+        }
+    }
+
+    private func forward() {
+        guard let account = model.account(for: message) else { return }
+        Task {
+            let parsed = await model.parsedBody(for: message)
+            model.openCompose(.forward(message, parsed: parsed, account: account))
+        }
+    }
+
+    private func saveAsEML() {
+        let panel = NSSavePanel()
+        let safe = message.subject.replacingOccurrences(of: "[/:\\\\]", with: "-", options: .regularExpression)
+        panel.nameFieldStringValue = (safe.isEmpty ? "message" : String(safe.prefix(60))) + ".eml"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            if let raw = await model.rawBody(for: message) { try? raw.write(to: url) }
+        }
+    }
+}
+
+struct ReaderActionButton: View {
+    let title: LocalizedStringKey
+    let symbol: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    init(_ title: LocalizedStringKey, _ symbol: String, action: @escaping () -> Void) {
+        self.title = title
+        self.symbol = symbol
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 30, height: 26)
+                .background(hovering ? Color.primary.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(title)
     }
 }
 
@@ -100,20 +226,13 @@ struct MessageWindowView: View {
     var body: some View {
         Group {
             if let message {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(message.subject.isEmpty ? "(no subject)" : message.subject)
-                            .font(.title3.bold())
-                            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
-                        MessageCard(message: message, expanded: true)
-                    }
-                }
-                .navigationTitle(message.subject.isEmpty ? "Message" : message.subject)
+                MessageReaderView(message: message, context: .window)
+                    .navigationTitle(message.subject.isEmpty ? "Message" : message.subject)
             } else {
                 ProgressView()
             }
         }
-        .frame(minWidth: 480, minHeight: 400)
+        .frame(minWidth: 560, minHeight: 480)
         .background(PopupWindowAccessor())
         .task { message = try? await model.store.message(id: messageID) }
         .onAppear { model.openMessageWindows.insert(messageID) }
@@ -148,7 +267,7 @@ enum MessageRenderer {
         let csp = allowRemote
             ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
             : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
-        let style = "<style>:root{color-scheme:light dark;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.45;color:CanvasText;margin:0;padding:4px 0;word-wrap:break-word;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} blockquote{border-left:2px solid #999;margin:0;padding-left:10px;opacity:0.8;} a{color:#0a84ff;}</style>"
+        let style = "<style>:root{color-scheme:light dark;} html,body{margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:CanvasText;padding:16px 22px 28px 22px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid #999;margin:0;padding-left:10px;opacity:0.8;} a{color:#0a84ff;}</style>"
         let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {

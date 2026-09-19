@@ -4,43 +4,59 @@ import FalconCore
 struct MessageListView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
-    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            searchBar
+            listHeader
             filterBar
             Divider()
             if model.isSearching {
                 ProgressView("Searching…").padding()
             }
-            threadList
+            rowList
             loadOlderBar
         }
+        .background(Color(nsColor: .controlBackgroundColor))
         .onChange(of: model.selectedMessageIDs) { _, _ in model.selectionDidChange() }
-        .onChange(of: model.focusSearchToken) { _, _ in searchFocused = true }
     }
 
-    private var searchBar: some View {
-        @Bindable var model = model
-        return HStack {
-            TextField("Search mail", text: $model.searchText)
-                .textFieldStyle(.roundedBorder)
-                .focused($searchFocused)
-                .onSubmit { Task { await model.runSearch() } }
-                .onExitCommand {
-                    model.clearSearch()
-                    searchFocused = false
+    private var listHeader: some View {
+        HStack(spacing: 8) {
+            Text(model.listTitle).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+            Text("\(model.threads.count)").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            sortMenu
+            if model.hasExpandableThreads {
+                Button { model.canCollapseSomething ? model.collapseAll() : model.expandAll() } label: {
+                    Image(systemName: model.canCollapseSomething ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
                 }
-            if !model.searchText.isEmpty {
-                Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain)
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help(model.canCollapseSomething ? "Collapse all conversations" : "Expand all conversations")
             }
-            Toggle(isOn: $model.groupByThread) { Image(systemName: "bubble.left.and.bubble.right") }
-                .toggleStyle(.button)
-                .help("Group by conversation")
         }
-        .padding(8)
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(ListSort.allCases) { sort in
+                Button { model.listSort = sort.rawValue } label: {
+                    if model.listSort == sort.rawValue { Label(sort.title, systemImage: "checkmark") } else { Text(sort.title) }
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.up.arrow.down").font(.system(size: 10))
+                Text(ListSort(rawValue: model.listSort)?.title ?? "Recent").font(.caption)
+            }
+            .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Sort order")
     }
 
     @ViewBuilder private var filterBar: some View {
@@ -50,15 +66,12 @@ struct MessageListView: View {
                     filterChip(filter)
                 }
                 Spacer()
-                Text("\(model.threads.count) conversations")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 pinButton
                 Button("Clear") { model.clearFilters() }
                     .buttonStyle(.link)
                     .font(.caption)
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
     }
@@ -87,13 +100,13 @@ struct MessageListView: View {
         .help("Keep these filters when switching folders")
     }
 
-    private var threadList: some View {
+    private var rowList: some View {
         @Bindable var model = model
         return ScrollViewReader { proxy in
-            List(model.threads, selection: $model.selectedMessageIDs) { thread in
-                MessageRow(thread: thread)
-                    .tag(thread.id)
-                    .contextMenu { rowMenu(thread) }
+            List(model.rows, selection: $model.selectedMessageIDs) { row in
+                rowView(row)
+                    .tag(row.id)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 8))
             }
             .listStyle(.inset)
             .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } })
@@ -102,6 +115,8 @@ struct MessageListView: View {
                 model.openMessage(t.latest) { openWindow(value: $0) }
                 return .handled
             }
+            .onKeyPress(.rightArrow) { model.expandCurrent() ? .handled : .ignored }
+            .onKeyPress(.leftArrow) { model.collapseCurrent() ? .handled : .ignored }
             .overlay {
                 if model.threads.isEmpty && !model.isSearching {
                     ContentUnavailableView(emptyTitle, systemImage: model.filters.isEmpty ? "tray" : "line.3.horizontal.decrease.circle")
@@ -111,6 +126,17 @@ struct MessageListView: View {
                 guard ids.count == 1, let id = ids.first else { return }
                 proxy.scrollTo(id)
             }
+        }
+    }
+
+    @ViewBuilder private func rowView(_ row: ListRow) -> some View {
+        switch row {
+        case .thread(let thread):
+            ConversationRow(thread: thread)
+                .contextMenu { rowMenu(thread) }
+        case .message(let message, _):
+            ChildMessageRow(message: message)
+                .contextMenu { rowMenu(MessageThread(messages: [message])) }
         }
     }
 
@@ -129,6 +155,10 @@ struct MessageListView: View {
     @ViewBuilder private func rowMenu(_ thread: MessageThread) -> some View {
         Button("Open") { model.openMessage(thread.latest) { openWindow(value: $0) } }
         Button("Open in Separate Window") { model.openMessage(thread.latest, forceWindow: true) { openWindow(value: $0) } }
+        if thread.messages.count > 1 {
+            Button(model.isExpanded(thread) ? "Collapse Conversation" : "Expand Conversation") { model.toggleExpanded(thread) }
+        }
+        Divider()
         Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
         Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
         Button("Archive") { model.archive(thread.messages) }
@@ -138,44 +168,140 @@ struct MessageListView: View {
     }
 }
 
-struct MessageRow: View {
+struct ConversationRow: View {
+    @Environment(AppModel.self) private var model
     let thread: MessageThread
+
+    private var unread: Bool { thread.unreadCount > 0 }
 
     var body: some View {
         let m = thread.latest
         HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(thread.unreadCount > 0 ? Color.accentColor : Color.clear)
-                .frame(width: 8, height: 8)
-                .padding(.top, 6)
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(unread ? Color.accentColor : Color.clear)
+                .frame(width: 3)
+                .padding(.vertical, 6)
+            chevron
+            AvatarView(name: m.from.displayName, address: m.from.address, size: 32)
+                .padding(.top, 2)
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
+                HStack(spacing: 6) {
                     Text(m.from.displayName)
-                        .font(.system(size: 13, weight: thread.unreadCount > 0 ? .semibold : .regular))
+                        .font(.system(size: 13, weight: unread ? .semibold : .regular))
                         .lineLimit(1)
                     if thread.messages.count > 1 {
                         Text("\(thread.messages.count)")
-                            .font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
+                            .font(.system(size: 10, weight: .medium))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Color.secondary.opacity(0.15), in: Capsule())
                     }
-                    Spacer()
-                    Text(MessageRow.dateText(m.date)).font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 4)
+                    Text(MessageRow.dateText(m.date))
+                        .font(.system(size: 11))
+                        .foregroundStyle(unread ? Color.accentColor : Color.secondary)
                 }
                 HStack(spacing: 4) {
                     Text(m.subject.isEmpty ? "(no subject)" : m.subject)
-                        .font(.system(size: 13, weight: thread.unreadCount > 0 ? .medium : .regular))
+                        .font(.system(size: 13, weight: unread ? .medium : .regular))
                         .lineLimit(1)
-                    Spacer()
-                    if m.hasAttachments { Image(systemName: "paperclip").font(.caption).foregroundStyle(.secondary) }
-                    if m.isFlagged { Image(systemName: "flag.fill").font(.caption).foregroundStyle(.red) }
+                    Spacer(minLength: 4)
+                    if m.hasAttachments { Image(systemName: "paperclip").font(.system(size: 11)).foregroundStyle(.secondary) }
+                    if m.isFlagged { Image(systemName: "flag.fill").font(.system(size: 11)).foregroundStyle(.red) }
                 }
-                Text(m.snippet).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text(m.snippet.isEmpty ? " " : m.snippet)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
     }
 
+    @ViewBuilder private var chevron: some View {
+        if thread.messages.count > 1 {
+            Button { model.toggleExpanded(thread) } label: {
+                Image(systemName: model.isExpanded(thread) ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, height: 14)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 10)
+            .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
+        } else {
+            Color.clear.frame(width: 14, height: 14)
+        }
+    }
+}
+
+struct ChildMessageRow: View {
+    let message: MessageSummary
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(message.isRead ? Color.clear : Color.accentColor)
+                .frame(width: 7, height: 7)
+                .padding(.top, 9)
+            AvatarView(name: message.from.displayName, address: message.from.address, size: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(message.from.displayName)
+                        .font(.system(size: 12.5, weight: message.isRead ? .regular : .semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if message.hasAttachments { Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(.secondary) }
+                    if message.isFlagged { Image(systemName: "flag.fill").font(.system(size: 10)).foregroundStyle(.red) }
+                    Text(MessageRow.dateText(message.date)).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Text(message.snippet.isEmpty ? " " : message.snippet)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.leading, 44)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+struct AvatarView: View {
+    let name: String
+    let address: String
+    let size: CGFloat
+
+    private static let palette: [Color] = [
+        Color(red: 0.20, green: 0.47, blue: 0.96), Color(red: 0.86, green: 0.30, blue: 0.36), Color(red: 0.16, green: 0.63, blue: 0.47),
+        Color(red: 0.93, green: 0.55, blue: 0.14), Color(red: 0.55, green: 0.36, blue: 0.86), Color(red: 0.13, green: 0.61, blue: 0.75),
+        Color(red: 0.76, green: 0.40, blue: 0.18), Color(red: 0.42, green: 0.53, blue: 0.20)
+    ]
+
+    private var initials: String {
+        let words = name.split(separator: " ").filter { $0.first?.isLetter == true }
+        let letters = words.prefix(2).compactMap { $0.first }.map { String($0).uppercased() }
+        if !letters.isEmpty { return letters.joined() }
+        return String((address.first.map { String($0) } ?? "?").uppercased())
+    }
+
+    static func color(for key: String) -> Color {
+        var hash: UInt32 = 5381
+        for b in key.lowercased().utf8 { hash = hash &* 33 &+ UInt32(b) }
+        return palette[Int(hash % UInt32(palette.count))]
+    }
+
+    private var color: Color { AvatarView.color(for: address) }
+
+    var body: some View {
+        Circle()
+            .fill(color.opacity(0.85))
+            .frame(width: size, height: size)
+            .overlay(Text(initials).font(.system(size: size * 0.4, weight: .semibold)).foregroundStyle(.white))
+    }
+}
+
+enum MessageRow {
     static let timeFormatter: DateFormatter = { let f = DateFormatter(); f.timeStyle = .short; f.dateStyle = .none; return f }()
     static let dayFormatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "EEE"; return f }()
     static let dateFormatter: DateFormatter = { let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .none; return f }()

@@ -36,14 +36,10 @@ struct SidebarView: View {
     }
 
     private var topSection: some View {
-        Section {
+        Section("Favorites") {
             Label("All Inboxes", systemImage: "tray.2")
                 .tag(SidebarSelection.unified)
                 .badge(model.unifiedUnreadCount)
-            Label("Calendar", systemImage: "calendar")
-                .tag(SidebarSelection.calendar)
-            Label("Contacts", systemImage: "person.2")
-                .tag(SidebarSelection.contacts)
             Label("Outbox", systemImage: "paperplane")
                 .tag(SidebarSelection.outbox)
                 .badge(pendingOutbox)
@@ -59,7 +55,6 @@ struct SidebarView: View {
             }
         }
     }
-
 }
 
 struct AccountFolderSection: View {

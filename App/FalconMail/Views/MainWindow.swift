@@ -15,35 +15,34 @@ struct MainWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if model.activeTab == nil {
+                CommandBar()
+                Divider()
+            }
             if !model.tabs.isEmpty {
                 WorkspaceTabStrip()
                 Divider()
             }
-            ZStack {
-                NavigationSplitView {
-                    SidebarView()
-                        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
-                } content: {
-                    contentColumn
-                        .navigationSplitViewColumnWidth(min: 320, ideal: 420, max: 640)
-                } detail: {
-                    detailColumn
-                }
-                .opacity(model.activeTab == nil ? 1 : 0)
-                .allowsHitTesting(model.activeTab == nil)
-                if let tab = model.activeTab {
-                    WorkspaceTabContent(tab: tab)
-                        .id(tab.id)
-                        .background(Color(nsColor: .windowBackgroundColor))
-                }
-                if model.showsMovePalette {
-                    MovePalette()
+            HStack(spacing: 0) {
+                ModuleRail()
+                Divider()
+                ZStack {
+                    moduleContent
+                        .opacity(model.activeTab == nil ? 1 : 0)
+                        .allowsHitTesting(model.activeTab == nil)
+                    if let tab = model.activeTab {
+                        WorkspaceTabContent(tab: tab)
+                            .id(tab.id)
+                            .background(Color(nsColor: .windowBackgroundColor))
+                    }
+                    if model.showsMovePalette {
+                        MovePalette()
+                    }
                 }
             }
         }
         .background(MailboxWindowAccessor())
         .background(KeyRouterView(model: model))
-        .toolbar { toolbarItems }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 WindowTrayBar()
@@ -71,10 +70,26 @@ struct MainWindow: View {
         .onChange(of: model.drafts.count) { _, _ in model.saveSession() }
     }
 
+    @ViewBuilder private var moduleContent: some View {
+        switch model.module {
+        case .calendar: CalendarView()
+        case .people: ContactsView()
+        case .mail:
+            NavigationSplitView {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
+            } content: {
+                contentColumn
+                    .navigationSplitViewColumnWidth(min: 340, ideal: 400, max: 600)
+            } detail: {
+                detailColumn
+            }
+            .navigationSplitViewStyle(.balanced)
+        }
+    }
+
     @ViewBuilder private var contentColumn: some View {
         switch model.selection {
-        case .calendar: CalendarView()
-        case .contacts: ContactsView()
         case .outbox: OutboxView()
         case .archive(let id):
             if let record = model.archiveRecords.first(where: { $0.id == id }) { ArchiveBrowserView(record: record) } else { Text("Archive not found") }
@@ -84,28 +99,15 @@ struct MainWindow: View {
 
     @ViewBuilder private var detailColumn: some View {
         switch model.selection {
-        case .calendar, .contacts, .outbox, .archive: EmptyView()
+        case .outbox, .archive: EmptyView()
         default:
             if let thread = model.currentThread {
-                MessageDetailView(thread: thread)
+                MessageReaderView(message: thread.latest, conversation: model.currentConversation)
+                    .id(thread.latest.id)
             } else if model.selectedMessageIDs.count > 1 {
                 ContentUnavailableView("\(model.selectedMessageIDs.count) conversations selected", systemImage: "envelope.badge")
             } else {
                 ContentUnavailableView("No message selected", systemImage: "envelope.open")
-            }
-        }
-    }
-
-    @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button { model.composeNew() } label: { Label("New Message", systemImage: "square.and.pencil") }
-                .disabled(model.accounts.isEmpty)
-            Button { model.syncNow() } label: { Label("Check Mail", systemImage: "arrow.clockwise") }
-        }
-        if model.activeTab == nil {
-            ToolbarItemGroup(placement: .primaryAction) {
-                ReplyToolbar(reply: { model.replyToSelection(all: $0) }, forward: { model.forwardSelection() })
-                MessageActionsToolbar()
             }
         }
     }
@@ -126,43 +128,6 @@ struct MainWindow: View {
         panel.canCreateDirectories = true
         panel.prompt = "Export Here"
         if panel.runModal() == .OK, let url = panel.url { model.exportSelectedAsEML(to: url) }
-    }
-}
-
-struct ReplyToolbar: View {
-    @Environment(AppModel.self) private var model
-    let reply: (Bool) -> Void
-    let forward: () -> Void
-
-    var body: some View {
-        let disabled = model.currentThread == nil
-        Button { reply(false) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.disabled(disabled)
-        Button { reply(true) } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.disabled(disabled)
-        Button { forward() } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.disabled(disabled)
-    }
-}
-
-struct MessageActionsToolbar: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let none = model.selectedMessageIDs.isEmpty
-        let first = model.firstSelectedMessage
-        Button { model.archive(model.selectedMessages) } label: { Label("Archive", systemImage: "archivebox") }.disabled(none)
-        Button { model.delete(model.selectedMessages) } label: { Label("Delete", systemImage: "trash") }.disabled(none)
-        Button { model.setFlagged(model.selectedMessages, !(first?.isFlagged ?? false)) } label: { Label("Flag", systemImage: "flag") }.disabled(none)
-        MoveButton()
-        Button { model.markRead(model.selectedMessages, !(first?.isRead ?? true)) } label: { Label("Read/Unread", systemImage: "envelope.open") }.disabled(none)
-    }
-}
-
-struct MoveButton: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        Button { model.openMovePalette() } label: { Label("Move", systemImage: "folder") }
-            .disabled(model.selectedMessageIDs.isEmpty)
-            .help("Move to folder")
     }
 }
 

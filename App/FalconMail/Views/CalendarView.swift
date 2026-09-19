@@ -37,6 +37,7 @@ struct CalendarView: View {
             if let id = accountID { NewMeetingSheet(accountID: id) { Task { await load() } }.environment(model) }
         }
         .onAppear { accountID = model.accounts.first?.id }
+        .onReceive(NotificationCenter.default.publisher(for: .falconNewMeeting)) { _ in if accountID != nil { showNew = true } }
         .task(id: accountID) { await load() }
     }
 
