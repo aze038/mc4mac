@@ -322,6 +322,11 @@ public actor AccountSyncer {
         return raw
     }
 
+    public func parsedMessage(for message: MessageSummary) async throws -> MIMEMessage {
+        let raw = try await body(for: message)
+        return MIMEParser.parse(raw)
+    }
+
     public func setFlag(_ flag: MessageFlags, on messages: [MessageSummary], enabled: Bool) async throws {
         for (folderID, group) in Dictionary(grouping: messages, by: { $0.folderID }) {
             guard let folder = await store.folder(folderID) else { continue }

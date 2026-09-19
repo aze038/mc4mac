@@ -3,7 +3,7 @@ import AppKit
 import FalconCore
 
 struct ArchiveSheet: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     var localExport = false
 
@@ -193,7 +193,7 @@ struct FolderChecklist: View {
 }
 
 struct OpenArchiveSheet: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var accountID: UUID?
     @State private var found: [RemoteFile] = []
@@ -272,7 +272,7 @@ struct OpenArchiveSheet: View {
 }
 
 struct ArchiveBrowserView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let record: ArchiveRecord
     @State private var reader: ArchiveReader?
     @State private var entries: [ArchiveEntry] = []

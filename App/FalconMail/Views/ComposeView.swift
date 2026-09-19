@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import FalconCore
 
 struct ComposeView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     let draftID: UUID
@@ -240,7 +240,7 @@ struct ComposeAttachmentChip: View {
 }
 
 struct RecipientField: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let label: String
     @Binding var text: String
     @State private var suggestions: [ContactInfo] = []

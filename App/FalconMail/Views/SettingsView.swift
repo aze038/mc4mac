@@ -15,7 +15,7 @@ struct SettingsView: View {
 }
 
 struct GeneralSettings: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @AppStorage("notificationSound") private var notificationSound = "Ping"
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
 
@@ -24,7 +24,8 @@ struct GeneralSettings: View {
     }
 
     private var form: some View {
-        Form {
+        @Bindable var model = model
+        return Form {
             Section("Appearance") {
                 Picker("Theme", selection: $model.appearance) {
                     ForEach(AppAppearance.allCases) { a in Text(a.title).tag(a.rawValue) }
@@ -91,7 +92,7 @@ struct GeneralSettings: View {
 }
 
 struct AccountSettings: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var selected: UUID?
     @State private var showAdd = false
 
@@ -142,13 +143,13 @@ struct AccountSettings: View {
                 }
             }
         }
-        .sheet(isPresented: $showAdd) { AddAccountSheet().environmentObject(model) }
+        .sheet(isPresented: $showAdd) { AddAccountSheet().environment(model) }
         .onAppear { if selected == nil { selected = model.accounts.first?.id } }
     }
 }
 
 struct AccountDetail: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let account: AccountInfo
     @State private var displayName = ""
     @State private var signature = ""
@@ -238,7 +239,7 @@ struct AccountDetail: View {
 }
 
 struct RulesSettings: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var rules: [RuleDefinition] = []
     @State private var selected: UUID?
 

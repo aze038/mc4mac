@@ -96,7 +96,7 @@ extension AppModel {
 }
 
 struct WorkspaceTabStrip: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -133,7 +133,7 @@ struct WorkspaceTabStrip: View {
 }
 
 struct WorkspaceTabContent: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let tab: WorkspaceTab
 
     var body: some View {
@@ -147,7 +147,7 @@ struct WorkspaceTabContent: View {
 }
 
 struct MessageTabView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     let messageID: String
     @State private var message: MessageSummary?

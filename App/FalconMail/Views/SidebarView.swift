@@ -2,7 +2,7 @@ import SwiftUI
 import FalconCore
 
 struct SidebarView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var showAddAccount = false
 
     private var selectionBinding: Binding<SidebarSelection?> {
@@ -39,7 +39,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .sheet(isPresented: $showAddAccount) { AddAccountSheet().environmentObject(model) }
+        .sheet(isPresented: $showAddAccount) { AddAccountSheet().environment(model) }
         .onReceive(NotificationCenter.default.publisher(for: .falconAddAccount)) { _ in showAddAccount = true }
     }
 

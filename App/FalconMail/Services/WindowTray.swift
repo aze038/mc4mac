@@ -119,7 +119,7 @@ struct PopupWindowAccessor: NSViewRepresentable {
 
 struct WindowTrayBar: View {
     @ObservedObject var tray = WindowTray.shared
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
 
     var body: some View {
         if !tray.entries.isEmpty || !model.minimizedTabs.isEmpty {

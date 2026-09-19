@@ -1,5 +1,5 @@
 import SwiftUI
-import Combine
+import Observation
 import AppKit
 import FalconCore
 
@@ -20,61 +20,115 @@ struct MessageThread: Identifiable, Hashable {
 }
 
 @MainActor
-final class AppModel: ObservableObject {
-    let layout = FileLayout()
-    let store: MailStore
-    let tokens: TokenStore
-    let rules: RuleStore
-    let indexer = SpotlightIndexer()
-    let coordinator: SyncCoordinator
-    let outbox: Outbox
-    let contacts: ContactStore
-    let archives: ArchiveRecordStore
-    let notifications = NotificationService()
+@Observable
+final class AppModel {
+    @ObservationIgnored let layout = FileLayout()
+    @ObservationIgnored let store: MailStore
+    @ObservationIgnored let tokens: TokenStore
+    @ObservationIgnored let rules: RuleStore
+    @ObservationIgnored let indexer = SpotlightIndexer()
+    @ObservationIgnored let coordinator: SyncCoordinator
+    @ObservationIgnored let outbox: Outbox
+    @ObservationIgnored let contacts: ContactStore
+    @ObservationIgnored let archives: ArchiveRecordStore
+    @ObservationIgnored let notifications = NotificationService()
+    @ObservationIgnored let updates = UpdateManager()
+    @ObservationIgnored let session: SessionStore
 
-    @Published var accounts: [AccountInfo] = []
-    @Published var folders: [UUID: [FolderInfo]] = [:]
-    @Published var selection: SidebarSelection? = .unified
-    @Published var messages: [MessageSummary] = []
-    @Published var threads: [MessageThread] = []
-    @Published var selectedMessageIDs = Set<String>()
-    @Published var searchText = ""
-    @Published var isSearching = false
-    @Published var statusText = "Ready"
-    @Published var online: [UUID: Bool] = [:]
-    @Published var outboxItems: [OutboxItem] = []
-    @Published var archiveRecords: [ArchiveRecord] = []
-    @Published var errorMessage: String?
-    @Published var drafts: [UUID: ComposeDraft] = [:] {
-        didSet {
-            for (id, d) in drafts where oldValue[id] != d { session.saveDraft(d) }
-            for id in oldValue.keys where drafts[id] == nil { session.removeDraft(id) }
+    var accounts: [AccountInfo] = []
+    var folders: [UUID: [FolderInfo]] = [:]
+    var selection: SidebarSelection? = .unified
+    var messages: [MessageSummary] = []
+    var threads: [MessageThread] = []
+    var selectedMessageIDs = Set<String>()
+    var searchText = ""
+    var isSearching = false
+    var statusText = "Ready"
+    var online: [UUID: Bool] = [:]
+    var outboxItems: [OutboxItem] = []
+    var archiveRecords: [ArchiveRecord] = []
+    var errorMessage: String?
+    var contactList: [ContactInfo] = []
+    var openMessageWindows = Set<String>()
+    var tabs: [WorkspaceTab] = []
+    var minimizedTabs: [WorkspaceTab] = []
+    var activeTab: WorkspaceTab?
+    var tabTitles: [String: String] = [:]
+    var cacheSizeBytes = 0
+
+    private var draftsStorage: [UUID: ComposeDraft] = [:]
+    var drafts: [UUID: ComposeDraft] {
+        get { draftsStorage }
+        set {
+            let old = draftsStorage
+            draftsStorage = newValue
+            for (id, d) in newValue where old[id] != d { scheduleDraftSave(id) }
+            for id in old.keys where newValue[id] == nil { pendingDraftSaves[id]?.cancel(); pendingDraftSaves[id] = nil; session.removeDraft(id) }
         }
     }
-    @Published var contactList: [ContactInfo] = []
-    @Published var openMessageWindows = Set<String>()
-    @Published var tabs: [WorkspaceTab] = []
-    @Published var minimizedTabs: [WorkspaceTab] = []
-    @Published var activeTab: WorkspaceTab?
-    var tabTitles: [String: String] = [:]
-    let updates = UpdateManager()
-    lazy var session = SessionStore(layout: layout)
-    private var restoredState: SessionState?
 
-    @AppStorage("groupByThread") var groupByThread = true { didSet { rebuildThreads() } }
-    @AppStorage("undoSendSeconds") var undoSendSeconds = 10
-    @AppStorage("loadRemoteImages") var loadRemoteImages = false
-    @AppStorage("openInWindowOnDoubleClick") var openInWindowOnDoubleClick = false
-    @AppStorage("appearance") var appearance = AppAppearance.system.rawValue
-    @AppStorage("offlineBodies") var offlineBodies = 150 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
-    @AppStorage("maxOfflineMB") var maxOfflineMB = 5 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
-    @Published var cacheSizeBytes = 0
-    @AppStorage("sentSound") var sentSound = "Pop"
-    private var knownSentIDs = Set<UUID>()
+    private var groupByThreadStorage = Preferences.bool("groupByThread", default: true)
+    var groupByThread: Bool {
+        get { groupByThreadStorage }
+        set { groupByThreadStorage = newValue; Preferences.set(newValue, "groupByThread"); rebuildThreads() }
+    }
+    private var undoSendSecondsStorage = Preferences.int("undoSendSeconds", default: 10)
+    var undoSendSeconds: Int {
+        get { undoSendSecondsStorage }
+        set { undoSendSecondsStorage = newValue; Preferences.set(newValue, "undoSendSeconds") }
+    }
+    private var loadRemoteImagesStorage = Preferences.bool("loadRemoteImages", default: false)
+    var loadRemoteImages: Bool {
+        get { loadRemoteImagesStorage }
+        set { loadRemoteImagesStorage = newValue; Preferences.set(newValue, "loadRemoteImages") }
+    }
+    private var openInWindowStorage = Preferences.bool("openInWindowOnDoubleClick", default: false)
+    var openInWindowOnDoubleClick: Bool {
+        get { openInWindowStorage }
+        set { openInWindowStorage = newValue; Preferences.set(newValue, "openInWindowOnDoubleClick") }
+    }
+    private var appearanceStorage = Preferences.string("appearance", default: AppAppearance.system.rawValue)
+    var appearance: String {
+        get { appearanceStorage }
+        set { appearanceStorage = newValue; Preferences.set(newValue, "appearance") }
+    }
+    private var offlineBodiesStorage = Preferences.int("offlineBodies", default: 150)
+    var offlineBodies: Int {
+        get { offlineBodiesStorage }
+        set { offlineBodiesStorage = newValue; Preferences.set(newValue, "offlineBodies"); applyOfflineSettings() }
+    }
+    private var maxOfflineMBStorage = Preferences.int("maxOfflineMB", default: 5)
+    var maxOfflineMB: Int {
+        get { maxOfflineMBStorage }
+        set { maxOfflineMBStorage = newValue; Preferences.set(newValue, "maxOfflineMB"); applyOfflineSettings() }
+    }
+    private var sentSoundStorage = Preferences.string("sentSound", default: "Pop")
+    var sentSound: String {
+        get { sentSoundStorage }
+        set { sentSoundStorage = newValue; Preferences.set(newValue, "sentSound") }
+    }
 
-    private var bodyCache: [String: MIMEMessage] = [:]
-    private var listeners: [Task<Void, Never>] = []
-    private var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private var restoredState: SessionState?
+    @ObservationIgnored private var knownSentIDs = Set<UUID>()
+    @ObservationIgnored private var bodyCache: [String: MIMEMessage] = [:]
+    @ObservationIgnored private var listeners: [Task<Void, Never>] = []
+    @ObservationIgnored private var reloadTask: Task<Void, Never>?
+    @ObservationIgnored private var sessionSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingDraftSaves: [UUID: Task<Void, Never>] = [:]
+
+    private func applyOfflineSettings() {
+        Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) }
+    }
+
+    private func scheduleDraftSave(_ id: UUID) {
+        pendingDraftSaves[id]?.cancel()
+        pendingDraftSaves[id] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self, let d = self.draftsStorage[id] else { return }
+            self.session.saveDraft(d)
+            self.pendingDraftSaves[id] = nil
+        }
+    }
 
     init() {
         let store = MailStore(layout: layout)
@@ -87,6 +141,7 @@ final class AppModel: ObservableObject {
         self.outbox = Outbox(layout: layout, sender: SMTPSender(store: store, tokens: tokens), undoWindow: 10)
         self.contacts = ContactStore(layout: layout)
         self.archives = ArchiveRecordStore(layout: layout)
+        self.session = SessionStore(layout: layout)
     }
 
     func bootstrap() async {
@@ -129,11 +184,21 @@ final class AppModel: ObservableObject {
     }
 
     func saveSession() {
+        sessionSaveTask?.cancel()
+        sessionSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.session.save(self.currentSessionState())
+        }
+    }
+
+    func saveSessionNow() {
+        sessionSaveTask?.cancel()
         session.save(currentSessionState())
     }
 
     func prepareForRelaunch() async {
-        saveSession()
+        saveSessionNow()
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
         let stop = Task { await coordinator.stopAll() }
@@ -147,7 +212,7 @@ final class AppModel: ObservableObject {
             for await change in await self.store.changes() {
                 switch change {
                 case .accountsChanged: await self.refreshAccounts()
-                case .foldersChanged: await self.refreshAccounts()
+                case .foldersChanged(let accountID): self.folders[accountID] = await self.store.folders(for: accountID)
                 case .messagesChanged(let folderID): self.scheduleReload(for: folderID)
                 case .contactsChanged: self.contactList = await self.contacts.all()
                 }
@@ -228,7 +293,8 @@ final class AppModel: ObservableObject {
         } else {
             threads = messages.map { MessageThread(messages: [$0]) }
         }
-        selectedMessageIDs = selectedMessageIDs.filter { id in threads.contains { $0.id == id } }
+        let valid = selectedMessageIDs.filter { id in threads.contains { $0.id == id } }
+        if valid != selectedMessageIDs { selectedMessageIDs = valid }
     }
 
     func runSearch() async {
@@ -264,8 +330,7 @@ final class AppModel: ObservableObject {
         if let cached = bodyCache[message.id] { return cached }
         guard let syncer = await coordinator.syncer(for: message.accountID) else { return nil }
         do {
-            let raw = try await syncer.body(for: message)
-            let parsed = MIMEParser.parse(raw)
+            let parsed = try await syncer.parsedMessage(for: message)
             bodyCache[message.id] = parsed
             if bodyCache.count > 200 { bodyCache.removeAll() }
             return parsed
@@ -491,7 +556,8 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() async {
-        saveSession()
+        saveSessionNow()
+        for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
         await coordinator.stopAll()
     }

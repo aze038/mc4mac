@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import FalconCore
 
 struct MainWindow: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @EnvironmentObject var updates: UpdateManager
     @Environment(\.openWindow) private var openWindow
     @State private var showArchiveSheet = false
@@ -47,10 +47,10 @@ struct MainWindow: View {
         }
         .sheet(isPresented: Binding(get: { updates.shouldPrompt }, set: { _ in })) { UpdateSheet().environmentObject(updates) }
         .disabled(updates.isMandatory)
-        .sheet(isPresented: $showArchiveSheet) { ArchiveSheet().environmentObject(model) }
-        .sheet(isPresented: $showExportArchiveSheet) { ArchiveSheet(localExport: true).environmentObject(model) }
-        .sheet(isPresented: $showOpenArchiveSheet) { OpenArchiveSheet().environmentObject(model) }
-        .sheet(item: $importTarget) { folder in ImportSheet(folder: folder).environmentObject(model) }
+        .sheet(isPresented: $showArchiveSheet) { ArchiveSheet().environment(model) }
+        .sheet(isPresented: $showExportArchiveSheet) { ArchiveSheet(localExport: true).environment(model) }
+        .sheet(isPresented: $showOpenArchiveSheet) { OpenArchiveSheet().environment(model) }
+        .sheet(item: $importTarget) { folder in ImportSheet(folder: folder).environment(model) }
         .alert("FalconMail", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: {
@@ -146,7 +146,7 @@ struct MainWindow: View {
 }
 
 struct ReplyToolbar: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let reply: (Bool) -> Void
     let forward: () -> Void
 
@@ -159,7 +159,7 @@ struct ReplyToolbar: View {
 }
 
 struct MessageActionsToolbar: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
 
     var body: some View {
         let selected = model.selectedMessages
@@ -173,7 +173,7 @@ struct MessageActionsToolbar: View {
 }
 
 struct MoveMenu: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let selected: [MessageSummary]
 
     var body: some View {
@@ -193,7 +193,7 @@ struct MoveMenu: View {
 }
 
 struct StatusBar: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
 
     var body: some View {
         HStack(spacing: 12) {
@@ -215,7 +215,7 @@ struct StatusBar: View {
 }
 
 struct ImportSheet: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let folder: FolderInfo
     @State private var target: FolderInfo?
