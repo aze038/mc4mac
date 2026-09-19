@@ -107,37 +107,6 @@ struct MessageWindowView: View {
     }
 }
 
-struct AttachmentStrip: View {
-    let attachments: [MIMEAttachment]
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(attachments.filter { !$0.isInline || $0.contentID == nil }) { a in
-                    Button {
-                        let panel = NSSavePanel()
-                        panel.nameFieldStringValue = a.filename
-                        if panel.runModal() == .OK, let url = panel.url { try? a.data.write(to: url) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "doc")
-                            VStack(alignment: .leading) {
-                                Text(a.filename).font(.caption).lineLimit(1)
-                                Text(ByteCountFormatter.string(fromByteCount: Int64(a.size), countStyle: .file)).font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(6)
-                        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    .onDrag { AttachmentTempFiles.itemProvider(filename: a.filename, data: a.data) }
-                    .help("Drag into a compose window or onto the Desktop")
-                }
-            }
-        }
-    }
-}
-
 struct RemoteImagesBanner: View {
     let loadOnce: () -> Void
     let loadAlways: () -> Void
