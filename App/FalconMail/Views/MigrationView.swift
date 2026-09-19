@@ -39,19 +39,20 @@ struct MigrationView: View {
     private var targetFolders: [FolderInfo] { targetAccountID.flatMap { model.folders[$0] } ?? [] }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Migrate mail to Google Workspace").font(.title2.bold())
-            Text("Reads your Outlook for Mac mailbox or an .olm archive and uploads every message straight to the matching folder over \(MigrationOptions().uploaders) parallel connections, using up to \(ByteCountFormatter.string(fromByteCount: Int64(MigrationOptions.defaultBufferBytes), countStyle: .memory)) of memory and no disk space. Messages that already exist in the target are skipped, so it is safe to run again.")
-                .foregroundStyle(.secondary)
+            Text("Reads your Outlook for Mac mailbox or an .olm archive and uploads every message straight to the matching folder, using no disk space. Messages that already exist in the target are skipped, so it is safe to run again.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             sourceSection
             accountSection
             targetSection
             if source != nil { mappingTable }
             progressSection
+            Divider()
             buttons
         }
-        .padding(24)
-        .frame(width: 760, height: 640)
+        .padding(20)
+        .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity, minHeight: 560, idealHeight: 700, maxHeight: .infinity)
         .alert("Start the migration?", isPresented: $confirmStart) {
             Button("Start") { start(dryRun: false) }
             Button("Cancel", role: .cancel) {}
@@ -133,27 +134,37 @@ struct MigrationView: View {
     }
 
     private var targetSection: some View {
-        HStack {
-            Text("Target").frame(width: 60, alignment: .trailing).foregroundStyle(.secondary)
-            Picker("", selection: $targetAccountID) {
-                ForEach(model.accounts) { a in Text(a.email).tag(Optional(a.id)) }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Target").frame(width: 60, alignment: .trailing).foregroundStyle(.secondary)
+                Picker("", selection: $targetAccountID) {
+                    ForEach(model.accounts) { a in Text(a.email).tag(Optional(a.id)) }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 320)
+                .onChange(of: targetAccountID) { _, _ in rebuildMapping() }
+                Spacer()
             }
-            .labelsHidden()
-            .frame(maxWidth: 320)
-            .onChange(of: targetAccountID) { _, _ in rebuildMapping() }
-            Toggle("Include Deleted Items and Junk", isOn: $includeTrashJunk)
-                .onChange(of: includeTrashJunk) { _, _ in rebuildMapping() }
-            Toggle("Label uploaded mail “Migrated”", isOn: $labelMigrated)
-            Stepper("\(connections) upload connections", value: $connections, in: 1...8)
-                .disabled(running)
-            if targetIsGoogle {
-                Toggle("Upload through the Gmail API", isOn: $useGmailAPI).disabled(running)
+            HStack(spacing: 18) {
+                Text("").frame(width: 60)
+                Toggle("Include Deleted Items and Junk", isOn: $includeTrashJunk)
+                    .onChange(of: includeTrashJunk) { _, _ in rebuildMapping() }
+                Toggle("Label uploaded mail “Migrated”", isOn: $labelMigrated)
+                if targetIsGoogle {
+                    Toggle("Upload through the Gmail API", isOn: $useGmailAPI).disabled(running)
+                }
+                Stepper("\(connections) upload connections", value: $connections, in: 1...8)
+                    .disabled(running)
+                Spacer()
             }
-            Text(targetIsGoogle && useGmailAPI
-                 ? "Messages go in through Gmail's import API, which has no daily upload cap, keeps original dates, and applies labels on the way in. Only one IMAP connection is used, for duplicate checks. Gmail's quota allows about 240 messages a minute."
-                 : "Gmail caps IMAP uploads at 500 MB per day and allows 15 IMAP connections per mailbox, shared with this app's own sync and any other mail client on the account. Connections from a stopped run keep counting for a few minutes.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Spacer()
+            .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top) {
+                Text("").frame(width: 60)
+                Text(targetIsGoogle && useGmailAPI
+                     ? "Messages go in through Gmail's import API, which has no daily upload cap, keeps original dates, and applies labels on the way in. Only one IMAP connection is used, for duplicate checks. Gmail's quota allows about 240 messages a minute."
+                     : "Gmail caps IMAP uploads at 500 MB per day and allows 15 IMAP connections per mailbox, shared with this app's own sync and any other mail client on the account. Connections from a stopped run keep counting for a few minutes.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -172,7 +183,8 @@ struct MigrationView: View {
                     targetPicker(folder)
                 }
             }
-            .frame(minHeight: 200)
+            .frame(minHeight: 120)
+            .frame(maxHeight: .infinity)
         }
     }
 
@@ -209,8 +221,8 @@ struct MigrationView: View {
                     }
                 }
                 if !log.isEmpty {
-                    ScrollView { Text(log.suffix(40).joined(separator: "\n")).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading) }
-                        .frame(height: 70)
+                    ScrollView { Text(log.suffix(40).joined(separator: "\n")).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                        .frame(height: 90)
                 }
             }
         }
