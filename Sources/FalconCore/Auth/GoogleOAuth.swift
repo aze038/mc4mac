@@ -129,6 +129,16 @@ public actor TokenStore {
     public func remove(accountID: UUID) {
         cache[accountID] = nil
         keychain.delete(account: "oauth.\(accountID.uuidString)")
+        keychain.delete(account: "password.\(accountID.uuidString)")
+    }
+
+    public func savePassword(_ password: String, for accountID: UUID) throws {
+        try keychain.save(Data(password.utf8), account: "password.\(accountID.uuidString)")
+    }
+
+    public func password(for accountID: UUID) throws -> String {
+        guard let data = try keychain.load(account: "password.\(accountID.uuidString)") else { throw FalconError.notAuthenticated }
+        return String(decoding: data, as: UTF8.self)
     }
 
     public func validAccessToken(for accountID: UUID) async throws -> String {

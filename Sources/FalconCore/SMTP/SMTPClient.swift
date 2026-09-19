@@ -31,6 +31,18 @@ public actor SMTPClient {
         guard reply.code == 235 else { throw FalconError.protocolError("SMTP authentication failed: \(reply.text)") }
     }
 
+    public func authenticatePlain(user: String, password: String) async throws {
+        let raw = "\u{00}\(user)\u{00}\(password)"
+        let reply = try await command("AUTH PLAIN \(Data(raw.utf8).base64EncodedString())")
+        if reply.code == 235 { return }
+        let login = try await command("AUTH LOGIN")
+        guard login.code == 334 else { throw FalconError.protocolError("SMTP authentication failed: \(reply.text)") }
+        let u = try await command(Data(user.utf8).base64EncodedString())
+        guard u.code == 334 else { throw FalconError.protocolError("SMTP authentication failed: \(u.text)") }
+        let p = try await command(Data(password.utf8).base64EncodedString())
+        guard p.code == 235 else { throw FalconError.protocolError("SMTP authentication failed: \(p.text)") }
+    }
+
     public func send(from: String, recipients: [String], message: Data) async throws {
         let mail = try await command("MAIL FROM:<\(from)>")
         guard mail.code == 250 else { throw FalconError.protocolError("MAIL FROM: \(mail.text)") }

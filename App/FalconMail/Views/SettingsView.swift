@@ -7,7 +7,7 @@ struct SettingsView: View {
             GeneralSettings().tabItem { Label("General", systemImage: "gear") }
             AccountSettings().tabItem { Label("Accounts", systemImage: "person.crop.circle") }
             RulesSettings().tabItem { Label("Rules", systemImage: "line.3.horizontal.decrease.circle") }
-            GoogleSettings().tabItem { Label("Google", systemImage: "key") }
+            GoogleSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
             UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
         .frame(width: 620, height: 460)
@@ -192,9 +192,15 @@ struct GoogleSettings: View {
     var body: some View {
         Form {
             Section {
+                LabeledContent("Google sign-in", value: OAuthConfigLoader.isBuiltIn ? "Built into this app" : (OAuthConfigLoader.load() == nil ? "Not configured" : "Using developer override"))
+            } footer: {
+                Text("Release builds carry the Google OAuth client inside the app, so users only sign in with Google. The override below is for developers building from source.")
+            }
+            Section("Developer override") {
                 TextField("OAuth client ID", text: $clientID)
                 SecureField("OAuth client secret", text: $clientSecret)
                 HStack {
+                    Button("Clear Override") { OAuthConfigLoader.clearOverride(); clientID = ""; clientSecret = ""; saved = false }
                     Spacer()
                     Button("Save") {
                         try? OAuthConfigLoader.save(OAuthClientConfig(clientID: clientID.trimmed, clientSecret: clientSecret.trimmed))
@@ -202,16 +208,15 @@ struct GoogleSettings: View {
                     }.disabled(clientID.trimmed.isEmpty)
                 }
                 if saved { Text("Saved to the Keychain.").font(.caption).foregroundStyle(.secondary) }
-            } header: {
-                Text("Google Cloud credentials")
-            } footer: {
-                Text("Create a Desktop app OAuth client in Google Cloud Console and enable the Gmail, Drive, Calendar and People APIs. See docs/SETUP.md.")
             }
         }
         .formStyle(.grouped)
         .padding()
         .onAppear {
-            if let c = OAuthConfigLoader.load() { clientID = c.clientID; clientSecret = c.clientSecret ?? "" }
+            if let c = try? OAuthConfigLoader.keychain.loadCodable(OAuthClientConfig.self, account: OAuthConfigLoader.keychainAccount) {
+                clientID = c.clientID
+                clientSecret = c.clientSecret ?? ""
+            }
         }
     }
 }
