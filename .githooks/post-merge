@@ -1,0 +1,3 @@
+#!/bin/sh
+# Regenerates FalconMail.xcodeproj after every git pull or merge.
+exec "$(git rev-parse --show-toplevel)/scripts/regenerate-project.sh" "$@"
