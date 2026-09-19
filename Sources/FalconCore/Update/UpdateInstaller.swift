@@ -113,6 +113,36 @@ public enum UpdateInstaller {
         return path == "/Applications" || path.hasSuffix("/Applications") || path.hasPrefix("/Applications/")
     }
 
+    public static func scheduleInstallAfterQuit(newApp: URL, target: URL) throws {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let script = """
+        #!/bin/sh
+        i=0
+        while kill -0 \(pid) 2>/dev/null && [ $i -lt 150 ]; do sleep 0.2; i=$((i+1)); done
+        TARGET="\(target.path)"
+        NEW="\(newApp.path)"
+        rm -rf "$TARGET.updating"
+        if [ -d "$TARGET" ]; then mv "$TARGET" "$TARGET.updating"; fi
+        if /usr/bin/ditto "$NEW" "$TARGET"; then
+          rm -rf "$TARGET.updating"
+        else
+          rm -rf "$TARGET"
+          if [ -d "$TARGET.updating" ]; then mv "$TARGET.updating" "$TARGET"; fi
+        fi
+        /usr/bin/xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null
+        sleep 0.5
+        /usr/bin/open -n "$TARGET"
+        rm -rf "\(newApp.deletingLastPathComponent().deletingLastPathComponent().path)"
+        """
+        let scriptURL = FileManager.default.temporaryDirectory.appendingPathComponent("falconmail-install-\(UUID().uuidString).sh")
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "nohup /bin/sh \"\(scriptURL.path)\" >/dev/null 2>&1 &"]
+        try p.run()
+    }
+
     public static func relaunch(_ app: URL) {
         let pid = ProcessInfo.processInfo.processIdentifier
         let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; /usr/bin/open -n \"\(app.path)\""

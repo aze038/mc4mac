@@ -49,7 +49,8 @@ struct MessageCard: View {
             .contentShape(Rectangle())
             .onTapGesture { expanded.toggle() }
             .contextMenu {
-                Button("Open in New Window") { openWindow(value: message.id) }
+                Button("Open in Tab") { model.openMessageTab(message) }
+                Button("Open in Separate Window") { openWindow(value: message.id) }
             }
             if expanded {
                 if let parsed {
