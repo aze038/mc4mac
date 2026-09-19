@@ -17,7 +17,7 @@ public enum MigrationTarget: Hashable, Sendable {
 public enum MigrationProgress: Sendable {
     case status(String)
     case folder(String)
-    case count(done: Int, total: Int, appended: Int, existing: Int, failed: Int)
+    case count(done: Int, total: Int, appended: Int, existing: Int, failed: Int, bytes: Int)
     case log(String)
 }
 
@@ -88,7 +88,7 @@ public struct MigrationReport: Sendable {
 
 public struct MigrationOptions: Sendable {
     public var bufferBytes = MigrationOptions.defaultBufferBytes
-    public var uploaders = 5
+    public var uploaders = 8
     public var decoders = 3
     public var labelMigrated = true
     public var labelName = "Migrated"
@@ -397,7 +397,7 @@ public actor MigrationRunner {
     private func isKnown(_ id: String, in scope: String) -> Bool { knownIDs[scope]?.contains(id) ?? false }
 
     private func emit(_ progress: @escaping @Sendable (MigrationProgress) -> Void) {
-        progress(.count(done: processed, total: total, appended: report.appended, existing: report.existing, failed: report.failed))
+        progress(.count(done: processed, total: total, appended: report.appended, existing: report.existing, failed: report.failed, bytes: report.bytesUploaded))
     }
 
     private func noteExisting(_ progress: @escaping @Sendable (MigrationProgress) -> Void) {
@@ -478,7 +478,7 @@ public actor MigrationRunner {
                 removed += 1
                 appendedRecords.removeAll { $0 == record }
                 done.remove(MigrationState.key(folder, record.messageID))
-                progress(.count(done: removed, total: count, appended: 0, existing: 0, failed: 0))
+                progress(.count(done: removed, total: count, appended: 0, existing: 0, failed: 0, bytes: 0))
             }
         }
         MigrationState.rewrite(MigrationState(done: done, appended: appendedRecords), to: stateURL)

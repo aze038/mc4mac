@@ -15,6 +15,9 @@ struct MigrationView: View {
     @State private var mapping: [String: MigrationTarget] = [:]
     @State private var includeTrashJunk = false
     @State private var labelMigrated = true
+    @State private var connections = 8
+    @State private var uploadedBytes = 0
+    @State private var rateSamples: [(Date, Int)] = []
     @State private var running = false
     @State private var dryRun = false
     @State private var status = ""
@@ -95,6 +98,8 @@ struct MigrationView: View {
             Toggle("Include Deleted Items and Junk", isOn: $includeTrashJunk)
                 .onChange(of: includeTrashJunk) { _, _ in rebuildMapping() }
             Toggle("Label uploaded mail “Migrated”", isOn: $labelMigrated)
+            Stepper("\(connections) upload connections", value: $connections, in: 1...12)
+                .disabled(running)
             Spacer()
         }
     }
@@ -143,6 +148,10 @@ struct MigrationView: View {
                     ProgressView(value: Double(done), total: Double(total))
                     Text("\(done) of \(total) · \(appended) \(dryRun ? "would be uploaded" : "uploaded") · \(existing) already present · \(failed) failed")
                         .font(.caption).foregroundStyle(.secondary)
+                    if !dryRun, uploadedBytes > 0 {
+                        Text("\(MigrationView.size(uploadedBytes)) uploaded · \(rateText)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if !log.isEmpty {
                     ScrollView { Text(log.suffix(40).joined(separator: "\n")).font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading) }
@@ -280,7 +289,7 @@ struct MigrationView: View {
                     Task { @MainActor in
                         switch p {
                         case .status(let s), .folder(let s): status = s
-                        case .count(let d, let t, _, _, _): done = d; total = t
+                        case .count(let d, let t, _, _, _, _): done = d; total = t
                         case .log(let line): log.append(line)
                         }
                     }
@@ -300,6 +309,8 @@ struct MigrationView: View {
         guard let source, let accountID = targetAccountID, let account = model.accounts.first(where: { $0.id == accountID }) else { return }
         self.dryRun = dryRun
         running = true
+        uploadedBytes = 0
+        rateSamples = []
         model.migrationInProgress = true
         status = "Connecting to \(account.email)"
         log = []
@@ -314,6 +325,7 @@ struct MigrationView: View {
                                              existingFolders: folders, mapping: mapping, layout: model.layout)
                 var options = MigrationOptions()
                 options.labelMigrated = labelMigrated
+                options.uploaders = connections
                 await runner.setOptions(options)
                 do {
                     let report = try await runner.run(dryRun: dryRun) { p in
@@ -321,7 +333,7 @@ struct MigrationView: View {
                             switch p {
                             case .status(let s): status = s
                             case .folder(let f): status = f
-                            case .count(let d, let t, let a, let e, let x): done = d; total = t; appended = a; existing = e; failed = x
+                            case .count(let d, let t, let a, let e, let x, let b): done = d; total = t; appended = a; existing = e; failed = x; noteBytes(b)
                             case .log(let line): log.append(line)
                             }
                         }
@@ -346,5 +358,23 @@ struct MigrationView: View {
             running = false
             model.migrationInProgress = false
         }
+    }
+
+    private var rateText: String {
+        guard let first = rateSamples.first, let last = rateSamples.last, last.0.timeIntervalSince(first.0) >= 1 else { return "measuring…" }
+        let bytesPerSecond = Double(last.1 - first.1) / last.0.timeIntervalSince(first.0)
+        let megabits = bytesPerSecond * 8 / 1_000_000
+        return String(format: "%.1f Mbps (%@/s)", megabits, MigrationView.size(Int(bytesPerSecond)))
+    }
+
+    private func noteBytes(_ bytes: Int) {
+        uploadedBytes = bytes
+        let now = Date()
+        rateSamples.append((now, bytes))
+        rateSamples.removeAll { now.timeIntervalSince($0.0) > 30 }
+    }
+
+    static func size(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }
