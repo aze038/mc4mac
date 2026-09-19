@@ -99,6 +99,7 @@ struct ComposeView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                Button(role: .destructive) { discard() } label: { Label("Discard", systemImage: "trash") }
                 Button { attach() } label: { Label("Attach", systemImage: "paperclip") }
                 Button { showSchedule = true } label: { Label("Schedule", systemImage: "clock") }
                     .popover(isPresented: $showSchedule) {
@@ -145,6 +146,12 @@ struct ComposeView: View {
             guard let i = draft?.attachments.firstIndex(where: { $0.id == a.id }) else { return }
             draft?.attachments[i].data = data
         }
+    }
+
+    private func discard() {
+        editSessions.values.forEach { $0.stop() }
+        model.drafts[draftID] = nil
+        dismiss()
     }
 
     private func send() {

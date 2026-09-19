@@ -8,6 +8,7 @@ struct SettingsView: View {
             AccountSettings().tabItem { Label("Accounts", systemImage: "person.crop.circle") }
             RulesSettings().tabItem { Label("Rules", systemImage: "line.3.horizontal.decrease.circle") }
             GoogleSettings().tabItem { Label("Google", systemImage: "key") }
+            UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
         .frame(width: 620, height: 460)
     }

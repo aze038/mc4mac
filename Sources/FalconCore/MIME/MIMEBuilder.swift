@@ -1,6 +1,6 @@
 import Foundation
 
-public struct OutgoingAttachment: Sendable, Hashable, Identifiable {
+public struct OutgoingAttachment: Sendable, Hashable, Identifiable, Codable {
     public var id: UUID
     public var filename: String
     public var mimeType: String

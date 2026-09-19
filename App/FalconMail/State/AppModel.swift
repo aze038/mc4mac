@@ -44,8 +44,17 @@ final class AppModel: ObservableObject {
     @Published var outboxItems: [OutboxItem] = []
     @Published var archiveRecords: [ArchiveRecord] = []
     @Published var errorMessage: String?
-    @Published var drafts: [UUID: ComposeDraft] = [:]
+    @Published var drafts: [UUID: ComposeDraft] = [:] {
+        didSet {
+            for (id, d) in drafts where oldValue[id] != d { session.saveDraft(d) }
+            for id in oldValue.keys where drafts[id] == nil { session.removeDraft(id) }
+        }
+    }
     @Published var contactList: [ContactInfo] = []
+    @Published var openMessageWindows = Set<String>()
+    let updates = UpdateManager()
+    lazy var session = SessionStore(layout: layout)
+    private var restoredState: SessionState?
 
     @AppStorage("groupByThread") var groupByThread = true { didSet { rebuildThreads() } }
     @AppStorage("undoSendSeconds") var undoSendSeconds = 10
@@ -70,6 +79,14 @@ final class AppModel: ObservableObject {
 
     func bootstrap() async {
         do { try await store.load() } catch { errorMessage = error.localizedDescription }
+        restoredState = session.load()
+        for d in session.loadDrafts() { drafts[d.id] = d }
+        if let s = restoredState {
+            selection = s.selection ?? .unified
+            searchText = s.searchText
+        }
+        updates.beforeRelaunch = { [weak self] in await self?.prepareForRelaunch() }
+        updates.start()
         await refreshAccounts()
         archiveRecords = await archives.all()
         contactList = await contacts.all()
@@ -77,7 +94,32 @@ final class AppModel: ObservableObject {
         listen()
         await coordinator.startAll()
         await reloadMessages()
+        if let s = restoredState {
+            let ids = Set(s.selectedMessageIDs)
+            selectedMessageIDs = ids.filter { id in threads.contains { $0.id == id } }
+        }
         Task { await syncContacts() }
+    }
+
+    var windowsToRestore: (messages: [String], drafts: [UUID]) {
+        let state = restoredState
+        restoredState = nil
+        return (state?.openMessageWindows ?? [], Array(drafts.keys))
+    }
+
+    func currentSessionState() -> SessionState {
+        SessionState(selection: selection, selectedMessageIDs: Array(selectedMessageIDs), searchText: searchText,
+                     openMessageWindows: Array(openMessageWindows), openDraftIDs: Array(drafts.keys))
+    }
+
+    func saveSession() {
+        session.save(currentSessionState())
+    }
+
+    func prepareForRelaunch() async {
+        saveSession()
+        for d in drafts.values { session.saveDraft(d) }
+        await store.flushAll()
     }
 
     private func listen() {
@@ -182,6 +224,7 @@ final class AppModel: ObservableObject {
         selectedMessageIDs = []
         searchText = ""
         Task { await reloadMessages() }
+        saveSession()
     }
 
     var selectedThreads: [MessageThread] { threads.filter { selectedMessageIDs.contains($0.id) } }
@@ -372,6 +415,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() async {
+        saveSession()
         await coordinator.stopAll()
         await store.flushAll()
     }

@@ -1,7 +1,7 @@
 import Foundation
 import FalconCore
 
-struct ComposeDraft: Identifiable, Hashable {
+struct ComposeDraft: Identifiable, Hashable, Codable {
     var id = UUID()
     var accountID: UUID
     var to: String = ""

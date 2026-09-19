@@ -34,13 +34,11 @@ targets:
         NSHumanReadableCopyright: "Copyright © 2026 FalconMail"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
+        FalconUpdateRepository: aze038/mc4mac
     entitlements:
       path: App/FalconMail/FalconMail.entitlements
       properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.network.client: true
-        com.apple.security.network.server: true
-        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.app-sandbox: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.falconmail.app
