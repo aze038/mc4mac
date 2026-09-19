@@ -27,14 +27,21 @@ public struct SourceMessage: Sendable {
     public var isFlagged: Bool
     public var date: Date?
     public var load: @Sendable () throws -> Data
+    public var prepare: (@Sendable () throws -> SourceMessage)?
 
-    public init(folderID: String, messageID: String, isRead: Bool, isFlagged: Bool, date: Date?, load: @escaping @Sendable () throws -> Data) {
+    public init(folderID: String, messageID: String, isRead: Bool, isFlagged: Bool, date: Date?, load: @escaping @Sendable () throws -> Data,
+                prepare: (@Sendable () throws -> SourceMessage)? = nil) {
         self.folderID = folderID
         self.messageID = messageID
         self.isRead = isRead
         self.isFlagged = isFlagged
         self.date = date
         self.load = load
+        self.prepare = prepare
+    }
+
+    public func prepared() throws -> SourceMessage {
+        try prepare?() ?? self
     }
 }
 

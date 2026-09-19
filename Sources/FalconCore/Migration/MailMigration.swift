@@ -205,9 +205,10 @@ public actor MigrationRunner {
     }
 
     private func dryRunFolder(_ folder: SourceFolder, messages: [SourceMessage], scope: String, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {
-        for message in messages {
+        for light in messages {
             try Task.checkCancellation()
             processed += 1
+            guard let message = try? light.prepared() else { report.failed += 1; emit(progress); continue }
             let messageID = try resolveMessageID(message)
             let alreadyDone = done.contains(folder.id + "|" + messageID)
             let present = alreadyDone ? true : try await existsOn(client, messageID, in: scope)
@@ -245,7 +246,12 @@ public actor MigrationRunner {
 
     private func decode(from cursor: Cursor<SourceMessage>, folder: SourceFolder, targetPath: String, scope: String, preloaded: Bool,
                         into queue: PayloadQueue, progress: @escaping @Sendable (MigrationProgress) -> Void) async {
-        while let message = await cursor.next(), !Task.isCancelled {
+        while let light = await cursor.next(), !Task.isCancelled {
+            let message: SourceMessage
+            do { message = try light.prepared() } catch {
+                await noteFailed(progress, "\(folder.path): \(error.localizedDescription)")
+                continue
+            }
             var raw: Data?
             var messageID = message.messageID
             if messageID.isEmpty {

@@ -12,7 +12,8 @@ final class MigrationTests: XCTestCase {
         let inbox = archive.folders.first { $0.path == "Inbox" }!
         let messages = try archive.messages(in: inbox)
         XCTAssertEqual(messages.count, 1)
-        let m = messages[0]
+        XCTAssertEqual(messages[0].messageID, "")
+        let m = try messages[0].prepared()
         XCTAssertEqual(m.messageID, "<abc123@example.com>")
         XCTAssertTrue(m.isRead)
         XCTAssertTrue(m.isFlagged)

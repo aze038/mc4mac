@@ -54,18 +54,43 @@ public struct OLMArchive: MigrationSource {
 
     public func messages(in folder: SourceFolder) throws -> [SourceMessage] {
         let zip = self.zip
+        let folderID = folder.id
         return (entriesByFolder[folder.id] ?? []).map { entry in
-            let parsed = try? OLMMessage(xml: try zip.data(for: entry))
-            let messageID = parsed?.messageID ?? ""
-            return SourceMessage(folderID: folder.id, messageID: messageID, isRead: parsed?.isRead ?? true, isFlagged: parsed?.isFlagged ?? false,
-                                 date: parsed?.date) {
-                let message = try OLMMessage(xml: try zip.data(for: entry))
-                return try message.mime(loading: { path in
-                    guard let e = OLMArchive.attachmentEntry(path, in: zip) else { return nil }
-                    return try zip.data(for: e)
-                })
-            }
+            SourceMessage(folderID: folderID, messageID: "", isRead: true, isFlagged: false, date: nil, load: {
+                try OLMArchive.build(entry, in: zip).mime
+            }, prepare: {
+                let parsed = try OLMMessage(xml: try zip.data(for: entry))
+                let mime = OLMArchive.MIMEBox()
+                return SourceMessage(folderID: folderID, messageID: parsed.messageID, isRead: parsed.isRead, isFlagged: parsed.isFlagged, date: parsed.date) {
+                    try mime.value(or: { try OLMArchive.render(parsed, in: zip) })
+                }
+            })
         }
+    }
+
+    final class MIMEBox: @unchecked Sendable {
+        private var data: Data?
+        private let lock = NSLock()
+        func value(or make: () throws -> Data) throws -> Data {
+            lock.lock()
+            defer { lock.unlock() }
+            if let data { return data }
+            let d = try make()
+            data = d
+            return d
+        }
+    }
+
+    static func build(_ entry: ZipEntry, in zip: ZipReader) throws -> (message: OLMMessage, mime: Data) {
+        let parsed = try OLMMessage(xml: try zip.data(for: entry))
+        return (parsed, try render(parsed, in: zip))
+    }
+
+    static func render(_ parsed: OLMMessage, in zip: ZipReader) throws -> Data {
+        try parsed.mime(loading: { path in
+            guard let e = OLMArchive.attachmentEntry(path, in: zip) else { return nil }
+            return try zip.data(for: e)
+        })
     }
 }
 
