@@ -3,7 +3,7 @@ import FalconCore
 
 @main
 struct FalconMailApp: App {
-    @StateObject private var model = AppModel()
+    @State private var model = AppModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 
