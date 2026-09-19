@@ -63,19 +63,59 @@ public enum UpdateInstaller {
         try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
     }
 
-    public static func install(newApp: URL, replacing current: URL) throws {
+    public static func isTranslocated(_ app: URL) -> Bool {
+        app.path.contains("/AppTranslocation/")
+    }
+
+    public static func isReplaceable(_ app: URL) -> Bool {
+        guard !isTranslocated(app) else { return false }
+        let parent = app.deletingLastPathComponent().path
+        guard FileManager.default.isWritableFile(atPath: parent) else { return false }
+        if let values = try? app.resourceValues(forKeys: [.volumeIsReadOnlyKey]), values.volumeIsReadOnly == true { return false }
+        return true
+    }
+
+    public static func preferredInstallLocation(named name: String = "FalconMail.app") -> URL {
         let fm = FileManager.default
-        let backup = fm.temporaryDirectory.appendingPathComponent("FalconMail-previous-\(UUID().uuidString).app")
+        let system = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        if fm.isWritableFile(atPath: system.path) { return system.appendingPathComponent(name) }
+        let user = fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+        try? fm.createDirectory(at: user, withIntermediateDirectories: true)
+        return user.appendingPathComponent(name)
+    }
+
+    @discardableResult
+    public static func install(newApp: URL, replacing current: URL) throws -> URL {
+        let fm = FileManager.default
         try run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp.path], allowFailure: true)
-        try fm.moveItem(at: current, to: backup)
+        let target = isReplaceable(current) ? current : preferredInstallLocation(named: current.lastPathComponent)
+        let backup = fm.temporaryDirectory.appendingPathComponent("FalconMail-previous-\(UUID().uuidString).app")
+        let hadExisting = fm.fileExists(atPath: target.path)
+        if hadExisting { try fm.moveItem(at: target, to: backup) }
         do {
-            try fm.copyItem(at: newApp, to: current)
+            try fm.copyItem(at: newApp, to: target)
         } catch {
-            try? fm.removeItem(at: current)
-            try? fm.moveItem(at: backup, to: current)
-            throw FalconError.storage("Could not replace the application: \(error.localizedDescription)")
+            try? fm.removeItem(at: target)
+            if hadExisting { try? fm.moveItem(at: backup, to: target) }
+            throw FalconError.storage("Could not install into \(target.deletingLastPathComponent().path): \(error.localizedDescription)")
         }
-        try? fm.removeItem(at: backup)
+        if hadExisting { try? fm.removeItem(at: backup) }
+        return target
+    }
+
+    public static func moveToApplications(from current: URL) throws -> URL {
+        let target = preferredInstallLocation(named: current.lastPathComponent)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
+        try fm.copyItem(at: current, to: target)
+        try run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", target.path], allowFailure: true)
+        if isReplaceable(current) { try? fm.trashItem(at: current, resultingItemURL: nil) }
+        return target
+    }
+
+    public static func isInApplicationsFolder(_ app: URL) -> Bool {
+        let path = app.deletingLastPathComponent().path
+        return path == "/Applications" || path.hasSuffix("/Applications") || path.hasPrefix("/Applications/")
     }
 
     public static func relaunch(_ app: URL) {

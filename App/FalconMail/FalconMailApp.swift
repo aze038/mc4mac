@@ -109,6 +109,37 @@ struct FalconMailApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: AppModel?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        offerMoveToApplications()
+    }
+
+    private func offerMoveToApplications() {
+        let current = Bundle.main.bundleURL
+        guard !UpdateInstaller.isInApplicationsFolder(current) || UpdateInstaller.isTranslocated(current) else { return }
+        guard !UserDefaults.standard.bool(forKey: "declinedMoveToApplications") else { return }
+        let target = UpdateInstaller.preferredInstallLocation()
+        let alert = NSAlert()
+        alert.messageText = "Move FalconMail to the Applications folder?"
+        alert.informativeText = "FalconMail is running from \(UpdateInstaller.isTranslocated(current) ? "a temporary read-only location" : current.deletingLastPathComponent().path). Moving it to \(target.deletingLastPathComponent().path) lets it update itself and keeps it in Launchpad."
+        alert.addButton(withTitle: "Move to Applications")
+        alert.addButton(withTitle: "Not Now")
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else {
+            UserDefaults.standard.set(true, forKey: "declinedMoveToApplications")
+            return
+        }
+        do {
+            let installed = try UpdateInstaller.moveToApplications(from: current)
+            UpdateInstaller.relaunch(installed)
+            NSApp.terminate(nil)
+        } catch {
+            let failure = NSAlert()
+            failure.messageText = "Could not move FalconMail"
+            failure.informativeText = error.localizedDescription
+            failure.runModal()
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

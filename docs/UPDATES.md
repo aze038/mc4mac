@@ -75,3 +75,12 @@ write `update.json`, and publish both assets on a GitHub Release whose tag is
   notarizes when the secrets exist, zips the app, writes `update.json` with
   the sha256 and publishes the GitHub Release. Tag a release with
   `git tag v0.2.0 && git push origin v0.2.0`.
+
+## Read-only locations and App Translocation
+
+An unsigned app opened from Downloads runs from a hidden read-only mount
+(App Translocation), and an app launched from a mounted DMG is read-only too.
+The updater therefore installs into `/Applications` (or `~/Applications`)
+whenever the running bundle cannot be replaced in place, and relaunches from
+there. On launch from any location outside an Applications folder the app
+offers to move itself there once; "Not Now" is remembered.
