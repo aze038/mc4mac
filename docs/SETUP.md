@@ -1,36 +1,62 @@
 # Setup
 
-## 1. Google Cloud project (done once, by the company, not by users)
+## 1. Google Cloud project (done once by the publisher, never by users)
 
 Every app that talks to Google, including Outlook and Thunderbird, identifies
 itself with an OAuth client. FalconMail carries its client inside the app, so
 users never see a client ID. Create it once:
 
-1. Sign in to https://console.cloud.google.com **with a Workspace admin
-   account of your company domain**, not a personal Gmail account. The project
-   must belong to the Workspace organization for the next step to be available.
-2. Create a project, for example `FalconMail`.
-3. APIs & Services → Library: enable **Gmail API**, **Google Drive API**,
+1. Sign in to https://console.cloud.google.com and create a project, for
+   example `FalconMail`.
+2. APIs & Services → Library: enable **Gmail API**, **Google Drive API**,
    **Google Calendar API**, **People API**.
-4. APIs & Services → OAuth consent screen: choose **Internal**. Every user in
-   the domain can then sign in, no Google verification review, no test-user
-   list. (**External** in *Testing* mode only lets the listed test users sign
-   in, which is why a personal account can work while a company account is
-   refused.)
-5. Credentials → Create credentials → **OAuth client ID** → Application type
+3. APIs & Services → OAuth consent screen → User type **External**. Fill in
+   the app name, support email, logo, homepage, privacy policy and terms
+   links (see below), and the authorized domain of the homepage.
+4. Credentials → Create credentials → **OAuth client ID** → Application type
    **Desktop app**. Copy the client ID and client secret.
-6. If the Workspace admin console restricts third-party apps (Security → Access
-   and data control → API controls), mark the app as trusted there.
+5. On the consent screen page press **Publish app** to move from Testing to
+   Production.
+
+### What "public for everyone" means with Google
+
+- In **Testing** only the listed test users (max 100) can sign in. This is why
+  a personal account that was added as a tester worked while a company
+  account did not.
+- In **Production, unverified**, anyone can sign in but Google shows a
+  "Google hasn't verified this app" warning (Advanced → continue), and the app
+  is capped at 100 users for sensitive and restricted scopes.
+- For unlimited users the app must pass **Google's OAuth verification**. IMAP
+  access uses the restricted scope `https://mail.google.com/`, and there is no
+  narrower scope that allows IMAP, so the restricted-scope review is
+  mandatory for any public Gmail client. It consists of brand verification
+  (days), a scope justification with a demo video, and a **CASA security
+  assessment** by an authorized lab (weeks, paid, renewed yearly). Thunderbird,
+  Spark and every other public mail client go through the same process.
+- Verification needs a public homepage and privacy policy. `docs/privacy.md`
+  and `docs/terms.md` are starting drafts; GitHub Pages can host them.
+
+Users who do not want to wait for verification, or whose Workspace admin
+blocks third-party apps, can add Gmail through "Other email (IMAP)" with a
+Google App Password. That path needs no OAuth client at all but covers mail
+only.
 
 Scopes the app requests:
 
 | Scope | Used for |
 | --- | --- |
-| `https://mail.google.com/` | IMAP and SMTP |
-| `https://www.googleapis.com/auth/drive.file` | Archives on Google Drive |
-| `https://www.googleapis.com/auth/calendar` | Calendar and Meet |
-| `https://www.googleapis.com/auth/contacts.readonly` and `contacts.other.readonly` | Contacts sync |
+| `https://mail.google.com/` | IMAP and SMTP (restricted scope) |
+| `https://www.googleapis.com/auth/drive.file` | Archives on Google Drive (non-sensitive) |
+| `https://www.googleapis.com/auth/calendar` | Calendar and Meet (sensitive) |
+| `https://www.googleapis.com/auth/contacts.readonly` and `contacts.other.readonly` | Contacts sync (sensitive) |
 | `https://www.googleapis.com/auth/userinfo.email` | Account identity |
+
+### Public distribution on macOS
+
+A public release must be signed with a Developer ID certificate and notarized,
+otherwise Gatekeeper refuses to open it on other Macs. Add the five signing
+secrets listed in `docs/ROADMAP.md` and the Release workflow signs and
+notarizes automatically.
 
 ## 2. Put the client into the builds
 
