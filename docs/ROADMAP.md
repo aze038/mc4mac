@@ -18,7 +18,8 @@
 - [x] Google People and Calendar clients, agenda view, Google Meet creation
 - [x] In-app updates from GitHub Releases with mandatory mode and session restore
 - [x] GitHub Actions: CI build and tests on every push, Release workflow on tags
-- [ ] First compile and smoke test on a Mac with a Workspace test account
+- [x] First CI build green, v1.0.0 published on GitHub Releases
+- [ ] Smoke test on a Mac with a Workspace test account
 
 ## Milestone 2: Daily driver
 
