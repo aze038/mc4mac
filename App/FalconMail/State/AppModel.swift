@@ -3,7 +3,7 @@ import Combine
 import AppKit
 import FalconCore
 
-enum SidebarSelection: Hashable {
+enum SidebarSelection: Hashable, Codable {
     case unified
     case folder(UUID)
     case archive(UUID)

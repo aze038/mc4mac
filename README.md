@@ -28,8 +28,7 @@ Google Workspace and are tired of Outlook's archiving.
 See `docs/SETUP.md`. Short version:
 
 ```sh
-brew install xcodegen
-xcodegen generate
+./scripts/setup.sh
 open FalconMail.xcodeproj
 ```
 

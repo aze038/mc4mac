@@ -1,4 +1,8 @@
-.PHONY: project build test clean
+.PHONY: setup project build test clean
+
+# One-time: install xcodegen, enable auto-regeneration hooks, generate project
+setup:
+	./scripts/setup.sh
 
 # Generate FalconMail.xcodeproj from project.yml (requires: brew install xcodegen)
 project:
