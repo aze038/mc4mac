@@ -30,10 +30,17 @@ struct SidebarView: View {
             if !model.archiveRecords.isEmpty {
                 archiveSection
             }
+            Section {
+                Button { showAddAccount = true } label: {
+                    Label(model.accounts.isEmpty ? "Add your email account" : "Add account…", systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) { addAccountBar }
         .sheet(isPresented: $showAddAccount) { AddAccountSheet().environmentObject(model) }
+        .onReceive(NotificationCenter.default.publisher(for: .falconAddAccount)) { _ in showAddAccount = true }
     }
 
     private var topSection: some View {
@@ -59,17 +66,6 @@ struct SidebarView: View {
         }
     }
 
-    private var addAccountBar: some View {
-        HStack {
-            Button { showAddAccount = true } label: {
-                Label(model.accounts.isEmpty ? "Add your email account" : "Add account", systemImage: "plus.circle")
-            }
-            .buttonStyle(.plain)
-            Spacer()
-        }
-        .padding(10)
-        .background(.bar)
-    }
 }
 
 struct AccountFolderSection: View {

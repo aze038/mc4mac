@@ -30,6 +30,8 @@ struct FalconMailApp: App {
                 Button("New Message") { compose() }
                     .keyboardShortcut("n", modifiers: .command)
                 Divider()
+                Button("Add Account…") { NotificationCenter.default.post(name: .falconAddAccount, object: nil) }
+                Divider()
                 Button("Import Mail…") { NotificationCenter.default.post(name: .falconImport, object: nil) }
                 Button("Export Selected as .eml…") { NotificationCenter.default.post(name: .falconExport, object: nil) }
             }
@@ -120,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension Notification.Name {
+    static let falconAddAccount = Notification.Name("falcon.addAccount")
     static let falconImport = Notification.Name("falcon.import")
     static let falconExport = Notification.Name("falcon.export")
     static let falconArchive = Notification.Name("falcon.archive")

@@ -5,12 +5,10 @@ struct AddAccountSheet: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
-    enum Step { case email, choose, google, custom }
-    enum Kind { case google, custom }
+    enum Step { case choose, custom }
 
-    @State private var step: Step = .email
+    @State private var step: Step = .choose
     @State private var email = ""
-    @State private var kind: Kind = .google
     @State private var displayName = ""
     @State private var settings = CustomServerSettings(imapHost: "", smtpHost: "", username: "", password: "")
     @State private var busy = false
@@ -19,12 +17,7 @@ struct AddAccountSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
-            switch step {
-            case .email: emailStep
-            case .choose: chooseStep
-            case .google: googleStep
-            case .custom: customStep
-            }
+            if step == .choose { chooseStep } else { customStep }
             if let error {
                 Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
             }
@@ -39,39 +32,27 @@ struct AddAccountSheet: View {
             Image(systemName: "envelope.badge.person.crop").font(.system(size: 34)).foregroundStyle(Color.accentColor)
             VStack(alignment: .leading) {
                 Text("Add an email account").font(.title2.bold())
-                Text(step == .email ? "Start with your email address." : email).foregroundStyle(.secondary)
+                Text(step == .choose ? "Choose how this mailbox connects." : email).foregroundStyle(.secondary)
             }
-        }
-    }
-
-    private var emailStep: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField("name@company.com", text: $email)
-                .textFieldStyle(.roundedBorder)
-                .font(.title3)
-                .onSubmit { continueFromEmail() }
-            Text("Google Workspace and Gmail sign in with Google. Any other mailbox connects with IMAP and SMTP.")
-                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
     private var chooseStep: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("How does this mailbox connect?").font(.headline)
-            ProviderChoice(title: "Google Workspace or Gmail", detail: "Sign in with your Google account. No passwords are stored in FalconMail.",
-                           icon: "g.circle.fill", selected: kind == .google) { kind = .google }
-            ProviderChoice(title: "Custom settings", detail: "IMAP and SMTP with a username and password. Works with any mail server that uses SSL/TLS.",
-                           icon: "server.rack", selected: kind == .custom) { kind = .custom }
-        }
-    }
-
-    private var googleStep: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Sign in with Google").font(.headline)
-            Text("Your browser opens Google's sign-in page for \(email). Approve access and come back here. Mail, Drive, Calendar and Contacts are connected in one step.")
-                .foregroundStyle(.secondary)
-            if !OAuthConfigLoader.isBuiltIn && OAuthConfigLoader.load() == nil {
-                Text("This build of FalconMail has no Google sign-in configured. Builds from GitHub Releases include it; a local build needs the values in Settings → Advanced.")
+            ProviderChoice(title: "Google Workspace or Gmail",
+                           detail: "Opens Google in your browser. Sign in and approve; that is all.",
+                           icon: "g.circle.fill", selected: false) { signInWithGoogle() }
+            ProviderChoice(title: "Other email (IMAP)",
+                           detail: "Any mail server with a username and password over SSL/TLS.",
+                           icon: "server.rack", selected: false) { step = .custom }
+            if busy {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Waiting for Google sign-in in your browser…").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if OAuthConfigLoader.load() == nil {
+                Text("This build of FalconMail has no Google sign-in configured. Builds from GitHub Releases include it once the repository secrets are set; a local build needs the values in Settings → Advanced.")
                     .font(.caption).foregroundStyle(.orange)
             }
         }
@@ -79,6 +60,14 @@ struct AddAccountSheet: View {
 
     private var customStep: some View {
         Form {
+            TextField("Email address", text: $email)
+                .onChange(of: email) { _, new in
+                    let guess = CustomServerSettings.guess(for: new.trimmed.lowercased())
+                    if settings.imapHost.isEmpty || settings.imapHost.hasPrefix("imap.") { settings.imapHost = guess.imapHost }
+                    if settings.smtpHost.isEmpty || settings.smtpHost.hasPrefix("smtp.") { settings.smtpHost = guess.smtpHost }
+                    if settings.username.isEmpty || settings.username.contains("@") { settings.username = new.trimmed }
+                    if displayName.isEmpty { displayName = new.split(separator: "@").first.map(String.init) ?? "" }
+                }
             TextField("Your name", text: $displayName)
             Section("Incoming mail (IMAP, SSL/TLS)") {
                 TextField("Server", text: $settings.imapHost)
@@ -94,65 +83,35 @@ struct AddAccountSheet: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 360)
+        .frame(height: 400)
     }
 
     private var footer: some View {
         HStack {
-            if step != .email {
-                Button("Back") { error = nil; step = step == .choose ? .email : .choose }
-            }
+            if step == .custom { Button("Back") { error = nil; step = .choose } }
             Spacer()
-            if busy { ProgressView().controlSize(.small) }
+            if busy && step == .custom { ProgressView().controlSize(.small) }
             Button("Cancel") { dismiss() }
-            Button(primaryTitle) { primaryAction() }
-                .keyboardShortcut(.defaultAction)
-                .disabled(busy || !primaryEnabled)
+            if step == .custom {
+                Button("Test and Add") { testAndAddCustom() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(busy || !customReady)
+            }
         }
     }
 
-    private var primaryTitle: String {
-        switch step {
-        case .email, .choose: return "Continue"
-        case .google: return "Continue with Google"
-        case .custom: return "Test and Add"
-        }
-    }
-
-    private var primaryEnabled: Bool {
-        switch step {
-        case .email: return email.contains("@") && email.contains(".")
-        case .choose, .google: return true
-        case .custom: return !settings.imapHost.isEmpty && !settings.smtpHost.isEmpty && !settings.username.isEmpty && !settings.password.isEmpty
-        }
-    }
-
-    private func primaryAction() {
-        error = nil
-        switch step {
-        case .email: continueFromEmail()
-        case .choose: step = kind == .google ? .google : .custom
-        case .google: signInWithGoogle()
-        case .custom: testAndAddCustom()
-        }
-    }
-
-    private func continueFromEmail() {
-        let trimmed = email.trimmed.lowercased()
-        guard trimmed.contains("@") else { return }
-        email = trimmed
-        settings = CustomServerSettings.guess(for: trimmed)
-        if displayName.isEmpty { displayName = trimmed.split(separator: "@").first.map(String.init) ?? "" }
-        kind = CustomServerSettings.looksLikeGoogle(trimmed) ? .google : kind
-        step = .choose
+    private var customReady: Bool {
+        email.contains("@") && !settings.imapHost.isEmpty && !settings.smtpHost.isEmpty && !settings.username.isEmpty && !settings.password.isEmpty
     }
 
     private func signInWithGoogle() {
+        guard !busy else { return }
+        error = nil
         busy = true
         Task {
             defer { busy = false }
             do {
-                try await model.addGoogleAccount(loginHint: email)
+                try await model.addGoogleAccount()
                 dismiss()
             } catch {
                 self.error = error.localizedDescription
@@ -161,12 +120,13 @@ struct AddAccountSheet: View {
     }
 
     private func testAndAddCustom() {
+        error = nil
         busy = true
         Task {
             defer { busy = false }
             do {
                 try await AccountProbe.test(settings)
-                try await model.addCustomAccount(email: email, displayName: displayName, settings: settings)
+                try await model.addCustomAccount(email: email.trimmed.lowercased(), displayName: displayName, settings: settings)
                 dismiss()
             } catch {
                 self.error = error.localizedDescription
@@ -191,11 +151,12 @@ struct ProviderChoice: View {
                     Text(detail).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle").foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                Image(systemName: "chevron.right").foregroundStyle(.secondary)
             }
             .padding(12)
             .background(selected ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
     }
