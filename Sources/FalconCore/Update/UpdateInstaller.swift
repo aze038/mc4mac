@@ -1,0 +1,104 @@
+import Foundation
+import CryptoKit
+
+public enum UpdateInstaller {
+    public static func download(_ request: URLRequest, expectedSHA256: String?, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw FalconError.http(status, "download failed") }
+        let total = response.expectedContentLength
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("FalconMail-Update-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fileURL = dir.appendingPathComponent("update.zip")
+        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: fileURL)
+        var hasher = SHA256()
+        var buffer = Data()
+        var received: Int64 = 0
+        var lastReport = Date.distantPast
+        for try await byte in bytes {
+            buffer.append(byte)
+            if buffer.count >= 1 << 16 {
+                try handle.write(contentsOf: buffer)
+                hasher.update(data: buffer)
+                received += Int64(buffer.count)
+                buffer.removeAll(keepingCapacity: true)
+                if total > 0, Date().timeIntervalSince(lastReport) > 0.2 {
+                    lastReport = Date()
+                    progress(Double(received) / Double(total))
+                }
+            }
+        }
+        if !buffer.isEmpty {
+            try handle.write(contentsOf: buffer)
+            hasher.update(data: buffer)
+        }
+        try handle.close()
+        progress(1)
+        if let expected = expectedSHA256?.lowercased(), !expected.isEmpty {
+            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            guard digest == expected else { throw FalconError.storage("Downloaded file failed its checksum") }
+        }
+        return fileURL
+    }
+
+    public static func extractApp(from zip: URL) throws -> URL {
+        let dest = zip.deletingLastPathComponent().appendingPathComponent("extracted", isDirectory: true)
+        try run("/usr/bin/ditto", ["-x", "-k", zip.path, dest.path])
+        let items = try FileManager.default.contentsOfDirectory(at: dest, includingPropertiesForKeys: nil)
+        if let app = items.first(where: { $0.pathExtension == "app" }) { return app }
+        for folder in items where (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            let inner = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            if let app = inner.first(where: { $0.pathExtension == "app" }) { return app }
+        }
+        throw FalconError.storage("No .app found in the downloaded update")
+    }
+
+    public static func bundleVersion(of app: URL) -> String? {
+        let plist = app.appendingPathComponent("Contents/Info.plist")
+        return (NSDictionary(contentsOf: plist) as? [String: Any])?["CFBundleShortVersionString"] as? String
+    }
+
+    public static func verifySignature(of app: URL) throws {
+        try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+    }
+
+    public static func install(newApp: URL, replacing current: URL) throws {
+        let fm = FileManager.default
+        let backup = fm.temporaryDirectory.appendingPathComponent("FalconMail-previous-\(UUID().uuidString).app")
+        try run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", newApp.path], allowFailure: true)
+        try fm.moveItem(at: current, to: backup)
+        do {
+            try fm.copyItem(at: newApp, to: current)
+        } catch {
+            try? fm.removeItem(at: current)
+            try? fm.moveItem(at: backup, to: current)
+            throw FalconError.storage("Could not replace the application: \(error.localizedDescription)")
+        }
+        try? fm.removeItem(at: backup)
+    }
+
+    public static func relaunch(_ app: URL) {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; /usr/bin/open -n \"\(app.path)\""
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", script]
+        try? p.run()
+    }
+
+    static func run(_ tool: String, _ args: [String], allowFailure: Bool = false) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        let err = Pipe()
+        p.standardError = err
+        p.standardOutput = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        if p.terminationStatus != 0 && !allowFailure {
+            let text = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            throw FalconError.storage("\(URL(fileURLWithPath: tool).lastPathComponent) failed: \(text.trimmed)")
+        }
+    }
+}
