@@ -172,7 +172,8 @@ struct MigrationView: View {
 
     private func refreshUndoAvailability() {
         guard let source, let account = model.accounts.first(where: { $0.id == targetAccountID }) else { undoAvailable = 0; return }
-        undoAvailable = MigrationState.load(MigrationRunner.stateURL(source: source, account: account, layout: model.layout)).appended.count
+        let url = MigrationRunner.stateURL(source: source, account: account, layout: model.layout)
+        undoAvailable = MigrationState.load(url).appended.count
     }
 
     private var canStart: Bool {

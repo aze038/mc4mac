@@ -11,31 +11,32 @@ public struct ZipEntry: Sendable, Hashable {
 public final class ZipReader: @unchecked Sendable {
     public let url: URL
     public private(set) var entries: [ZipEntry] = []
-    private let handle: FileHandle
-    private let fileSize: UInt64
-    private let lock = NSLock()
+    private var byName: [String: Int] = [:]
+    private let mapped: Data
+    private let fileSize: Int
 
     public init(url: URL) throws {
         self.url = url
-        handle = try FileHandle(forReadingFrom: url)
-        fileSize = try handle.seekToEnd()
+        mapped = try Data(contentsOf: url, options: [.alwaysMapped, .uncached])
+        fileSize = mapped.count
         try readCentralDirectory()
     }
 
-    deinit { try? handle.close() }
+    public var entryCount: Int { entries.count }
 
-    public func entry(named name: String) -> ZipEntry? { entries.first { $0.name == name } }
+    public func entry(named name: String) -> ZipEntry? {
+        byName[name].map { entries[$0] }
+    }
 
     public func data(for entry: ZipEntry) throws -> Data {
-        lock.lock()
-        defer { lock.unlock() }
-        try handle.seek(toOffset: entry.localHeaderOffset)
-        let local = try handle.read(upToCount: 30) ?? Data()
-        guard local.count == 30, local.readLE32(at: 0) == 0x04034b50 else { throw FalconError.storage("zip: bad local header for \(entry.name)") }
-        let nameLength = Int(local.readLE16(at: 26))
-        let extraLength = Int(local.readLE16(at: 28))
-        try handle.seek(toOffset: entry.localHeaderOffset + 30 + UInt64(nameLength + extraLength))
-        let compressed = try handle.read(upToCount: Int(entry.compressedSize)) ?? Data()
+        let start = Int(entry.localHeaderOffset)
+        guard start + 30 <= fileSize, mapped.readLE32(at: start) == 0x04034b50 else { throw FalconError.storage("zip: bad local header for \(entry.name)") }
+        let nameLength = Int(mapped.readLE16(at: start + 26))
+        let extraLength = Int(mapped.readLE16(at: start + 28))
+        let dataStart = start + 30 + nameLength + extraLength
+        let dataEnd = dataStart + Int(entry.compressedSize)
+        guard dataEnd <= fileSize else { throw FalconError.storage("zip: entry \(entry.name) runs past the end of the file") }
+        let compressed = mapped.subdata(in: dataStart..<dataEnd)
         switch entry.method {
         case 0: return compressed
         case 8: return try (compressed as NSData).decompressed(using: .zlib) as Data
@@ -43,66 +44,59 @@ public final class ZipReader: @unchecked Sendable {
         }
     }
 
-    private func readTail(_ count: UInt64) throws -> (Data, UInt64) {
-        let size = min(count, fileSize)
-        let start = fileSize - size
-        try handle.seek(toOffset: start)
-        return (try handle.read(upToCount: Int(size)) ?? Data(), start)
-    }
-
     private func readCentralDirectory() throws {
-        let (tail, tailStart) = try readTail(70_000)
+        let tailStart = max(0, fileSize - 70_000)
         var eocd: Int?
-        var i = tail.count - 22
-        while i >= 0 {
-            if tail.readLE32(at: i) == 0x06054b50 { eocd = i; break }
+        var i = fileSize - 22
+        while i >= tailStart {
+            if mapped.readLE32(at: i) == 0x06054b50 { eocd = i; break }
             i -= 1
         }
         guard let eocd else { throw FalconError.storage("Not a zip file") }
-        var count = UInt64(tail.readLE16(at: eocd + 10))
-        var cdSize = UInt64(tail.readLE32(at: eocd + 12))
-        var cdOffset = UInt64(tail.readLE32(at: eocd + 16))
-        if count == 0xFFFF || cdSize == 0xFFFFFFFF || cdOffset == 0xFFFFFFFF, eocd >= 20, tail.readLE32(at: eocd - 20) == 0x07064b50 {
-            let eocd64Offset = tail.readLE64(at: eocd - 20 + 8)
-            try handle.seek(toOffset: eocd64Offset)
-            let rec = try handle.read(upToCount: 56) ?? Data()
-            guard rec.count == 56, rec.readLE32(at: 0) == 0x06064b50 else { throw FalconError.storage("zip64: bad record") }
-            count = rec.readLE64(at: 32)
-            cdSize = rec.readLE64(at: 40)
-            cdOffset = rec.readLE64(at: 48)
+        var count = Int(mapped.readLE16(at: eocd + 10))
+        var cdSize = Int(mapped.readLE32(at: eocd + 12))
+        var cdOffset = Int(mapped.readLE32(at: eocd + 16))
+        if count == 0xFFFF || cdSize == 0xFFFFFFFF || cdOffset == 0xFFFFFFFF, eocd >= 20, mapped.readLE32(at: eocd - 20) == 0x07064b50 {
+            let rec = Int(mapped.readLE64(at: eocd - 20 + 8))
+            guard rec + 56 <= fileSize, mapped.readLE32(at: rec) == 0x06064b50 else { throw FalconError.storage("zip64: bad record") }
+            count = Int(mapped.readLE64(at: rec + 32))
+            cdSize = Int(mapped.readLE64(at: rec + 40))
+            cdOffset = Int(mapped.readLE64(at: rec + 48))
         }
-        _ = tailStart
-        try handle.seek(toOffset: cdOffset)
-        let cd = try handle.read(upToCount: Int(cdSize)) ?? Data()
-        var pos = 0
+        let end = min(fileSize, cdOffset + cdSize)
+        var pos = cdOffset
         var list: [ZipEntry] = []
-        list.reserveCapacity(Int(min(count, 1_000_000)))
-        while pos + 46 <= cd.count, cd.readLE32(at: pos) == 0x02014b50 {
-            let method = cd.readLE16(at: pos + 10)
-            var compressed = UInt64(cd.readLE32(at: pos + 20))
-            var uncompressed = UInt64(cd.readLE32(at: pos + 24))
-            let nameLength = Int(cd.readLE16(at: pos + 28))
-            let extraLength = Int(cd.readLE16(at: pos + 30))
-            let commentLength = Int(cd.readLE16(at: pos + 32))
-            var offset = UInt64(cd.readLE32(at: pos + 42))
-            let name = String(decoding: cd.subdata(in: (pos + 46)..<(pos + 46 + nameLength)), as: UTF8.self)
+        list.reserveCapacity(min(count, 4_000_000))
+        var index: [String: Int] = [:]
+        index.reserveCapacity(min(count, 4_000_000))
+        while pos + 46 <= end, mapped.readLE32(at: pos) == 0x02014b50 {
+            let method = mapped.readLE16(at: pos + 10)
+            var compressed = UInt64(mapped.readLE32(at: pos + 20))
+            var uncompressed = UInt64(mapped.readLE32(at: pos + 24))
+            let nameLength = Int(mapped.readLE16(at: pos + 28))
+            let extraLength = Int(mapped.readLE16(at: pos + 30))
+            let commentLength = Int(mapped.readLE16(at: pos + 32))
+            var offset = UInt64(mapped.readLE32(at: pos + 42))
+            let name = String(decoding: mapped.subdata(in: (pos + 46)..<(pos + 46 + nameLength)), as: UTF8.self)
             var extraPos = pos + 46 + nameLength
             let extraEnd = extraPos + extraLength
             while extraPos + 4 <= extraEnd {
-                let tag = cd.readLE16(at: extraPos)
-                let size = Int(cd.readLE16(at: extraPos + 2))
+                let tag = mapped.readLE16(at: extraPos)
+                let size = Int(mapped.readLE16(at: extraPos + 2))
                 if tag == 0x0001 {
                     var p = extraPos + 4
-                    if uncompressed == 0xFFFFFFFF, p + 8 <= extraEnd { uncompressed = cd.readLE64(at: p); p += 8 }
-                    if compressed == 0xFFFFFFFF, p + 8 <= extraEnd { compressed = cd.readLE64(at: p); p += 8 }
-                    if offset == 0xFFFFFFFF, p + 8 <= extraEnd { offset = cd.readLE64(at: p); p += 8 }
+                    if uncompressed == 0xFFFFFFFF, p + 8 <= extraEnd { uncompressed = mapped.readLE64(at: p); p += 8 }
+                    if compressed == 0xFFFFFFFF, p + 8 <= extraEnd { compressed = mapped.readLE64(at: p); p += 8 }
+                    if offset == 0xFFFFFFFF, p + 8 <= extraEnd { offset = mapped.readLE64(at: p); p += 8 }
                 }
                 extraPos += 4 + size
             }
+            index[name] = list.count
             list.append(ZipEntry(name: name, method: method, compressedSize: compressed, uncompressedSize: uncompressed, localHeaderOffset: offset))
             pos += 46 + nameLength + extraLength + commentLength
         }
         entries = list
+        byName = index
     }
 }
 

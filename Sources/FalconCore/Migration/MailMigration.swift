@@ -26,14 +26,54 @@ public struct MigrationAppended: Codable, Sendable, Hashable {
     public var messageID: String
 }
 
-public struct MigrationState: Codable, Sendable {
-    public var done: [String] = []
+public struct MigrationState: Sendable {
+    public var done: Set<String> = []
     public var appended: [MigrationAppended] = []
 
+    public static func key(_ folderID: String, _ messageID: String) -> String {
+        let digest = SHA256.hash(data: Data((folderID + "|" + messageID).utf8))
+        return Data(digest.prefix(12)).base64URL
+    }
+
     public static func load(_ url: URL) -> MigrationState {
-        if let s = AtomicFile.readJSON(MigrationState.self, from: url) { return s }
-        if let legacy = AtomicFile.readJSON([String].self, from: url) { return MigrationState(done: legacy, appended: []) }
-        return MigrationState()
+        var state = MigrationState()
+        guard let data = AtomicFile.read(url) else { return state }
+        let decoder = JSONDecoder()
+        for line in data.split(separator: 0x0A) where !line.isEmpty {
+            guard let entry = try? decoder.decode(JournalLine.self, from: line) else { continue }
+            if let d = entry.d { state.done.insert(d) }
+            if let a = entry.a { state.appended.append(a) }
+            if let r = entry.r { state.appended.removeAll { $0.messageID == r }; state.done = state.done.filter { !$0.hasSuffix("|" + r) } }
+        }
+        return state
+    }
+
+    struct JournalLine: Codable {
+        var d: String?
+        var a: MigrationAppended?
+        var r: String?
+    }
+
+    static func append(_ lines: [JournalLine], to url: URL) {
+        guard !lines.isEmpty else { return }
+        let encoder = JSONEncoder()
+        var data = Data()
+        for l in lines {
+            if let e = try? encoder.encode(l) { data.append(e); data.append(0x0A) }
+        }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    public static func rewrite(_ state: MigrationState, to url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        append(state.done.map { JournalLine(d: $0) } + state.appended.map { JournalLine(a: $0) }, to: url)
     }
 }
 
@@ -52,6 +92,7 @@ public struct MigrationOptions: Sendable {
     public var decoders = 3
     public var labelMigrated = true
     public var labelName = "Migrated"
+    public var memoryCeiling = 900 * 1024 * 1024
 
     public init() {}
 
@@ -119,6 +160,25 @@ actor PayloadQueue {
     }
 }
 
+enum MemoryFootprint {
+    static func current() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+    }
+
+    static func waitBelow(_ ceiling: Int) async {
+        var waited = 0
+        while MemoryFootprint.current() > ceiling, waited < 600, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 1
+        }
+    }
+}
+
 actor Cursor<T: Sendable> {
     private var items: [T]
     private var index = 0
@@ -140,6 +200,7 @@ public actor MigrationRunner {
     public let stateURL: URL
     private var done: Set<String>
     private var appendedRecords: [MigrationAppended]
+    private var journal: [MigrationState.JournalLine] = []
     private var knownIDs: [String: Set<String>] = [:]
     private var created = Set<String>()
     private var report = MigrationReport()
@@ -151,7 +212,7 @@ public actor MigrationRunner {
 
     public static func stateURL(source: MigrationSource, account: AccountInfo, layout: FileLayout) -> URL {
         let safe = source.identifier.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
-        return layout.root.appendingPathComponent("Migrations", isDirectory: true).appendingPathComponent("\(safe)-\(account.id.uuidString).json")
+        return layout.root.appendingPathComponent("Migrations", isDirectory: true).appendingPathComponent("\(safe)-\(account.id.uuidString).jsonl")
     }
 
     public init(source: MigrationSource, account: AccountInfo, client: IMAPClient, reconnect: @escaping @Sendable () async throws -> IMAPClient,
@@ -164,7 +225,7 @@ public actor MigrationRunner {
         self.mapping = mapping
         stateURL = MigrationRunner.stateURL(source: source, account: account, layout: layout)
         let state = MigrationState.load(stateURL)
-        done = Set(state.done)
+        done = state.done
         appendedRecords = state.appended
     }
 
@@ -210,7 +271,7 @@ public actor MigrationRunner {
             processed += 1
             guard let message = try? light.prepared() else { report.failed += 1; emit(progress); continue }
             let messageID = try resolveMessageID(message)
-            let alreadyDone = done.contains(folder.id + "|" + messageID)
+            let alreadyDone = done.contains(MigrationState.key(folder.id, messageID))
             let present = alreadyDone ? true : try await existsOn(client, messageID, in: scope)
             if present { report.existing += 1 } else { report.appended += 1 }
             emit(progress)
@@ -246,7 +307,9 @@ public actor MigrationRunner {
 
     private func decode(from cursor: Cursor<SourceMessage>, folder: SourceFolder, targetPath: String, scope: String, preloaded: Bool,
                         into queue: PayloadQueue, progress: @escaping @Sendable (MigrationProgress) -> Void) async {
+        let ceiling = options.memoryCeiling
         while let light = await cursor.next(), !Task.isCancelled {
+            await MemoryFootprint.waitBelow(ceiling)
             let message: SourceMessage
             do { message = try light.prepared() } catch {
                 await noteFailed(progress, "\(folder.path): \(error.localizedDescription)")
@@ -260,7 +323,7 @@ public actor MigrationRunner {
                 messageID = MIMENormalizer.messageID(in: data)
                 if messageID.isEmpty { messageID = MigrationRunner.syntheticID(for: data) }
             }
-            let key = folder.id + "|" + messageID
+            let key = MigrationState.key(folder.id, messageID)
             if await isDone(key) { await noteExisting(progress); continue }
             if preloaded, await isKnown(messageID, in: scope) {
                 await markDone(key)
@@ -354,7 +417,9 @@ public actor MigrationRunner {
         report.appended += 1
         report.bytesUploaded += bytes
         knownIDs[item.scope]?.insert(item.messageID)
-        appendedRecords.append(MigrationAppended(folder: item.targetPath, messageID: item.messageID))
+        let record = MigrationAppended(folder: item.targetPath, messageID: item.messageID)
+        appendedRecords.append(record)
+        journal.append(MigrationState.JournalLine(a: record))
         if let uid, options.labelMigrated { pendingLabel[item.targetPath, default: []].append(uid) }
         markDone(item.key)
         emit(progress)
@@ -410,11 +475,12 @@ public actor MigrationRunner {
                 }
                 removed += 1
                 appendedRecords.removeAll { $0 == record }
-                done = done.filter { !$0.hasSuffix("|" + record.messageID) }
+                done.remove(MigrationState.key(folder, record.messageID))
                 progress(.count(done: removed, total: count, appended: 0, existing: 0, failed: 0))
             }
         }
-        persist()
+        MigrationState.rewrite(MigrationState(done: done, appended: appendedRecords), to: stateURL)
+        journal.removeAll()
         progress(.status("Removed \(removed) migrated messages"))
         return removed
     }
@@ -460,12 +526,15 @@ public actor MigrationRunner {
     }
 
     private func markDone(_ key: String) {
+        guard !done.contains(key) else { return }
         done.insert(key)
-        if done.count % 100 == 0 { persist() }
+        journal.append(MigrationState.JournalLine(d: key))
+        if journal.count >= 200 { persist() }
     }
 
     public func persist() {
-        try? AtomicFile.writeJSON(MigrationState(done: Array(done), appended: appendedRecords), to: stateURL)
+        MigrationState.append(journal, to: stateURL)
+        journal.removeAll()
     }
 
     static func quote(_ s: String) -> String {

@@ -79,3 +79,53 @@ final class MigrationTests: XCTestCase {
         XCTAssertNotNil(OutlookProfile.validDate(1_700_000_000))
     }
 }
+
+extension MigrationTests {
+    private static func residentBytes() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+    }
+
+    func testStreamingALargeArchiveKeepsMemoryFlat() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let storage = LocalFolderStorage(root: dir)
+        let session = try await storage.beginUpload(name: "big.olm", parentID: dir.path, mimeType: "application/zip")
+        let writer = ZipChunkWriter(session: session, name: "big.olm")
+        let filler = String(repeating: "Lorem ipsum dolor sit amet. ", count: 4000)
+        let attachment = Data(repeating: 0x41, count: 200_000)
+        let count = 400
+        for i in 0..<count {
+            let xml = MigrationTests.sampleXML
+                .replacingOccurrences(of: "abc123", with: "msg\(i)")
+                .replacingOccurrences(of: "Hi, see attached.", with: filler)
+                .replacingOccurrences(of: "1F2E/report.pdf", with: "A\(i)/report.pdf")
+            _ = try await writer.add(name: "Accounts/Work/com.microsoft.__Messages/Inbox/message_\(i).xml", data: Data(xml.utf8), modified: Date())
+            _ = try await writer.add(name: "Accounts/Work/com.microsoft.__Attachments/A\(i)/report.pdf", data: attachment, modified: Date())
+        }
+        _ = try await writer.close()
+        let url = dir.appendingPathComponent("big.olm")
+        let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        XCTAssertGreaterThan(size, 100_000_000)
+
+        let archive = try OLMArchive(url: url)
+        let inbox = archive.folders.first { $0.path == "Inbox" }!
+        let messages = try archive.messages(in: inbox)
+        XCTAssertEqual(messages.count, count)
+        let baseline = MigrationTests.residentBytes()
+        var peak = baseline
+        var bytes = 0
+        for light in messages {
+            let m = try light.prepared()
+            bytes += try m.load().count
+            peak = max(peak, MigrationTests.residentBytes())
+        }
+        XCTAssertGreaterThan(bytes, size / 2)
+        XCTAssertLessThan(peak - baseline, 80_000_000, "memory grew by \((peak - baseline) / 1_000_000) MB while streaming \(size / 1_000_000) MB")
+    }
+}

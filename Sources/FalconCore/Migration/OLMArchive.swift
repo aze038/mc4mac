@@ -6,13 +6,21 @@ public struct OLMArchive: MigrationSource {
     public let folders: [SourceFolder]
     private let zip: ZipReader
     private let entriesByFolder: [String: [ZipEntry]]
+    private let attachmentsByTail: [String: ZipEntry]
 
     public init(url: URL) throws {
         zip = try ZipReader(url: url)
         identifier = "olm:" + url.lastPathComponent + ":" + String(zip.entries.count)
         title = "OLM · " + url.lastPathComponent
         var grouped: [String: [ZipEntry]] = [:]
-        for e in zip.entries where e.name.hasSuffix(".xml") && e.name.contains("com.microsoft.__Messages/") {
+        var tails: [String: ZipEntry] = [:]
+        for e in zip.entries {
+            if e.name.contains("__Attachments") {
+                let tail = e.name.split(separator: "/").suffix(2).joined(separator: "/")
+                if tails[tail] == nil { tails[tail] = e }
+                continue
+            }
+            guard e.name.hasSuffix(".xml"), e.name.contains("com.microsoft.__Messages/") else { continue }
             let parts = e.name.components(separatedBy: "com.microsoft.__Messages/")
             guard parts.count == 2 else { continue }
             let folderPath = parts[1].split(separator: "/").dropLast().joined(separator: "/")
@@ -20,6 +28,7 @@ public struct OLMArchive: MigrationSource {
             grouped[folderPath, default: []].append(e)
         }
         entriesByFolder = grouped
+        attachmentsByTail = tails
         folders = grouped.map { path, entries in
             let name = path.split(separator: "/").last.map(String.init) ?? path
             return SourceFolder(id: path, name: name, path: path, kind: OLMArchive.kind(for: name, path: path), messageCount: entries.count)
@@ -43,26 +52,25 @@ public struct OLMArchive: MigrationSource {
         }
     }
 
-    static func attachmentEntry(_ path: String, in zip: ZipReader) -> ZipEntry? {
+    func attachmentEntry(_ path: String) -> ZipEntry? {
         if let e = zip.entry(named: path) { return e }
         let decoded = path.removingPercentEncoding ?? path
         if let e = zip.entry(named: decoded) { return e }
         let tail = decoded.split(separator: "/").suffix(2).joined(separator: "/")
-        guard !tail.isEmpty else { return nil }
-        return zip.entries.first { $0.name.hasSuffix(tail) && $0.name.contains("__Attachments") }
+        return attachmentsByTail[tail]
     }
 
     public func messages(in folder: SourceFolder) throws -> [SourceMessage] {
-        let zip = self.zip
+        let archive = self
         let folderID = folder.id
         return (entriesByFolder[folder.id] ?? []).map { entry in
             SourceMessage(folderID: folderID, messageID: "", isRead: true, isFlagged: false, date: nil, load: {
-                try OLMArchive.build(entry, in: zip).mime
+                try archive.render(try OLMMessage(xml: try archive.zip.data(for: entry)))
             }, prepare: {
-                let parsed = try OLMMessage(xml: try zip.data(for: entry))
+                let parsed = try OLMMessage(xml: try archive.zip.data(for: entry))
                 let mime = OLMArchive.MIMEBox()
                 return SourceMessage(folderID: folderID, messageID: parsed.messageID, isRead: parsed.isRead, isFlagged: parsed.isFlagged, date: parsed.date) {
-                    try mime.value(or: { try OLMArchive.render(parsed, in: zip) })
+                    try mime.value(or: { try archive.render(parsed) })
                 }
             })
         }
@@ -81,14 +89,9 @@ public struct OLMArchive: MigrationSource {
         }
     }
 
-    static func build(_ entry: ZipEntry, in zip: ZipReader) throws -> (message: OLMMessage, mime: Data) {
-        let parsed = try OLMMessage(xml: try zip.data(for: entry))
-        return (parsed, try render(parsed, in: zip))
-    }
-
-    static func render(_ parsed: OLMMessage, in zip: ZipReader) throws -> Data {
+    func render(_ parsed: OLMMessage) throws -> Data {
         try parsed.mime(loading: { path in
-            guard let e = OLMArchive.attachmentEntry(path, in: zip) else { return nil }
+            guard let e = attachmentEntry(path) else { return nil }
             return try zip.data(for: e)
         })
     }
