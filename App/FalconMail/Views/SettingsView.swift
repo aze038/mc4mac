@@ -29,6 +29,16 @@ struct GeneralSettings: View {
                 Text("Language follows the macOS setting in System Settings → General → Language & Region.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Offline") {
+                Picker("Keep offline copies per folder", selection: $model.offlineBodies) {
+                    Text("150 newest").tag(150)
+                    Text("500 newest").tag(500)
+                    Text("2,000 newest").tag(2000)
+                    Text("10,000 newest").tag(10000)
+                }
+                Text("Messages are stored on this Mac for reading, searching and replying without a connection. Sent mail waits in the Outbox until you are online.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Reading") {
                 Toggle("Group messages by conversation", isOn: $model.groupByThread)
                 Toggle("Open messages in a new window on double-click", isOn: $model.openInWindowOnDoubleClick)
@@ -221,6 +231,7 @@ struct RulesSettings: View {
                     Button { let r = RuleDefinition(name: "New rule", conditions: [RuleCondition(field: .from, op: .contains, value: "")], actions: [RuleAction(kind: .markRead)]); rules.append(r); selected = r.id; save() } label: { Image(systemName: "plus") }
                     Button { rules.removeAll { $0.id == selected }; selected = nil; save() } label: { Image(systemName: "minus") }.disabled(selected == nil)
                     Spacer()
+                    Button("Run on Inbox Now") { model.runRulesNow() }.disabled(rules.isEmpty)
                 }.padding(6)
             }
             .frame(width: 220)
@@ -274,7 +285,7 @@ struct RuleEditor: View {
                 ForEach($rule.actions) { $a in
                     HStack {
                         Picker("", selection: $a.kind) { ForEach(RuleAction.Kind.allCases, id: \.self) { Text(label($0)).tag($0) } }.frame(width: 160)
-                        if a.kind == .moveToFolder {
+                        if a.kind == .moveToFolder || a.kind == .copyToFolder {
                             Picker("", selection: $a.value) {
                                 Text("Choose folder").tag("")
                                 ForEach(folders) { f in Text(f.path).tag(f.path) }
@@ -304,6 +315,7 @@ struct RuleEditor: View {
     private func label(_ k: RuleAction.Kind) -> String {
         switch k {
         case .moveToFolder: return "Move to folder"
+        case .copyToFolder: return "Copy to folder (label)"
         case .markRead: return "Mark as read"
         case .flag: return "Flag"
         case .delete: return "Move to trash"

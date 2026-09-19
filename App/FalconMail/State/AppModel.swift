@@ -8,6 +8,7 @@ enum SidebarSelection: Hashable, Codable {
     case folder(UUID)
     case archive(UUID)
     case calendar
+    case contacts
     case outbox
 }
 
@@ -61,6 +62,7 @@ final class AppModel: ObservableObject {
     @AppStorage("loadRemoteImages") var loadRemoteImages = false
     @AppStorage("openInWindowOnDoubleClick") var openInWindowOnDoubleClick = true
     @AppStorage("appearance") var appearance = AppAppearance.system.rawValue
+    @AppStorage("offlineBodies") var offlineBodies = 150 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies) } } }
 
     private var bodyCache: [String: MIMEMessage] = [:]
     private var listeners: [Task<Void, Never>] = []
@@ -89,6 +91,7 @@ final class AppModel: ObservableObject {
         }
         updates.beforeRelaunch = { [weak self] in await self?.prepareForRelaunch() }
         updates.start()
+        await coordinator.setBodyPrefetch(offlineBodies)
         await refreshAccounts()
         archiveRecords = await archives.all()
         contactList = await contacts.all()
@@ -393,6 +396,17 @@ final class AppModel: ObservableObject {
             }
         }
         contactList = await contacts.all()
+    }
+
+    func runRulesNow() {
+        Task {
+            statusText = "Applying rules to inboxes"
+            for a in accounts {
+                guard let syncer = await coordinator.syncer(for: a.id) else { continue }
+                do { try await syncer.runRulesOnInbox() } catch { errorMessage = error.localizedDescription }
+            }
+            statusText = "Rules applied"
+        }
     }
 
     func reloadArchives() async {

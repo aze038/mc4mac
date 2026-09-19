@@ -218,7 +218,7 @@ public actor AccountSyncer {
             try Task.checkCancellation()
             guard let raw = try? await client.fetchMessage(uid: m.uid) else { continue }
             let parsed = MIMEParser.parse(raw)
-            try await fs.storeBody(uid: m.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty)
+            try await fs.storeBody(uid: m.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty, searchText: parsed.bestText)
             if let s = await fs.message(uid: m.uid) { updated.append(s); texts[s.id] = parsed.bestText }
         }
         await indexer.index(updated, bodies: texts)
@@ -242,6 +242,8 @@ public actor AccountSyncer {
                         try await archiveOnServer(uids: [m.uid], client: client)
                     case .moveToFolder:
                         if !a.value.isEmpty { try await client.move(uids: [m.uid], to: a.value) }
+                    case .copyToFolder:
+                        if !a.value.isEmpty { try await client.copy(uids: [m.uid], to: a.value) }
                     case .stopProcessing: break
                     }
                 } catch {
@@ -249,7 +251,7 @@ public actor AccountSyncer {
                 }
             }
         }
-        if let fresh = await store.folder(folder.id), !messages.isEmpty {
+        if let fresh = await store.folder(folder.id), !messages.isEmpty, client === syncClient {
             try? await syncFolder(fresh, client: client)
         }
     }
@@ -306,7 +308,7 @@ public actor AccountSyncer {
         if await client.selectedMailbox != folder.path { _ = try await client.select(folder.path) }
         let raw = try await client.fetchMessage(uid: message.uid)
         let parsed = MIMEParser.parse(raw)
-        try await fs.storeBody(uid: message.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty)
+        try await fs.storeBody(uid: message.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty, searchText: parsed.bestText)
         if let s = await fs.message(uid: message.uid) { await indexer.index([s], bodies: [s.id: parsed.bestText]) }
         await store.notifyMessagesChanged(folderID: folder.id)
         return raw
@@ -407,6 +409,20 @@ public actor AccountSyncer {
         try await store.updateFolder(folder)
         try await store.refreshCounts(folderID: folder.id)
         await store.notifyMessagesChanged(folderID: folder.id)
+    }
+
+    public func setBodyPrefetch(_ count: Int) {
+        bodyPrefetch = count
+    }
+
+    public func runRulesOnInbox() async throws {
+        guard let inbox = await store.folder(accountID: account.id, role: .inbox) else { return }
+        let fs = try await store.folderStore(inbox)
+        let client = try await connectedOpClient()
+        _ = try await client.select(inbox.path)
+        let all = await fs.all()
+        await applyRules(to: all, folder: inbox, fs: fs, client: client)
+        await requestSync()
     }
 
     public func openArchiveSourceClient() async throws -> IMAPClient {

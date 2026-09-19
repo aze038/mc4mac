@@ -26,7 +26,9 @@ struct OutboxView: View {
 
     private func statusText(_ item: OutboxItem) -> String {
         switch item.status {
-        case .queued: return item.sendAt > Date().addingTimeInterval(60) ? "Scheduled for \(item.sendAt.formatted())" : "Sending shortly"
+        case .queued:
+            if let e = item.error { return "Waiting for connection, retrying at \(item.sendAt.formatted(date: .omitted, time: .shortened)) (\(e))" }
+            return item.sendAt > Date().addingTimeInterval(60) ? "Scheduled for \(item.sendAt.formatted())" : "Sending shortly"
         case .sending: return "Sending…"
         case .sent: return "Sent"
         case .failed: return "Failed: \(item.error ?? "unknown error")"

@@ -18,7 +18,7 @@ public struct RuleCondition: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct RuleAction: Codable, Hashable, Sendable, Identifiable {
-    public enum Kind: String, Codable, CaseIterable, Sendable { case moveToFolder, markRead, flag, delete, archive, stopProcessing }
+    public enum Kind: String, Codable, CaseIterable, Sendable { case moveToFolder, copyToFolder, markRead, flag, delete, archive, stopProcessing }
 
     public var id: UUID
     public var kind: Kind

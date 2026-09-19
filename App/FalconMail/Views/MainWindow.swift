@@ -24,7 +24,12 @@ struct MainWindow: View {
             detailColumn
         }
         .toolbar { toolbarItems }
-        .safeAreaInset(edge: .bottom) { StatusBar() }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                WindowTrayBar()
+                StatusBar()
+            }
+        }
         .sheet(isPresented: Binding(get: { updates.shouldPrompt }, set: { _ in })) { UpdateSheet().environmentObject(updates) }
         .disabled(updates.isMandatory)
         .sheet(isPresented: $showArchiveSheet) { ArchiveSheet().environmentObject(model) }
@@ -49,6 +54,7 @@ struct MainWindow: View {
     @ViewBuilder private var contentColumn: some View {
         switch model.selection {
         case .calendar: CalendarView()
+        case .contacts: ContactsView()
         case .outbox: OutboxView()
         case .archive(let id):
             if let record = model.archiveRecords.first(where: { $0.id == id }) { ArchiveBrowserView(record: record) } else { Text("Archive not found") }
@@ -58,7 +64,7 @@ struct MainWindow: View {
 
     @ViewBuilder private var detailColumn: some View {
         switch model.selection {
-        case .calendar, .outbox, .archive: EmptyView()
+        case .calendar, .contacts, .outbox, .archive: EmptyView()
         default:
             if let thread = model.currentThread {
                 MessageDetailView(thread: thread)

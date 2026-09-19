@@ -175,15 +175,19 @@ public actor MailStore {
     public func search(_ query: String, accountID: UUID?) async throws -> [MessageSummary] {
         let q = query.lowercased().trimmed
         guard !q.isEmpty else { return [] }
+        let tokens = ArchiveTerms.tokenize(q)
         var out: [MessageSummary] = []
         for a in accounts where accountID == nil || a.id == accountID {
             for f in folders(for: a.id) where f.isSelectable && f.role != .all {
-                let all = try await folderStore(f).all()
-                out.append(contentsOf: all.filter {
-                    $0.subject.lowercased().contains(q) || $0.from.address.lowercased().contains(q) ||
-                    $0.from.name.lowercased().contains(q) || $0.snippet.lowercased().contains(q) ||
-                    $0.to.contains { $0.address.lowercased().contains(q) || $0.name.lowercased().contains(q) }
-                })
+                let fs = try await folderStore(f)
+                if tokens.isEmpty {
+                    let all = await fs.all()
+                    out.append(contentsOf: all.filter { $0.subject.lowercased().contains(q) || $0.from.address.lowercased().contains(q) })
+                } else {
+                    for uid in await fs.search(tokens: tokens) {
+                        if let m = await fs.message(uid: uid) { out.append(m) }
+                    }
+                }
             }
         }
         return out.sorted { $0.date > $1.date }

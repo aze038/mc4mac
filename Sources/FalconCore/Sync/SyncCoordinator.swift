@@ -25,9 +25,17 @@ public actor SyncCoordinator {
         }
     }
 
+    public var bodyPrefetch = 150
+
+    public func setBodyPrefetch(_ count: Int) async {
+        bodyPrefetch = count
+        for s in syncers.values { await s.setBodyPrefetch(count) }
+    }
+
     public func start(account: AccountInfo) async {
         if let existing = syncers[account.id] { await existing.stop() }
         let s = AccountSyncer(account: account, store: store, tokens: tokens, rules: rules, indexer: indexer, events: eventContinuation)
+        await s.setBodyPrefetch(bodyPrefetch)
         syncers[account.id] = s
         await s.start()
     }

@@ -13,6 +13,7 @@ public struct OutboxItem: Codable, Sendable, Hashable, Identifiable {
     public var status: Status
     public var error: String?
     public var undoUntil: Date
+    public var attempts: Int?
 
     public init(accountID: UUID, subject: String, recipients: [String], sender: String, sendAt: Date, undoWindow: TimeInterval) {
         self.id = UUID()
@@ -140,15 +141,35 @@ public actor Outbox {
             do {
                 try await sender.send(accountID: item.accountID, from: item.sender, recipients: item.recipients, message: raw)
                 item.status = .sent
+                item.error = nil
             } catch {
-                item.status = .failed
+                let attempts = (item.attempts ?? 0) + 1
+                item.attempts = attempts
                 item.error = error.localizedDescription
+                if Outbox.isTransient(error) && attempts < 30 {
+                    item.status = .queued
+                    item.sendAt = Date().addingTimeInterval(min(600, 15 * pow(2, Double(min(attempts, 6)))))
+                    item.undoUntil = Date()
+                } else {
+                    item.status = .failed
+                }
             }
             try? persist(item)
             items[item.id] = item
             notify()
         }
         return !items.values.contains { $0.status == .queued }
+    }
+
+    static func isTransient(_ error: Error) -> Bool {
+        if let f = error as? FalconError {
+            switch f {
+            case .network: return true
+            case .http(let code, _): return code >= 500 || code == 429
+            default: return false
+            }
+        }
+        return (error as? URLError) != nil
     }
 
     private func persist(_ item: OutboxItem) throws {
