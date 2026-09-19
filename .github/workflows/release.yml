@@ -19,7 +19,7 @@ permissions:
 jobs:
   release:
     name: Build, sign, package, publish
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     env:
       VERSION: ${{ github.event.inputs.version || github.ref_name }}
@@ -28,11 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: Show toolchain
+        run: xcodebuild -version
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
 
       - name: Set version
         run: |
@@ -103,7 +103,7 @@ jobs:
           ZIP="FalconMail-$APP_VERSION.zip"
           DMG="FalconMail-$APP_VERSION.dmg"
           ditto -c -k --keepParent "$APP" "$ZIP"
-          brew install create-dmg
+          command -v create-dmg >/dev/null || brew install create-dmg
           rm -rf dmg-root && mkdir dmg-root && cp -R "$APP" dmg-root/
           create-dmg \
             --volname "FalconMail $APP_VERSION" \
