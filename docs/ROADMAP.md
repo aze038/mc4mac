@@ -49,3 +49,15 @@
   Requested before the first test round.
 - Sparkle-style in-app updates fed by GitHub Releases
 - Crash reporting opt-in
+
+## Compose window notes
+
+- A message can be opened in its own window (⌘O or the context menu) so it sits
+  next to a compose window.
+- Attachments in the reading pane are draggable into any compose window, onto
+  the Desktop, or into Finder. Files from Finder can be dropped on a compose
+  window.
+- "Edit in Default App" on a compose attachment opens it in Excel, Word or
+  whatever owns the file type. FalconMail watches the file and refreshes the
+  attachment on every save. macOS does not allow Office to be embedded inside
+  another app's window, so this is the native equivalent of in-place editing.

@@ -27,6 +27,7 @@ struct FalconMailApp: App {
                 Button("Reply") { reply(all: false) }.keyboardShortcut("r", modifiers: .command)
                 Button("Reply All") { reply(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
                 Button("Forward") { forward() }.keyboardShortcut("f", modifiers: [.command, .shift])
+                Button("Open in New Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: .command)
                 Divider()
                 Button("Archive") { model.archive(model.selectedMessages) }.keyboardShortcut("e", modifiers: .command)
                 Button("Delete") { model.delete(model.selectedMessages) }.keyboardShortcut(.delete, modifiers: .command)
@@ -43,6 +44,13 @@ struct FalconMailApp: App {
                 Button("Open Archive from Google Drive…") { NotificationCenter.default.post(name: .falconOpenArchive, object: nil) }
             }
         }
+
+        WindowGroup("Message", for: String.self) { $messageID in
+            if let id = messageID {
+                MessageWindowView(messageID: id).environmentObject(model)
+            }
+        }
+        .defaultSize(width: 720, height: 640)
 
         WindowGroup("Compose", for: UUID.self) { $draftID in
             if let id = draftID {
@@ -75,6 +83,11 @@ struct FalconMailApp: App {
             let parsed = await model.parsedBody(for: thread.latest)
             openWindow(value: model.newDraft(.forward(thread.latest, parsed: parsed, account: account)))
         }
+    }
+
+    private func openSelectedInWindow() {
+        guard let thread = model.currentThread else { return }
+        openWindow(value: thread.latest.id)
     }
 }
 
