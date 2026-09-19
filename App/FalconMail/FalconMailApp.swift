@@ -18,7 +18,11 @@ struct FalconMailApp: App {
                     for id in restore.messages { openWindow(value: id) }
                     for id in restore.drafts { openWindow(value: id) }
                 }
-                .onAppear { appDelegate.model = model }
+                .onAppear {
+                    appDelegate.model = model
+                    AppAppearance.apply(model.appearance)
+                }
+                .onChange(of: model.appearance) { _, new in AppAppearance.apply(new) }
         }
         .defaultSize(width: 1280, height: 800)
         .commands {
