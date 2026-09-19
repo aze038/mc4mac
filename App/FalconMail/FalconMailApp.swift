@@ -1,14 +1,18 @@
 import SwiftUI
+import AppKit
+import UserNotifications
 import FalconCore
 
 @main
 struct FalconMailApp: App {
+    static let mailboxWindowID = "mailbox"
+
     @State private var model = AppModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
-        WindowGroup("FalconMail") {
+        WindowGroup("FalconMail", id: FalconMailApp.mailboxWindowID) {
             MainWindow()
                 .environment(model)
                 .environmentObject(model.updates)
@@ -19,6 +23,7 @@ struct FalconMailApp: App {
                     for id in restore.drafts { openWindow(value: id) }
                 }
                 .onAppear {
+                    model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }
                     appDelegate.model = model
                     AppAppearance.apply(model.appearance)
                 }
@@ -30,7 +35,7 @@ struct FalconMailApp: App {
         .defaultSize(width: 1280, height: 800)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Message") { compose() }
+                Button("New Message") { model.composeNew() }
                     .keyboardShortcut("n", modifiers: .command)
                 Divider()
                 Button("Add Account…") { NotificationCenter.default.post(name: .falconAddAccount, object: nil) }
@@ -38,23 +43,37 @@ struct FalconMailApp: App {
                 Button("Import Mail…") { NotificationCenter.default.post(name: .falconImport, object: nil) }
                 Button("Export Selected as .eml…") { NotificationCenter.default.post(name: .falconExport, object: nil) }
             }
+            CommandGroup(replacing: .undoRedo) {
+                Button(undoTitle) { undo() }.keyboardShortcut("z", modifiers: .command)
+                Button("Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
             CommandMenu("Message") {
-                Button("Reply") { reply(all: false) }.keyboardShortcut("r", modifiers: .command)
-                Button("Reply All") { reply(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
-                Button("Forward") { forward() }.keyboardShortcut("f", modifiers: [.command, .shift])
-                Button("Open") { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } }.keyboardShortcut("o", modifiers: .command)
-                Button("Open in Separate Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
-                Button("Close Tab") { model.closeActiveTab() }.keyboardShortcut("w", modifiers: .command).disabled(model.activeTab == nil)
-                Button("Minimize Tab") { if let t = model.activeTab { model.minimizeTab(t) } }.keyboardShortcut("m", modifiers: .command).disabled(model.activeTab == nil)
+                replyCommands
+                windowCommands
                 Divider()
-                Button("Archive") { model.archive(model.selectedMessages) }.keyboardShortcut("e", modifiers: .command)
-                Button("Delete") { model.delete(model.selectedMessages) }.keyboardShortcut(.delete, modifiers: .command)
-                Button("Mark as Read") { model.markRead(model.selectedMessages, true) }.keyboardShortcut("u", modifiers: [.command, .shift])
-                Button("Mark as Unread") { model.markRead(model.selectedMessages, false) }.keyboardShortcut("u", modifiers: [.command, .option])
-                Button("Flag") { model.setFlagged(model.selectedMessages, true) }.keyboardShortcut("l", modifiers: [.command, .shift])
+                fileCommands
                 Divider()
-                Button("Check for New Mail") { model.syncNow() }.keyboardShortcut("m", modifiers: [.command, .shift])
-                Button("Load Older Messages") { model.loadOlder() }
+                readStateCommands
+                Divider()
+                navigationCommands
+                Divider()
+                syncCommands
+            }
+            CommandGroup(after: .sidebar) {
+                Divider()
+                Button("Search Mail") { model.focusSearch() }.keyboardShortcut("f", modifiers: .command)
+                Menu("Go To") {
+                    Button("All Inboxes") { model.jumpToAllInboxes() }
+                    Button("Sent") { model.jump(to: .sent) }
+                    Button("Drafts") { model.jump(to: .drafts) }
+                    Button("Archive") { model.jump(to: .archive) }
+                    Button("Junk") { model.jump(to: .junk) }
+                    Button("Trash") { model.jump(to: .trash) }
+                }
+                Divider()
+                filterCommands
+                Toggle("Group by Conversation", isOn: $model.groupByThread)
             }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { Task { await model.updates.check(userInitiated: true) } }
@@ -85,25 +104,101 @@ struct FalconMailApp: App {
         }
     }
 
-    private func compose() {
-        guard let account = model.accounts.first else { return }
-        model.openCompose(.blank(account: account))
+    @ViewBuilder private var replyCommands: some View {
+        Button("Reply") { model.replyToSelection(all: false) }.keyboardShortcut("r", modifiers: .command)
+        Button("Reply All") { model.replyToSelection(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
+        Button("Forward") { model.forwardSelection() }.keyboardShortcut("f", modifiers: [.command, .shift])
     }
 
-    private func reply(all: Bool) {
-        guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: thread.latest)
-            model.openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all))
+    @ViewBuilder private var windowCommands: some View {
+        Button("Open") { openSelectedInTab() }.keyboardShortcut("o", modifiers: .command)
+        Button("Open in Separate Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
+        Button("Close Tab") { model.closeActiveTab() }.keyboardShortcut("w", modifiers: .command).disabled(model.activeTab == nil)
+        if let tab = model.activeTab {
+            Button("Minimize Tab") { model.minimizeTab(tab) }.keyboardShortcut("m", modifiers: .command)
         }
     }
 
-    private func forward() {
-        guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: thread.latest)
-            model.openCompose(.forward(thread.latest, parsed: parsed, account: account))
+    @ViewBuilder private var fileCommands: some View {
+        Button("Archive") { model.archive(model.selectedMessages) }.keyboardShortcut("e", modifiers: .command)
+        Button("Delete") { model.delete(model.selectedMessages) }.keyboardShortcut(.delete, modifiers: .command)
+        Button("Move to Folder…") { model.openMovePalette() }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .disabled(model.selectedMessageIDs.isEmpty)
+        Button(moveAgainTitle) { model.moveToLastTarget() }
+            .keyboardShortcut("y", modifiers: [.command, .shift])
+            .disabled(model.lastMoveTarget == nil || model.selectedMessageIDs.isEmpty)
+        Button("Move to Junk") { model.moveToJunk(model.selectedMessages) }
+            .disabled(model.selectedMessageIDs.isEmpty)
+        Button("Not Junk") { model.markNotJunk(model.selectedMessages) }
+            .disabled(!model.selectionIsAllInJunk)
+    }
+
+    @ViewBuilder private var readStateCommands: some View {
+        Button("Mark as Read") { model.markRead(model.selectedMessages, true) }.keyboardShortcut("u", modifiers: [.command, .shift])
+        Button("Mark as Unread") { model.markRead(model.selectedMessages, false) }.keyboardShortcut("u", modifiers: [.command, .option])
+        Button("Mark All as Read") { model.markAllReadInSelection() }
+            .disabled(!model.canMarkAllRead)
+            .help("Marks every unread message in the selected mailbox as read.")
+        Button(flagTitle) { model.toggleFlagOnSelection() }.keyboardShortcut("l", modifiers: [.command, .shift])
+        Button("Mute Conversation") { model.muteSelection() }
+            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .disabled(model.selectedMessageIDs.isEmpty)
+            .help("Outlook calls this Ignore. New replies are marked read and archived as they arrive.")
+    }
+
+    @ViewBuilder private var navigationCommands: some View {
+        Button("Next Conversation") { model.selectNextThread() }
+        Button("Previous Conversation") { model.selectPreviousThread() }
+        Button("Next Unread Message") { model.selectNextUnread() }.keyboardShortcut("n", modifiers: [.command, .control])
+        Button("Previous Unread Message") { model.selectPreviousUnread() }.keyboardShortcut("p", modifiers: [.command, .control])
+    }
+
+    @ViewBuilder private var syncCommands: some View {
+        Button("Check for New Mail") { model.syncNow() }.keyboardShortcut("n", modifiers: [.command, .shift])
+        Button("Load Older Messages") { model.loadOlder() }
+    }
+
+    @ViewBuilder private var filterCommands: some View {
+        Toggle("Only Unread", isOn: filterBinding(.unread))
+            .keyboardShortcut("1", modifiers: [.command, .control])
+        Toggle("Only Flagged", isOn: filterBinding(.flagged))
+            .keyboardShortcut("2", modifiers: [.command, .control])
+        Button("Clear Filters") { model.clearFilters() }
+            .keyboardShortcut("0", modifiers: [.command, .control])
+            .disabled(model.filters.isEmpty)
+        Toggle("Keep Filters When Switching Folders", isOn: $model.pinFilters)
+    }
+
+    private func filterBinding(_ filter: MessageFilter) -> Binding<Bool> {
+        Binding(get: { model.filters.contains(filter) }, set: { _ in model.toggleFilter(filter) })
+    }
+
+    private var moveAgainTitle: String {
+        guard let target = model.lastMoveTarget else { return "Move Again" }
+        return "Move Again to \(target.name)"
+    }
+
+    private var flagTitle: String {
+        model.firstSelectedMessage?.isFlagged == true ? "Unflag" : "Flag"
+    }
+
+    private var undoTitle: String {
+        guard let undo = model.pendingUndo else { return "Undo" }
+        return "Undo \(undo.verbTitle)"
+    }
+
+    private func undo() {
+        guard model.canUndoAction, WindowTray.shared.mailboxWindowTakesUndo else {
+            NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+            return
         }
+        model.undoLastAction()
+    }
+
+    private func openSelectedInTab() {
+        guard let thread = model.currentThread else { return }
+        model.openMessage(thread.latest) { openWindow(value: $0) }
     }
 
     private func openSelectedInWindow() {
@@ -112,12 +207,48 @@ struct FalconMailApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    var model: AppModel?
+struct QueuedNotificationAction {
+    let action: MailNotificationAction
+    let messageID: String
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    var model: AppModel? {
+        didSet { MainActor.assumeIsolated { deliverQueuedActions() } }
+    }
+
+    private var queuedActions: [QueuedNotificationAction] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         WindowTray.installMinimizeHook()
         offerMoveToApplications()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let messageID = response.notification.request.content.userInfo["messageID"] as? String ?? ""
+        let identifier = response.actionIdentifier
+        MainActor.assumeIsolated {
+            guard let action = MailNotificationCategory.action(for: identifier) else { return }
+            deliver(QueuedNotificationAction(action: action, messageID: messageID))
+        }
+        completionHandler()
+    }
+
+    @MainActor private func deliver(_ queued: QueuedNotificationAction) {
+        guard let model else {
+            queuedActions.append(queued)
+            return
+        }
+        model.handleNotificationAction(queued.action, messageID: queued.messageID)
+    }
+
+    @MainActor private func deliverQueuedActions() {
+        guard let model, !queuedActions.isEmpty else { return }
+        let pending = queuedActions
+        queuedActions = []
+        for queued in pending { model.handleNotificationAction(queued.action, messageID: queued.messageID) }
     }
 
     private func offerMoveToApplications() {

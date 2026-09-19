@@ -7,6 +7,7 @@ struct SettingsView: View {
             GeneralSettings().tabItem { Label("General", systemImage: "gear") }
             AccountSettings().tabItem { Label("Accounts", systemImage: "person.crop.circle") }
             RulesSettings().tabItem { Label("Rules", systemImage: "line.3.horizontal.decrease.circle") }
+            NotificationSettings().tabItem { Label("Notifications", systemImage: "bell.badge") }
             GoogleSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
             UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
@@ -16,8 +17,8 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
-    @AppStorage("notificationSound") private var notificationSound = "Ping"
-    @AppStorage("notificationsEnabled") private var notificationsEnabled = true
+    @AppStorage(AttachmentWarning.enabledKey) private var warnAboutAttachments = true
+    @AppStorage(AttachmentWarning.keywordsKey) private var attachmentKeywords = AttachmentWarning.defaultKeywords
 
     var body: some View {
         form.task { await model.refreshCacheSize() }
@@ -56,38 +57,73 @@ struct GeneralSettings: View {
                 Text("Older copies are removed automatically as new mail arrives. Headers and the search index stay, about 200 bytes per message. Sent mail waits in the Outbox until you are online.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Reading") {
-                Toggle("Group messages by conversation", isOn: $model.groupByThread)
-                Toggle("Open messages in a separate window instead of a tab", isOn: $model.openInWindowOnDoubleClick)
-                Toggle("Load remote images in messages", isOn: $model.loadRemoteImages)
-            }
+            readingSection
+            triageSection
+            keyboardSection
+            composingSection
             Section("Sending") {
                 Picker("Undo send window", selection: $model.undoSendSeconds) {
                     ForEach([0, 5, 10, 20, 30], id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
                 }
             }
-            Section("Notifications") {
-                Toggle("Notify about new mail", isOn: $notificationsEnabled)
-                HStack {
-                    Picker("Notification sound", selection: $notificationSound) {
-                        Text("None").tag(SystemSounds.none)
-                        ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
-                    }
-                    Button { SystemSounds.play(notificationSound) } label: { Image(systemName: "play.circle") }
-                        .disabled(notificationSound == SystemSounds.none)
-                }
-                HStack {
-                    Picker("Sent mail sound", selection: $model.sentSound) {
-                        Text("None").tag(SystemSounds.none)
-                        ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
-                    }
-                    Button { SystemSounds.play(model.sentSound) } label: { Image(systemName: "play.circle") }
-                        .disabled(model.sentSound == SystemSounds.none)
-                }
-            }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    private var readingSection: some View {
+        @Bindable var model = model
+        return Section("Reading") {
+            Toggle("Group messages by conversation", isOn: $model.groupByThread)
+            Toggle("Open messages in a separate window instead of a tab", isOn: $model.openInWindowOnDoubleClick)
+            Toggle("Load remote images in messages", isOn: $model.loadRemoteImages)
+            Picker("Mark messages as read", selection: $model.markReadPolicy) {
+                ForEach(MarkReadPolicy.allCases) { policy in Text(policy.title).tag(policy.rawValue) }
+            }
+            if model.markReadPolicy == MarkReadPolicy.delay.rawValue {
+                Picker("Delay", selection: $model.markReadDelaySeconds) {
+                    ForEach([1, 2, 3, 5, 10], id: \.self) { Text($0 == 1 ? "1 second" : "\($0) seconds").tag($0) }
+                }
+            }
+            Picker("After archiving, deleting or moving", selection: $model.advanceAfterAction) {
+                ForEach(AdvanceAfterAction.allCases) { action in Text(action.title).tag(action.rawValue) }
+            }
+            Text("Choose Never to keep unread counts intact while you scan.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var keyboardSection: some View {
+        @Bindable var model = model
+        return Section("Keyboard") {
+            Toggle("Use single-key shortcuts in the message list", isOn: $model.singleKeyShortcuts)
+            Text("e archive, Delete trash, ! junk or not junk, m mute, u read or unread, s flag, v move, Shift+V move again, j and k next and previous conversation, n and p next and previous unread, c new message, r reply, a reply all, f forward, / search, and g followed by i, t, d, a or j to jump to a mailbox.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Every one of these also has a menu item, so they can be rebound in System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var composingSection: some View {
+        Section("Composing") {
+            Toggle("Warn when a message mentions an attachment but has none", isOn: $warnAboutAttachments)
+            TextField("Words that suggest an attachment", text: $attachmentKeywords, axis: .vertical)
+                .lineLimit(2...5)
+                .disabled(!warnAboutAttachments)
+            Text("Separate the words with commas. Only what you type is checked, never the quoted reply or your signature.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var triageSection: some View {
+        @Bindable var model = model
+        return Section("Triage") {
+            Picker("Undo window for archive, delete and move", selection: $model.undoActionSeconds) {
+                ForEach([0, 3, 5, 10], id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+            }
+            Text("Actions apply on this Mac straight away and reach the server when the window ends. Press Command+Z while the capsule is showing to take one back.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -244,6 +280,15 @@ struct RulesSettings: View {
     @State private var selected: UUID?
 
     var body: some View {
+        VStack(spacing: 0) {
+            splitView
+            Divider()
+            mutedSection
+        }
+        .task { rules = await model.rules.all() }
+    }
+
+    private var splitView: some View {
         HSplitView {
             VStack {
                 List(rules, selection: $selected) { r in
@@ -267,7 +312,45 @@ struct RulesSettings: View {
                 ContentUnavailableView("Select a rule", systemImage: "line.3.horizontal.decrease.circle").frame(maxWidth: .infinity)
             }
         }
-        .task { rules = await model.rules.all() }
+        .frame(maxHeight: .infinity)
+    }
+
+    private var mutedSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Muted conversations").font(.headline)
+            if model.mutedThreads.isEmpty {
+                Text("Nothing is muted. Select a conversation and press m, or use Message → Mute Conversation.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                mutedList
+            }
+            Text("Muting happens on this Mac. Other devices still show the conversation.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+    }
+
+    private var mutedList: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(model.mutedThreads.sorted { $0.mutedAt > $1.mutedAt }) { muted in
+                    mutedRow(muted)
+                }
+            }
+        }
+        .frame(height: 110)
+    }
+
+    private func mutedRow(_ muted: MutedThread) -> some View {
+        HStack {
+            Text(muted.subject.isEmpty ? "(no subject)" : muted.subject).lineLimit(1)
+            Spacer()
+            Text(muted.mutedAt.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Remove") { model.unmute(muted) }.buttonStyle(.link)
+        }
+        .padding(.vertical, 2)
     }
 
     private func update(_ id: UUID, _ change: (inout RuleDefinition) -> Void) {
@@ -347,6 +430,121 @@ struct RuleEditor: View {
         case .archive: return "Archive"
         case .stopProcessing: return "Stop processing rules"
         }
+    }
+}
+
+struct NotificationSettings: View {
+    @Environment(AppModel.self) private var model
+    @AppStorage("notificationSound") private var notificationSound = "Ping"
+    @AppStorage("notificationsEnabled") private var notificationsEnabled = true
+    @State private var newVIP = ""
+    @State private var selectedVIP: String?
+
+    var body: some View {
+        Form {
+            soundsSection
+            dockSection
+            accountsSection.disabled(!notificationsEnabled)
+            vipSection.disabled(!notificationsEnabled)
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private var soundsSection: some View {
+        @Bindable var model = model
+        return Section("Notifications") {
+            Toggle("Notify about new mail", isOn: $notificationsEnabled)
+            HStack {
+                Picker("Notification sound", selection: $notificationSound) {
+                    Text("None").tag(SystemSounds.none)
+                    ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
+                }
+                Button { SystemSounds.play(notificationSound) } label: { Image(systemName: "play.circle") }
+                    .disabled(notificationSound == SystemSounds.none)
+            }
+            HStack {
+                Picker("Sent mail sound", selection: $model.sentSound) {
+                    Text("None").tag(SystemSounds.none)
+                    ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
+                }
+                Button { SystemSounds.play(model.sentSound) } label: { Image(systemName: "play.circle") }
+                    .disabled(model.sentSound == SystemSounds.none)
+            }
+        }
+    }
+
+    private var dockSection: some View {
+        @Bindable var model = model
+        return Section("Dock") {
+            Toggle("Show unread count in the Dock", isOn: $model.dockBadge)
+            Text("Counts unread messages across every inbox, whether or not banners are on.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var accountsSection: some View {
+        Section("Notify me about") {
+            if model.accounts.isEmpty {
+                Text("Add an account to choose what it notifies you about.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(model.accounts) { account in modePicker(account) }
+            }
+            Text("Only new mail arriving in an inbox is announced. Mail a rule files away is silent.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func modePicker(_ account: AccountInfo) -> some View {
+        Picker(account.email, selection: Binding(get: { model.notificationPolicy.mode(for: account.id) },
+                                                 set: { model.setNotifyMode($0, for: account.id) })) {
+            ForEach(NotifyMode.allCases) { mode in Text(mode.title).tag(mode) }
+        }
+    }
+
+    private var vipSection: some View {
+        Section("VIPs") {
+            vipList
+            vipEntry
+            Text("VIP addresses are shared by all accounts.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var vipList: some View {
+        List(model.notificationPolicy.vip, id: \.self, selection: $selectedVIP) { entry in
+            Text(entry)
+        }
+        .frame(height: 120)
+        .overlay {
+            if model.notificationPolicy.vip.isEmpty {
+                Text("No VIPs yet. Add an address, or a whole domain written as @example.com.")
+                    .font(.caption).foregroundStyle(.secondary).padding()
+            }
+        }
+    }
+
+    private var vipEntry: some View {
+        HStack {
+            TextField("name@example.com or @example.com", text: $newVIP).onSubmit { addVIP() }
+            Button { addVIP() } label: { Image(systemName: "plus") }
+                .disabled(!newVIP.contains("@"))
+            Button { removeSelectedVIP() } label: { Image(systemName: "minus") }
+                .disabled(selectedVIP == nil)
+        }
+    }
+
+    private func addVIP() {
+        guard newVIP.contains("@") else { return }
+        model.addVIP(newVIP)
+        newVIP = ""
+    }
+
+    private func removeSelectedVIP() {
+        guard let entry = selectedVIP else { return }
+        model.removeVIP(entry)
+        selectedVIP = nil
     }
 }
 

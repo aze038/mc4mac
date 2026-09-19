@@ -29,6 +29,10 @@ public struct OutboxItem: Codable, Sendable, Hashable, Identifiable {
     }
 
     public var canUndo: Bool { status == .queued && Date() < undoUntil }
+
+    public func isSendingSoon(within window: TimeInterval) -> Bool {
+        canUndo && sendAt <= Date().addingTimeInterval(max(0, window))
+    }
 }
 
 public protocol MessageSender: Sendable {
@@ -42,6 +46,10 @@ public actor Outbox {
     private let sender: MessageSender
     public var undoWindow: TimeInterval
     private var listeners: [UUID: AsyncStream<[OutboxItem]>.Continuation] = [:]
+
+    public static func draftSidecarURL(directory: URL, id: UUID) -> URL {
+        directory.appendingPathComponent("\(id.uuidString).draft.json")
+    }
 
     public init(layout: FileLayout, sender: MessageSender, undoWindow: TimeInterval = 10) {
         self.directory = layout.outboxDirectory
@@ -91,18 +99,21 @@ public actor Outbox {
         AtomicFile.read(directory.appendingPathComponent("\(id.uuidString).eml"))
     }
 
-    public func cancel(_ id: UUID) throws {
-        guard var item = items[id], item.status == .queued else { return }
+    @discardableResult
+    public func cancel(_ id: UUID) throws -> Bool {
+        guard var item = items[id], item.status == .queued else { return false }
         item.status = .cancelled
         try persist(item)
         items[id] = item
         notify()
+        return true
     }
 
     public func remove(_ id: UUID) {
         items[id] = nil
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(id.uuidString).json"))
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(id.uuidString).eml"))
+        try? FileManager.default.removeItem(at: Outbox.draftSidecarURL(directory: directory, id: id))
         notify()
     }
 
@@ -132,9 +143,10 @@ public actor Outbox {
     private func pumpFinished() { pump = nil }
 
     private func tick() async -> Bool {
-        let due = items.values.filter { $0.status == .queued && $0.sendAt <= Date() }
-        for var item in due {
-            guard let raw = rawMessage(for: item.id) else { continue }
+        let due = items.values.filter { $0.status == .queued && $0.sendAt <= Date() }.map { $0.id }
+        for id in due {
+            guard var item = items[id], item.status == .queued, item.sendAt <= Date() else { continue }
+            guard let raw = rawMessage(for: id) else { continue }
             item.status = .sending
             items[item.id] = item
             notify()

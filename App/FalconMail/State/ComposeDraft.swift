@@ -1,7 +1,7 @@
 import Foundation
 import FalconCore
 
-struct ComposeDraft: Identifiable, Hashable, Codable {
+struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     var id = UUID()
     var accountID: UUID
     var to: String = ""
@@ -41,8 +41,25 @@ struct ComposeDraft: Identifiable, Hashable, Codable {
         d.historyPlain = h.plain
         d.historyHTML = h.html
         d.body = "\n\n" + signatureBlock(account) + h.plain
-        d.attachments = (parsed?.attachments ?? []).filter { !$0.isInline }.map { OutgoingAttachment(filename: $0.filename, mimeType: $0.mimeType, data: $0.data) }
+        d.attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
         return d
+    }
+
+    static func from(parsed: MIMEMessage, accountID: UUID) -> ComposeDraft {
+        var d = ComposeDraft(accountID: accountID)
+        d.to = parsed.to.map { $0.rfc5322 }.joined(separator: ", ")
+        d.cc = parsed.cc.map { $0.rfc5322 }.joined(separator: ", ")
+        d.bcc = AddressParser.parse(parsed.headers.first("Bcc")).map { $0.rfc5322 }.joined(separator: ", ")
+        d.subject = parsed.subject
+        d.body = parsed.bestText
+        d.attachments = ComposeDraft.outgoingAttachments(of: parsed)
+        d.inReplyTo = parsed.inReplyTo.isEmpty ? nil : parsed.inReplyTo
+        d.references = parsed.references
+        return d
+    }
+
+    static func outgoingAttachments(of parsed: MIMEMessage) -> [OutgoingAttachment] {
+        parsed.attachments.filter { !$0.isInline }.map { OutgoingAttachment(filename: $0.filename, mimeType: $0.mimeType, data: $0.data) }
     }
 
     static func blank(account: AccountInfo) -> ComposeDraft {
@@ -55,7 +72,7 @@ struct ComposeDraft: Identifiable, Hashable, Codable {
         account.signature.trimmed.isEmpty ? "" : "-- \n\(account.signature)\n\n"
     }
 
-    static let separatorLine = String(repeating: "_", count: 40)
+    static let separatorLine = AttachmentReminder.separatorLine
 
     static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> (plain: String, html: String) {
         let f = DateFormatter()
@@ -109,5 +126,51 @@ struct ComposeDraft: Identifiable, Hashable, Codable {
         return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
                                cc: AddressParser.parse(cc), bcc: AddressParser.parse(bcc), subject: subject, textBody: body,
                                htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references)
+    }
+}
+
+struct ComposeDraftSidecar: Codable, Sendable {
+    var id: UUID
+    var accountID: UUID
+    var to: String
+    var cc: String
+    var bcc: String
+    var subject: String
+    var body: String
+    var inReplyTo: String?
+    var references: [String]
+    var scheduledAt: Date?
+    var historyPlain: String
+    var historyHTML: String
+
+    init(_ draft: ComposeDraft) {
+        id = draft.id
+        accountID = draft.accountID
+        to = draft.to
+        cc = draft.cc
+        bcc = draft.bcc
+        subject = draft.subject
+        body = draft.body
+        inReplyTo = draft.inReplyTo
+        references = draft.references
+        scheduledAt = draft.scheduledAt
+        historyPlain = draft.historyPlain
+        historyHTML = draft.historyHTML
+    }
+
+    func draft(attachments: [OutgoingAttachment]) -> ComposeDraft {
+        var d = ComposeDraft(id: id, accountID: accountID)
+        d.to = to
+        d.cc = cc
+        d.bcc = bcc
+        d.subject = subject
+        d.body = body
+        d.attachments = attachments
+        d.inReplyTo = inReplyTo
+        d.references = references
+        d.scheduledAt = scheduledAt
+        d.historyPlain = historyPlain
+        d.historyHTML = historyHTML
+        return d
     }
 }

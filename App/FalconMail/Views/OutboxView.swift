@@ -3,6 +3,7 @@ import FalconCore
 
 struct OutboxView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         List(model.outboxItems) { item in
@@ -13,22 +14,39 @@ struct OutboxView: View {
                     Text(statusText(item)).font(.caption).foregroundStyle(item.status == .failed ? .red : .secondary)
                 }
                 Spacer()
-                if item.canUndo { Button("Undo") { model.undoSend(item) } }
-                if item.status == .failed { Button("Retry") { Task { try? await model.outbox.retry(item.id) } } }
-                if item.status == .sent || item.status == .cancelled || item.status == .failed {
-                    Button { Task { await model.outbox.remove(item.id) } } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain)
-                }
+                actions(item)
             }
             .padding(.vertical, 4)
         }
         .overlay { if model.outboxItems.isEmpty { ContentUnavailableView("Outbox is empty", systemImage: "paperplane") } }
     }
 
+    @ViewBuilder private func actions(_ item: OutboxItem) -> some View {
+        if isSendingSoon(item) {
+            Button("Undo") { reopen(item) }
+        } else if item.status == .queued {
+            Button("Edit") { reopen(item) }.help("Stops the message and reopens it as a draft")
+        }
+        if item.status == .failed { Button("Retry") { Task { try? await model.outbox.retry(item.id) } } }
+        if item.status == .sent || item.status == .cancelled || item.status == .failed {
+            Button { Task { await model.outbox.remove(item.id) } } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain)
+        }
+    }
+
+    private func isSendingSoon(_ item: OutboxItem) -> Bool {
+        item.isSendingSoon(within: TimeInterval(model.undoSendSeconds))
+    }
+
+    private func reopen(_ item: OutboxItem) {
+        model.cancelAndReopen(item) { openWindow(value: $0) }
+    }
+
     private func statusText(_ item: OutboxItem) -> String {
         switch item.status {
         case .queued:
             if let e = item.error { return "Waiting for connection, retrying at \(item.sendAt.formatted(date: .omitted, time: .shortened)) (\(e))" }
-            return item.sendAt > Date().addingTimeInterval(60) ? "Scheduled for \(item.sendAt.formatted())" : "Sending shortly"
+            if item.sendAt > Date().addingTimeInterval(60) { return "Scheduled for \(item.sendAt.formatted()). Edit to change it." }
+            return "Sending shortly"
         case .sending: return "Sending…"
         case .sent: return "Sent"
         case .failed: return "Failed: \(item.error ?? "unknown error")"

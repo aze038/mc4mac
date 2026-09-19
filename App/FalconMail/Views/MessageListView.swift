@@ -4,38 +4,96 @@ import FalconCore
 struct MessageListView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
-        @Bindable var model = model
         VStack(spacing: 0) {
-            HStack {
-                TextField("Search mail", text: $model.searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { Task { await model.runSearch() } }
-                if !model.searchText.isEmpty {
-                    Button { model.searchText = ""; Task { await model.reloadMessages() } } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
-                }
-                Toggle(isOn: $model.groupByThread) { Image(systemName: "bubble.left.and.bubble.right") }
-                    .toggleStyle(.button)
-                    .help("Group by conversation")
-            }
-            .padding(8)
+            searchBar
+            filterBar
             Divider()
             if model.isSearching {
                 ProgressView("Searching…").padding()
             }
+            threadList
+            loadOlderBar
+        }
+        .onChange(of: model.selectedMessageIDs) { _, _ in model.selectionDidChange() }
+        .onChange(of: model.focusSearchToken) { _, _ in searchFocused = true }
+    }
+
+    private var searchBar: some View {
+        @Bindable var model = model
+        return HStack {
+            TextField("Search mail", text: $model.searchText)
+                .textFieldStyle(.roundedBorder)
+                .focused($searchFocused)
+                .onSubmit { Task { await model.runSearch() } }
+                .onExitCommand {
+                    model.clearSearch()
+                    searchFocused = false
+                }
+            if !model.searchText.isEmpty {
+                Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain)
+            }
+            Toggle(isOn: $model.groupByThread) { Image(systemName: "bubble.left.and.bubble.right") }
+                .toggleStyle(.button)
+                .help("Group by conversation")
+        }
+        .padding(8)
+    }
+
+    @ViewBuilder private var filterBar: some View {
+        if !model.filters.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(MessageFilter.allCases.filter { model.filters.contains($0) }) { filter in
+                    filterChip(filter)
+                }
+                Spacer()
+                Text("\(model.threads.count) conversations")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                pinButton
+                Button("Clear") { model.clearFilters() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func filterChip(_ filter: MessageFilter) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: filter.symbol)
+            Text(filter.title)
+            Button { model.toggleFilter(filter) } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .help("Remove this filter")
+        }
+        .font(.caption)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Color.accentColor.opacity(0.15), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.4)))
+    }
+
+    private var pinButton: some View {
+        Button { model.pinFilters.toggle() } label: {
+            Image(systemName: model.pinFilters ? "pin.fill" : "pin.slash")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(model.pinFilters ? Color.accentColor : Color.secondary)
+        .help("Keep these filters when switching folders")
+    }
+
+    private var threadList: some View {
+        @Bindable var model = model
+        return ScrollViewReader { proxy in
             List(model.threads, selection: $model.selectedMessageIDs) { thread in
                 MessageRow(thread: thread)
                     .tag(thread.id)
-                    .contextMenu {
-                        Button("Open") { model.openMessage(thread.latest) { openWindow(value: $0) } }
-                        Button("Open in Separate Window") { openWindow(value: thread.latest.id) }
-                        Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
-                        Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
-                        Button("Archive") { model.archive(thread.messages) }
-                        Button("Delete", role: .destructive) { model.delete(thread.messages) }
-                    }
+                    .contextMenu { rowMenu(thread) }
             }
             .listStyle(.inset)
             .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } })
@@ -46,19 +104,37 @@ struct MessageListView: View {
             }
             .overlay {
                 if model.threads.isEmpty && !model.isSearching {
-                    ContentUnavailableView(model.accounts.isEmpty ? "Add an account to get started" : "No messages", systemImage: "tray")
+                    ContentUnavailableView(emptyTitle, systemImage: model.filters.isEmpty ? "tray" : "line.3.horizontal.decrease.circle")
                 }
             }
-            if case .folder = model.selection, model.searchText.isEmpty {
-                Divider()
-                Button("Load older messages") { model.loadOlder() }.buttonStyle(.link).padding(6)
+            .onChange(of: model.selectedMessageIDs) { _, ids in
+                guard ids.count == 1, let id = ids.first else { return }
+                proxy.scrollTo(id)
             }
         }
-        .onChange(of: model.selectedMessageIDs) { _, new in
-            if new.count == 1, let t = model.threads.first(where: { $0.id == new.first! }), !t.latest.isRead {
-                model.markRead([t.latest], true)
-            }
+    }
+
+    private var emptyTitle: LocalizedStringKey {
+        if model.accounts.isEmpty { return "Add an account to get started" }
+        return model.filters.isEmpty ? "No messages" : "No conversations match these filters"
+    }
+
+    @ViewBuilder private var loadOlderBar: some View {
+        if case .folder = model.selection, model.searchText.isEmpty {
+            Divider()
+            Button("Load older messages") { model.loadOlder() }.buttonStyle(.link).padding(6)
         }
+    }
+
+    @ViewBuilder private func rowMenu(_ thread: MessageThread) -> some View {
+        Button("Open") { model.openMessage(thread.latest) { openWindow(value: $0) } }
+        Button("Open in Separate Window") { model.openMessage(thread.latest, forceWindow: true) { openWindow(value: $0) } }
+        Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
+        Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
+        Button("Archive") { model.archive(thread.messages) }
+        Button(model.isInJunk(thread.messages) ? "Not Junk" : "Move to Junk") { model.toggleJunk(thread.messages) }
+        Button(model.isMuted(thread) ? "Unmute Conversation" : "Mute Conversation") { model.toggleMute(thread) }
+        Button("Delete", role: .destructive) { model.delete(thread.messages) }
     }
 }
 

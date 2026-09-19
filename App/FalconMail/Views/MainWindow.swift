@@ -36,8 +36,13 @@ struct MainWindow: View {
                         .id(tab.id)
                         .background(Color(nsColor: .windowBackgroundColor))
                 }
+                if model.showsMovePalette {
+                    MovePalette()
+                }
             }
         }
+        .background(MailboxWindowAccessor())
+        .background(KeyRouterView(model: model))
         .toolbar { toolbarItems }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
@@ -93,36 +98,15 @@ struct MainWindow: View {
 
     @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
-            Button { compose() } label: { Label("New Message", systemImage: "square.and.pencil") }
+            Button { model.composeNew() } label: { Label("New Message", systemImage: "square.and.pencil") }
                 .disabled(model.accounts.isEmpty)
             Button { model.syncNow() } label: { Label("Check Mail", systemImage: "arrow.clockwise") }
         }
         if model.activeTab == nil {
             ToolbarItemGroup(placement: .primaryAction) {
-                ReplyToolbar(reply: reply, forward: forward)
+                ReplyToolbar(reply: { model.replyToSelection(all: $0) }, forward: { model.forwardSelection() })
                 MessageActionsToolbar()
             }
-        }
-    }
-
-    private func compose() {
-        guard let account = model.accounts.first else { return }
-        model.openCompose(.blank(account: account))
-    }
-
-    private func reply(all: Bool) {
-        guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: thread.latest)
-            model.openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all))
-        }
-    }
-
-    private func forward() {
-        guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: thread.latest)
-            model.openCompose(.forward(thread.latest, parsed: parsed, account: account))
         }
     }
 
@@ -162,55 +146,91 @@ struct MessageActionsToolbar: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let selected = model.selectedMessages
-        let none = selected.isEmpty
-        Button { model.archive(selected) } label: { Label("Archive", systemImage: "archivebox") }.disabled(none)
-        Button { model.delete(selected) } label: { Label("Delete", systemImage: "trash") }.disabled(none)
-        Button { model.setFlagged(selected, !(selected.first?.isFlagged ?? false)) } label: { Label("Flag", systemImage: "flag") }.disabled(none)
-        MoveMenu(selected: selected)
-        Button { model.markRead(selected, !(selected.first?.isRead ?? true)) } label: { Label("Read/Unread", systemImage: "envelope.open") }.disabled(none)
+        let none = model.selectedMessageIDs.isEmpty
+        let first = model.firstSelectedMessage
+        Button { model.archive(model.selectedMessages) } label: { Label("Archive", systemImage: "archivebox") }.disabled(none)
+        Button { model.delete(model.selectedMessages) } label: { Label("Delete", systemImage: "trash") }.disabled(none)
+        Button { model.setFlagged(model.selectedMessages, !(first?.isFlagged ?? false)) } label: { Label("Flag", systemImage: "flag") }.disabled(none)
+        MoveButton()
+        Button { model.markRead(model.selectedMessages, !(first?.isRead ?? true)) } label: { Label("Read/Unread", systemImage: "envelope.open") }.disabled(none)
     }
 }
 
-struct MoveMenu: View {
+struct MoveButton: View {
     @Environment(AppModel.self) private var model
-    let selected: [MessageSummary]
 
     var body: some View {
-        Menu {
-            ForEach(model.accounts) { account in
-                Section(account.email) {
-                    ForEach(model.folders[account.id] ?? []) { folder in
-                        Button(folder.path) { model.move(selected, to: folder) }
-                    }
-                }
-            }
-        } label: {
-            Label("Move", systemImage: "folder")
-        }
-        .disabled(selected.isEmpty)
+        Button { model.openMovePalette() } label: { Label("Move", systemImage: "folder") }
+            .disabled(model.selectedMessageIDs.isEmpty)
+            .help("Move to folder")
     }
 }
 
 struct StatusBar: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 12) {
             Circle().fill(model.online.values.contains(false) ? Color.orange : Color.green).frame(width: 8, height: 8)
             Text(model.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
-            ForEach(model.outboxItems.filter { $0.canUndo }) { item in
-                HStack(spacing: 6) {
-                    Text("Sending “\(item.subject.isEmpty ? "(no subject)" : item.subject)”").font(.caption)
-                    Button("Undo") { model.undoSend(item) }.buttonStyle(.link).font(.caption)
-                }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.accentColor.opacity(0.12), in: Capsule())
-            }
+            chordCapsule
+            actionErrorCapsule
+            undoCapsule
+            sendingCapsules
         }
         .padding(.horizontal, 12).padding(.vertical, 5)
         .background(.bar)
+    }
+
+    @ViewBuilder private var chordCapsule: some View {
+        if let hint = model.keyChordHint {
+            Text(hint)
+                .font(.caption.monospaced())
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Color.accentColor.opacity(0.18), in: Capsule())
+                .help("Waiting for the second key of a shortcut")
+        }
+    }
+
+    @ViewBuilder private var actionErrorCapsule: some View {
+        if let message = model.actionError {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle").font(.caption)
+                Text(message).font(.caption).lineLimit(1)
+                if model.actionErrorNeedsDismissal {
+                    Button { model.dismissActionError() } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                        .buttonStyle(.plain)
+                        .help("This happened while FalconMail was in the background. Dismiss it once you have read it.")
+                }
+            }
+            .foregroundStyle(Color.red)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color.red.opacity(0.12), in: Capsule())
+        }
+    }
+
+    @ViewBuilder private var undoCapsule: some View {
+        if let undo = model.pendingUndo {
+            HStack(spacing: 6) {
+                Text(undo.summary).font(.caption)
+                Button("Undo") { model.undoLastAction() }.buttonStyle(.link).font(.caption)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color.secondary.opacity(0.14), in: Capsule())
+        }
+    }
+
+    private var sendingCapsules: some View {
+        ForEach(model.sendingSoonItems) { item in
+            HStack(spacing: 6) {
+                Text("Sending “\(item.subject.isEmpty ? "(no subject)" : item.subject)”").font(.caption)
+                Button("Undo") { model.cancelAndReopen(item) { openWindow(value: $0) } }.buttonStyle(.link).font(.caption)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color.accentColor.opacity(0.12), in: Capsule())
+        }
     }
 }
 

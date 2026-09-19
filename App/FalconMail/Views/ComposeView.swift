@@ -17,6 +17,10 @@ struct ComposeView: View {
     @State private var error: String?
     @State private var dropTargeted = false
     @State private var editSessions: [UUID: AttachmentEditSession] = [:]
+    @State private var showAttachmentWarning = false
+    @FocusState private var bodyFocused: Bool
+    @AppStorage(AttachmentWarning.enabledKey) private var warnAboutAttachments = true
+    @AppStorage(AttachmentWarning.keywordsKey) private var attachmentKeywords = AttachmentWarning.defaultKeywords
 
     var body: some View {
         Group {
@@ -24,13 +28,14 @@ struct ComposeView: View {
         }
         .frame(minWidth: 600, minHeight: embedded ? 0 : 480)
         .background(embedded ? nil : PopupWindowAccessor())
-        .onAppear { draft = model.drafts[draftID] }
+        .onAppear { load() }
         .onDisappear { editSessions.values.forEach { $0.stop() } }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             Task {
                 for url in await AttachmentTempFiles.fileURLs(from: providers) {
                     if let a = AttachmentTempFiles.attachment(from: url) { draft?.attachments.append(a) }
                 }
+                commitDraft()
             }
             return true
         }
@@ -48,6 +53,16 @@ struct ComposeView: View {
     }
 
     private var form: some View {
+        composer.alert("Did you forget an attachment?", isPresented: $showAttachmentWarning) {
+            Button("Add Attachment") { attach() }.keyboardShortcut(.defaultAction)
+            Button("Send Anyway") { sendPending() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This message mentions an attachment but none is attached.")
+        }
+    }
+
+    private var composer: some View {
         VStack(spacing: 0) {
             if embedded {
                 HStack(spacing: 10) {
@@ -82,6 +97,7 @@ struct ComposeView: View {
                     Text("Subject").frame(width: 60, alignment: .trailing).foregroundStyle(.secondary)
                     TextField("", text: binding(\.subject)).textFieldStyle(.plain)
                 }
+                scheduleBanner
                 if let attachments = draft?.attachments, !attachments.isEmpty {
                     ScrollView(.horizontal) {
                         HStack {
@@ -102,6 +118,7 @@ struct ComposeView: View {
             TextEditor(text: binding(\.body))
                 .font(.system(size: 14))
                 .padding(8)
+                .focused($bodyFocused)
         }
         .toolbar {
             if !embedded {
@@ -118,6 +135,21 @@ struct ComposeView: View {
         .navigationTitle(draft?.subject.isEmpty == false ? draft!.subject : "New Message")
     }
 
+    @ViewBuilder private var scheduleBanner: some View {
+        if let date = draft?.scheduledAt, date > Date() {
+            HStack(spacing: 6) {
+                Image(systemName: "clock").font(.caption)
+                Text("Scheduled for \(date.formatted())").font(.caption)
+                Spacer()
+                Button("Clear Schedule") { clearSchedule() }
+                    .buttonStyle(.link).font(.caption)
+                    .help("Send as soon as you press Send")
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
     private var schedulePopover: some View {
         VStack(alignment: .leading, spacing: 12) {
             DatePicker("Send at", selection: $scheduleDate, in: Date()...)
@@ -125,13 +157,30 @@ struct ComposeView: View {
                 Button("Cancel") { showSchedule = false }
                 Spacer()
                 Button("Schedule Send") {
-                    draft?.scheduledAt = scheduleDate
                     showSchedule = false
-                    send()
+                    send(scheduling: scheduleDate)
                 }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(16).frame(width: 320)
+    }
+
+    private func load() {
+        let stored = model.drafts[draftID]
+        draft = stored
+        if let date = stored?.scheduledAt, date > Date() { scheduleDate = date }
+        guard !(stored?.to.isEmpty ?? true) else { return }
+        Task { @MainActor in bodyFocused = true }
+    }
+
+    private func clearSchedule() {
+        draft?.scheduledAt = nil
+        commitDraft()
+    }
+
+    private func commitDraft() {
+        guard let d = draft else { return }
+        model.drafts[d.id] = d
     }
 
     private func close() {
@@ -146,7 +195,7 @@ struct ComposeView: View {
     }
 
     private func binding<T>(_ path: WritableKeyPath<ComposeDraft, T>) -> Binding<T> {
-        Binding(get: { draft![keyPath: path] }, set: { draft?[keyPath: path] = $0; if let d = draft { model.drafts[d.id] = d } })
+        Binding(get: { draft![keyPath: path] }, set: { draft?[keyPath: path] = $0; commitDraft() })
     }
 
     private func attach() {
@@ -159,6 +208,7 @@ struct ComposeView: View {
             let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
             draft?.attachments.append(OutgoingAttachment(filename: url.lastPathComponent, mimeType: type, data: data))
         }
+        commitDraft()
     }
 
     private func edit(_ a: OutgoingAttachment) {
@@ -166,6 +216,7 @@ struct ComposeView: View {
         editSessions[a.id] = AttachmentEditSession(attachment: a) { data in
             guard let i = draft?.attachments.firstIndex(where: { $0.id == a.id }) else { return }
             draft?.attachments[i].data = data
+            commitDraft()
         }
     }
 
@@ -177,6 +228,7 @@ struct ComposeView: View {
     private func remove(_ id: UUID) {
         stopWatching(id)
         draft?.attachments.removeAll { $0.id == id }
+        commitDraft()
     }
 
     private func discard() {
@@ -185,8 +237,25 @@ struct ComposeView: View {
         close()
     }
 
-    private func send() {
+    private func send(scheduling date: Date? = nil) {
+        if let date {
+            draft?.scheduledAt = date
+            commitDraft()
+        }
         guard let d = draft else { return }
+        guard !needsAttachmentWarning(d) else {
+            showAttachmentWarning = true
+            return
+        }
+        deliver(d)
+    }
+
+    private func sendPending() {
+        guard let d = draft else { return }
+        deliver(d)
+    }
+
+    private func deliver(_ d: ComposeDraft) {
         editSessions.values.forEach { $0.stop() }
         do {
             try model.send(d)
@@ -194,6 +263,21 @@ struct ComposeView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func needsAttachmentWarning(_ d: ComposeDraft) -> Bool {
+        guard warnAboutAttachments, d.attachments.isEmpty else { return false }
+        return AttachmentReminder.mentionsAttachment(subject: d.subject, body: d.body, historyPlain: d.historyPlain,
+                                                     keywords: AttachmentReminder.keywords(from: attachmentKeywords))
+    }
+}
+
+enum AttachmentWarning {
+    static let enabledKey = "attachmentWarning"
+    static let keywordsKey = "attachmentKeywords"
+
+    static var defaultKeywords: String {
+        String(localized: "attached, attaching, attachment, attachments, enclosed, see attached, in the attachment, please find, anbei, anhang, angehängt, beigefügt, beiliegend, вложение, вложении, прикреплен, прикреплён, прикрепляю, прилагается, прилагаю, ekte, ektedir, ekli, ek olarak, ekledim, iliştirdim, əlavədə, əlavə edirəm, əlavə edilib, əlavə olunub, qoşma, qoşulub")
     }
 }
 

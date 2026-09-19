@@ -29,7 +29,7 @@
 - Drafts sync with the server
 - Load older messages on demand, per-folder sync windows
 - Smart folders (unread, flagged, attachments)
-- Keyboard shortcuts parity with Outlook
+- [x] Keyboard shortcuts parity with Outlook (single-key triage verbs, g chords, menu equivalents)
 
 ## Milestone 3: Cross-platform archives
 

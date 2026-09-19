@@ -71,6 +71,42 @@ final class StoreAndRulesTests: XCTestCase {
         XCTAssertTrue(messages[1].raw.utf8Lossy.hasPrefix("From: c@d"))
     }
 
+    func testMuteMatching() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let store = MuteStore(layout: FileLayout(root: tmp))
+        let accountID = UUID()
+        let record = MutedThread(accountID: accountID, threadKey: "<root@x>", messageIDs: ["<root@x>"],
+                                 normalizedSubject: ConversationThreader.normalizedSubject("Lunch plans"),
+                                 subject: "Lunch plans")
+        await store.mute(record)
+
+        let byKey = await store.match(accountID: accountID, threadKey: "<root@x>", messageID: "<later@x>",
+                                      references: [], inReplyTo: "")
+        XCTAssertEqual(byKey?.threadKey, "<root@x>")
+
+        let byReference = await store.match(accountID: accountID, threadKey: "<orphan@x>", messageID: "<reply@x>",
+                                            references: ["<root@x>"], inReplyTo: "<root@x>")
+        XCTAssertEqual(byReference?.threadKey, "<root@x>")
+
+        await store.remember(messageID: "<reply@x>", accountID: accountID, threadKey: "<root@x>")
+        let byChain = await store.match(accountID: accountID, threadKey: "<orphan@x>", messageID: "<third@x>",
+                                        references: ["<reply@x>"], inReplyTo: "<reply@x>")
+        XCTAssertEqual(byChain?.threadKey, "<root@x>")
+
+        let sameSubject = await store.match(accountID: accountID, threadKey: "<fresh@x>", messageID: "<fresh@x>",
+                                            references: [], inReplyTo: "")
+        XCTAssertNil(sameSubject)
+
+        let otherAccount = await store.match(accountID: UUID(), threadKey: "<root@x>", messageID: "<root@x>",
+                                             references: [], inReplyTo: "")
+        XCTAssertNil(otherAccount)
+
+        await store.unmute(accountID: accountID, threadKey: "<root@x>")
+        let afterUnmute = await store.all()
+        XCTAssertTrue(afterUnmute.isEmpty)
+    }
+
     func testSMTPDotStuffing() {
         XCTAssertEqual(SMTPClient.dotStuffed(Data("a\r\n.b\r\n..".utf8)), Data("a\r\n..b\r\n...".utf8))
     }

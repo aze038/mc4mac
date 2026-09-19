@@ -15,6 +15,10 @@ public struct FileLayout: Sendable {
     public var accountsFile: URL { root.appendingPathComponent("accounts.json") }
     public var rulesFile: URL { root.appendingPathComponent("rules.json") }
     public var archivesFile: URL { root.appendingPathComponent("archives.json") }
+    public var pendingActionsFile: URL { root.appendingPathComponent("pendingActions.json") }
+    public var moveTargetsFile: URL { root.appendingPathComponent("moveTargets.json") }
+    public var mutedFile: URL { root.appendingPathComponent("muted.json") }
+    public var notificationPolicyFile: URL { root.appendingPathComponent("notifications.json") }
     public var outboxDirectory: URL { root.appendingPathComponent("Outbox", isDirectory: true) }
     public var contactsDirectory: URL { root.appendingPathComponent("Contacts", isDirectory: true) }
 
