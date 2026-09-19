@@ -35,7 +35,7 @@ enum OAuthConfigLoader {
     }
 
     static func redirect(for config: OAuthClientConfig) -> GoogleSignInFlow.Redirect {
-        if let scheme = config.reversedClientScheme, registeredSchemes.contains(scheme.lowercased()) {
+        if !config.hasSecret, let scheme = config.reversedClientScheme, registeredSchemes.contains(scheme.lowercased()) {
             return .customScheme(scheme)
         }
         return .loopback
