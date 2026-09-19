@@ -97,6 +97,8 @@ struct MessageWindowView: View {
         }
         .frame(minWidth: 480, minHeight: 400)
         .task { message = try? await model.store.message(id: messageID) }
+        .onAppear { model.openMessageWindows.insert(messageID) }
+        .onDisappear { model.openMessageWindows.remove(messageID) }
     }
 }
 

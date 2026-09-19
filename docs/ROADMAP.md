@@ -16,6 +16,7 @@
 - [x] Core Spotlight indexing
 - [x] Three-pane UI, compose, account setup, archive UI, settings
 - [x] Google People and Calendar clients, agenda view, Google Meet creation
+- [x] In-app updates from GitHub Releases with mandatory mode and session restore
 - [ ] First compile and smoke test on a Mac with a Workspace test account
 
 ## Milestone 2: Daily driver
@@ -45,8 +46,9 @@
 
 - GitHub Actions CI that builds FalconMail on a macOS Apple Silicon runner, runs
   the FalconCore tests, signs and notarizes the app, and publishes a GitHub
-  Release with the `.dmg` attached so testers download it from the Releases page.
-  Requested before the first test round.
+  Release with the zipped app and `update.json` attached so testers download it
+  from the Releases page and installed copies offer the update in-app. The
+  release contract is in `docs/UPDATES.md`. Requested before the first test round.
 - Sparkle-style in-app updates fed by GitHub Releases
 - Crash reporting opt-in
 

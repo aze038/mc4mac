@@ -11,7 +11,13 @@ struct FalconMailApp: App {
         WindowGroup("FalconMail") {
             MainWindow()
                 .environmentObject(model)
-                .task { await model.bootstrap() }
+                .environmentObject(model.updates)
+                .task {
+                    await model.bootstrap()
+                    let restore = model.windowsToRestore
+                    for id in restore.messages { openWindow(value: id) }
+                    for id in restore.drafts { openWindow(value: id) }
+                }
                 .onAppear { appDelegate.model = model }
         }
         .defaultSize(width: 1280, height: 800)
@@ -38,6 +44,9 @@ struct FalconMailApp: App {
                 Button("Check for New Mail") { model.syncNow() }.keyboardShortcut("m", modifiers: [.command, .shift])
                 Button("Load Older Messages") { model.loadOlder() }
             }
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { Task { await model.updates.check(userInitiated: true) } }
+            }
             CommandMenu("Archive") {
                 Button("Archive Mail to Cloud…") { NotificationCenter.default.post(name: .falconArchive, object: nil) }
                 Button("Export Folder to Local Archive…") { NotificationCenter.default.post(name: .falconExportArchive, object: nil) }
@@ -47,20 +56,20 @@ struct FalconMailApp: App {
 
         WindowGroup("Message", for: String.self) { $messageID in
             if let id = messageID {
-                MessageWindowView(messageID: id).environmentObject(model)
+                MessageWindowView(messageID: id).environmentObject(model).environmentObject(model.updates)
             }
         }
         .defaultSize(width: 720, height: 640)
 
         WindowGroup("Compose", for: UUID.self) { $draftID in
             if let id = draftID {
-                ComposeView(draftID: id).environmentObject(model)
+                ComposeView(draftID: id).environmentObject(model).environmentObject(model.updates)
             }
         }
         .defaultSize(width: 720, height: 600)
 
         Settings {
-            SettingsView().environmentObject(model)
+            SettingsView().environmentObject(model).environmentObject(model.updates)
         }
     }
 

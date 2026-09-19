@@ -5,6 +5,7 @@ import FalconCore
 
 struct MainWindow: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var updates: UpdateManager
     @Environment(\.openWindow) private var openWindow
     @State private var showArchiveSheet = false
     @State private var showExportArchiveSheet = false
@@ -24,6 +25,8 @@ struct MainWindow: View {
         }
         .toolbar { toolbarItems }
         .safeAreaInset(edge: .bottom) { StatusBar() }
+        .sheet(isPresented: Binding(get: { updates.shouldPrompt }, set: { _ in })) { UpdateSheet().environmentObject(updates) }
+        .disabled(updates.isMandatory)
         .sheet(isPresented: $showArchiveSheet) { ArchiveSheet().environmentObject(model) }
         .sheet(isPresented: $showExportArchiveSheet) { ArchiveSheet(localExport: true).environmentObject(model) }
         .sheet(isPresented: $showOpenArchiveSheet) { OpenArchiveSheet().environmentObject(model) }
@@ -38,6 +41,9 @@ struct MainWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .falconOpenArchive)) { _ in showOpenArchiveSheet = true }
         .onReceive(NotificationCenter.default.publisher(for: .falconImport)) { _ in startImport() }
         .onReceive(NotificationCenter.default.publisher(for: .falconExport)) { _ in exportSelected() }
+        .onChange(of: model.selectedMessageIDs) { _, _ in model.saveSession() }
+        .onChange(of: model.openMessageWindows) { _, _ in model.saveSession() }
+        .onChange(of: model.drafts.count) { _, _ in model.saveSession() }
     }
 
     @ViewBuilder private var contentColumn: some View {
