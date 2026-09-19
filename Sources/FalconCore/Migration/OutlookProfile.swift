@@ -146,8 +146,8 @@ public struct OutlookProfile: MigrationSource {
     }
 
     static func uuidString(_ hex: String) -> String {
-        guard hex.count == 32 else { return hex.uppercased() }
-        let h = hex.uppercased()
+        let h = hex.count > 32 ? String(hex.uppercased().suffix(32)) : hex.uppercased()
+        guard h.count == 32 else { return h }
         let parts = [8, 4, 4, 4, 12]
         var out: [String] = []
         var i = h.startIndex

@@ -198,7 +198,8 @@ public actor IMAPClient {
         _ = try await run("EXPUNGE")
     }
 
-    public func append(mailbox: String, message: Data, flags: [String], date: Date?) async throws {
+    @discardableResult
+    public func append(mailbox: String, message: Data, flags: [String], date: Date?) async throws -> UInt32? {
         var cmd = "APPEND \(quote(mailbox))"
         if !flags.isEmpty { cmd += " (\(flags.joined(separator: " ")))" }
         if let date { cmd += " \(quote(IMAPClient.internalDate(date)))" }
@@ -210,7 +211,12 @@ public actor IMAPClient {
         }
         try await connection?.send(message)
         try await connection?.send(line: "")
-        _ = try await waitTagged(tag)
+        let reply = try await waitTagged(tag)
+        if case .tagged(_, _, let code?, _) = reply {
+            let parts = code.split(separator: " ")
+            if parts.count == 3, parts[0].uppercased() == "APPENDUID" { return UInt32(parts[2]) }
+        }
+        return nil
     }
 
     public func createFolder(_ path: String) async throws {

@@ -21,6 +21,22 @@ public enum MigrationProgress: Sendable {
     case log(String)
 }
 
+public struct MigrationAppended: Codable, Sendable, Hashable {
+    public var folder: String
+    public var messageID: String
+}
+
+public struct MigrationState: Codable, Sendable {
+    public var done: [String] = []
+    public var appended: [MigrationAppended] = []
+
+    public static func load(_ url: URL) -> MigrationState {
+        if let s = AtomicFile.readJSON(MigrationState.self, from: url) { return s }
+        if let legacy = AtomicFile.readJSON([String].self, from: url) { return MigrationState(done: legacy, appended: []) }
+        return MigrationState()
+    }
+}
+
 public struct MigrationReport: Sendable {
     public var appended = 0
     public var existing = 0
@@ -32,27 +48,46 @@ public struct MigrationReport: Sendable {
 public actor MigrationRunner {
     private let source: MigrationSource
     private let account: AccountInfo
-    private let client: IMAPClient
+    private var client: IMAPClient
+    private let reconnect: @Sendable () async throws -> IMAPClient
     private let existingFolders: [FolderInfo]
     private let mapping: [String: MigrationTarget]
-    private let stateURL: URL
+    public let stateURL: URL
     private var done: Set<String>
+    private var appendedRecords: [MigrationAppended]
     private var knownIDs: [String: Set<String>] = [:]
     private var created = Set<String>()
     private var report = MigrationReport()
     private let prefetchLimit = 40_000
+    public var labelName = "Migrated"
+    public var labelMigrated = true
+    private var pendingLabel: [String: [UInt32]] = [:]
 
-    public init(source: MigrationSource, account: AccountInfo, client: IMAPClient, existingFolders: [FolderInfo],
-                mapping: [String: MigrationTarget], layout: FileLayout) {
+    public static func stateURL(source: MigrationSource, account: AccountInfo, layout: FileLayout) -> URL {
+        let safe = source.identifier.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
+        return layout.root.appendingPathComponent("Migrations", isDirectory: true).appendingPathComponent("\(safe)-\(account.id.uuidString).json")
+    }
+
+    public func setLabel(_ enabled: Bool, name: String) {
+        labelMigrated = enabled
+        if !name.trimmed.isEmpty { labelName = name.trimmed }
+    }
+
+    public init(source: MigrationSource, account: AccountInfo, client: IMAPClient, reconnect: @escaping @Sendable () async throws -> IMAPClient,
+                existingFolders: [FolderInfo], mapping: [String: MigrationTarget], layout: FileLayout) {
         self.source = source
         self.account = account
         self.client = client
+        self.reconnect = reconnect
         self.existingFolders = existingFolders
         self.mapping = mapping
-        let safe = source.identifier.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
-        stateURL = layout.root.appendingPathComponent("Migrations", isDirectory: true).appendingPathComponent("\(safe)-\(account.id.uuidString).json")
-        done = Set(AtomicFile.readJSON([String].self, from: stateURL) ?? [])
+        stateURL = MigrationRunner.stateURL(source: source, account: account, layout: layout)
+        let state = MigrationState.load(stateURL)
+        done = Set(state.done)
+        appendedRecords = state.appended
     }
+
+    public var appendedCount: Int { appendedRecords.count }
 
     private var delimiter: String { existingFolders.first(where: { !$0.delimiter.isEmpty })?.delimiter ?? "/" }
     private var isGmail: Bool { account.provider == "google" }
@@ -106,19 +141,80 @@ public actor MigrationRunner {
                     if message.isFlagged { flags.insert(.flagged) }
                     if folder.kind == .drafts { flags.insert(.draft) }
                     let date = message.date ?? MIMEParser.parseHeaders(payload).first("Date").flatMap(RFC5322Date.parse)
-                    try await client.append(mailbox: targetPath, message: payload, flags: flags.imapFlags, date: date)
+                    let uid = try await appendWithRetry(mailbox: targetPath, message: payload, flags: flags.imapFlags, date: date)
+                    if let uid, labelMigrated { pendingLabel[targetPath, default: []].append(uid) }
+                    if pendingLabel[targetPath, default: []].count >= 200 { try await flushLabels(for: targetPath) }
                     knownIDs[dedupeScope, default: []].insert(messageID)
                     seenThisRun.insert(messageID)
                     report.appended += 1
+                    appendedRecords.append(MigrationAppended(folder: targetPath, messageID: messageID))
                     markDone(key)
                 } catch {
                     report.failed += 1
+                    Log.info("migration", "failed \(folder.path) \(messageID): \(error.localizedDescription)")
                     progress(.log("Failed: \(folder.path) \(messageID): \(error.localizedDescription)"))
                 }
             }
         }
+        if !dryRun { try await flushAllLabels() }
         progress(.status(dryRun ? "Dry run complete" : "Migration complete"))
         return report
+    }
+
+    private func flushAllLabels() async throws {
+        for folder in Array(pendingLabel.keys) { try await flushLabels(for: folder) }
+    }
+
+    private func flushLabels(for folder: String) async throws {
+        guard let uids = pendingLabel[folder], !uids.isEmpty else { return }
+        pendingLabel[folder] = []
+        if isGmail { try await ensureFolder(labelName) }
+        if await client.selectedMailbox != folder { _ = try await client.select(folder) }
+        if isGmail {
+            try await client.copy(uids: uids, to: labelName)
+        } else {
+            try await client.store(uids: uids, add: true, flags: ["$" + labelName.replacingOccurrences(of: " ", with: "")])
+        }
+    }
+
+    private func appendWithRetry(mailbox: String, message: Data, flags: [String], date: Date?) async throws -> UInt32? {
+        do {
+            return try await client.append(mailbox: mailbox, message: message, flags: flags, date: date)
+        } catch FalconError.network {
+            await client.logout()
+            client = try await reconnect()
+            return try await client.append(mailbox: mailbox, message: message, flags: flags, date: date)
+        }
+    }
+
+    public func undo(progress: @escaping @Sendable (MigrationProgress) -> Void) async throws -> Int {
+        var removed = 0
+        let trash = existingFolders.first { $0.role == .trash }?.path
+        let groups = Dictionary(grouping: appendedRecords, by: \.folder)
+        let total = appendedRecords.count
+        for (folder, records) in groups {
+            try Task.checkCancellation()
+            progress(.folder("Removing from \(folder)"))
+            let scope = isGmail ? (allMailPath ?? folder) : folder
+            _ = try await client.select(scope)
+            for record in records {
+                let uids = try await client.uidSearch("HEADER Message-ID \(MigrationRunner.quote(record.messageID))")
+                if !uids.isEmpty {
+                    if isGmail, let trash { try await client.move(uids: uids, to: trash) }
+                    else {
+                        try await client.store(uids: uids, add: true, flags: ["\\Deleted"])
+                        try await client.expunge()
+                    }
+                }
+                removed += 1
+                appendedRecords.removeAll { $0 == record }
+                done = done.filter { !$0.hasSuffix("|" + record.messageID) }
+                progress(.count(done: removed, total: total, appended: 0, existing: 0, failed: 0))
+            }
+        }
+        persist()
+        progress(.status("Removed \(removed) migrated messages" + (isGmail ? " (moved to Trash)" : "")))
+        return removed
     }
 
     private func ensureFolder(_ path: String) async throws {
@@ -167,7 +263,7 @@ public actor MigrationRunner {
     }
 
     public func persist() {
-        try? AtomicFile.writeJSON(Array(done), to: stateURL)
+        try? AtomicFile.writeJSON(MigrationState(done: Array(done), appended: appendedRecords), to: stateURL)
     }
 
     static func quote(_ s: String) -> String {

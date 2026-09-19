@@ -14,6 +14,7 @@ struct MigrationView: View {
     @State private var targetAccountID: UUID?
     @State private var mapping: [String: MigrationTarget] = [:]
     @State private var includeTrashJunk = false
+    @State private var labelMigrated = true
     @State private var running = false
     @State private var dryRun = false
     @State private var status = ""
@@ -24,6 +25,9 @@ struct MigrationView: View {
     @State private var failed = 0
     @State private var log: [String] = []
     @State private var task: Task<Void, Never>?
+    @State private var confirmStart = false
+    @State private var confirmUndo = false
+    @State private var undoAvailable = 0
 
     private var targetFolders: [FolderInfo] { targetAccountID.flatMap { model.folders[$0] } ?? [] }
 
@@ -40,9 +44,22 @@ struct MigrationView: View {
         }
         .padding(24)
         .frame(width: 760, height: 640)
+        .alert("Start the migration?", isPresented: $confirmStart) {
+            Button("Start") { start(dryRun: false) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Up to \(plannedCount) messages from \(sourceTitle) will be uploaded into \(targetEmail). Messages already in the target are skipped. You can undo the upload afterwards.")
+        }
+        .alert("Remove migrated messages?", isPresented: $confirmUndo) {
+            Button("Remove", role: .destructive) { undo() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(undoAvailable) messages uploaded by the last migration into \(targetEmail) will be removed. On Gmail they are moved to Trash.")
+        }
+        .onChange(of: targetAccountID) { _, _ in refreshUndoAvailability() }
         .onAppear {
             profiles = OutlookProfile.discover()
-            targetAccountID = model.accounts.first?.id
+            targetAccountID = model.keyboardAccountID ?? model.accounts.first?.id
             if let first = profiles.first { load(profile: first) }
         }
     }
@@ -77,6 +94,7 @@ struct MigrationView: View {
             .onChange(of: targetAccountID) { _, _ in rebuildMapping() }
             Toggle("Include Deleted Items and Junk", isOn: $includeTrashJunk)
                 .onChange(of: includeTrashJunk) { _, _ in rebuildMapping() }
+            Toggle("Label uploaded mail “Migrated”", isOn: $labelMigrated)
             Spacer()
         }
     }
@@ -138,9 +156,23 @@ struct MigrationView: View {
         HStack {
             Spacer()
             Button(running ? "Stop" : "Close") { running ? task?.cancel() : dismiss() }
-            Button("Dry Run") { start(dryRun: true) }.disabled(!canStart)
-            Button("Start Migration") { start(dryRun: false) }.keyboardShortcut(.defaultAction).disabled(!canStart)
+            if undoAvailable > 0 {
+                Button("Undo Last Migration (\(undoAvailable))") { confirmUndo = true }.disabled(running)
+            }
+            Button("Dry Run") { start(dryRun: true) }.keyboardShortcut(.defaultAction).disabled(!canStart)
+            Button("Start Migration…") { confirmStart = true }.disabled(!canStart)
         }
+    }
+
+    private var targetEmail: String { model.accounts.first { $0.id == targetAccountID }?.email ?? "" }
+
+    private var plannedCount: Int {
+        (source?.folders ?? []).filter { mapping[$0.id]?.path != nil }.reduce(0) { $0 + $1.messageCount }
+    }
+
+    private func refreshUndoAvailability() {
+        guard let source, let account = model.accounts.first(where: { $0.id == targetAccountID }) else { undoAvailable = 0; return }
+        undoAvailable = MigrationState.load(MigrationRunner.stateURL(source: source, account: account, layout: model.layout)).appended.count
     }
 
     private var canStart: Bool {
@@ -172,6 +204,7 @@ struct MigrationView: View {
                     source = loaded
                     sourceTitle = loaded.title
                     rebuildMapping()
+                    refreshUndoAvailability()
                 } else {
                     status = "Could not read the Outlook profile at \(url.path)"
                 }
@@ -230,6 +263,36 @@ struct MigrationView: View {
         }
     }
 
+    private func undo() {
+        guard let source, let accountID = targetAccountID, let account = model.accounts.first(where: { $0.id == accountID }) else { return }
+        running = true
+        status = "Connecting to \(account.email)"
+        done = 0; total = 0
+        task = Task {
+            do {
+                guard let syncer = await model.coordinator.syncer(for: accountID) else { throw FalconError.storage("The target account is not running") }
+                let client = try await syncer.openArchiveSourceClient()
+                let runner = MigrationRunner(source: source, account: account, client: client, reconnect: { try await syncer.openArchiveSourceClient() },
+                                             existingFolders: targetFolders, mapping: [:], layout: model.layout)
+                _ = try await runner.undo { p in
+                    Task { @MainActor in
+                        switch p {
+                        case .status(let s), .folder(let s): status = s
+                        case .count(let d, let t, _, _, _): done = d; total = t
+                        case .log(let line): log.append(line)
+                        }
+                    }
+                }
+                await client.logout()
+                model.syncNow()
+                refreshUndoAvailability()
+            } catch {
+                status = "Undo failed: \(error.localizedDescription)"
+            }
+            running = false
+        }
+    }
+
     private func start(dryRun: Bool) {
         guard let source, let accountID = targetAccountID, let account = model.accounts.first(where: { $0.id == accountID }) else { return }
         self.dryRun = dryRun
@@ -243,7 +306,9 @@ struct MigrationView: View {
             do {
                 guard let syncer = await model.coordinator.syncer(for: accountID) else { throw FalconError.storage("The target account is not running") }
                 let client = try await syncer.openArchiveSourceClient()
-                let runner = MigrationRunner(source: source, account: account, client: client, existingFolders: folders, mapping: mapping, layout: model.layout)
+                let runner = MigrationRunner(source: source, account: account, client: client, reconnect: { try await syncer.openArchiveSourceClient() },
+                                             existingFolders: folders, mapping: mapping, layout: model.layout)
+                await runner.setLabel(labelMigrated, name: "Migrated")
                 do {
                     let report = try await runner.run(dryRun: dryRun) { p in
                         Task { @MainActor in
@@ -261,6 +326,7 @@ struct MigrationView: View {
                         ? "Dry run: \(report.appended) messages would be uploaded, \(report.existing) already present"
                         : "Done: \(report.appended) uploaded, \(report.existing) already present, \(report.failed) failed" + (report.createdFolders.isEmpty ? "" : ", created \(report.createdFolders.count) folders")
                     if !dryRun { model.syncNow() }
+                    refreshUndoAvailability()
                 } catch is CancellationError {
                     await runner.persist()
                     await client.logout()
