@@ -2,7 +2,7 @@ import SwiftUI
 import FalconCore
 
 struct ContactsView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @State private var query = ""
     @State private var selected: String?

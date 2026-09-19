@@ -10,7 +10,7 @@ struct FalconMailApp: App {
     var body: some Scene {
         WindowGroup("FalconMail") {
             MainWindow()
-                .environmentObject(model)
+                .environment(model)
                 .environmentObject(model.updates)
                 .task {
                     await model.bootstrap()
@@ -68,20 +68,20 @@ struct FalconMailApp: App {
 
         WindowGroup("Message", for: String.self) { $messageID in
             if let id = messageID {
-                MessageWindowView(messageID: id).environmentObject(model).environmentObject(model.updates)
+                MessageWindowView(messageID: id).environment(model).environmentObject(model.updates)
             }
         }
         .defaultSize(width: 720, height: 640)
 
         WindowGroup("Compose", for: UUID.self) { $draftID in
             if let id = draftID {
-                ComposeView(draftID: id).environmentObject(model).environmentObject(model.updates)
+                ComposeView(draftID: id).environment(model).environmentObject(model.updates)
             }
         }
         .defaultSize(width: 720, height: 600)
 
         Settings {
-            SettingsView().environmentObject(model).environmentObject(model.updates)
+            SettingsView().environment(model).environmentObject(model.updates)
         }
     }
 

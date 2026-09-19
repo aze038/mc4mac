@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+enum Preferences {
+    static func bool(_ key: String, default d: Bool) -> Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? d }
+    static func int(_ key: String, default d: Int) -> Int { UserDefaults.standard.object(forKey: key) as? Int ?? d }
+    static func string(_ key: String, default d: String) -> String { UserDefaults.standard.string(forKey: key) ?? d }
+    static func set(_ value: Any, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
+}
+
 enum AppAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
 

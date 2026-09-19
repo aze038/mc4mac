@@ -2,10 +2,11 @@ import SwiftUI
 import FalconCore
 
 struct MessageListView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        @Bindable var model = model
         VStack(spacing: 0) {
             HStack {
                 TextField("Search mail", text: $model.searchText)

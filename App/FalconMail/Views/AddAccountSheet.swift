@@ -2,7 +2,7 @@ import SwiftUI
 import FalconCore
 
 struct AddAccountSheet: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
     enum Step { case choose, custom }

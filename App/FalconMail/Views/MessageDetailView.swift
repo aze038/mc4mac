@@ -4,7 +4,7 @@ import WebKit
 import FalconCore
 
 struct MessageDetailView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let thread: MessageThread
 
     var body: some View {
@@ -24,13 +24,17 @@ struct MessageDetailView: View {
 }
 
 struct MessageCard: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     let message: MessageSummary
+
+    private var renderKey: String { "\(expanded)|\(allowRemoteImages)|\(model.loadRemoteImages)" }
     @State var expanded: Bool
     @State private var parsed: MIMEMessage?
     @State private var loading = false
     @State private var allowRemoteImages = false
+    @State private var rendered: String?
+    @State private var hasRemote = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -53,12 +57,12 @@ struct MessageCard: View {
                 Button("Open in Separate Window") { openWindow(value: message.id) }
             }
             if expanded {
-                if let parsed {
+                if let parsed, let rendered {
                     if !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments) }
-                    if !model.loadRemoteImages && !allowRemoteImages && MessageRenderer.hasRemoteImages(parsed) {
+                    if !model.loadRemoteImages && !allowRemoteImages && hasRemote {
                         RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
                     }
-                    HTMLView(html: MessageRenderer.html(for: parsed, allowRemote: model.loadRemoteImages || allowRemoteImages))
+                    HTMLView(html: rendered)
                         .frame(minHeight: 200)
                 } else if loading {
                     ProgressView().padding()
@@ -70,17 +74,26 @@ struct MessageCard: View {
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
-        .task(id: expanded) {
-            guard expanded, parsed == nil else { return }
-            loading = true
-            parsed = await model.parsedBody(for: message)
-            loading = false
+        .task(id: renderKey) {
+            guard expanded else { return }
+            if parsed == nil {
+                loading = true
+                parsed = await model.parsedBody(for: message)
+                loading = false
+            }
+            guard let parsed else { return }
+            let allow = model.loadRemoteImages || allowRemoteImages
+            let result = await Task.detached(priority: .userInitiated) {
+                (MessageRenderer.html(for: parsed, allowRemote: allow), MessageRenderer.hasRemoteImages(parsed))
+            }.value
+            rendered = result.0
+            hasRemote = result.1
         }
     }
 }
 
 struct MessageWindowView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     let messageID: String
     @State private var message: MessageSummary?
 
@@ -157,17 +170,37 @@ enum MessageRenderer {
     }
 }
 
+@MainActor
+enum WebViewPool {
+    private static var free: [WKWebView] = []
+    private static let processPool = WKProcessPool()
+
+    static func acquire() -> WKWebView {
+        if let v = free.popLast() { return v }
+        let config = WKWebViewConfiguration()
+        config.processPool = processPool
+        config.defaultWebpagePreferences.allowsContentJavaScript = false
+        let view = WKWebView(frame: .zero, configuration: config)
+        view.setValue(false, forKey: "drawsBackground")
+        return view
+    }
+
+    static func release(_ view: WKWebView) {
+        view.navigationDelegate = nil
+        view.loadHTMLString("", baseURL: nil)
+        if free.count < 4 { free.append(view) }
+    }
+}
+
 struct HTMLView: NSViewRepresentable {
     let html: String
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = false
-        let view = WKWebView(frame: .zero, configuration: config)
+        let view = WebViewPool.acquire()
         view.navigationDelegate = context.coordinator
-        view.setValue(false, forKey: "drawsBackground")
+        context.coordinator.lastHTML = ""
         return view
     }
 
@@ -176,6 +209,10 @@ struct HTMLView: NSViewRepresentable {
             context.coordinator.lastHTML = html
             view.loadHTMLString(html, baseURL: nil)
         }
+    }
+
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+        WebViewPool.release(view)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {

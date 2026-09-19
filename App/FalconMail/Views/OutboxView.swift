@@ -2,7 +2,7 @@ import SwiftUI
 import FalconCore
 
 struct OutboxView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
 
     var body: some View {
         List(model.outboxItems) { item in

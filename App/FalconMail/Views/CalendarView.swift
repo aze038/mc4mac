@@ -3,7 +3,7 @@ import AppKit
 import FalconCore
 
 struct CalendarView: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var events: [CalendarEvent] = []
     @State private var loading = false
     @State private var status = ""
@@ -34,7 +34,7 @@ struct CalendarView: View {
             if !status.isEmpty { Divider(); Text(status).font(.caption).foregroundStyle(.secondary).padding(6) }
         }
         .sheet(isPresented: $showNew) {
-            if let id = accountID { NewMeetingSheet(accountID: id) { Task { await load() } }.environmentObject(model) }
+            if let id = accountID { NewMeetingSheet(accountID: id) { Task { await load() } }.environment(model) }
         }
         .onAppear { accountID = model.accounts.first?.id }
         .task(id: accountID) { await load() }
@@ -96,7 +96,7 @@ struct EventRow: View {
 }
 
 struct NewMeetingSheet: View {
-    @EnvironmentObject var model: AppModel
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let accountID: UUID
     let onCreated: () -> Void
