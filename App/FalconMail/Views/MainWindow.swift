@@ -77,25 +77,8 @@ struct MainWindow: View {
             Button { model.syncNow() } label: { Label("Check Mail", systemImage: "arrow.clockwise") }
         }
         ToolbarItemGroup(placement: .primaryAction) {
-            let selected = model.selectedMessages
-            Button { reply(all: false) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.disabled(model.currentThread == nil)
-            Button { reply(all: true) } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.disabled(model.currentThread == nil)
-            Button { forward() } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.disabled(model.currentThread == nil)
-            Divider()
-            Button { model.archive(selected) } label: { Label("Archive", systemImage: "archivebox") }.disabled(selected.isEmpty)
-            Button { model.delete(selected) } label: { Label("Delete", systemImage: "trash") }.disabled(selected.isEmpty)
-            Button { model.setFlagged(selected, !(selected.first?.isFlagged ?? false)) } label: { Label("Flag", systemImage: "flag") }.disabled(selected.isEmpty)
-            Menu {
-                ForEach(model.accounts) { account in
-                    Section(account.email) {
-                        ForEach(model.folders[account.id] ?? []) { folder in
-                            Button(folder.path) { model.move(selected, to: folder) }
-                        }
-                    }
-                }
-            } label: { Label("Move", systemImage: "folder") }.disabled(selected.isEmpty)
-            Divider()
-            Button { model.markRead(selected, !(selected.first?.isRead ?? true)) } label: { Label("Read/Unread", systemImage: "envelope.open") }.disabled(selected.isEmpty)
+            ReplyToolbar(reply: reply, forward: forward)
+            MessageActionsToolbar()
         }
     }
 
@@ -136,6 +119,53 @@ struct MainWindow: View {
         panel.canCreateDirectories = true
         panel.prompt = "Export Here"
         if panel.runModal() == .OK, let url = panel.url { model.exportSelectedAsEML(to: url) }
+    }
+}
+
+struct ReplyToolbar: View {
+    @EnvironmentObject var model: AppModel
+    let reply: (Bool) -> Void
+    let forward: () -> Void
+
+    var body: some View {
+        let disabled = model.currentThread == nil
+        Button { reply(false) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.disabled(disabled)
+        Button { reply(true) } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.disabled(disabled)
+        Button { forward() } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.disabled(disabled)
+    }
+}
+
+struct MessageActionsToolbar: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        let selected = model.selectedMessages
+        let none = selected.isEmpty
+        Button { model.archive(selected) } label: { Label("Archive", systemImage: "archivebox") }.disabled(none)
+        Button { model.delete(selected) } label: { Label("Delete", systemImage: "trash") }.disabled(none)
+        Button { model.setFlagged(selected, !(selected.first?.isFlagged ?? false)) } label: { Label("Flag", systemImage: "flag") }.disabled(none)
+        MoveMenu(selected: selected)
+        Button { model.markRead(selected, !(selected.first?.isRead ?? true)) } label: { Label("Read/Unread", systemImage: "envelope.open") }.disabled(none)
+    }
+}
+
+struct MoveMenu: View {
+    @EnvironmentObject var model: AppModel
+    let selected: [MessageSummary]
+
+    var body: some View {
+        Menu {
+            ForEach(model.accounts) { account in
+                Section(account.email) {
+                    ForEach(model.folders[account.id] ?? []) { folder in
+                        Button(folder.path) { model.move(selected, to: folder) }
+                    }
+                }
+            }
+        } label: {
+            Label("Move", systemImage: "folder")
+        }
+        .disabled(selected.isEmpty)
     }
 }
 

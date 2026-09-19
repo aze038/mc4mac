@@ -32,62 +32,12 @@ struct ArchiveSheet: View {
                  : "Messages are streamed straight to Google Drive. Nothing is stored on this Mac.")
                 .foregroundStyle(.secondary)
             Form {
-                Picker("Account", selection: $accountID) {
-                    ForEach(model.accounts) { a in Text(a.email).tag(Optional(a.id)) }
-                }
-                TextField("Archive name", text: $name)
-                if let id = accountID {
-                    VStack(alignment: .leading) {
-                        Text("Folders")
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach((model.folders[id] ?? []).filter { $0.isSelectable }) { f in
-                                    Toggle(f.path, isOn: Binding(
-                                        get: { selectedPaths.contains(f.path) },
-                                        set: { if $0 { selectedPaths.insert(f.path) } else { selectedPaths.remove(f.path) } }))
-                                }
-                            }
-                        }
-                        .frame(height: 140)
-                        .padding(6)
-                        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                    }
-                }
-                Toggle("Only messages older than", isOn: $useCutoff)
-                if useCutoff { DatePicker("Cutoff date", selection: $cutoff, displayedComponents: .date) }
-                Toggle("Encrypt archive with a password", isOn: $encrypt)
-                if encrypt {
-                    SecureField("Password", text: $password)
-                    SecureField("Confirm password", text: $passwordConfirm)
-                    Text("The password is never stored. If you lose it the archive cannot be opened.").font(.caption).foregroundStyle(.orange)
-                }
-                Toggle("Remove archived messages from the mail server", isOn: $removeFromServer)
-                if localExport {
-                    HStack {
-                        Text(localFolder?.path ?? "Choose a destination folder")
-                            .lineLimit(1).truncationMode(.middle).foregroundStyle(localFolder == nil ? .secondary : .primary)
-                        Spacer()
-                        Button("Choose…") {
-                            let panel = NSOpenPanel()
-                            panel.canChooseDirectories = true
-                            panel.canChooseFiles = false
-                            panel.canCreateDirectories = true
-                            if panel.runModal() == .OK { localFolder = panel.url }
-                        }
-                    }
-                }
+                sourceSection
+                optionsSection
+                if localExport { destinationRow }
             }
             .formStyle(.grouped)
-            if running || !status.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(status).font(.caption)
-                    if total > 0 {
-                        ProgressView(value: Double(done), total: Double(total))
-                        Text("\(done) of \(total) messages, \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
+            if running || !status.isEmpty { progressView }
             HStack {
                 Spacer()
                 Button(running ? "Stop" : "Cancel") {
@@ -103,6 +53,61 @@ struct ArchiveSheet: View {
         .onAppear {
             accountID = model.accounts.first?.id
             if case .folder(let id) = model.selection, let f = model.folder(id) { selectedPaths = [f.path]; accountID = f.accountID }
+        }
+    }
+
+    private var sourceSection: some View {
+        Section {
+            Picker("Account", selection: $accountID) {
+                ForEach(model.accounts) { a in Text(a.email).tag(Optional(a.id)) }
+            }
+            TextField("Archive name", text: $name)
+            if let id = accountID {
+                FolderChecklist(folders: (model.folders[id] ?? []).filter { $0.isSelectable }, selected: $selectedPaths)
+            }
+        }
+    }
+
+    private var optionsSection: some View {
+        Section {
+            Toggle("Only messages older than", isOn: $useCutoff)
+            if useCutoff { DatePicker("Cutoff date", selection: $cutoff, displayedComponents: .date) }
+            Toggle("Encrypt archive with a password", isOn: $encrypt)
+            if encrypt {
+                SecureField("Password", text: $password)
+                SecureField("Confirm password", text: $passwordConfirm)
+                Text("The password is never stored. If you lose it the archive cannot be opened.").font(.caption).foregroundStyle(.orange)
+            }
+            Toggle("Remove archived messages from the mail server", isOn: $removeFromServer)
+        }
+    }
+
+    private var destinationRow: some View {
+        HStack {
+            Text(localFolder?.path ?? "Choose a destination folder")
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(localFolder == nil ? Color.secondary : Color.primary)
+            Spacer()
+            Button("Choose…") {
+                let panel = NSOpenPanel()
+                panel.canChooseDirectories = true
+                panel.canChooseFiles = false
+                panel.canCreateDirectories = true
+                if panel.runModal() == .OK { localFolder = panel.url }
+            }
+        }
+    }
+
+    private var progressView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(status).font(.caption)
+            if total > 0 {
+                ProgressView(value: Double(done), total: Double(total))
+                Text("\(done) of \(total) messages, \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -159,6 +164,31 @@ struct ArchiveSheet: View {
                 running = false
             }
         }
+    }
+}
+
+struct FolderChecklist: View {
+    let folders: [FolderInfo]
+    @Binding var selected: Set<String>
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text("Folders")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(folders) { f in
+                        Toggle(f.path, isOn: binding(for: f.path))
+                    }
+                }
+            }
+            .frame(height: 140)
+            .padding(6)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func binding(for path: String) -> Binding<Bool> {
+        Binding(get: { selected.contains(path) }, set: { on in if on { selected.insert(path) } else { selected.remove(path) } })
     }
 }
 
