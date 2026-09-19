@@ -20,7 +20,7 @@ struct MigrationView: View {
     @State private var connections = 5
     @State private var verifying = false
     @State private var useGmailAPI = true
-    @State private var importsPerMinute = 220
+    @State private var importsPerMinute = 240
     @State private var uploadedBytes = 0
     @State private var rateSamples: [(Date, Int)] = []
     @State private var running = false
@@ -166,7 +166,7 @@ struct MigrationView: View {
             HStack(alignment: .top) {
                 Text("").frame(width: 60)
                 Text(targetIsGoogle && useGmailAPI
-                     ? "Messages go in through Gmail's import API, which has no daily upload cap, keeps original dates, and applies labels on the way in. Only one IMAP connection is used, for duplicate checks. Each import costs 25 quota units, so set imports per minute to your project's “Units per minute per user” quota ÷ 25 with some headroom: 220 for the default 6,000, 560 for 15,000."
+                     ? "Messages go in through Gmail's import API, which has no daily upload cap, keeps original dates, and applies labels on the way in. Only one IMAP connection is used, for duplicate checks. Each import costs 25 quota units, so set imports per minute to your project's “Units per minute per user” quota ÷ 25: 240 for the default 6,000, 600 for 15,000. The pace drops automatically when Gmail pushes back and climbs back on its own."
                      : "Gmail caps IMAP uploads at 500 MB per day and allows 15 IMAP connections per mailbox, shared with this app's own sync and any other mail client on the account. Connections from a stopped run keep counting for a few minutes.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }

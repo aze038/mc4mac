@@ -8,7 +8,9 @@ public actor GmailImporter {
     private var labelsByName: [String: String] = [:]
     private var labelsLoaded = false
     private var lastStart = Date.distantPast
-    private let minimumInterval: TimeInterval
+    private let targetPerMinute: Double
+    private var currentPerMinute: Double
+    private var lastRateLimit = Date.distantPast
     private static let base = URL(string: "https://gmail.googleapis.com/gmail/v1/users/me")!
     private static let upload = URL(string: "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/import")!
 
@@ -16,7 +18,20 @@ public actor GmailImporter {
         self.tokens = tokens
         self.accountID = accountID
         api = GoogleAPI(tokens: tokens, accountID: accountID)
-        minimumInterval = 60.0 / Double(max(1, importsPerMinute))
+        targetPerMinute = Double(max(1, importsPerMinute))
+        currentPerMinute = targetPerMinute
+    }
+
+    public var pacePerMinute: Int { Int(currentPerMinute) }
+
+    public func noteRateLimited() {
+        lastRateLimit = Date()
+        currentPerMinute = max(30, currentPerMinute * 0.6)
+    }
+
+    private func noteSuccess() {
+        guard currentPerMinute < targetPerMinute, Date().timeIntervalSince(lastRateLimit) > 30 else { return }
+        currentPerMinute = min(targetPerMinute, currentPerMinute + targetPerMinute / 600)
     }
 
     public func grantedScopes() async throws -> Set<String> {
@@ -71,6 +86,7 @@ public actor GmailImporter {
             let body = GmailImporter.multipart(metadata: metadata, raw: raw, boundary: boundary)
             let url = URL(string: GmailImporter.upload.absoluteString + String(format: query, "multipart"))!
             let (data, _) = try await api.request("POST", url, body: body, contentType: "multipart/related; boundary=\(boundary)")
+            noteSuccess()
             return try JSONDecoder().decode(Imported.self, from: data).id
         }
         let start = URL(string: GmailImporter.upload.absoluteString + String(format: query, "resumable"))!
@@ -80,6 +96,7 @@ public actor GmailImporter {
             throw FalconError.protocolError("Gmail did not open a resumable upload session")
         }
         let (data, _) = try await api.request("PUT", session, body: raw, contentType: "message/rfc822")
+        noteSuccess()
         return try JSONDecoder().decode(Imported.self, from: data).id
     }
 
@@ -95,7 +112,7 @@ public actor GmailImporter {
 
     private func pace() async {
         let now = Date()
-        let next = max(now, lastStart.addingTimeInterval(minimumInterval))
+        let next = max(now, lastStart.addingTimeInterval(60.0 / currentPerMinute))
         lastStart = next
         let wait = next.timeIntervalSince(now)
         if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }

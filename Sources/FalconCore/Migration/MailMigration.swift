@@ -109,7 +109,7 @@ public struct MigrationReport: Sendable {
 public struct MigrationOptions: Sendable {
     public var bufferBytes = MigrationOptions.defaultBufferBytes
     public var uploaders = 5
-    public var importsPerMinute = 220
+    public var importsPerMinute = 240
     public var decoders = 3
     public var labelMigrated = true
     public var labelName = "Migrated"
@@ -519,7 +519,9 @@ public actor MigrationRunner {
                     attempt += 1
                     let delay = min(60, 5 * (1 << attempt))
                     if GmailImporter.isRateLimited(error) {
-                        progress(.log("Gmail asked to slow down — retrying in \(delay)s"))
+                        await gmail?.noteRateLimited()
+                        let pace = await gmail?.pacePerMinute ?? 0
+                        progress(.log("Gmail asked to slow down — pace now \(pace)/min, retrying in \(delay)s"))
                         try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
                         continue
                     }
