@@ -10,7 +10,7 @@ struct SettingsView: View {
             GoogleSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
             UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
-        .frame(width: 620, height: 460)
+        .frame(width: 680, height: 520)
     }
 }
 
@@ -59,43 +59,146 @@ struct GeneralSettings: View {
 struct AccountSettings: View {
     @EnvironmentObject var model: AppModel
     @State private var selected: UUID?
-    @State private var signature = ""
-    @State private var displayName = ""
+    @State private var showAdd = false
 
     var body: some View {
         HSplitView {
-            List(model.accounts, selection: $selected) { a in
-                VStack(alignment: .leading) {
-                    Text(a.displayName).font(.headline)
-                    Text(a.email).font(.caption).foregroundStyle(.secondary)
-                }.tag(a.id)
+            VStack(spacing: 0) {
+                List(model.accounts, selection: $selected) { a in
+                    HStack(spacing: 10) {
+                        Image(systemName: a.usesPassword ? "server.rack" : "g.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(model.online[a.id] == false ? Color.orange : Color.accentColor)
+                        VStack(alignment: .leading) {
+                            Text(a.displayName.isEmpty ? a.email : a.displayName).font(.headline)
+                            Text(a.email).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .tag(a.id)
+                }
+                .overlay {
+                    if model.accounts.isEmpty {
+                        ContentUnavailableView("No accounts yet", systemImage: "person.crop.circle.badge.plus")
+                    }
+                }
+                Divider()
+                HStack(spacing: 0) {
+                    Button { showAdd = true } label: { Image(systemName: "plus").frame(width: 24, height: 22) }
+                    Divider().frame(height: 16)
+                    Button { if let a = model.accounts.first(where: { $0.id == selected }) { model.removeAccount(a); selected = nil } } label: {
+                        Image(systemName: "minus").frame(width: 24, height: 22)
+                    }
+                    .disabled(selected == nil)
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(4)
             }
-            .frame(width: 220)
-            VStack(alignment: .leading, spacing: 12) {
-                if let id = selected, let account = model.accounts.first(where: { $0.id == id }) {
-                    TextField("Display name", text: $displayName)
-                    Text("Signature").font(.caption).foregroundStyle(.secondary)
-                    TextEditor(text: $signature).font(.body).frame(minHeight: 140)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-                    HStack {
-                        Button("Remove Account", role: .destructive) { model.removeAccount(account); selected = nil }
-                        Spacer()
-                        Button("Save") {
-                            var a = account
-                            a.signature = signature
-                            a.displayName = displayName
-                            model.saveAccount(a)
-                        }.keyboardShortcut(.defaultAction)
-                    }
-                    .onAppear { signature = account.signature; displayName = account.displayName }
-                    .onChange(of: selected) { _, _ in
-                        if let a = model.accounts.first(where: { $0.id == selected }) { signature = a.signature; displayName = a.displayName }
-                    }
+            .frame(minWidth: 220, maxWidth: 260)
+            Group {
+                if let account = model.accounts.first(where: { $0.id == selected }) {
+                    AccountDetail(account: account)
                 } else {
-                    ContentUnavailableView("Select an account", systemImage: "person.crop.circle")
+                    VStack(spacing: 12) {
+                        ContentUnavailableView(model.accounts.isEmpty ? "Add your first account" : "Select an account", systemImage: "person.crop.circle")
+                        Button("Add Account…") { showAdd = true }.buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .padding()
+        }
+        .sheet(isPresented: $showAdd) { AddAccountSheet().environmentObject(model) }
+        .onAppear { if selected == nil { selected = model.accounts.first?.id } }
+    }
+}
+
+struct AccountDetail: View {
+    @EnvironmentObject var model: AppModel
+    let account: AccountInfo
+    @State private var displayName = ""
+    @State private var signature = ""
+    @State private var newPassword = ""
+    @State private var busy = false
+    @State private var message: String?
+
+    var body: some View {
+        Form {
+            Section("Account") {
+                TextField("Name", text: $displayName)
+                LabeledContent("Email", value: account.email)
+                LabeledContent("Sign-in", value: account.usesPassword ? "Username and password" : "Google account")
+                LabeledContent("Status", value: model.online[account.id] == false ? "Offline or sign-in needed" : "Connected")
+            }
+            Section("Servers") {
+                LabeledContent("Incoming (IMAP)", value: "\(account.imapHost):\(account.imapPort) SSL/TLS")
+                LabeledContent("Outgoing (SMTP)", value: "\(account.smtpHost):\(account.smtpPort) SSL/TLS")
+                if account.usesPassword { LabeledContent("Username", value: account.loginName) }
+            }
+            Section(account.usesPassword ? "Password" : "Google authorization") {
+                if account.usesPassword {
+                    SecureField("New password", text: $newPassword)
+                    Button("Update Password") { updatePassword() }.disabled(newPassword.isEmpty || busy)
+                } else {
+                    Text("Mail, Drive, Calendar and Contacts are authorized through your Google account. Sign in again if Google revoked access or the password changed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Sign in with Google Again") { reauthorize() }.disabled(busy)
+                }
+            }
+            Section("Signature") {
+                TextEditor(text: $signature).font(.body).frame(minHeight: 100)
+            }
+            if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                Button("Remove Account", role: .destructive) { model.removeAccount(account) }
+                Spacer()
+                if busy { ProgressView().controlSize(.small) }
+                Button("Save") {
+                    var a = account
+                    a.displayName = displayName
+                    a.signature = signature
+                    model.saveAccount(a)
+                    message = "Saved."
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { load() }
+        .onChange(of: account.id) { _, _ in load() }
+    }
+
+    private func load() {
+        displayName = account.displayName
+        signature = account.signature
+        newPassword = ""
+        message = nil
+    }
+
+    private func updatePassword() {
+        busy = true
+        let settings = CustomServerSettings(imapHost: account.imapHost, imapPort: account.imapPort, smtpHost: account.smtpHost,
+                                            smtpPort: account.smtpPort, username: account.loginName, password: newPassword)
+        Task {
+            defer { busy = false }
+            do {
+                try await AccountProbe.test(settings)
+                try await model.tokens.savePassword(newPassword, for: account.id)
+                await model.coordinator.start(account: account)
+                newPassword = ""
+                message = "Password updated and verified."
+            } catch { message = error.localizedDescription }
+        }
+    }
+
+    private func reauthorize() {
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                try await model.addGoogleAccount(loginHint: account.email)
+                message = "Google authorization renewed."
+            } catch { message = error.localizedDescription }
         }
     }
 }
