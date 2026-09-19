@@ -75,6 +75,14 @@ struct GeneralSettings: View {
                     Button { SystemSounds.play(notificationSound) } label: { Image(systemName: "play.circle") }
                         .disabled(notificationSound == SystemSounds.none)
                 }
+                HStack {
+                    Picker("Sent mail sound", selection: $model.sentSound) {
+                        Text("None").tag(SystemSounds.none)
+                        ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
+                    }
+                    Button { SystemSounds.play(model.sentSound) } label: { Image(systemName: "play.circle") }
+                        .disabled(model.sentSound == SystemSounds.none)
+                }
             }
         }
         .formStyle(.grouped)

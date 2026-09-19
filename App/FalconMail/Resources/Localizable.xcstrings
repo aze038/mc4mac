@@ -2940,6 +2940,34 @@
           }
         }
       }
+    },
+    "Sent mail sound": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Звук отправки"
+          }
+        },
+        "tr": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gönderilen posta sesi"
+          }
+        },
+        "az": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Göndərilən məktub səsi"
+          }
+        },
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ton beim Senden"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

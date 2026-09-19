@@ -65,6 +65,8 @@ final class AppModel: ObservableObject {
     @AppStorage("offlineBodies") var offlineBodies = 150 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
     @AppStorage("maxOfflineMB") var maxOfflineMB = 5 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
     @Published var cacheSizeBytes = 0
+    @AppStorage("sentSound") var sentSound = "Pop"
+    private var knownSentIDs = Set<UUID>()
 
     private var bodyCache: [String: MIMEMessage] = [:]
     private var listeners: [Task<Void, Never>] = []
@@ -161,7 +163,14 @@ final class AppModel: ObservableObject {
         })
         listeners.append(Task { [weak self] in
             guard let self else { return }
-            for await items in await self.outbox.updates() { self.outboxItems = items }
+            for await items in await self.outbox.updates() {
+                let sent = Set(items.filter { $0.status == .sent }.map { $0.id })
+                if !self.knownSentIDs.isEmpty || !self.outboxItems.isEmpty, !sent.subtracting(self.knownSentIDs).isEmpty {
+                    SystemSounds.play(self.sentSound)
+                }
+                self.knownSentIDs = sent
+                self.outboxItems = items
+            }
         })
     }
 
