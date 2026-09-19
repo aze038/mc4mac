@@ -12,6 +12,8 @@ struct ComposeView: View {
     @State private var showSchedule = false
     @State private var scheduleDate = Date().addingTimeInterval(3600)
     @State private var error: String?
+    @State private var dropTargeted = false
+    @State private var editSessions: [UUID: AttachmentEditSession] = [:]
 
     var body: some View {
         Group {
@@ -19,6 +21,23 @@ struct ComposeView: View {
         }
         .frame(minWidth: 600, minHeight: 480)
         .onAppear { draft = model.drafts[draftID] }
+        .onDisappear { editSessions.values.forEach { $0.stop() } }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            Task {
+                for url in await AttachmentTempFiles.fileURLs(from: providers) {
+                    if let a = AttachmentTempFiles.attachment(from: url) { draft?.attachments.append(a) }
+                }
+            }
+            return true
+        }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor, lineWidth: 3)
+                    .background(Color.accentColor.opacity(0.06)).padding(4)
+                    .overlay(Text("Drop to attach").font(.title3).foregroundStyle(Color.accentColor))
+                    .allowsHitTesting(false)
+            }
+        }
         .alert("Cannot send", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
@@ -48,11 +67,25 @@ struct ComposeView: View {
                         HStack {
                             ForEach(attachments) { a in
                                 HStack(spacing: 4) {
-                                    Image(systemName: "paperclip")
+                                    Image(systemName: editSessions[a.id] != nil ? "pencil.circle.fill" : "paperclip")
+                                        .foregroundStyle(editSessions[a.id] != nil ? Color.accentColor : Color.primary)
                                     Text(a.filename).font(.caption)
-                                    Button { draft?.attachments.removeAll { $0.id == a.id } } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain)
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(a.data.count), countStyle: .file)).font(.caption2).foregroundStyle(.secondary)
+                                    Menu {
+                                        Button(editSessions[a.id] == nil ? "Edit in Default App" : "Reopen in Default App") { edit(a) }
+                                        if editSessions[a.id] != nil { Button("Stop Watching for Changes") { editSessions[a.id]?.stop(); editSessions[a.id] = nil } }
+                                        Button("Save As…") {
+                                            let panel = NSSavePanel()
+                                            panel.nameFieldStringValue = a.filename
+                                            if panel.runModal() == .OK, let url = panel.url { try? a.data.write(to: url) }
+                                        }
+                                        Divider()
+                                        Button("Remove", role: .destructive) { editSessions[a.id]?.stop(); editSessions[a.id] = nil; draft?.attachments.removeAll { $0.id == a.id } }
+                                    } label: { Image(systemName: "chevron.down.circle") }
+                                    .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 18)
                                 }
                                 .padding(4).background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                                .help(editSessions[a.id] != nil ? "Open in \(a.filename.split(separator: ".").last.map { String($0).uppercased() } ?? "the editor"). Saves are picked up automatically." : a.filename)
                             }
                         }
                     }
@@ -106,8 +139,17 @@ struct ComposeView: View {
         }
     }
 
+    private func edit(_ a: OutgoingAttachment) {
+        editSessions[a.id]?.stop()
+        editSessions[a.id] = AttachmentEditSession(attachment: a) { data in
+            guard let i = draft?.attachments.firstIndex(where: { $0.id == a.id }) else { return }
+            draft?.attachments[i].data = data
+        }
+    }
+
     private func send() {
         guard let d = draft else { return }
+        editSessions.values.forEach { $0.stop() }
         do {
             try model.send(d)
             dismiss()
