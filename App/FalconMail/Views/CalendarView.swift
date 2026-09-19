@@ -45,12 +45,6 @@ struct CalendarView: View {
         let groups = Dictionary(grouping: events) { cal.startOfDay(for: $0.start) }
         return groups.keys.sorted().map { DayGroup(day: $0, events: groups[$0]!.sorted { $0.start < $1.start }) }
     }
-}
-
-struct DayGroup: Identifiable {
-    var day: Date
-    var events: [CalendarEvent]
-    var id: Date { day }
 
     private func load() async {
         guard let id = accountID else { return }
@@ -62,6 +56,12 @@ struct DayGroup: Identifiable {
             status = ""
         } catch { status = error.localizedDescription }
     }
+}
+
+struct DayGroup: Identifiable {
+    var day: Date
+    var events: [CalendarEvent]
+    var id: Date { day }
 }
 
 struct EventRow: View {

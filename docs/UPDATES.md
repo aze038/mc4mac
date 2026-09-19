@@ -64,3 +64,13 @@ The release workflow in the backlog must: build for arm64, sign with Developer
 ID, notarize, staple, zip with `ditto -c -k --keepParent`, compute the sha256,
 write `update.json`, and publish both assets on a GitHub Release whose tag is
 `v<version>`.
+
+## Workflows
+
+- `.github/workflows/ci.yml` builds the app and runs the FalconCore tests on
+  every push.
+- `.github/workflows/release.yml` runs on a `v*` tag or by hand from the
+  Actions tab (with a "mandatory" checkbox). It builds Release, signs and
+  notarizes when the secrets exist, zips the app, writes `update.json` with
+  the sha256 and publishes the GitHub Release. Tag a release with
+  `git tag v0.2.0 && git push origin v0.2.0`.

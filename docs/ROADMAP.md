@@ -17,6 +17,7 @@
 - [x] Three-pane UI, compose, account setup, archive UI, settings
 - [x] Google People and Calendar clients, agenda view, Google Meet creation
 - [x] In-app updates from GitHub Releases with mandatory mode and session restore
+- [x] GitHub Actions: CI build and tests on every push, Release workflow on tags
 - [ ] First compile and smoke test on a Mac with a Workspace test account
 
 ## Milestone 2: Daily driver
@@ -44,11 +45,10 @@
 
 ## Backlog
 
-- GitHub Actions CI that builds FalconMail on a macOS Apple Silicon runner, runs
-  the FalconCore tests, signs and notarizes the app, and publishes a GitHub
-  Release with the zipped app and `update.json` attached so testers download it
-  from the Releases page and installed copies offer the update in-app. The
-  release contract is in `docs/UPDATES.md`. Requested before the first test round.
+- Add Developer ID signing and notarization secrets to the Release workflow
+  (`MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`, `APPLE_TEAM_ID`,
+  `APPLE_ID`, `APPLE_APP_PASSWORD`). Until then releases are ad-hoc signed and
+  need a right-click → Open on first launch.
 - Sparkle-style in-app updates fed by GitHub Releases
 - Crash reporting opt-in
 
