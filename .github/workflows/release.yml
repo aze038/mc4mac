@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 0.2.0"
+        required: true
+      mandatory:
+        description: "Mandatory update (serious bug fix)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, sign, package, publish
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ github.event.inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Set version
+        run: |
+          V="${VERSION#v}"
+          echo "APP_VERSION=$V" >> "$GITHUB_ENV"
+          sed -i '' "s/MARKETING_VERSION: .*/MARKETING_VERSION: $V/" project.yml
+          sed -i '' "s/CFBundleShortVersionString: .*/CFBundleShortVersionString: \"$V\"/" project.yml
+          sed -i '' "s/CURRENT_PROJECT_VERSION: .*/CURRENT_PROJECT_VERSION: ${{ github.run_number }}/" project.yml
+          xcodegen generate
+
+      - name: Import signing certificate
+        if: ${{ env.MACOS_CERTIFICATE_P12 != '' }}
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          echo "SIGN_IDENTITY=Developer ID Application" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -o pipefail
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            SIGNING=(CODE_SIGN_IDENTITY="$SIGN_IDENTITY" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime")
+          else
+            SIGNING=(CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO)
+          fi
+          xcodebuild -project FalconMail.xcodeproj -scheme FalconMail -configuration Release \
+            -destination 'platform=macOS,arch=arm64' -derivedDataPath build "${SIGNING[@]}" build 2>&1 | tee xcodebuild.log | grep -E "error:|\*\* BUILD" || true
+          grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
+
+      - name: Notarize
+        if: ${{ env.SIGN_IDENTITY != '' && secrets.APPLE_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP="build/Build/Products/Release/FalconMail.app"
+          ditto -c -k --keepParent "$APP" notarize.zip
+          xcrun notarytool submit notarize.zip --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$APP"
+
+      - name: Package
+        run: |
+          APP="build/Build/Products/Release/FalconMail.app"
+          ZIP="FalconMail-$APP_VERSION.zip"
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          SHA=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
+          MANDATORY="${{ github.event.inputs.mandatory || 'false' }}"
+          cat > update.json <<JSON
+          {
+            "version": "$APP_VERSION",
+            "mandatory": $MANDATORY,
+            "sha256": "$SHA"
+          }
+          JSON
+          cat update.json
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          if [ -z "${SIGN_IDENTITY:-}" ]; then
+            echo "NOTE=This build is not signed with a Developer ID. To run it: right-click FalconMail.app, choose Open, or run xattr -dr com.apple.quarantine FalconMail.app." >> "$GITHUB_ENV"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          name: FalconMail ${{ env.APP_VERSION }}
+          generate_release_notes: true
+          body: |
+            ${{ github.event.inputs.mandatory == 'true' && '[mandatory]' || '' }}
+            ${{ env.NOTE }}
+          files: |
+            ${{ env.ZIP }}
+            update.json
