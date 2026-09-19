@@ -4,16 +4,21 @@ public actor SyncCoordinator {
     public let store: MailStore
     public let tokens: TokenStore
     public let rules: RuleStore
+    public let mutes: MuteStore
     public let indexer: SpotlightIndexer
+    public let pendingActions: PendingActionStore
     private var syncers: [UUID: AccountSyncer] = [:]
     private let eventContinuation: AsyncStream<SyncEvent>.Continuation
     public nonisolated let events: AsyncStream<SyncEvent>
 
-    public init(store: MailStore, tokens: TokenStore, rules: RuleStore, indexer: SpotlightIndexer) {
+    public init(store: MailStore, tokens: TokenStore, rules: RuleStore, mutes: MuteStore, indexer: SpotlightIndexer,
+                pendingActions: PendingActionStore) {
         self.store = store
         self.tokens = tokens
         self.rules = rules
+        self.mutes = mutes
         self.indexer = indexer
+        self.pendingActions = pendingActions
         var cont: AsyncStream<SyncEvent>.Continuation!
         self.events = AsyncStream { cont = $0 }
         self.eventContinuation = cont
@@ -27,6 +32,7 @@ public actor SyncCoordinator {
 
     public var bodyPrefetch = 150
     public var maxOfflineBodyBytes = 5 * 1024 * 1024
+    public var undoWindow: TimeInterval = 5
 
     public func setBodyPrefetch(_ count: Int, maxBytes: Int? = nil) async {
         bodyPrefetch = count
@@ -34,10 +40,21 @@ public actor SyncCoordinator {
         for s in syncers.values { await s.setBodyPrefetch(count, maxBytes: maxOfflineBodyBytes) }
     }
 
+    public func setUndoWindow(_ seconds: TimeInterval) async {
+        undoWindow = max(0, seconds)
+        for s in syncers.values { await s.setUndoWindow(undoWindow) }
+    }
+
+    public func flushPendingActions() async {
+        for s in syncers.values { await s.flushPending() }
+    }
+
     public func start(account: AccountInfo) async {
         if let existing = syncers[account.id] { await existing.stop() }
-        let s = AccountSyncer(account: account, store: store, tokens: tokens, rules: rules, indexer: indexer, events: eventContinuation)
+        let s = AccountSyncer(account: account, store: store, tokens: tokens, rules: rules, mutes: mutes,
+                              indexer: indexer, pendingActions: pendingActions, events: eventContinuation)
         await s.setBodyPrefetch(bodyPrefetch, maxBytes: maxOfflineBodyBytes)
+        await s.setUndoWindow(undoWindow)
         syncers[account.id] = s
         await s.start()
     }
@@ -62,10 +79,12 @@ public actor SyncCoordinator {
 public struct SMTPSender: MessageSender {
     let store: MailStore
     let tokens: TokenStore
+    let coordinator: SyncCoordinator?
 
-    public init(store: MailStore, tokens: TokenStore) {
+    public init(store: MailStore, tokens: TokenStore, coordinator: SyncCoordinator? = nil) {
         self.store = store
         self.tokens = tokens
+        self.coordinator = coordinator
     }
 
     public func send(accountID: UUID, from: String, recipients: [String], message: Data) async throws {
@@ -80,5 +99,14 @@ public struct SMTPSender: MessageSender {
         }
         try await smtp.send(from: from, recipients: recipients, message: message)
         await smtp.quit()
+        await appendToSentFolder(message, account: account)
+    }
+
+    private func appendToSentFolder(_ message: Data, account: AccountInfo) async {
+        guard account.provider != "google", let coordinator else { return }
+        guard let syncer = await coordinator.syncer(for: account.id) else { return }
+        let folders = await store.folders(for: account.id)
+        guard let sent = folders.first(where: { $0.role == .sent && $0.isSelectable }) else { return }
+        try? await syncer.append(raw: message, to: sent, flags: .seen, date: Date())
     }
 }

@@ -15,6 +15,7 @@ final class WindowTray: ObservableObject {
 
     @Published private(set) var entries: [Entry] = []
     private var popups: [WeakWindow] = []
+    private var mailboxWindows: [WeakWindow] = []
     private var observers: [NSObjectProtocol] = []
 
     private init() {
@@ -27,8 +28,33 @@ final class WindowTray: ObservableObject {
             MainActor.assumeIsolated {
                 self?.remove(w)
                 self?.popups.removeAll { $0.window == nil || $0.window === w }
+                self?.mailboxWindows.removeAll { $0.window == nil || $0.window === w }
             }
         })
+    }
+
+    func register(mailbox window: NSWindow) {
+        mailboxWindows.removeAll { $0.window == nil }
+        guard !mailboxWindows.contains(where: { $0.window === window }) else { return }
+        mailboxWindows.append(WeakWindow(window))
+    }
+
+    var mailboxWindowTakesUndo: Bool {
+        guard let key = NSApp.keyWindow, mailboxWindows.contains(where: { $0.window === key }) else { return false }
+        return !(key.firstResponder is NSText)
+    }
+
+    var mailboxWindowIsShowing: Bool {
+        NSApp.isActive && mailboxWindows.contains { $0.window?.isVisible == true }
+    }
+
+    func orderMailboxWindowFront() -> Bool {
+        mailboxWindows.removeAll { $0.window == nil }
+        let candidates = mailboxWindows.compactMap { $0.window }
+        guard let window = candidates.last(where: { $0.isVisible || $0.isMiniaturized }) else { return false }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        return true
     }
 
     func register(popup window: NSWindow) {
@@ -113,6 +139,19 @@ struct PopupWindowAccessor: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window else { return }
             WindowTray.shared.register(popup: window)
+        }
+    }
+}
+
+struct MailboxWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> AccessorView { AccessorView() }
+    func updateNSView(_ nsView: AccessorView, context: Context) {}
+
+    final class AccessorView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            WindowTray.shared.register(mailbox: window)
         }
     }
 }

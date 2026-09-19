@@ -12,6 +12,67 @@ enum SidebarSelection: Hashable, Codable {
     case outbox
 }
 
+enum MarkReadPolicy: String, CaseIterable, Identifiable {
+    case delay, never
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .delay: return "After a delay"
+        case .never: return "Never"
+        }
+    }
+}
+
+enum AdvanceAfterAction: String, CaseIterable, Identifiable {
+    case next, previous, list
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .next: return "Select the next message"
+        case .previous: return "Select the previous message"
+        case .list: return "Go back to the list"
+        }
+    }
+}
+
+enum MessageFilter: String, CaseIterable, Identifiable {
+    case unread, flagged
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .unread: return "Unread"
+        case .flagged: return "Flagged"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .unread: return "envelope.badge"
+        case .flagged: return "flag"
+        }
+    }
+
+    func matches(_ message: MessageSummary) -> Bool {
+        switch self {
+        case .unread: return !message.isRead
+        case .flagged: return message.isFlagged
+        }
+    }
+}
+
+struct PendingUndo: Identifiable {
+    let id = UUID()
+    var records: [MailActionRecord]
+    var summary: String
+    var verbTitle: String
+}
+
 struct MessageThread: Identifiable, Hashable {
     var id: String { latest.id }
     var messages: [MessageSummary]
@@ -26,6 +87,7 @@ final class AppModel {
     let store: MailStore
     let tokens: TokenStore
     let rules: RuleStore
+    let mutes: MuteStore
     let indexer = SpotlightIndexer()
     let coordinator: SyncCoordinator
     let outbox: Outbox
@@ -34,6 +96,7 @@ final class AppModel {
     let notifications = NotificationService()
     let updates = UpdateManager()
     let session: SessionStore
+    let moveTargets: MoveTargets
 
     var accounts: [AccountInfo] = []
     var folders: [UUID: [FolderInfo]] = [:]
@@ -41,13 +104,15 @@ final class AppModel {
     var messages: [MessageSummary] = []
     var threads: [MessageThread] = []
     var selectedMessageIDs = Set<String>()
-    var searchText = ""
     var isSearching = false
     var statusText = "Ready"
     var online: [UUID: Bool] = [:]
     var outboxItems: [OutboxItem] = []
     var archiveRecords: [ArchiveRecord] = []
     var errorMessage: String?
+    var actionError: String?
+    var actionErrorNeedsDismissal = false
+    var pendingUndo: PendingUndo?
     var contactList: [ContactInfo] = []
     var openMessageWindows = Set<String>()
     var tabs: [WorkspaceTab] = []
@@ -55,6 +120,31 @@ final class AppModel {
     var activeTab: WorkspaceTab?
     var tabTitles: [String: String] = [:]
     var cacheSizeBytes = 0
+    var showsMovePalette = false
+    var focusSearchToken = 0
+    var keyChordHint: String?
+    var mutedThreads: [MutedThread] = []
+    var notificationPolicy = NotificationPolicy()
+
+    private var searchTextStorage = ""
+    var searchText: String {
+        get { searchTextStorage }
+        set {
+            guard newValue != searchTextStorage else { return }
+            searchTextStorage = newValue
+            searchTextDidChange()
+        }
+    }
+
+    private var filtersStorage: Set<MessageFilter> = []
+    var filters: Set<MessageFilter> {
+        get { filtersStorage }
+        set {
+            guard newValue != filtersStorage else { return }
+            filtersStorage = newValue
+            rebuildThreads()
+        }
+    }
 
     private var draftsStorage: [UUID: ComposeDraft] = [:]
     var drafts: [UUID: ComposeDraft] {
@@ -107,6 +197,46 @@ final class AppModel {
         get { sentSoundStorage }
         set { sentSoundStorage = newValue; Preferences.set(newValue, "sentSound") }
     }
+    private var markReadPolicyStorage = Preferences.string("markReadPolicy", default: MarkReadPolicy.delay.rawValue)
+    var markReadPolicy: String {
+        get { markReadPolicyStorage }
+        set { markReadPolicyStorage = newValue; Preferences.set(newValue, "markReadPolicy"); cancelPendingRead() }
+    }
+    private var markReadDelayStorage = Preferences.int("markReadDelaySeconds", default: 2)
+    var markReadDelaySeconds: Int {
+        get { markReadDelayStorage }
+        set { markReadDelayStorage = newValue; Preferences.set(newValue, "markReadDelaySeconds"); cancelPendingRead() }
+    }
+    private var undoActionSecondsStorage = Preferences.int("undoActionSeconds", default: 5)
+    var undoActionSeconds: Int {
+        get { undoActionSecondsStorage }
+        set { undoActionSecondsStorage = newValue; Preferences.set(newValue, "undoActionSeconds"); applyUndoWindow() }
+    }
+    private var advanceAfterActionStorage = Preferences.string("advanceAfterAction", default: AdvanceAfterAction.next.rawValue)
+    var advanceAfterAction: String {
+        get { advanceAfterActionStorage }
+        set { advanceAfterActionStorage = newValue; Preferences.set(newValue, "advanceAfterAction") }
+    }
+    private var singleKeyShortcutsStorage = Preferences.bool(AppModel.singleKeyShortcutsKey, default: true)
+    var singleKeyShortcuts: Bool {
+        get { singleKeyShortcutsStorage }
+        set { singleKeyShortcutsStorage = newValue; Preferences.set(newValue, AppModel.singleKeyShortcutsKey) }
+    }
+    private var pinFiltersStorage = Preferences.bool("pinFilters", default: false)
+    var pinFilters: Bool {
+        get { pinFiltersStorage }
+        set { pinFiltersStorage = newValue; Preferences.set(newValue, "pinFilters") }
+    }
+    private var dockBadgeStorage = Preferences.bool("dockBadge", default: true)
+    var dockBadge: Bool {
+        get { dockBadgeStorage }
+        set { dockBadgeStorage = newValue; Preferences.set(newValue, "dockBadge"); refreshDockBadge() }
+    }
+
+    static let singleKeyShortcutsKey = "singleKeyShortcuts"
+
+    private var readPolicy: MarkReadPolicy { MarkReadPolicy(rawValue: markReadPolicyStorage) ?? .delay }
+    private var advancePolicy: AdvanceAfterAction { AdvanceAfterAction(rawValue: advanceAfterActionStorage) ?? .next }
 
     @ObservationIgnored private var restoredState: SessionState?
     @ObservationIgnored private var knownSentIDs = Set<UUID>()
@@ -115,9 +245,21 @@ final class AppModel {
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
     @ObservationIgnored private var sessionSaveTask: Task<Void, Never>?
     @ObservationIgnored private var pendingDraftSaves: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var readTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingReadID: String?
+    @ObservationIgnored private var actionErrorTask: Task<Void, Never>?
+    @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
+    @ObservationIgnored private var liveSearchNeedle = ""
+    @ObservationIgnored private var submittedSearchQuery: String?
+    @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
+    @ObservationIgnored var openMainWindow: (@MainActor () -> Void)?
 
     private func applyOfflineSettings() {
         Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) }
+    }
+
+    private func applyUndoWindow() {
+        Task { await coordinator.setUndoWindow(TimeInterval(undoActionSeconds)) }
     }
 
     private func scheduleDraftSave(_ id: UUID) {
@@ -134,14 +276,19 @@ final class AppModel {
         let store = MailStore(layout: layout)
         let tokens = TokenStore { OAuthConfigLoader.load() }
         let rules = RuleStore(layout: layout)
+        let mutes = MuteStore(layout: layout)
         self.store = store
         self.tokens = tokens
         self.rules = rules
-        self.coordinator = SyncCoordinator(store: store, tokens: tokens, rules: rules, indexer: indexer)
-        self.outbox = Outbox(layout: layout, sender: SMTPSender(store: store, tokens: tokens), undoWindow: 10)
+        self.mutes = mutes
+        let coordinator = SyncCoordinator(store: store, tokens: tokens, rules: rules, mutes: mutes, indexer: indexer,
+                                          pendingActions: PendingActionStore(layout: layout))
+        self.coordinator = coordinator
+        self.outbox = Outbox(layout: layout, sender: SMTPSender(store: store, tokens: tokens, coordinator: coordinator), undoWindow: 10)
         self.contacts = ContactStore(layout: layout)
         self.archives = ArchiveRecordStore(layout: layout)
         self.session = SessionStore(layout: layout)
+        self.moveTargets = MoveTargets(layout: layout)
     }
 
     func bootstrap() async {
@@ -155,8 +302,11 @@ final class AppModel {
         updates.beforeRelaunch = { [weak self] in await self?.prepareForRelaunch() }
         updates.start()
         await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024)
+        await coordinator.setUndoWindow(TimeInterval(undoActionSeconds))
         await refreshAccounts()
         archiveRecords = await archives.all()
+        mutedThreads = await mutes.all()
+        notificationPolicy = NotificationPolicy.load(layout: layout)
         contactList = await contacts.all()
         await notifications.requestPermission()
         listen()
@@ -201,9 +351,12 @@ final class AppModel {
         saveSessionNow()
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
-        let stop = Task { await coordinator.stopAll() }
+        let wind = Task {
+            await self.flushPendingActions()
+            await self.coordinator.stopAll()
+        }
         let timeout = Task { _ = try? await Task.sleep(nanoseconds: 2_000_000_000) }
-        _ = await Task.select(stop, timeout)
+        _ = await Task.select(wind, timeout)
     }
 
     private func listen() {
@@ -212,7 +365,9 @@ final class AppModel {
             for await change in await self.store.changes() {
                 switch change {
                 case .accountsChanged: await self.refreshAccounts()
-                case .foldersChanged(let accountID): self.folders[accountID] = await self.store.folders(for: accountID)
+                case .foldersChanged(let accountID):
+                    self.folders[accountID] = await self.store.folders(for: accountID)
+                    self.refreshDockBadge()
                 case .messagesChanged(let folderID): self.scheduleReload(for: folderID)
                 case .contactsChanged: self.contactList = await self.contacts.all()
                 }
@@ -226,9 +381,10 @@ final class AppModel {
                 case .progress(_, let text): self.statusText = text
                 case .finished: self.statusText = "Up to date"
                 case .error(let id, let message): self.statusText = "\(self.accountName(id)): \(message)"
+                case .actionFailed(_, let message): self.showActionError(message)
                 case .online(let id, let on): self.online[id] = on
-                case .newMessages(let id, _, let list):
-                    self.notifications.notify(newMessages: list, accountEmail: self.accountName(id))
+                case .newMessages(let id, let folderID, let list):
+                    self.announce(list, accountID: id, folderID: folderID)
                 case .folderSynced: break
                 }
             }
@@ -237,9 +393,11 @@ final class AppModel {
             guard let self else { return }
             for await items in await self.outbox.updates() {
                 let sent = Set(items.filter { $0.status == .sent }.map { $0.id })
-                if !self.knownSentIDs.isEmpty || !self.outboxItems.isEmpty, !sent.subtracting(self.knownSentIDs).isEmpty {
+                let newlySent = sent.subtracting(self.knownSentIDs)
+                if !self.knownSentIDs.isEmpty || !self.outboxItems.isEmpty, !newlySent.isEmpty {
                     SystemSounds.play(self.sentSound)
                 }
+                for id in newlySent { self.discardSidecar(id) }
                 self.knownSentIDs = sent
                 self.outboxItems = items
             }
@@ -248,11 +406,115 @@ final class AppModel {
 
     func accountName(_ id: UUID) -> String { accounts.first { $0.id == id }?.email ?? "account" }
 
+    private func announce(_ list: [MessageSummary], accountID: UUID, folderID: UUID) {
+        guard let account = accounts.first(where: { $0.id == accountID }), let folder = folder(folderID) else { return }
+        notifications.notify(newMessages: list, account: account, folder: folder, policy: notificationPolicy)
+    }
+
+    func setNotifyMode(_ mode: NotifyMode, for accountID: UUID) {
+        notificationPolicy.setMode(mode, for: accountID)
+        notificationPolicy.save(layout: layout)
+    }
+
+    func addVIP(_ entry: String) {
+        notificationPolicy.addVIP(entry)
+        notificationPolicy.save(layout: layout)
+    }
+
+    func removeVIP(_ entry: String) {
+        notificationPolicy.removeVIP(entry)
+        notificationPolicy.save(layout: layout)
+    }
+
+    func handleNotificationAction(_ action: MailNotificationAction, messageID: String) {
+        switch action {
+        case .reveal: reveal(messageID: messageID)
+        case .archive, .delete, .markRead, .flag: applyFromNotification(action, messageID: messageID)
+        }
+    }
+
+    private func applyFromNotification(_ action: MailNotificationAction, messageID: String) {
+        guard !messageID.isEmpty else { return }
+        Task {
+            guard let message = try? await store.message(id: messageID) else {
+                showActionError("That message is no longer here")
+                return
+            }
+            switch action {
+            case .archive: archive([message])
+            case .delete: delete([message])
+            case .markRead: markRead([message], true)
+            case .flag: setFlagged([message], true)
+            case .reveal: break
+            }
+        }
+    }
+
+    func reveal(messageID: String) {
+        showMainWindow()
+        guard !messageID.isEmpty else { return }
+        Task {
+            guard let message = try? await store.message(id: messageID) else {
+                statusText = "That message is no longer here"
+                return
+            }
+            cancelPendingRead()
+            resetSearch()
+            if !pinFilters { filtersStorage = [] }
+            if !alreadyShowing(message.folderID) { selection = .folder(message.folderID) }
+            await reloadMessages()
+            selectRevealedThread(containing: message)
+            saveSession()
+        }
+    }
+
+    private func showMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        guard !WindowTray.shared.orderMailboxWindowFront() else { return }
+        openMainWindow?()
+    }
+
+    private func alreadyShowing(_ folderID: UUID) -> Bool {
+        switch selection {
+        case .unified: return folder(folderID)?.role == .inbox
+        case .folder(let id): return id == folderID
+        default: return false
+        }
+    }
+
+    private func selectRevealedThread(containing message: MessageSummary) {
+        if let thread = residentThread(containing: message) {
+            selectedMessageIDs = [thread.id]
+            return
+        }
+        guard !filtersStorage.isEmpty else { return }
+        filtersStorage = []
+        rebuildThreads()
+        guard let thread = residentThread(containing: message) else { return }
+        selectedMessageIDs = [thread.id]
+    }
+
     func refreshAccounts() async {
         accounts = await store.allAccounts()
         var map: [UUID: [FolderInfo]] = [:]
         for a in accounts { map[a.id] = await store.folders(for: a.id) }
         folders = map
+        refreshDockBadge()
+    }
+
+    var unifiedUnreadCount: Int {
+        accounts.reduce(0) { total, account in
+            total + (folders[account.id] ?? []).filter { $0.role == .inbox }.reduce(0) { $0 + $1.unreadCount }
+        }
+    }
+
+    private func refreshDockBadge() {
+        guard dockBadgeStorage else {
+            NSApp.dockTile.badgeLabel = nil
+            return
+        }
+        let count = unifiedUnreadCount
+        NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
     }
 
     private func scheduleReload(for folderID: UUID) {
@@ -272,8 +534,8 @@ final class AppModel {
 
     func reloadMessages() async {
         do {
-            if !searchText.trimmed.isEmpty {
-                await runSearch()
+            if let query = submittedSearchQuery {
+                await runFullSearch(query)
                 return
             }
             switch selection {
@@ -287,44 +549,339 @@ final class AppModel {
         }
     }
 
+    private func matchesNeedle(_ message: MessageSummary) -> Bool {
+        if message.subject.localizedCaseInsensitiveContains(liveSearchNeedle) { return true }
+        if message.from.name.localizedCaseInsensitiveContains(liveSearchNeedle) { return true }
+        if message.from.address.localizedCaseInsensitiveContains(liveSearchNeedle) { return true }
+        return message.snippet.localizedCaseInsensitiveContains(liveSearchNeedle)
+    }
+
+    private var visibleMessages: [MessageSummary] {
+        guard !liveSearchNeedle.isEmpty else { return messages }
+        return messages.filter { matchesNeedle($0) }
+    }
+
+    private func passesFilters(_ thread: MessageThread) -> Bool {
+        filtersStorage.allSatisfy { filter in thread.messages.contains { filter.matches($0) } }
+    }
+
     private func rebuildThreads() {
+        let visible = visibleMessages
+        let grouped: [MessageThread]
         if groupByThread {
-            threads = ConversationThreader.group(messages).map { MessageThread(messages: $0) }
+            grouped = ConversationThreader.group(visible).map { MessageThread(messages: $0) }
         } else {
-            threads = messages.map { MessageThread(messages: [$0]) }
+            grouped = visible.map { MessageThread(messages: [$0]) }
+        }
+        if filtersStorage.isEmpty {
+            threads = grouped
+        } else {
+            threads = grouped.filter { passesFilters($0) || selectedMessageIDs.contains($0.id) }
         }
         let valid = selectedMessageIDs.filter { id in threads.contains { $0.id == id } }
         if valid != selectedMessageIDs { selectedMessageIDs = valid }
     }
 
     func runSearch() async {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        liveSearchNeedle = ""
         let q = searchText.trimmed
-        guard !q.isEmpty else { await reloadMessages(); return }
+        guard !q.isEmpty else {
+            submittedSearchQuery = nil
+            await reloadMessages()
+            return
+        }
+        submittedSearchQuery = q
+        await runFullSearch(q)
+    }
+
+    private func runFullSearch(_ query: String) async {
         isSearching = true
         defer { isSearching = false }
-        var found = (try? await store.search(q, accountID: nil)) ?? []
+        var found = (try? await store.search(query, accountID: nil)) ?? []
         var seen = Set(found.map { $0.id })
-        for id in await indexer.search(q) where !seen.contains(id) {
+        for id in await indexer.search(query) where !seen.contains(id) {
             if let m = try? await store.message(id: id) { found.append(m); seen.insert(id) }
         }
         messages = found.sorted { $0.date > $1.date }
         rebuildThreads()
     }
 
+    private func searchTextDidChange() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        let needle = searchTextStorage.trimmed
+        guard !needle.isEmpty else {
+            applyIncrementalSearch("")
+            return
+        }
+        searchDebounceTask = Task { [weak self] in
+            _ = try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.searchDebounceTask = nil
+            self.applyIncrementalSearch(needle)
+        }
+    }
+
+    private func applyIncrementalSearch(_ needle: String) {
+        let leavingFullResults = submittedSearchQuery != nil
+        guard needle != liveSearchNeedle || leavingFullResults else { return }
+        liveSearchNeedle = needle
+        submittedSearchQuery = nil
+        if leavingFullResults {
+            Task { await reloadMessages() }
+        } else {
+            rebuildThreads()
+        }
+    }
+
+    private func resetSearch() {
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        liveSearchNeedle = ""
+        submittedSearchQuery = nil
+        searchTextStorage = ""
+    }
+
+    func toggleFilter(_ filter: MessageFilter) {
+        var updated = filtersStorage
+        if updated.contains(filter) { updated.remove(filter) } else { updated.insert(filter) }
+        filters = updated
+    }
+
+    func clearFilters() {
+        filters = []
+    }
+
     func select(_ s: SidebarSelection?) {
+        cancelPendingRead()
         selection = s
         selectedMessageIDs = []
-        searchText = ""
+        resetSearch()
+        if !pinFilters { filtersStorage = [] }
         Task { await reloadMessages() }
         saveSession()
     }
 
     var selectedThreads: [MessageThread] { threads.filter { selectedMessageIDs.contains($0.id) } }
     var selectedMessages: [MessageSummary] { selectedThreads.flatMap { $0.messages } }
+    var firstSelectedMessage: MessageSummary? { threads.first { selectedMessageIDs.contains($0.id) }?.messages.first }
+
+    private var junkFolderIDs: Set<UUID> {
+        var ids = Set<UUID>()
+        for list in folders.values {
+            for f in list where f.role == .junk { ids.insert(f.id) }
+        }
+        return ids
+    }
+
+    var selectionIsAllInJunk: Bool {
+        guard !selectedMessageIDs.isEmpty else { return false }
+        let junk = junkFolderIDs
+        guard !junk.isEmpty else { return false }
+        var sawAny = false
+        for thread in threads where selectedMessageIDs.contains(thread.id) {
+            guard thread.messages.allSatisfy({ junk.contains($0.folderID) }) else { return false }
+            sawAny = true
+        }
+        return sawAny
+    }
     var currentThread: MessageThread? { selectedMessageIDs.count == 1 ? threads.first { $0.id == selectedMessageIDs.first! } : nil }
 
     func account(for message: MessageSummary) -> AccountInfo? { accounts.first { $0.id == message.accountID } }
     func folder(_ id: UUID) -> FolderInfo? { folders.values.flatMap { $0 }.first { $0.id == id } }
+
+    var showsMessageList: Bool {
+        switch selection {
+        case .unified, .folder: return true
+        default: return false
+        }
+    }
+
+    var keyboardAccountID: UUID? {
+        if let id = selectedMessages.first?.accountID { return id }
+        if case .folder(let id) = selection, let f = folder(id) { return f.accountID }
+        return accounts.first?.id
+    }
+
+    private var selectionBounds: (first: Int, last: Int)? {
+        let indices = threads.indices.filter { selectedMessageIDs.contains(threads[$0].id) }
+        guard let first = indices.min(), let last = indices.max() else { return nil }
+        return (first, last)
+    }
+
+    private func selectThread(at index: Int) {
+        guard threads.indices.contains(index) else { return }
+        selectedMessageIDs = [threads[index].id]
+    }
+
+    func selectNextThread() {
+        guard !threads.isEmpty else { return }
+        guard let bounds = selectionBounds else { return selectThread(at: 0) }
+        selectThread(at: min(bounds.last + 1, threads.count - 1))
+    }
+
+    func selectPreviousThread() {
+        guard !threads.isEmpty else { return }
+        guard let bounds = selectionBounds else { return selectThread(at: threads.count - 1) }
+        selectThread(at: max(bounds.first - 1, 0))
+    }
+
+    func selectNextUnread() {
+        let start = selectionBounds.map { $0.last + 1 } ?? 0
+        guard start < threads.count, let next = threads[start...].first(where: { $0.unreadCount > 0 }) else {
+            statusText = "No more unread conversations"
+            return
+        }
+        selectedMessageIDs = [next.id]
+    }
+
+    func selectPreviousUnread() {
+        let end = min(selectionBounds.map { $0.first } ?? threads.count, threads.count)
+        guard let previous = threads[..<end].last(where: { $0.unreadCount > 0 }) else {
+            statusText = "No earlier unread conversations"
+            return
+        }
+        selectedMessageIDs = [previous.id]
+    }
+
+    func toggleReadOnSelection() {
+        let list = selectedMessages
+        guard let first = list.first else { return }
+        markRead(list, !first.isRead)
+    }
+
+    func toggleFlagOnSelection() {
+        let list = selectedMessages
+        guard let first = list.first else { return }
+        setFlagged(list, !first.isFlagged)
+    }
+
+    func composeNew() {
+        guard let account = accounts.first else { return }
+        openCompose(.blank(account: account))
+    }
+
+    func replyToSelection(all: Bool) {
+        guard let thread = currentThread, let account = account(for: thread.latest) else { return }
+        Task {
+            let parsed = await parsedBody(for: thread.latest)
+            openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all))
+        }
+    }
+
+    func forwardSelection() {
+        guard let thread = currentThread, let account = account(for: thread.latest) else { return }
+        Task {
+            let parsed = await parsedBody(for: thread.latest)
+            openCompose(.forward(thread.latest, parsed: parsed, account: account))
+        }
+    }
+
+    func focusSearch() {
+        focusSearchToken += 1
+    }
+
+    func clearSearch() {
+        guard !searchText.isEmpty else { return }
+        searchText = ""
+    }
+
+    func jumpToAllInboxes() {
+        select(.unified)
+    }
+
+    func jump(to role: FolderRole) {
+        guard let accountID = keyboardAccountID else { return }
+        guard let target = (folders[accountID] ?? []).first(where: { $0.role == role && $0.isSelectable }) else {
+            statusText = "No \(role.rawValue) mailbox on \(accountName(accountID))"
+            return
+        }
+        select(.folder(target.id))
+    }
+
+    func folder(for target: MoveTarget) -> FolderInfo? {
+        (folders[target.accountID] ?? []).first { $0.path == target.folderPath && $0.isSelectable }
+    }
+
+    var lastMoveTarget: FolderInfo? {
+        guard let target = moveTargets.last else { return nil }
+        return folder(for: target)
+    }
+
+    func isRecentTarget(_ folder: FolderInfo) -> Bool {
+        moveTargets.entry(for: folder) != nil
+    }
+
+    func openMovePalette() {
+        guard !selectedMessageIDs.isEmpty else { return }
+        guard WindowTray.shared.orderMailboxWindowFront() else { return }
+        showsMovePalette = true
+    }
+
+    func closeMovePalette() {
+        showsMovePalette = false
+    }
+
+    func moveToLastTarget() {
+        let list = selectedMessages
+        guard !list.isEmpty else { return }
+        guard let target = lastMoveTarget, list.contains(where: { $0.accountID == target.accountID }) else {
+            openMovePalette()
+            return
+        }
+        move(list, to: target)
+    }
+
+    private var moveScope: [FolderInfo] {
+        let accountIDs = Set(selectedMessages.map(\.accountID))
+        return accounts.flatMap { folders[$0.id] ?? [] }.filter { $0.isSelectable && accountIDs.contains($0.accountID) }
+    }
+
+    func paletteTargets(matching query: String) -> [FolderInfo] {
+        let scope = moveScope
+        let needle = query.trimmed.lowercased()
+        guard !needle.isEmpty else { return Array(recentFirst(scope).prefix(12)) }
+        let scored = scope.compactMap { folder -> (folder: FolderInfo, tier: Int)? in
+            guard let tier = FolderMatch.tier(for: folder, accountEmail: accountName(folder.accountID), needle: needle) else { return nil }
+            return (folder, tier)
+        }
+        let ranked = scored.sorted { a, b in
+            guard a.tier == b.tier else { return a.tier < b.tier }
+            return usedMoreRecently(a.folder, than: b.folder)
+        }
+        return ranked.prefix(12).map { $0.folder }
+    }
+
+    private func recentFirst(_ scope: [FolderInfo]) -> [FolderInfo] {
+        let byID = Dictionary(scope.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var ordered: [FolderInfo] = []
+        var seen = Set<UUID>()
+        for target in moveTargets.recent() {
+            guard let match = folder(for: target), let scoped = byID[match.id], !seen.contains(scoped.id) else { continue }
+            ordered.append(scoped)
+            seen.insert(scoped.id)
+        }
+        return ordered + scope.filter { !seen.contains($0.id) }
+    }
+
+    private func usedMoreRecently(_ a: FolderInfo, than b: FolderInfo) -> Bool {
+        let left = moveTargets.entry(for: a)
+        let right = moveTargets.entry(for: b)
+        let leftCount = left?.useCount ?? 0
+        let rightCount = right?.useCount ?? 0
+        guard leftCount == rightCount else { return leftCount > rightCount }
+        let leftUsed = left?.lastUsed ?? .distantPast
+        let rightUsed = right?.lastUsed ?? .distantPast
+        guard leftUsed == rightUsed else { return leftUsed > rightUsed }
+        return a.path.localizedCaseInsensitiveCompare(b.path) == .orderedAscending
+    }
+
+    func commitPalette(_ folder: FolderInfo) {
+        showsMovePalette = false
+        move(selectedMessages, to: folder)
+    }
 
     func parsedBody(for message: MessageSummary) async -> MIMEMessage? {
         if let cached = bodyCache[message.id] { return cached }
@@ -345,36 +902,302 @@ final class AppModel {
         return try? await syncer.body(for: message)
     }
 
-    private func perform(_ messages: [MessageSummary], _ op: @escaping (AccountSyncer, [MessageSummary]) async throws -> Void) {
+    private func perform(_ messages: [MessageSummary], announcing: Bool = true,
+                         _ op: @escaping (AccountSyncer, [MessageSummary]) async throws -> [MailActionRecord]) {
+        guard !messages.isEmpty else { return }
         Task {
+            var records: [MailActionRecord] = []
+            var failure: String?
             for (accountID, group) in Dictionary(grouping: messages, by: { $0.accountID }) {
                 guard let syncer = await coordinator.syncer(for: accountID) else { continue }
-                do { try await op(syncer, group) } catch { errorMessage = error.localizedDescription }
+                do {
+                    records.append(contentsOf: try await op(syncer, group))
+                } catch {
+                    failure = error.localizedDescription
+                }
             }
+            guard announcing else { return }
+            if let failure {
+                showActionError(failure)
+                await reloadMessages()
+            }
+            offerUndo(records)
         }
+    }
+
+    private func showActionError(_ message: String) {
+        actionErrorTask?.cancel()
+        actionErrorTask = nil
+        actionError = message
+        guard WindowTray.shared.mailboxWindowIsShowing else {
+            actionErrorNeedsDismissal = true
+            return
+        }
+        actionErrorNeedsDismissal = false
+        actionErrorTask = Task { [weak self] in
+            _ = try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.actionError = nil
+            self.actionErrorTask = nil
+        }
+    }
+
+    func dismissActionError() {
+        actionErrorTask?.cancel()
+        actionErrorTask = nil
+        actionError = nil
+        actionErrorNeedsDismissal = false
+    }
+
+    private func offerUndo(_ records: [MailActionRecord]) {
+        guard let first = records.first else { return }
+        undoExpiryTask?.cancel()
+        undoExpiryTask = nil
+        guard undoActionSeconds > 0 else { pendingUndo = nil; return }
+        let undo = PendingUndo(records: records, summary: MailActionRecord.summary(for: records), verbTitle: first.verbTitle)
+        pendingUndo = undo
+        let nanoseconds = UInt64(undoActionSeconds) * 1_000_000_000
+        undoExpiryTask = Task { [weak self] in
+            _ = try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled, let self, self.pendingUndo?.id == undo.id else { return }
+            self.pendingUndo = nil
+            self.undoExpiryTask = nil
+        }
+    }
+
+    var canUndoAction: Bool { pendingUndo != nil }
+
+    func undoLastAction() {
+        guard let undo = pendingUndo else { return }
+        undoExpiryTask?.cancel()
+        undoExpiryTask = nil
+        pendingUndo = nil
+        Task {
+            var restored = 0
+            for record in undo.records {
+                guard let syncer = await coordinator.syncer(for: record.accountID) else { continue }
+                if await syncer.undo(record.id) { restored += record.messages.count }
+            }
+            statusText = restored > 0 ? "Restored \(restored) \(MailActionRecord.noun(restored))" : "Too late to undo"
+        }
+    }
+
+    private func flushPendingActions() async {
+        undoExpiryTask?.cancel()
+        undoExpiryTask = nil
+        pendingUndo = nil
+        await coordinator.flushPendingActions()
     }
 
     func markRead(_ list: [MessageSummary], _ read: Bool) {
         perform(list.filter { $0.isRead != read }) { try await $0.setFlag(.seen, on: $1, enabled: read) }
     }
 
+    private var markAllReadFolders: [FolderInfo] {
+        switch selection {
+        case .unified: return accounts.flatMap { folders[$0.id] ?? [] }.filter { $0.role == .inbox }
+        case .folder(let id): return folder(id).map { [$0] } ?? []
+        default: return []
+        }
+    }
+
+    var canMarkAllRead: Bool {
+        markAllReadFolders.contains { $0.unreadCount > 0 }
+    }
+
+    func markAllReadInSelection() {
+        let list = markAllReadFolders
+        guard let first = list.first else { return }
+        markAllRead(in: list, named: list.count == 1 ? first.name : "All Inboxes")
+    }
+
+    func markAllRead(in folder: FolderInfo) {
+        markAllRead(in: [folder], named: folder.name)
+    }
+
+    private func markAllRead(in list: [FolderInfo], named name: String) {
+        Task {
+            var unread: [MessageSummary] = []
+            for f in list {
+                let all = (try? await store.messages(in: f.id)) ?? []
+                unread.append(contentsOf: all.filter { !$0.isRead })
+            }
+            guard !unread.isEmpty else {
+                statusText = "No unread messages in \(name)"
+                return
+            }
+            markRead(unread, true)
+            statusText = "Marked \(unread.count) \(MailActionRecord.noun(unread.count)) as read in \(name)"
+        }
+    }
+
+    private func markReadSilently(_ list: [MessageSummary]) {
+        perform(list.filter { !$0.isRead }, announcing: false) { try await $0.setFlag(.seen, on: $1, enabled: true, silent: true) }
+    }
+
+    private func cancelPendingRead() {
+        readTask?.cancel()
+        readTask = nil
+        pendingReadID = nil
+    }
+
+    private func residentThread(containing message: MessageSummary) -> MessageThread? {
+        threads.first { $0.messages.contains { $0.id == message.id } }
+    }
+
+    func selectionDidChange() {
+        cancelPendingRead()
+        guard readPolicy == .delay else { return }
+        guard selectedMessageIDs.count == 1, let id = selectedMessageIDs.first else { return }
+        guard let selected = threads.first(where: { $0.id == id }), selected.unreadCount > 0 else { return }
+        pendingReadID = id
+        let nanoseconds = UInt64(max(1, markReadDelaySeconds)) * 1_000_000_000
+        readTask = Task { [weak self] in
+            _ = try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            guard self.pendingReadID == id, self.selectedMessageIDs == [id] else { return }
+            guard let current = self.threads.first(where: { $0.id == id }) else { return }
+            self.readTask = nil
+            self.pendingReadID = nil
+            self.markReadSilently(current.messages)
+        }
+    }
+
     func setFlagged(_ list: [MessageSummary], _ flagged: Bool) {
         perform(list) { try await $0.setFlag(.flagged, on: $1, enabled: flagged) }
     }
 
+    private func advanceTarget(removing ids: Set<String>) -> String? {
+        guard advancePolicy != .list else { return nil }
+        guard !ids.isDisjoint(with: selectedMessageIDs) else { return nil }
+        let affected = threads.indices.filter { ids.contains(threads[$0].id) }
+        guard let first = affected.min(), let last = affected.max() else { return nil }
+        let forward = threads[threads.index(after: last)...].first { !ids.contains($0.id) }?.id
+        let backward = threads[..<first].last { !ids.contains($0.id) }?.id
+        return advancePolicy == .next ? (forward ?? backward) : (backward ?? forward)
+    }
+
+    private func removeFromList(_ list: [MessageSummary]) {
+        let ids = Set(list.map(\.id))
+        let touchesSelection = !ids.isDisjoint(with: selectedMessageIDs)
+        let target = advanceTarget(removing: ids)
+        messages.removeAll { ids.contains($0.id) }
+        rebuildThreads()
+        guard touchesSelection else { return }
+        selectedMessageIDs = target.map { [$0] } ?? []
+    }
+
     func archive(_ list: [MessageSummary]) {
-        selectedMessageIDs = []
+        removeFromList(list)
         perform(list) { try await $0.archive($1) }
     }
 
     func delete(_ list: [MessageSummary]) {
-        selectedMessageIDs = []
+        removeFromList(list)
         perform(list) { try await $0.delete($1) }
     }
 
     func move(_ list: [MessageSummary], to folder: FolderInfo) {
-        selectedMessageIDs = []
-        perform(list.filter { $0.accountID == folder.accountID }) { try await $0.move($1, to: folder) }
+        applyMove(list, to: folder)
+    }
+
+    private func applyMove(_ list: [MessageSummary], to folder: FolderInfo) {
+        let targets = list.filter { $0.accountID == folder.accountID && $0.folderID != folder.id }
+        guard !targets.isEmpty else { return }
+        moveTargets.record(folder: folder)
+        removeFromList(targets)
+        perform(targets) { try await $0.move($1, to: folder) }
+    }
+
+    func isInJunk(_ list: [MessageSummary]) -> Bool {
+        !list.isEmpty && list.allSatisfy { folder($0.folderID)?.role == .junk }
+    }
+
+    func moveToJunk(_ list: [MessageSummary]) {
+        route(list, to: .junk, missing: "No junk mailbox on")
+    }
+
+    func markNotJunk(_ list: [MessageSummary]) {
+        route(list, to: .inbox, missing: "No inbox on")
+    }
+
+    func toggleJunk(_ list: [MessageSummary]) {
+        if isInJunk(list) { markNotJunk(list) } else { moveToJunk(list) }
+    }
+
+    func toggleJunkOnSelection() {
+        toggleJunk(selectedMessages)
+    }
+
+    private func route(_ list: [MessageSummary], to role: FolderRole, missing: String) {
+        var found: [UUID: FolderInfo] = [:]
+        var moving: [MessageSummary] = []
+        for (accountID, group) in Dictionary(grouping: list, by: { $0.accountID }) {
+            guard let destination = (folders[accountID] ?? []).first(where: { $0.role == role && $0.isSelectable }) else {
+                statusText = "\(missing) \(accountName(accountID))"
+                continue
+            }
+            found[accountID] = destination
+            moving.append(contentsOf: group.filter { $0.folderID != destination.id })
+        }
+        let destinations = found
+        guard !moving.isEmpty else { return }
+        removeFromList(moving)
+        perform(moving) { syncer, group in
+            guard let first = group.first, let destination = destinations[first.accountID] else { return [] }
+            return try await syncer.move(group, to: destination)
+        }
+    }
+
+    func mutedRecord(for thread: MessageThread) -> MutedThread? {
+        let latest = thread.latest
+        return MuteStore.match(in: mutedThreads, accountID: latest.accountID, threadKey: latest.threadKey,
+                               messageID: latest.messageID, references: latest.references,
+                               inReplyTo: latest.inReplyTo)
+    }
+
+    func isMuted(_ thread: MessageThread) -> Bool { mutedRecord(for: thread) != nil }
+
+    func mute(_ threads: [MessageThread]) {
+        let records = threads.compactMap { muteRecord(for: $0) }
+        guard !records.isEmpty else { return }
+        Task {
+            for record in records { await mutes.mute(record) }
+            mutedThreads = await mutes.all()
+        }
+        let list = threads.flatMap { $0.messages }
+        markReadSilently(list)
+        archive(list)
+        statusText = records.count == 1 ? "Muted: \(muteTitle(records[0]))" : "Muted \(records.count) conversations"
+    }
+
+    func unmute(_ muted: MutedThread) {
+        Task {
+            await mutes.unmute(accountID: muted.accountID, threadKey: muted.threadKey)
+            mutedThreads = await mutes.all()
+        }
+    }
+
+    func toggleMute(_ thread: MessageThread) {
+        if let record = mutedRecord(for: thread) { unmute(record) } else { mute([thread]) }
+    }
+
+    func muteSelection() {
+        mute(selectedThreads)
+    }
+
+    private func muteRecord(for thread: MessageThread) -> MutedThread? {
+        let latest = thread.latest
+        let key = latest.threadKey.isEmpty ? latest.messageID : latest.threadKey
+        guard !key.isEmpty else { return nil }
+        let ids = Set(thread.messages.map { $0.messageID }.filter { !$0.isEmpty })
+        return MutedThread(accountID: latest.accountID, threadKey: key, messageIDs: ids,
+                           normalizedSubject: ConversationThreader.normalizedSubject(latest.subject),
+                           subject: latest.subject, mutedAt: Date())
+    }
+
+    private func muteTitle(_ record: MutedThread) -> String {
+        record.subject.isEmpty ? "(no subject)" : record.subject
     }
 
     func syncNow() {
@@ -397,7 +1220,25 @@ final class AppModel {
     }
 
     func openMessage(_ message: MessageSummary, forceWindow: Bool = false, openWindow: (String) -> Void) {
+        if folder(message.folderID)?.role == .drafts { return editStoredDraft(message) }
+        markReadOnOpen(message)
         if forceWindow || openInWindowOnDoubleClick { openWindow(message.id) } else { openMessageTab(message) }
+    }
+
+    private func editStoredDraft(_ message: MessageSummary) {
+        Task {
+            guard let parsed = await parsedBody(for: message) else {
+                showActionError("Could not open that draft.")
+                return
+            }
+            openCompose(ComposeDraft.from(parsed: parsed, accountID: message.accountID))
+        }
+    }
+
+    private func markReadOnOpen(_ message: MessageSummary) {
+        guard readPolicy != .never else { return }
+        cancelPendingRead()
+        markReadSilently(residentThread(containing: message)?.messages ?? [message])
     }
 
     func send(_ draft: ComposeDraft) throws {
@@ -406,7 +1247,8 @@ final class AppModel {
         Task {
             do {
                 await outbox.setUndoWindow(TimeInterval(undoSendSeconds))
-                _ = try await outbox.enqueue(accountID: account.id, from: account.email, message: message, sendAt: draft.scheduledAt)
+                let item = try await outbox.enqueue(accountID: account.id, from: account.email, message: message, sendAt: draft.scheduledAt)
+                await writeSidecar(draft, for: item.id)
                 try? await contacts.recordUse(accountID: account.id, addresses: message.to + message.cc + message.bcc)
                 contactList = await contacts.all()
             } catch {
@@ -417,8 +1259,71 @@ final class AppModel {
         closeTab(.compose(draft.id))
     }
 
-    func undoSend(_ item: OutboxItem) {
-        Task { try? await outbox.cancel(item.id) }
+    var sendingSoonItems: [OutboxItem] {
+        outboxItems.filter { $0.isSendingSoon(within: TimeInterval(undoSendSeconds)) }
+    }
+
+    func cancelAndReopen(_ item: OutboxItem, openWindow: @escaping (UUID) -> Void) {
+        Task {
+            let cancelled = (try? await outbox.cancel(item.id)) ?? false
+            let title = outboxTitle(item)
+            guard cancelled else {
+                statusText = "Too late to stop “\(title)”"
+                return
+            }
+            let draft = await queuedDraft(for: item)
+            await outbox.remove(item.id)
+            guard let draft else {
+                statusText = "Cancelled “\(title)”, but the message could not be reopened"
+                return
+            }
+            if openInWindowOnDoubleClick {
+                _ = newDraft(draft)
+                openWindow(draft.id)
+            } else {
+                openCompose(draft)
+            }
+            statusText = "Reopened “\(title)” as a draft"
+        }
+    }
+
+    private func outboxTitle(_ item: OutboxItem) -> String {
+        item.subject.isEmpty ? "(no subject)" : item.subject
+    }
+
+    private func sidecarURL(_ itemID: UUID) -> URL {
+        Outbox.draftSidecarURL(directory: layout.outboxDirectory, id: itemID)
+    }
+
+    private func writeSidecar(_ draft: ComposeDraft, for itemID: UUID) async {
+        let sidecar = ComposeDraftSidecar(draft)
+        let url = sidecarURL(itemID)
+        let write = Task.detached(priority: .utility) { () -> Void in
+            try? AtomicFile.writeJSON(sidecar, to: url)
+        }
+        await write.value
+    }
+
+    private func discardSidecar(_ itemID: UUID) {
+        let url = sidecarURL(itemID)
+        Task.detached(priority: .utility) { () -> Void in
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func queuedDraft(for item: OutboxItem) async -> ComposeDraft? {
+        let raw = await outbox.rawMessage(for: item.id)
+        let url = sidecarURL(item.id)
+        let accountID = item.accountID
+        return await Task.detached(priority: .userInitiated) { () -> ComposeDraft? in
+            let parsed = raw.map { MIMEParser.parse($0) }
+            let attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
+            if let sidecar = AtomicFile.readJSON(ComposeDraftSidecar.self, from: url) {
+                return sidecar.draft(attachments: attachments)
+            }
+            guard let parsed else { return nil }
+            return ComposeDraft.from(parsed: parsed, accountID: accountID)
+        }.value
     }
 
     func addGoogleAccount(loginHint: String? = nil) async throws {
@@ -556,6 +1461,10 @@ final class AppModel {
     }
 
     func shutdown() async {
+        cancelPendingRead()
+        searchDebounceTask?.cancel()
+        searchDebounceTask = nil
+        await flushPendingActions()
         saveSessionNow()
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()

@@ -9,14 +9,6 @@ struct SidebarView: View {
         Binding(get: { model.selection }, set: { model.select($0) })
     }
 
-    private var inboxUnread: Int {
-        var total = 0
-        for list in model.folders.values {
-            for f in list where f.role == .inbox { total += f.unreadCount }
-        }
-        return total
-    }
-
     private var pendingOutbox: Int {
         model.outboxItems.filter { $0.status == .queued || $0.status == .failed }.count
     }
@@ -47,7 +39,7 @@ struct SidebarView: View {
         Section {
             Label("All Inboxes", systemImage: "tray.2")
                 .tag(SidebarSelection.unified)
-                .badge(inboxUnread)
+                .badge(model.unifiedUnreadCount)
             Label("Calendar", systemImage: "calendar")
                 .tag(SidebarSelection.calendar)
             Label("Contacts", systemImage: "person.2")
@@ -91,6 +83,7 @@ struct AccountFolderSection: View {
 }
 
 struct FolderRow: View {
+    @Environment(AppModel.self) private var model
     let folder: FolderInfo
 
     private var icon: String {
@@ -111,5 +104,9 @@ struct FolderRow: View {
         Label(folder.name, systemImage: icon)
             .padding(.leading, CGFloat(folder.depth) * 12)
             .badge(folder.unreadCount)
+            .contextMenu {
+                Button("Mark All as Read") { model.markAllRead(in: folder) }
+                    .disabled(folder.unreadCount == 0)
+            }
     }
 }
