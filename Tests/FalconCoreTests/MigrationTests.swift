@@ -128,4 +128,17 @@ extension MigrationTests {
         XCTAssertGreaterThan(bytes, size / 2)
         XCTAssertLessThan(peak - baseline, 80_000_000, "memory grew by \((peak - baseline) / 1_000_000) MB while streaming \(size / 1_000_000) MB")
     }
+
+    func testJournalUnmarksMissingMessagesForReupload() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("journal-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let key = MigrationState.key("Inbox", "<a@example.com>")
+        let other = MigrationState.key("Inbox", "<b@example.com>")
+        MigrationState.append([.init(d: key), .init(d: other), .init(a: MigrationAppended(folder: "INBOX", messageID: "<a@example.com>"))], to: url)
+        XCTAssertEqual(MigrationState.load(url).done, [key, other])
+        MigrationState.append([.init(u: key)], to: url)
+        let state = MigrationState.load(url)
+        XCTAssertEqual(state.done, [other])
+        XCTAssertEqual(state.appended.count, 1)
+    }
 }

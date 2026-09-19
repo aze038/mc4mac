@@ -44,6 +44,7 @@ public struct MigrationState: Sendable {
             if let d = entry.d { state.done.insert(d) }
             if let a = entry.a { state.appended.append(a) }
             if let r = entry.r { state.appended.removeAll { $0.messageID == r }; state.done = state.done.filter { !$0.hasSuffix("|" + r) } }
+            if let u = entry.u { state.done.remove(u) }
         }
         return state
     }
@@ -52,6 +53,7 @@ public struct MigrationState: Sendable {
         var d: String?
         var a: MigrationAppended?
         var r: String?
+        var u: String?
     }
 
     static func append(_ lines: [JournalLine], to url: URL) {
@@ -75,6 +77,24 @@ public struct MigrationState: Sendable {
         try? FileManager.default.removeItem(at: url)
         append(state.done.map { JournalLine(d: $0) } + state.appended.map { JournalLine(a: $0) }, to: url)
     }
+}
+
+public struct VerificationFolder: Sendable, Identifiable {
+    public var id: String { source }
+    public var source: String
+    public var target: String
+    public var inArchive = 0
+    public var present = 0
+    public var missing = 0
+    public var unreadable = 0
+}
+
+public struct VerificationReport: Sendable {
+    public var folders: [VerificationFolder] = []
+    public var inArchive: Int { folders.reduce(0) { $0 + $1.inArchive } }
+    public var present: Int { folders.reduce(0) { $0 + $1.present } }
+    public var missing: Int { folders.reduce(0) { $0 + $1.missing } }
+    public var unreadable: Int { folders.reduce(0) { $0 + $1.unreadable } }
 }
 
 public struct MigrationReport: Sendable {
@@ -265,6 +285,80 @@ public actor MigrationRunner {
         persist()
         progress(.status(dryRun ? "Dry run complete" : "Migration complete"))
         return report
+    }
+
+    public func verify(progress: @escaping @Sendable (MigrationProgress) -> Void) async throws -> VerificationReport {
+        var result = VerificationReport()
+        let plan = source.folders.compactMap { folder -> (SourceFolder, String)? in
+            guard let path = mapping[folder.id]?.path else { return nil }
+            return (folder, path)
+        }
+        total = plan.reduce(0) { $0 + $1.0.messageCount }
+        processed = 0
+        var presentTotal = 0
+        var missingTotal = 0
+        for (folder, targetPath) in plan {
+            try Task.checkCancellation()
+            progress(.folder("Checking \(folder.path) against \(targetPath)"))
+            var entry = VerificationFolder(source: folder.path, target: targetPath)
+            let messages = try source.messages(in: folder)
+            let scope = isGmail ? (allMailPath ?? targetPath) : targetPath
+            knownIDs[scope] = nil
+            try await preloadKnownIDs(in: scope)
+            let ids = await collectMessageIDs(messages)
+            entry.inArchive = ids.ids.count + ids.unreadable
+            entry.unreadable = ids.unreadable
+            for messageID in ids.ids {
+                try Task.checkCancellation()
+                processed += 1
+                let present = try await existsOn(client, messageID, in: scope)
+                if present {
+                    entry.present += 1
+                    presentTotal += 1
+                } else {
+                    entry.missing += 1
+                    missingTotal += 1
+                    let key = MigrationState.key(folder.id, messageID)
+                    if done.remove(key) != nil { journal.append(MigrationState.JournalLine(u: key)) }
+                }
+                if processed % 50 == 0 {
+                    progress(.count(done: processed, total: total, appended: 0, existing: presentTotal, failed: missingTotal, bytes: 0))
+                }
+            }
+            processed += ids.unreadable
+            progress(.count(done: processed, total: total, appended: 0, existing: presentTotal, failed: missingTotal, bytes: 0))
+            progress(.log("\(folder.path): \(entry.inArchive) in archive · \(entry.present) on server · \(entry.missing) missing" + (entry.unreadable > 0 ? " · \(entry.unreadable) unreadable" : "")))
+            result.folders.append(entry)
+            persist()
+        }
+        persist()
+        progress(.status(missingTotal == 0 ? "Verified: every message in the archive is on the server" : "Verified: \(missingTotal) missing. Press Start Migration… to upload them."))
+        return result
+    }
+
+    private func collectMessageIDs(_ messages: [SourceMessage]) async -> (ids: [String], unreadable: Int) {
+        let cursor = Cursor(messages)
+        let decoders = max(1, options.decoders)
+        return await withTaskGroup(of: ([String], Int).self) { group in
+            for _ in 0..<decoders {
+                group.addTask {
+                    var ids: [String] = []
+                    var unreadable = 0
+                    while let light = await cursor.next(), !Task.isCancelled {
+                        guard let message = try? light.prepared() else { unreadable += 1; continue }
+                        if !message.messageID.isEmpty { ids.append(message.messageID); continue }
+                        guard let data = try? message.load() else { unreadable += 1; continue }
+                        let id = MIMENormalizer.messageID(in: data)
+                        ids.append(id.isEmpty ? MigrationRunner.syntheticID(for: data) : id)
+                    }
+                    return (ids, unreadable)
+                }
+            }
+            var all: [String] = []
+            var unreadable = 0
+            for await (ids, bad) in group { all.append(contentsOf: ids); unreadable += bad }
+            return (all, unreadable)
+        }
     }
 
     private func dryRunFolder(_ folder: SourceFolder, messages: [SourceMessage], scope: String, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {

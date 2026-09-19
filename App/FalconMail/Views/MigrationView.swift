@@ -16,6 +16,7 @@ struct MigrationView: View {
     @State private var includeTrashJunk = false
     @State private var labelMigrated = true
     @State private var connections = 8
+    @State private var verifying = false
     @State private var uploadedBytes = 0
     @State private var rateSamples: [(Date, Int)] = []
     @State private var running = false
@@ -146,7 +147,9 @@ struct MigrationView: View {
                 Text(status).font(.caption)
                 if total > 0 {
                     ProgressView(value: Double(done), total: Double(total))
-                    Text("\(done) of \(total) · \(appended) \(dryRun ? "would be uploaded" : "uploaded") · \(existing) already present · \(failed) failed")
+                    Text(verifying
+                         ? "\(done) of \(total) checked · \(existing) on server · \(failed) missing"
+                         : "\(done) of \(total) · \(appended) \(dryRun ? "would be uploaded" : "uploaded") · \(existing) already present · \(failed) failed")
                         .font(.caption).foregroundStyle(.secondary)
                     if !dryRun, uploadedBytes > 0 {
                         Text("\(MigrationView.size(uploadedBytes)) uploaded · \(rateText)")
@@ -168,6 +171,7 @@ struct MigrationView: View {
             if undoAvailable > 0 {
                 Button("Undo Last Migration (\(undoAvailable))") { confirmUndo = true }.disabled(running)
             }
+            Button("Verify") { verify() }.disabled(!canStart)
             Button("Dry Run") { start(dryRun: true) }.keyboardShortcut(.defaultAction).disabled(!canStart)
             Button("Start Migration…") { confirmStart = true }.disabled(!canStart)
         }
@@ -305,9 +309,55 @@ struct MigrationView: View {
         }
     }
 
+    private func verify() {
+        guard let source, let accountID = targetAccountID, let account = model.accounts.first(where: { $0.id == accountID }) else { return }
+        verifying = true
+        dryRun = true
+        running = true
+        model.migrationInProgress = true
+        status = "Connecting to \(account.email)"
+        log = []
+        done = 0; total = 0; appended = 0; existing = 0; failed = 0
+        task = Task {
+            do {
+                guard let syncer = await model.coordinator.syncer(for: accountID) else { throw FalconError.storage("The target account is not running") }
+                let client = try await syncer.openArchiveSourceClient()
+                let runner = MigrationRunner(source: source, account: account, client: client, reconnect: { try await syncer.openArchiveSourceClient() },
+                                             existingFolders: targetFolders, mapping: mapping, layout: model.layout)
+                do {
+                    let report = try await runner.verify { p in
+                        Task { @MainActor in
+                            switch p {
+                            case .status(let s): status = s
+                            case .folder(let f): status = f
+                            case .count(let d, let t, _, let e, let x, _): done = d; total = t; existing = e; failed = x
+                            case .log(let line): log.append(line)
+                            }
+                        }
+                    }
+                    await runner.persist()
+                    await client.logout()
+                    status = report.missing == 0
+                        ? "Verified: all \(report.present) messages from the archive are on \(account.email)"
+                        : "Verified: \(report.present) present, \(report.missing) missing. Press Start Migration… to upload the missing ones."
+                    if report.unreadable > 0 { log.append("\(report.unreadable) messages could not be read from the archive") }
+                } catch is CancellationError {
+                    await runner.persist()
+                    await client.logout()
+                    status = "Stopped."
+                }
+            } catch {
+                status = "Failed: \(error.localizedDescription)"
+            }
+            running = false
+            model.migrationInProgress = false
+        }
+    }
+
     private func start(dryRun: Bool) {
         guard let source, let accountID = targetAccountID, let account = model.accounts.first(where: { $0.id == accountID }) else { return }
         self.dryRun = dryRun
+        verifying = false
         running = true
         uploadedBytes = 0
         rateSamples = []
