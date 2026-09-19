@@ -27,7 +27,7 @@ public struct MIMEHeaders: Sendable, Hashable {
 
     public static func parse(_ data: Data) -> MIMEHeaders {
         var h = MIMEHeaders()
-        let text = data.utf8Lossy
+        let text = data.utf8Lossy.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         var current: (String, String)?
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : String(rawLine)
