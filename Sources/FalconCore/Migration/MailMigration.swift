@@ -151,9 +151,21 @@ actor PayloadQueue {
             await withCheckedContinuation { producers.append($0) }
         }
         guard !finished else { return }
+        if items.isEmpty, !consumers.isEmpty {
+            consumers.removeFirst().resume(returning: item)
+            return
+        }
         items.append(item)
         bytes += item.payload?.count ?? 0
-        if !consumers.isEmpty { consumers.removeFirst().resume(returning: items.removeFirst()) }
+    }
+
+    func requeue(_ item: MigrationItem) {
+        if items.isEmpty, !consumers.isEmpty {
+            consumers.removeFirst().resume(returning: item)
+            return
+        }
+        items.insert(item, at: 0)
+        bytes += item.payload?.count ?? 0
     }
 
     func pop() async -> MigrationItem? {
@@ -443,47 +455,83 @@ public actor MigrationRunner {
     }
 
     private func upload(from queue: PayloadQueue, index: Int, preloaded: Bool, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {
-        var connection: IMAPClient? = index == 0 ? nil : try await reconnect()
+        var connection: IMAPClient?
+        if index > 0 {
+            do { connection = try await reconnect() } catch {
+                progress(.log("Connection \(index + 1) not opened (\(error.localizedDescription)); continuing with fewer connections"))
+                return
+            }
+        }
         defer { if let c = connection { Task { await c.logout() } } }
         func current() async throws -> IMAPClient {
             if let c = connection { return c }
             return await client
         }
         while let item = await queue.pop() {
-            try Task.checkCancellation()
-            do {
-                var c = try await current()
-                if item.payload == nil {
-                    if let all = allMailPath { try await labelExisting(on: c, item.messageID, allMail: all, target: item.targetPath) }
-                    await noteExisting(progress)
-                    continue
-                }
-                if !preloaded, try await existsOn(c, item.messageID, in: item.scope) {
-                    await markDone(item.key)
-                    await noteExisting(progress)
-                    continue
-                }
-                var flags: MessageFlags = []
-                if item.isRead { flags.insert(.seen) }
-                if item.isFlagged { flags.insert(.flagged) }
-                if item.folderKind == .drafts { flags.insert(.draft) }
-                let payload = item.payload ?? Data()
-                let date = item.date ?? MIMEParser.parseHeaders(payload).first("Date").flatMap(RFC5322Date.parse)
-                let uid: UInt32?
+            var attempt = 0
+            while true {
+                try Task.checkCancellation()
                 do {
-                    uid = try await c.append(mailbox: item.targetPath, message: payload, flags: flags.imapFlags, date: date)
-                } catch FalconError.network {
-                    await c.logout()
-                    c = try await reconnect()
-                    if index == 0 { client = c } else { connection = c }
-                    uid = try await c.append(mailbox: item.targetPath, message: payload, flags: flags.imapFlags, date: date)
+                    let c = try await current()
+                    try await process(item, on: c, preloaded: preloaded, progress: progress)
+                    break
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    guard MigrationRunner.isTransient(error), attempt < 6 else {
+                        await noteFailed(progress, "\(item.targetPath) \(item.messageID): \(error.localizedDescription)")
+                        break
+                    }
+                    attempt += 1
+                    if let c = connection { await c.logout() } else { await client.logout() }
+                    let delay = min(60, 5 * (1 << attempt))
+                    progress(.log("Connection \(index + 1): \(error.localizedDescription) — retrying in \(delay)s"))
+                    try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                    do {
+                        let fresh = try await reconnect()
+                        if index == 0 { client = fresh } else { connection = fresh }
+                    } catch {
+                        if index > 0 {
+                            await queue.requeue(item)
+                            progress(.log("Connection \(index + 1) closed: \(error.localizedDescription); continuing with fewer connections"))
+                            connection = nil
+                            return
+                        }
+                    }
                 }
-                await noteAppended(item, uid: uid, bytes: payload.count, progress: progress)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                await noteFailed(progress, "\(item.targetPath) \(item.messageID): \(error.localizedDescription)")
             }
+        }
+    }
+
+    private func process(_ item: MigrationItem, on c: IMAPClient, preloaded: Bool, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {
+        if item.payload == nil {
+            if let all = allMailPath { try await labelExisting(on: c, item.messageID, allMail: all, target: item.targetPath) }
+            noteExisting(progress)
+            return
+        }
+        if !preloaded, try await existsOn(c, item.messageID, in: item.scope) {
+            markDone(item.key)
+            noteExisting(progress)
+            return
+        }
+        var flags: MessageFlags = []
+        if item.isRead { flags.insert(.seen) }
+        if item.isFlagged { flags.insert(.flagged) }
+        if item.folderKind == .drafts { flags.insert(.draft) }
+        let payload = item.payload ?? Data()
+        let date = item.date ?? MIMEParser.parseHeaders(payload).first("Date").flatMap(RFC5322Date.parse)
+        let uid = try await c.append(mailbox: item.targetPath, message: payload, flags: flags.imapFlags, date: date)
+        noteAppended(item, uid: uid, bytes: payload.count, progress: progress)
+    }
+
+    static func isTransient(_ error: Error) -> Bool {
+        switch error {
+        case FalconError.network: return true
+        case FalconError.protocolError(let text):
+            let t = text.lowercased()
+            return t.contains("too many simultaneous") || t.contains("try again") || t.contains("temporar") || t.contains("throttl") || t.contains("bye") || t.contains("timeout")
+        default:
+            return "\(error)".lowercased().contains("too many simultaneous")
         }
     }
 
