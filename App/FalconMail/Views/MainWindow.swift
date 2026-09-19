@@ -14,14 +14,29 @@ struct MainWindow: View {
     @State private var importTarget: FolderInfo?
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
-        } content: {
-            contentColumn
-                .navigationSplitViewColumnWidth(min: 320, ideal: 420, max: 640)
-        } detail: {
-            detailColumn
+        VStack(spacing: 0) {
+            if !model.tabs.isEmpty {
+                WorkspaceTabStrip()
+                Divider()
+            }
+            ZStack {
+                NavigationSplitView {
+                    SidebarView()
+                        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 360)
+                } content: {
+                    contentColumn
+                        .navigationSplitViewColumnWidth(min: 320, ideal: 420, max: 640)
+                } detail: {
+                    detailColumn
+                }
+                .opacity(model.activeTab == nil ? 1 : 0)
+                .allowsHitTesting(model.activeTab == nil)
+                if let tab = model.activeTab {
+                    WorkspaceTabContent(tab: tab)
+                        .id(tab.id)
+                        .background(Color(nsColor: .windowBackgroundColor))
+                }
+            }
         }
         .toolbar { toolbarItems }
         .safeAreaInset(edge: .bottom) {
@@ -82,22 +97,24 @@ struct MainWindow: View {
                 .disabled(model.accounts.isEmpty)
             Button { model.syncNow() } label: { Label("Check Mail", systemImage: "arrow.clockwise") }
         }
-        ToolbarItemGroup(placement: .primaryAction) {
-            ReplyToolbar(reply: reply, forward: forward)
-            MessageActionsToolbar()
+        if model.activeTab == nil {
+            ToolbarItemGroup(placement: .primaryAction) {
+                ReplyToolbar(reply: reply, forward: forward)
+                MessageActionsToolbar()
+            }
         }
     }
 
     private func compose() {
         guard let account = model.accounts.first else { return }
-        openWindow(value: model.newDraft(.blank(account: account)))
+        model.openCompose(.blank(account: account))
     }
 
     private func reply(all: Bool) {
         guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
         Task {
             let parsed = await model.parsedBody(for: thread.latest)
-            openWindow(value: model.newDraft(.reply(to: thread.latest, parsed: parsed, account: account, all: all)))
+            model.openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all))
         }
     }
 
@@ -105,7 +122,7 @@ struct MainWindow: View {
         guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
         Task {
             let parsed = await model.parsedBody(for: thread.latest)
-            openWindow(value: model.newDraft(.forward(thread.latest, parsed: parsed, account: account)))
+            model.openCompose(.forward(thread.latest, parsed: parsed, account: account))
         }
     }
 

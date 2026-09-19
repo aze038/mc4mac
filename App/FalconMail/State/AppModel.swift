@@ -53,6 +53,10 @@ final class AppModel: ObservableObject {
     }
     @Published var contactList: [ContactInfo] = []
     @Published var openMessageWindows = Set<String>()
+    @Published var tabs: [WorkspaceTab] = []
+    @Published var minimizedTabs: [WorkspaceTab] = []
+    @Published var activeTab: WorkspaceTab?
+    var tabTitles: [String: String] = [:]
     let updates = UpdateManager()
     lazy var session = SessionStore(layout: layout)
     private var restoredState: SessionState?
@@ -60,7 +64,7 @@ final class AppModel: ObservableObject {
     @AppStorage("groupByThread") var groupByThread = true { didSet { rebuildThreads() } }
     @AppStorage("undoSendSeconds") var undoSendSeconds = 10
     @AppStorage("loadRemoteImages") var loadRemoteImages = false
-    @AppStorage("openInWindowOnDoubleClick") var openInWindowOnDoubleClick = true
+    @AppStorage("openInWindowOnDoubleClick") var openInWindowOnDoubleClick = false
     @AppStorage("appearance") var appearance = AppAppearance.system.rawValue
     @AppStorage("offlineBodies") var offlineBodies = 150 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
     @AppStorage("maxOfflineMB") var maxOfflineMB = 5 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
@@ -106,6 +110,7 @@ final class AppModel: ObservableObject {
         if let s = restoredState {
             let ids = Set(s.selectedMessageIDs)
             selectedMessageIDs = ids.filter { id in threads.contains { $0.id == id } }
+            await restoreTabs(s.openTabs, minimized: s.minimizedTabs, active: s.activeTab)
         }
         Task { await syncContacts() }
     }
@@ -113,12 +118,14 @@ final class AppModel: ObservableObject {
     var windowsToRestore: (messages: [String], drafts: [UUID]) {
         let state = restoredState
         restoredState = nil
-        return (state?.openMessageWindows ?? [], Array(drafts.keys))
+        let tabDrafts = Set((tabs + minimizedTabs).compactMap { if case .compose(let id) = $0 { return id } else { return nil } })
+        return (state?.openMessageWindows ?? [], drafts.keys.filter { !tabDrafts.contains($0) })
     }
 
     func currentSessionState() -> SessionState {
         SessionState(selection: selection, selectedMessageIDs: Array(selectedMessageIDs), searchText: searchText,
-                     openMessageWindows: Array(openMessageWindows), openDraftIDs: Array(drafts.keys))
+                     openMessageWindows: Array(openMessageWindows), openDraftIDs: Array(drafts.keys),
+                     openTabs: tabs, minimizedTabs: minimizedTabs, activeTab: activeTab)
     }
 
     func saveSession() {
@@ -324,6 +331,10 @@ final class AppModel: ObservableObject {
         return draft.id
     }
 
+    func openMessage(_ message: MessageSummary, forceWindow: Bool = false, openWindow: (String) -> Void) {
+        if forceWindow || openInWindowOnDoubleClick { openWindow(message.id) } else { openMessageTab(message) }
+    }
+
     func send(_ draft: ComposeDraft) throws {
         guard let account = accounts.first(where: { $0.id == draft.accountID }) else { throw FalconError.storage("account missing") }
         let message = try draft.outgoing(from: account)
@@ -338,6 +349,7 @@ final class AppModel: ObservableObject {
             }
         }
         drafts[draft.id] = nil
+        closeTab(.compose(draft.id))
     }
 
     func undoSend(_ item: OutboxItem) {

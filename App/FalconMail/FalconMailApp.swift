@@ -42,7 +42,10 @@ struct FalconMailApp: App {
                 Button("Reply") { reply(all: false) }.keyboardShortcut("r", modifiers: .command)
                 Button("Reply All") { reply(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
                 Button("Forward") { forward() }.keyboardShortcut("f", modifiers: [.command, .shift])
-                Button("Open in New Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: .command)
+                Button("Open") { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } }.keyboardShortcut("o", modifiers: .command)
+                Button("Open in Separate Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
+                Button("Close Tab") { model.closeActiveTab() }.keyboardShortcut("w", modifiers: .command).disabled(model.activeTab == nil)
+                Button("Minimize Tab") { if let t = model.activeTab { model.minimizeTab(t) } }.keyboardShortcut("m", modifiers: .command).disabled(model.activeTab == nil)
                 Divider()
                 Button("Archive") { model.archive(model.selectedMessages) }.keyboardShortcut("e", modifiers: .command)
                 Button("Delete") { model.delete(model.selectedMessages) }.keyboardShortcut(.delete, modifiers: .command)
@@ -84,14 +87,14 @@ struct FalconMailApp: App {
 
     private func compose() {
         guard let account = model.accounts.first else { return }
-        openWindow(value: model.newDraft(.blank(account: account)))
+        model.openCompose(.blank(account: account))
     }
 
     private func reply(all: Bool) {
         guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
         Task {
             let parsed = await model.parsedBody(for: thread.latest)
-            openWindow(value: model.newDraft(.reply(to: thread.latest, parsed: parsed, account: account, all: all)))
+            model.openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all))
         }
     }
 
@@ -99,13 +102,13 @@ struct FalconMailApp: App {
         guard let thread = model.currentThread, let account = model.account(for: thread.latest) else { return }
         Task {
             let parsed = await model.parsedBody(for: thread.latest)
-            openWindow(value: model.newDraft(.forward(thread.latest, parsed: parsed, account: account)))
+            model.openCompose(.forward(thread.latest, parsed: parsed, account: account))
         }
     }
 
     private func openSelectedInWindow() {
         guard let thread = model.currentThread else { return }
-        openWindow(value: thread.latest.id)
+        model.openMessage(thread.latest, forceWindow: true) { openWindow(value: $0) }
     }
 }
 

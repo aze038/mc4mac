@@ -39,7 +39,7 @@ struct UpdateSheet: View {
             case .downloading(let p):
                 ProgressView(value: p) { Text("Downloading \(updates.release?.assetName ?? "update")…") }
             case .installing:
-                ProgressView { Text("Installing and relaunching…") }
+                ProgressView { Text("FalconMail will close, install the update and reopen…") }
             case .failed(let message):
                 Text(message).foregroundStyle(.red).font(.callout)
             default:
@@ -75,7 +75,7 @@ struct UpdateSheet: View {
 
     private var buttonTitle: String {
         if case .failed = updates.phase { return "Try Again" }
-        return updates.isMandatory ? "Update Now" : "Install and Relaunch"
+        return updates.isMandatory ? "Update Now" : "Quit, Install and Reopen"
     }
 }
 

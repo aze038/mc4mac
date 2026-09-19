@@ -7,6 +7,9 @@ struct SessionState: Codable {
     var searchText = ""
     var openMessageWindows: [String] = []
     var openDraftIDs: [UUID] = []
+    var openTabs: [WorkspaceTab] = []
+    var minimizedTabs: [WorkspaceTab] = []
+    var activeTab: WorkspaceTab?
     var savedAt = Date()
 }
 

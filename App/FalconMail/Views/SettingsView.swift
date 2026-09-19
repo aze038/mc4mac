@@ -57,7 +57,7 @@ struct GeneralSettings: View {
             }
             Section("Reading") {
                 Toggle("Group messages by conversation", isOn: $model.groupByThread)
-                Toggle("Open messages in a new window on double-click", isOn: $model.openInWindowOnDoubleClick)
+                Toggle("Open messages in a separate window instead of a tab", isOn: $model.openInWindowOnDoubleClick)
                 Toggle("Load remote images in messages", isOn: $model.loadRemoteImages)
             }
             Section("Sending") {

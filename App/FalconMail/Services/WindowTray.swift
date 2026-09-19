@@ -119,10 +119,21 @@ struct PopupWindowAccessor: NSViewRepresentable {
 
 struct WindowTrayBar: View {
     @ObservedObject var tray = WindowTray.shared
+    @EnvironmentObject var model: AppModel
 
     var body: some View {
-        if !tray.entries.isEmpty {
+        if !tray.entries.isEmpty || !model.minimizedTabs.isEmpty {
             HStack(spacing: 8) {
+                ForEach(model.minimizedTabs) { tab in
+                    HStack(spacing: 6) {
+                        Image(systemName: model.icon(for: tab)).font(.caption)
+                        Text(model.title(for: tab)).font(.caption).lineLimit(1).frame(maxWidth: 220)
+                        Button { model.closeTab(tab) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                    .onTapGesture { model.openTab(tab) }
+                }
                 ForEach(tray.entries) { e in
                     HStack(spacing: 6) {
                         Image(systemName: "macwindow").font(.caption)

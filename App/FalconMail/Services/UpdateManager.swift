@@ -113,8 +113,8 @@ final class UpdateManager: ObservableObject {
                 try UpdateInstaller.verifySignature(of: newApp)
                 await beforeRelaunch?()
                 let current = Bundle.main.bundleURL
-                let installed = try UpdateInstaller.install(newApp: newApp, replacing: current)
-                UpdateInstaller.relaunch(installed)
+                let target = UpdateInstaller.isReplaceable(current) ? current : UpdateInstaller.preferredInstallLocation(named: current.lastPathComponent)
+                try UpdateInstaller.scheduleInstallAfterQuit(newApp: newApp, target: target)
                 exit(0)
             } catch {
                 phase = .failed(error.localizedDescription)

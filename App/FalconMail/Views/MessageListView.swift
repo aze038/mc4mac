@@ -27,11 +27,9 @@ struct MessageListView: View {
             List(model.threads, selection: $model.selectedMessageIDs) { thread in
                 MessageRow(thread: thread)
                     .tag(thread.id)
-                    .simultaneousGesture(TapGesture(count: 2).onEnded {
-                        if model.openInWindowOnDoubleClick { openWindow(value: thread.latest.id) }
-                    })
                     .contextMenu {
-                        Button("Open in New Window") { openWindow(value: thread.latest.id) }
+                        Button("Open") { model.openMessage(thread.latest) { openWindow(value: $0) } }
+                        Button("Open in Separate Window") { openWindow(value: thread.latest.id) }
                         Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
                         Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
                         Button("Archive") { model.archive(thread.messages) }
@@ -39,9 +37,10 @@ struct MessageListView: View {
                     }
             }
             .listStyle(.inset)
+            .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } })
             .onKeyPress(.return) {
                 guard let t = model.currentThread else { return .ignored }
-                openWindow(value: t.latest.id)
+                model.openMessage(t.latest) { openWindow(value: $0) }
                 return .handled
             }
             .overlay {
@@ -97,6 +96,7 @@ struct MessageRow: View {
             }
         }
         .padding(.vertical, 3)
+        .contentShape(Rectangle())
     }
 
     static let timeFormatter: DateFormatter = { let f = DateFormatter(); f.timeStyle = .short; f.dateStyle = .none; return f }()

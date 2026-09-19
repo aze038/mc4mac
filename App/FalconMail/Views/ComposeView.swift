@@ -6,7 +6,10 @@ import FalconCore
 struct ComposeView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     let draftID: UUID
+    var embedded = false
+    var onClose: (() -> Void)? = nil
     @State private var draft: ComposeDraft?
     @State private var showCcBcc = false
     @State private var showSchedule = false
@@ -19,8 +22,8 @@ struct ComposeView: View {
         Group {
             if draft != nil { form } else { ProgressView() }
         }
-        .frame(minWidth: 600, minHeight: 480)
-        .background(PopupWindowAccessor())
+        .frame(minWidth: 600, minHeight: embedded ? 0 : 480)
+        .background(embedded ? nil : PopupWindowAccessor())
         .onAppear { draft = model.drafts[draftID] }
         .onDisappear { editSessions.values.forEach { $0.stop() } }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
@@ -46,6 +49,22 @@ struct ComposeView: View {
 
     private var form: some View {
         VStack(spacing: 0) {
+            if embedded {
+                HStack(spacing: 10) {
+                    Button { send() } label: { Label("Send", systemImage: "paperplane.fill") }
+                        .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
+                    Button { attach() } label: { Label("Attach", systemImage: "paperclip") }
+                    Button { showSchedule = true } label: { Label("Schedule", systemImage: "clock") }
+                        .popover(isPresented: $showSchedule) { schedulePopover }
+                    Spacer()
+                    Button { popOut() } label: { Label("Separate Window", systemImage: "macwindow.on.rectangle") }
+                    Button(role: .destructive) { discard() } label: { Label("Discard", systemImage: "trash") }
+                }
+                .buttonStyle(.borderless)
+                .labelStyle(.titleAndIcon)
+                .padding(8)
+                Divider()
+            }
             VStack(spacing: 6) {
                 HStack {
                     Picker("From", selection: binding(\.accountID)) {
@@ -85,30 +104,45 @@ struct ComposeView: View {
                 .padding(8)
         }
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button(role: .destructive) { discard() } label: { Label("Discard", systemImage: "trash") }
-                Button { attach() } label: { Label("Attach", systemImage: "paperclip") }
-                Button { showSchedule = true } label: { Label("Schedule", systemImage: "clock") }
-                    .popover(isPresented: $showSchedule) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            DatePicker("Send at", selection: $scheduleDate, in: Date()...)
-                            HStack {
-                                Button("Cancel") { showSchedule = false }
-                                Spacer()
-                                Button("Schedule Send") {
-                                    draft?.scheduledAt = scheduleDate
-                                    showSchedule = false
-                                    send()
-                                }.keyboardShortcut(.defaultAction)
-                            }
-                        }
-                        .padding(16).frame(width: 320)
-                    }
-                Button { send() } label: { Label("Send", systemImage: "paperplane.fill") }
-                    .keyboardShortcut(.return, modifiers: .command)
+            if !embedded {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button(role: .destructive) { discard() } label: { Label("Discard", systemImage: "trash") }
+                    Button { attach() } label: { Label("Attach", systemImage: "paperclip") }
+                    Button { showSchedule = true } label: { Label("Schedule", systemImage: "clock") }
+                        .popover(isPresented: $showSchedule) { schedulePopover }
+                    Button { send() } label: { Label("Send", systemImage: "paperplane.fill") }
+                        .keyboardShortcut(.return, modifiers: .command)
+                }
             }
         }
         .navigationTitle(draft?.subject.isEmpty == false ? draft!.subject : "New Message")
+    }
+
+    private var schedulePopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DatePicker("Send at", selection: $scheduleDate, in: Date()...)
+            HStack {
+                Button("Cancel") { showSchedule = false }
+                Spacer()
+                Button("Schedule Send") {
+                    draft?.scheduledAt = scheduleDate
+                    showSchedule = false
+                    send()
+                }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16).frame(width: 320)
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
+    }
+
+    private func popOut() {
+        editSessions.values.forEach { $0.stop() }
+        model.tabs.removeAll { $0 == .compose(draftID) }
+        if model.activeTab == .compose(draftID) { model.activeTab = nil }
+        openWindow(value: draftID)
     }
 
     private func binding<T>(_ path: WritableKeyPath<ComposeDraft, T>) -> Binding<T> {
@@ -148,7 +182,7 @@ struct ComposeView: View {
     private func discard() {
         editSessions.values.forEach { $0.stop() }
         model.drafts[draftID] = nil
-        dismiss()
+        close()
     }
 
     private func send() {
@@ -156,7 +190,7 @@ struct ComposeView: View {
         editSessions.values.forEach { $0.stop() }
         do {
             try model.send(d)
-            dismiss()
+            close()
         } catch {
             self.error = error.localizedDescription
         }
