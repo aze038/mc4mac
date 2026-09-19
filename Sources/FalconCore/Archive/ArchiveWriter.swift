@@ -110,7 +110,7 @@ public actor ArchiveWriter {
         if chunk != nil { try await closeChunk() }
         let manifest = ArchiveManifest(
             format: ArchiveManifest.formatName, version: ArchiveManifest.currentVersion, name: name, createdAt: Date(),
-            generator: "FalconMail 0.1.0", account: account.map { ArchiveAccountInfo(email: $0.email, provider: $0.provider) },
+            generator: "FalconMail 1.0.0", account: account.map { ArchiveAccountInfo(email: $0.email, provider: $0.provider) },
             encryption: encryptionInfo,
             folders: folderCounts.map { ArchiveFolderSummary(path: $0.key, messageCount: $0.value) }.sorted { $0.path < $1.path },
             chunks: chunks, indexShards: shards, messageCount: totalMessages, byteSize: totalBytes)
