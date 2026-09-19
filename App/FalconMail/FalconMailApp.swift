@@ -149,10 +149,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         Task { @MainActor in
-            await model.shutdown()
+            let shutdown = Task { await model.shutdown() }
+            let timeout = Task { try? await Task.sleep(nanoseconds: 3_000_000_000) }
+            _ = await Task.select(shutdown, timeout)
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+}
+
+extension Task where Success == Void, Failure == Never {
+    static func select(_ a: Task<Void, Never>, _ b: Task<Void, Never>) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await a.value }
+            group.addTask { await b.value }
+            await group.next()
+            group.cancelAll()
+        }
     }
 }
 

@@ -115,7 +115,7 @@ final class UpdateManager: ObservableObject {
                 let current = Bundle.main.bundleURL
                 let installed = try UpdateInstaller.install(newApp: newApp, replacing: current)
                 UpdateInstaller.relaunch(installed)
-                NSApp.terminate(nil)
+                exit(0)
             } catch {
                 phase = .failed(error.localizedDescription)
             }

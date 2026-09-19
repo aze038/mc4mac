@@ -127,6 +127,9 @@ final class AppModel: ObservableObject {
         saveSession()
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
+        let stop = Task { await coordinator.stopAll() }
+        let timeout = Task { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+        _ = await Task.select(stop, timeout)
     }
 
     private func listen() {
@@ -468,8 +471,8 @@ final class AppModel: ObservableObject {
 
     func shutdown() async {
         saveSession()
-        await coordinator.stopAll()
         await store.flushAll()
+        await coordinator.stopAll()
     }
 }
 
