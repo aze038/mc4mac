@@ -150,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let model else { return .terminateNow }
         Task { @MainActor in
             let shutdown = Task { await model.shutdown() }
-            let timeout = Task { try? await Task.sleep(nanoseconds: 3_000_000_000) }
+            let timeout = Task { _ = try? await Task.sleep(nanoseconds: 3_000_000_000) }
             _ = await Task.select(shutdown, timeout)
             NSApp.reply(toApplicationShouldTerminate: true)
         }
