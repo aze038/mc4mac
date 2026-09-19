@@ -104,12 +104,22 @@ struct QuickLookHostView: NSViewRepresentable {
 
 struct AttachmentStrip: View {
     let attachments: [MIMEAttachment]
+    var html: String? = nil
     @State private var selectedIndex = 0
     @State private var focusToken = 0
     @State private var tempURLs: [String: URL] = [:]
     @State private var hostView: QuickLookHost?
 
-    private var visible: [MIMEAttachment] { attachments.filter { !$0.isInline || $0.contentID == nil } }
+    private var visible: [MIMEAttachment] {
+        let body = html?.lowercased() ?? ""
+        var seen = Set<Data>()
+        return attachments.filter { a in
+            if let cid = a.contentID, a.isInline || body.contains("cid:" + cid.lowercased()) {
+                if body.contains("cid:" + cid.lowercased()) { return false }
+            }
+            return seen.insert(a.data).inserted
+        }
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {

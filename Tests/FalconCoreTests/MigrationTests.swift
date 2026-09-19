@@ -153,4 +153,34 @@ extension MigrationTests {
         XCTAssertFalse(GmailImporter.isRateLimited(FalconError.http(403, "insufficientPermissions")))
         XCTAssertFalse(GmailImporter.isRateLimited(FalconError.http(400, "bad request")))
     }
+
+    func testSlimmerMergesIdenticalInlineImagesAndRepointsCIDs() throws {
+        let logo = Data(repeating: 0xAB, count: 4096)
+        let pdf = Data(repeating: 0x01, count: 2048)
+        let html = "<p>Hi</p><img src=\"cid:logo1@x\"><blockquote><img src=\"cid:logo2@x\"><img src=\"cid:logo3@x\"></blockquote>"
+        let message = OutgoingMessage(from: EmailAddress(address: "a@example.com"), to: [EmailAddress(address: "b@example.com")], cc: [], bcc: [],
+                                      subject: "Sig", textBody: "Hi", htmlBody: html,
+                                      attachments: [OutgoingAttachment(filename: "image001.png", mimeType: "image/png", data: logo, contentID: "logo1@x"),
+                                                    OutgoingAttachment(filename: "image002.png", mimeType: "image/png", data: logo, contentID: "logo2@x"),
+                                                    OutgoingAttachment(filename: "image003.png", mimeType: "image/png", data: logo, contentID: "logo3@x"),
+                                                    OutgoingAttachment(filename: "doc.pdf", mimeType: "application/pdf", data: pdf)],
+                                      inReplyTo: nil, references: [], messageID: "<m@x>", date: Date())
+        let raw = MIMEBuilder.build(message)
+        let result = try XCTUnwrap(MIMESlimmer.mergeDuplicateAttachments(raw))
+        XCTAssertEqual(result.removedParts, 2)
+        XCTAssertGreaterThan(result.savedBytes, 8000)
+        let parsed = MIMEParser.parse(result.data)
+        XCTAssertEqual(parsed.attachments.count, 2)
+        XCTAssertEqual(parsed.subject, "Sig")
+        XCTAssertEqual(parsed.textPlain?.trimmingCharacters(in: .whitespacesAndNewlines), "Hi")
+        let body = try XCTUnwrap(parsed.textHTML)
+        XCTAssertEqual(body.components(separatedBy: "cid:logo1@x").count - 1, 3)
+        XCTAssertFalse(body.contains("logo2@x"))
+        XCTAssertNil(MIMESlimmer.mergeDuplicateAttachments(result.data))
+        let plain = MIMEBuilder.build(OutgoingMessage(from: EmailAddress(address: "a@example.com"), to: [], cc: [], bcc: [], subject: "x", textBody: "y", htmlBody: nil,
+                                                      attachments: [OutgoingAttachment(filename: "a.pdf", mimeType: "application/pdf", data: pdf),
+                                                                    OutgoingAttachment(filename: "b.pdf", mimeType: "application/pdf", data: pdf)],
+                                                      inReplyTo: nil, references: [], messageID: nil, date: Date()))
+        XCTAssertNil(MIMESlimmer.mergeDuplicateAttachments(plain))
+    }
 }

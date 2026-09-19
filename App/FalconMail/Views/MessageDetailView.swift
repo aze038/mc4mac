@@ -51,7 +51,7 @@ struct MessageReaderView: View {
                 }
             }
             conversationHint
-            if let parsed, !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments) }
+            if let parsed, !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments, html: parsed.textHTML) }
             if !model.loadRemoteImages && !allowRemoteImages && hasRemote {
                 RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
             }

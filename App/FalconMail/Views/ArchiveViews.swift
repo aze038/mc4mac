@@ -330,7 +330,7 @@ struct ArchiveBrowserView: View {
                             Text("From: \(parsed.from.rfc5322)").font(.caption)
                             Text("To: \(parsed.to.map { $0.rfc5322 }.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
                             Text(selected.date.formatted()).font(.caption).foregroundStyle(.secondary)
-                            if !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments) }
+                            if !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments, html: parsed.textHTML) }
                             HTMLView(html: MessageRenderer.html(for: parsed, allowRemote: model.loadRemoteImages)).frame(minHeight: 300)
                         }
                         .padding(20)

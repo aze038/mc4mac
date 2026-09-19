@@ -21,6 +21,8 @@ struct MigrationView: View {
     @State private var verifying = false
     @State private var useGmailAPI = true
     @State private var importsPerMinute = 240
+    @State private var labelDuplicates = true
+    @State private var mergeAttachments = true
     @State private var uploadedBytes = 0
     @State private var rateSamples: [(Date, Int)] = []
     @State private var running = false
@@ -163,6 +165,20 @@ struct MigrationView: View {
                 Spacer()
             }
             .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 18) {
+                Text("").frame(width: 60)
+                Toggle("Merge identical attachments inside a message", isOn: $mergeAttachments).disabled(running)
+                if targetIsGoogle {
+                    Toggle("Label copies already present in another folder", isOn: $labelDuplicates).disabled(running)
+                }
+                Spacer()
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top) {
+                Text("").frame(width: 60)
+                Text("Duplicates are detected by Message-ID across every source folder and uploaded once. Merging keeps one copy of an image that repeats inside a message, such as a signature logo in every quoted reply, and points the body at it.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             HStack(alignment: .top) {
                 Text("").frame(width: 60)
                 Text(targetIsGoogle && useGmailAPI
@@ -466,6 +482,8 @@ struct MigrationView: View {
                 options.labelMigrated = labelMigrated
                 options.uploaders = connections
                 options.importsPerMinute = importsPerMinute
+                options.labelDuplicates = labelDuplicates
+                options.mergeDuplicateAttachments = mergeAttachments
                 await runner.setOptions(options)
                 await runner.setGmailImporter(importer)
                 do {

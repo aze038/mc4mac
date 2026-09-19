@@ -104,12 +104,17 @@ public struct MigrationReport: Sendable {
     public var skippedFolders = 0
     public var createdFolders: [String] = []
     public var bytesUploaded = 0
+    public var mergedAttachments = 0
+    public var bytesSaved = 0
+    public var duplicatesSkipped = 0
 }
 
 public struct MigrationOptions: Sendable {
     public var bufferBytes = MigrationOptions.defaultBufferBytes
     public var uploaders = 5
     public var importsPerMinute = 240
+    public var labelDuplicates = true
+    public var mergeDuplicateAttachments = true
     public var decoders = 3
     public var labelMigrated = true
     public var labelName = "Migrated"
@@ -245,6 +250,7 @@ public actor MigrationRunner {
     public var options = MigrationOptions()
     private var pendingLabel: [String: [UInt32]] = [:]
     private var gmail: GmailImporter?
+    private var claimed = Set<String>()
     private var migratedLabelID: String?
     private var labelIDsByPath: [String: [String]] = [:]
 
@@ -329,6 +335,10 @@ public actor MigrationRunner {
             }
         }
         persist()
+        if report.mergedAttachments > 0 {
+            progress(.log("Merged \(report.mergedAttachments) duplicate attachments, saving \(ByteCountFormatter.string(fromByteCount: Int64(report.bytesSaved), countStyle: .file))"))
+        }
+        if report.duplicatesSkipped > 0 { progress(.log("Skipped \(report.duplicatesSkipped) copies of messages that appear in more than one source folder")) }
         progress(.status(dryRun ? "Dry run complete" : "Migration complete"))
         return report
     }
@@ -469,7 +479,7 @@ public actor MigrationRunner {
             if await isDone(key) { await noteExisting(progress); continue }
             if preloaded, await isKnown(messageID, in: scope) {
                 await markDone(key)
-                if isGmail, let all = allMailPath, all != targetPath {
+                if isGmail, options.labelDuplicates, let all = allMailPath, all != targetPath {
                     await queue.push(MigrationItem(key: key, messageID: messageID, folderKind: folder.kind, isRead: message.isRead, isFlagged: message.isFlagged,
                                                    date: message.date, payload: nil, targetPath: targetPath, scope: scope))
                 } else {
@@ -477,10 +487,18 @@ public actor MigrationRunner {
                 }
                 continue
             }
-            let data: Data
+            guard await claim(messageID, in: scope) else {
+                await noteDuplicate(progress)
+                continue
+            }
+            var data: Data
             do { data = try raw ?? message.load() } catch {
                 await noteFailed(progress, "\(folder.path) \(messageID): \(error.localizedDescription)")
                 continue
+            }
+            if options.mergeDuplicateAttachments, let slim = MIMESlimmer.mergeDuplicateAttachments(data) {
+                data = slim.data
+                await noteMerged(slim)
             }
             let payload = MigrationRunner.ensureMessageID(data, messageID)
             await queue.push(MigrationItem(key: key, messageID: messageID, folderKind: folder.kind, isRead: message.isRead, isFlagged: message.isFlagged,
@@ -583,6 +601,18 @@ public actor MigrationRunner {
         default:
             return "\(error)".lowercased().contains("too many simultaneous")
         }
+    }
+
+    private func claim(_ messageID: String, in scope: String) -> Bool { claimed.insert(scope + "|" + messageID).inserted }
+
+    private func noteMerged(_ slim: MIMESlimmer.Result) {
+        report.mergedAttachments += slim.removedParts
+        report.bytesSaved += slim.savedBytes
+    }
+
+    private func noteDuplicate(_ progress: @escaping @Sendable (MigrationProgress) -> Void) {
+        report.duplicatesSkipped += 1
+        noteExisting(progress)
     }
 
     private func isDone(_ key: String) -> Bool { done.contains(key) }
