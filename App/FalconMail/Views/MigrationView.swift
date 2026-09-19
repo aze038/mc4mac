@@ -20,6 +20,7 @@ struct MigrationView: View {
     @State private var connections = 5
     @State private var verifying = false
     @State private var useGmailAPI = true
+    @State private var importsPerMinute = 220
     @State private var uploadedBytes = 0
     @State private var rateSamples: [(Date, Int)] = []
     @State private var running = false
@@ -155,13 +156,17 @@ struct MigrationView: View {
                 }
                 Stepper("\(connections) upload connections", value: $connections, in: 1...8)
                     .disabled(running)
+                if targetIsGoogle && useGmailAPI {
+                    Stepper("\(importsPerMinute) imports per minute", value: $importsPerMinute, in: 60...2400, step: 20)
+                        .disabled(running)
+                }
                 Spacer()
             }
             .fixedSize(horizontal: false, vertical: true)
             HStack(alignment: .top) {
                 Text("").frame(width: 60)
                 Text(targetIsGoogle && useGmailAPI
-                     ? "Messages go in through Gmail's import API, which has no daily upload cap, keeps original dates, and applies labels on the way in. Only one IMAP connection is used, for duplicate checks. Gmail's quota allows about 240 messages a minute."
+                     ? "Messages go in through Gmail's import API, which has no daily upload cap, keeps original dates, and applies labels on the way in. Only one IMAP connection is used, for duplicate checks. Each import costs 25 quota units, so set imports per minute to your project's “Units per minute per user” quota ÷ 25 with some headroom: 220 for the default 6,000, 560 for 15,000."
                      : "Gmail caps IMAP uploads at 500 MB per day and allows 15 IMAP connections per mailbox, shared with this app's own sync and any other mail client on the account. Connections from a stopped run keep counting for a few minutes.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -247,7 +252,7 @@ struct MigrationView: View {
 
     private func gmailImporter(for account: AccountInfo) async throws -> GmailImporter? {
         guard !dryRun, useGmailAPI, account.provider == "google" else { return nil }
-        let importer = GmailImporter(tokens: model.tokens, accountID: account.id)
+        let importer = GmailImporter(tokens: model.tokens, accountID: account.id, importsPerMinute: importsPerMinute)
         if try await importer.hasRequiredScopes() { return importer }
         status = "Sign in to \(account.email) again to allow FalconMail to add mail to the mailbox…"
         try await model.addGoogleAccount(loginHint: account.email)
@@ -460,6 +465,7 @@ struct MigrationView: View {
                 var options = MigrationOptions()
                 options.labelMigrated = labelMigrated
                 options.uploaders = connections
+                options.importsPerMinute = importsPerMinute
                 await runner.setOptions(options)
                 await runner.setGmailImporter(importer)
                 do {

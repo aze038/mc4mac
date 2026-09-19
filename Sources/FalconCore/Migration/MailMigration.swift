@@ -109,6 +109,7 @@ public struct MigrationReport: Sendable {
 public struct MigrationOptions: Sendable {
     public var bufferBytes = MigrationOptions.defaultBufferBytes
     public var uploaders = 5
+    public var importsPerMinute = 220
     public var decoders = 3
     public var labelMigrated = true
     public var labelName = "Migrated"
