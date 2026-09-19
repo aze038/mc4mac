@@ -66,6 +66,7 @@ public actor AccountSyncer {
                 events.yield(.online(accountID: account.id, true))
                 backoff = 5
                 try await syncAll(client)
+                lastFullSync = Date()
                 events.yield(.finished(accountID: account.id))
                 try await idleLoop(client)
             } catch is CancellationError {
@@ -120,17 +121,22 @@ public actor AccountSyncer {
         }
     }
 
+    public var fullSyncInterval: TimeInterval = 5 * 60
+    private var lastFullSync = Date()
+
     private func idleLoop(_ client: IMAPClient) async throws {
         guard let inbox = await store.folder(accountID: account.id, role: .inbox) else { return }
         while !Task.isCancelled {
             _ = try await client.select(inbox.path)
-            let changed = try await client.idle(maxWait: 25 * 60)
-            if changed || syncRequested {
-                if syncRequested {
-                    try await syncAll(client)
-                } else if let fresh = await store.folder(inbox.id) {
-                    try await syncFolder(fresh, client: client)
-                }
+            let wait = max(30, fullSyncInterval - Date().timeIntervalSince(lastFullSync))
+            let changed = try await client.idle(maxWait: min(wait, 20 * 60))
+            let due = Date().timeIntervalSince(lastFullSync) >= fullSyncInterval
+            if syncRequested || due {
+                try await syncAll(client)
+                lastFullSync = Date()
+                events.yield(.finished(accountID: account.id))
+            } else if changed, let fresh = await store.folder(inbox.id) {
+                try await syncFolder(fresh, client: client)
                 events.yield(.finished(accountID: account.id))
             }
         }
