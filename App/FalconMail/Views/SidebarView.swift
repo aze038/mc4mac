@@ -5,59 +5,98 @@ struct SidebarView: View {
     @EnvironmentObject var model: AppModel
     @State private var addingAccount = false
 
+    private var selectionBinding: Binding<SidebarSelection?> {
+        Binding(get: { model.selection }, set: { model.select($0) })
+    }
+
+    private var inboxUnread: Int {
+        var total = 0
+        for list in model.folders.values {
+            for f in list where f.role == .inbox { total += f.unreadCount }
+        }
+        return total
+    }
+
+    private var pendingOutbox: Int {
+        model.outboxItems.filter { $0.status == .queued || $0.status == .failed }.count
+    }
+
     var body: some View {
-        List(selection: Binding(get: { model.selection }, set: { model.select($0) })) {
-            Section {
-                Label("All Inboxes", systemImage: "tray.2").tag(SidebarSelection.unified)
-                    .badge(model.folders.values.flatMap { $0 }.filter { $0.role == .inbox }.reduce(0) { $0 + $1.unreadCount })
-                Label("Calendar", systemImage: "calendar").tag(SidebarSelection.calendar)
-                Label("Outbox", systemImage: "paperplane").tag(SidebarSelection.outbox)
-                    .badge(model.outboxItems.filter { $0.status == .queued || $0.status == .failed }.count)
-            }
+        List(selection: selectionBinding) {
+            topSection
             ForEach(model.accounts) { account in
-                Section {
-                    ForEach(model.folders[account.id] ?? []) { folder in
-                        if folder.isSelectable {
-                            FolderRow(folder: folder).tag(SidebarSelection.folder(folder.id))
-                        }
-                    }
-                } header: {
-                    HStack {
-                        Text(account.email)
-                        Spacer()
-                        if model.online[account.id] == false { Image(systemName: "wifi.slash").foregroundStyle(.orange) }
-                    }
-                }
+                AccountFolderSection(account: account, folders: model.folders[account.id] ?? [], offline: model.online[account.id] == false)
             }
             if !model.archiveRecords.isEmpty {
-                Section("Archives") {
-                    ForEach(model.archiveRecords) { record in
-                        Label(record.name, systemImage: record.isEncrypted ? "lock.doc" : "archivebox")
-                            .tag(SidebarSelection.archive(record.id))
-                            .badge(record.messageCount)
-                    }
-                }
+                archiveSection
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Button {
-                    addingAccount = true
-                    Task {
-                        defer { addingAccount = false }
-                        do { try await model.addGoogleAccount() } catch { model.errorMessage = error.localizedDescription }
-                    }
-                } label: {
-                    Label(model.accounts.isEmpty ? "Add Google Workspace account" : "Add account", systemImage: "plus.circle")
-                }
-                .buttonStyle(.plain)
-                .disabled(addingAccount)
-                if addingAccount { ProgressView().controlSize(.small) }
-                Spacer()
+        .safeAreaInset(edge: .bottom) { addAccountBar }
+    }
+
+    private var topSection: some View {
+        Section {
+            Label("All Inboxes", systemImage: "tray.2")
+                .tag(SidebarSelection.unified)
+                .badge(inboxUnread)
+            Label("Calendar", systemImage: "calendar")
+                .tag(SidebarSelection.calendar)
+            Label("Outbox", systemImage: "paperplane")
+                .tag(SidebarSelection.outbox)
+                .badge(pendingOutbox)
+        }
+    }
+
+    private var archiveSection: some View {
+        Section("Archives") {
+            ForEach(model.archiveRecords) { record in
+                Label(record.name, systemImage: record.isEncrypted ? "lock.doc" : "archivebox")
+                    .tag(SidebarSelection.archive(record.id))
+                    .badge(record.messageCount)
             }
-            .padding(10)
-            .background(.bar)
+        }
+    }
+
+    private var addAccountBar: some View {
+        HStack {
+            Button(action: addAccount) {
+                Label(model.accounts.isEmpty ? "Add Google Workspace account" : "Add account", systemImage: "plus.circle")
+            }
+            .buttonStyle(.plain)
+            .disabled(addingAccount)
+            if addingAccount { ProgressView().controlSize(.small) }
+            Spacer()
+        }
+        .padding(10)
+        .background(.bar)
+    }
+
+    private func addAccount() {
+        addingAccount = true
+        Task {
+            defer { addingAccount = false }
+            do { try await model.addGoogleAccount() } catch { model.errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+struct AccountFolderSection: View {
+    let account: AccountInfo
+    let folders: [FolderInfo]
+    let offline: Bool
+
+    var body: some View {
+        Section {
+            ForEach(folders.filter { $0.isSelectable }) { folder in
+                FolderRow(folder: folder).tag(SidebarSelection.folder(folder.id))
+            }
+        } header: {
+            HStack {
+                Text(account.email)
+                Spacer()
+                if offline { Image(systemName: "wifi.slash").foregroundStyle(.orange) }
+            }
         }
     }
 }
@@ -65,7 +104,7 @@ struct SidebarView: View {
 struct FolderRow: View {
     let folder: FolderInfo
 
-    var icon: String {
+    private var icon: String {
         switch folder.role {
         case .inbox: return "tray"
         case .sent: return "paperplane"
