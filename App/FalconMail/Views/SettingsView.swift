@@ -323,7 +323,7 @@ struct GoogleSettings: View {
             Section {
                 LabeledContent("Google sign-in", value: OAuthConfigLoader.isBuiltIn ? "Built into this app" : (OAuthConfigLoader.load() == nil ? "Not configured" : "Using developer override"))
             } footer: {
-                Text("Release builds carry the Google OAuth client inside the app, so users only sign in with Google. The override below is for developers building from source.")
+                Text("Release builds carry a Google native-app client ID, which is public by design and has no secret. The override below is for developers building from source; a Desktop-type client with a secret uses a local loopback redirect instead.")
             }
             Section("Developer override") {
                 TextField("OAuth client ID", text: $clientID)

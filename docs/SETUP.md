@@ -14,7 +14,10 @@ users never see a client ID. Create it once:
    the app name, support email, logo, homepage, privacy policy and terms
    links (see below), and the authorized domain of the homepage.
 4. Credentials → Create credentials → **OAuth client ID** → Application type
-   **Desktop app**. Copy the client ID and client secret.
+   **iOS** (Google uses this type for macOS apps as well). Bundle ID:
+   `com.falconmail.app`. This client type has **no client secret**: the app
+   proves itself with PKCE and a URL scheme that only FalconMail registers.
+   Copy the client ID.
 5. On the consent screen page press **Publish app** to move from Testing to
    Production.
 
@@ -60,16 +63,18 @@ notarizes automatically.
 
 ## 2. Put the client into the builds
 
-Add two repository secrets on GitHub (Settings → Secrets and variables →
-Actions): `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`. CI and
-Release builds embed them into the app's `Info.plist`. Google documents that
-the secret of a Desktop app client is not confidential; it is still kept as a
-secret so it never appears in the repository.
+Add one repository secret on GitHub (Settings → Secrets and variables →
+Actions): `GOOGLE_OAUTH_CLIENT_ID`. CI and Release builds write it into the
+app's `Info.plist` and register the matching URL scheme
+`com.googleusercontent.apps.<id>` so Google's sign-in page can return to the
+app. There is nothing confidential in the build: a native-app client ID is
+public by design, like the client ID of any website.
 
-For a build from source on your own Mac, either copy
-`App/FalconMail/Config/GoogleOAuth.example.plist` to `GoogleOAuth.plist` and
-fill it in (the file is git-ignored), or paste the values under Settings →
-Advanced in the app.
+`GOOGLE_OAUTH_CLIENT_SECRET` is only needed if you use a Desktop-type client
+instead; the app then falls back to a local loopback redirect.
+
+For a build from source on your own Mac, paste the client ID under
+Settings → Advanced or into `App/FalconMail/Config/GoogleOAuth.plist`.
 
 ## Adding accounts in the app
 

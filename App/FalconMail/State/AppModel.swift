@@ -331,7 +331,7 @@ final class AppModel: ObservableObject {
         guard let config = OAuthConfigLoader.load() else {
             throw FalconError.invalidInput("This build has no Google sign-in configured. Use a build from GitHub Releases, or set the values under Settings → Advanced.")
         }
-        let flow = GoogleSignInFlow(config: config)
+        let flow = GoogleSignInFlow(config: config, redirect: OAuthConfigLoader.redirect(for: config))
         let result = try await flow.run(openURL: { url in
             DispatchQueue.main.async { _ = NSWorkspace.shared.open(url) }
         }, loginHint: loginHint)

@@ -29,6 +29,18 @@ enum OAuthConfigLoader {
         !id.isEmpty && !id.hasPrefix("YOUR_") && !id.hasPrefix("$")
     }
 
+    static var registeredSchemes: [String] {
+        let types = Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
+        return types.flatMap { ($0["CFBundleURLSchemes"] as? [String]) ?? [] }.map { $0.lowercased() }
+    }
+
+    static func redirect(for config: OAuthClientConfig) -> GoogleSignInFlow.Redirect {
+        if let scheme = config.reversedClientScheme, registeredSchemes.contains(scheme.lowercased()) {
+            return .customScheme(scheme)
+        }
+        return .loopback
+    }
+
     static func save(_ config: OAuthClientConfig) throws {
         try keychain.saveCodable(config, account: keychainAccount)
     }

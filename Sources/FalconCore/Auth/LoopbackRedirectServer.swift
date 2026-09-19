@@ -83,26 +83,74 @@ public actor LoopbackRedirectServer {
     }
 }
 
-public struct GoogleSignInFlow: Sendable {
-    public let oauth: GoogleOAuth
+public actor URLCallbackRouter {
+    public static let shared = URLCallbackRouter()
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var expectedScheme: String?
 
-    public init(config: OAuthClientConfig) {
+    public func expect(scheme: String) {
+        expectedScheme = scheme.lowercased()
+    }
+
+    public func waitForCallback() async throws -> URL {
+        try await withCheckedThrowingContinuation { cont in
+            continuation?.resume(throwing: FalconError.cancelled)
+            continuation = cont
+        }
+    }
+
+    public func deliver(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == expectedScheme, let cont = continuation else { return false }
+        continuation = nil
+        cont.resume(returning: url)
+        return true
+    }
+
+    public func cancel() {
+        continuation?.resume(throwing: FalconError.cancelled)
+        continuation = nil
+    }
+}
+
+public struct GoogleSignInFlow: Sendable {
+    public enum Redirect: Sendable {
+        case loopback
+        case customScheme(String)
+    }
+
+    public let oauth: GoogleOAuth
+    public let redirect: Redirect
+
+    public init(config: OAuthClientConfig, redirect: Redirect) {
         self.oauth = GoogleOAuth(config: config)
+        self.redirect = redirect
     }
 
     public func run(openURL: @Sendable (URL) -> Void, loginHint: String? = nil) async throws -> (token: OAuthToken, email: String, name: String) {
-        let server = LoopbackRedirectServer()
-        try await server.start()
-        let redirect = await server.redirectURI
         let pkce = PKCEPair.generate()
         let state = Data.random(count: 16).base64URL
-        let url = oauth.authorizationURL(redirectURI: redirect, state: state, pkce: pkce, loginHint: loginHint)
-        openURL(url)
-        let params = try await server.waitForCallback()
+        let redirectURI: String
+        let params: [String: String]
+        switch redirect {
+        case .loopback:
+            let server = LoopbackRedirectServer()
+            try await server.start()
+            redirectURI = await server.redirectURI
+            openURL(oauth.authorizationURL(redirectURI: redirectURI, state: state, pkce: pkce, loginHint: loginHint))
+            params = try await server.waitForCallback()
+        case .customScheme(let scheme):
+            redirectURI = "\(scheme):/oauth2redirect"
+            await URLCallbackRouter.shared.expect(scheme: scheme)
+            openURL(oauth.authorizationURL(redirectURI: redirectURI, state: state, pkce: pkce, loginHint: loginHint))
+            let url = try await URLCallbackRouter.shared.waitForCallback()
+            var out: [String: String] = [:]
+            for item in URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [] { out[item.name] = item.value ?? "" }
+            params = out
+        }
         guard params["state"] == state, let code = params["code"] else {
             throw FalconError.invalidInput(params["error"] ?? "Sign-in was cancelled.")
         }
-        let token = try await oauth.exchange(code: code, redirectURI: redirect, pkce: pkce)
+        let token = try await oauth.exchange(code: code, redirectURI: redirectURI, pkce: pkce)
         let who = try await oauth.userEmail(accessToken: token.accessToken)
         return (token, who.email, who.name)
     }

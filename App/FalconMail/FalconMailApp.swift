@@ -22,6 +22,9 @@ struct FalconMailApp: App {
                     appDelegate.model = model
                     AppAppearance.apply(model.appearance)
                 }
+                .onOpenURL { url in
+                    Task { _ = await URLCallbackRouter.shared.deliver(url) }
+                }
                 .onChange(of: model.appearance) { _, new in AppAppearance.apply(new) }
         }
         .defaultSize(width: 1280, height: 800)
