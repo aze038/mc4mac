@@ -25,6 +25,7 @@ struct MigrationView: View {
     @State private var mergeAttachments = true
     @State private var uploadedBytes = 0
     @State private var rateSamples: [(Date, Int)] = []
+    @State private var countSamples: [(Date, Int)] = []
     @State private var running = false
     @State private var dryRun = false
     @State private var status = ""
@@ -464,6 +465,7 @@ struct MigrationView: View {
         running = true
         uploadedBytes = 0
         rateSamples = []
+        countSamples = []
         model.migrationInProgress = true
         status = "Connecting to \(account.email)"
         log = []
@@ -521,9 +523,16 @@ struct MigrationView: View {
 
     private var rateText: String {
         guard let first = rateSamples.first, let last = rateSamples.last, last.0.timeIntervalSince(first.0) >= 1 else { return "measuring…" }
-        let bytesPerSecond = Double(last.1 - first.1) / last.0.timeIntervalSince(first.0)
+        let seconds = last.0.timeIntervalSince(first.0)
+        let bytesPerSecond = Double(last.1 - first.1) / seconds
         let megabits = bytesPerSecond * 8 / 1_000_000
-        return String(format: "%.1f Mbps (%@/s)", megabits, MigrationView.size(Int(bytesPerSecond)))
+        var text = String(format: "%.1f Mbps (%@/s)", megabits, MigrationView.size(Int(bytesPerSecond)))
+        if let c0 = countSamples.first, let c1 = countSamples.last, c1.0.timeIntervalSince(c0.0) >= 1 {
+            let perMinute = Double(c1.1 - c0.1) / c1.0.timeIntervalSince(c0.0) * 60
+            text += String(format: " · %.0f messages/min", perMinute)
+            if targetIsGoogle && useGmailAPI { text += " of \(importsPerMinute) allowed" }
+        }
+        return text
     }
 
     private func noteBytes(_ bytes: Int) {
@@ -531,6 +540,8 @@ struct MigrationView: View {
         let now = Date()
         rateSamples.append((now, bytes))
         rateSamples.removeAll { now.timeIntervalSince($0.0) > 30 }
+        countSamples.append((now, appended))
+        countSamples.removeAll { now.timeIntervalSince($0.0) > 60 }
     }
 
     static func size(_ bytes: Int) -> String {
