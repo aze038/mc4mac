@@ -25,7 +25,9 @@ final class ArchiveTests: XCTestCase {
         try await reader.loadIndex()
         let entries = await reader.entries
         XCTAssertEqual(entries.count, 5)
-        let hit = await reader.search("report 3")
+        let all = await reader.search("report")
+        XCTAssertEqual(all.count, 5)
+        let hit = await reader.search("sender3")
         XCTAssertEqual(hit.count, 1)
         let raw = try await reader.message(hit[0])
         XCTAssertEqual(raw, sampleMessage(3, subject: "Report 3"))
