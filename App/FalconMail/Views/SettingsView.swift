@@ -20,6 +20,10 @@ struct GeneralSettings: View {
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
 
     var body: some View {
+        form.task { await model.refreshCacheSize() }
+    }
+
+    private var form: some View {
         Form {
             Section("Appearance") {
                 Picker("Theme", selection: $model.appearance) {
@@ -29,14 +33,26 @@ struct GeneralSettings: View {
                 Text("Language follows the macOS setting in System Settings → General → Language & Region.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Offline") {
+            Section("Offline and storage") {
                 Picker("Keep offline copies per folder", selection: $model.offlineBodies) {
+                    Text("Online only").tag(0)
+                    Text("50 newest").tag(50)
                     Text("150 newest").tag(150)
                     Text("500 newest").tag(500)
                     Text("2,000 newest").tag(2000)
-                    Text("10,000 newest").tag(10000)
                 }
-                Text("Messages are stored on this Mac for reading, searching and replying without a connection. Sent mail waits in the Outbox until you are online.")
+                Picker("Skip offline copies larger than", selection: $model.maxOfflineMB) {
+                    Text("1 MB").tag(1)
+                    Text("5 MB").tag(5)
+                    Text("20 MB").tag(20)
+                    Text("No limit").tag(10_000)
+                }
+                HStack {
+                    Text("Offline copies on this Mac: \(ByteCountFormatter.string(fromByteCount: Int64(model.cacheSizeBytes), countStyle: .file))")
+                    Spacer()
+                    Button("Clear") { model.clearCache() }
+                }
+                Text("Older copies are removed automatically as new mail arrives. Headers and the search index stay, about 200 bytes per message. Sent mail waits in the Outbox until you are online.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Reading") {

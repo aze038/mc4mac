@@ -24,6 +24,7 @@ public actor AccountSyncer {
     private var backoff: TimeInterval = 5
     public var initialWindow = 1000
     public var bodyPrefetch = 150
+    public var maxOfflineBodyBytes = 5 * 1024 * 1024
     private let batchSize = 100
 
     public init(account: AccountInfo, store: MailStore, tokens: TokenStore, rules: RuleStore, indexer: SpotlightIndexer,
@@ -210,7 +211,8 @@ public actor AccountSyncer {
 
     private func prefetchBodies(folder: FolderInfo, fs: FolderStore, client: IMAPClient, preferred: [MessageSummary]) async throws {
         let all = await fs.all().sorted { $0.date > $1.date }
-        let candidates = all.prefix(bodyPrefetch).filter { !$0.hasBody }
+        if (try? await fs.pruneBodies(keepingNewest: bodyPrefetch)) ?? 0 > 0 { await store.notifyMessagesChanged(folderID: folder.id) }
+        let candidates = all.prefix(bodyPrefetch).filter { !$0.hasBody && $0.size <= maxOfflineBodyBytes }
         guard !candidates.isEmpty else { return }
         var texts: [String: String] = [:]
         var updated: [MessageSummary] = []
@@ -411,8 +413,9 @@ public actor AccountSyncer {
         await store.notifyMessagesChanged(folderID: folder.id)
     }
 
-    public func setBodyPrefetch(_ count: Int) {
+    public func setBodyPrefetch(_ count: Int, maxBytes: Int? = nil) {
         bodyPrefetch = count
+        if let maxBytes { maxOfflineBodyBytes = maxBytes }
     }
 
     public func runRulesOnInbox() async throws {

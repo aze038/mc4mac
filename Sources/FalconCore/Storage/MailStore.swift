@@ -168,6 +168,21 @@ public actor MailStore {
         try updateFolder(f)
     }
 
+    public func cacheSizeBytes() async -> Int {
+        var total = 0
+        for f in allFolders() {
+            if let s = try? await folderStore(f) { total += await s.bodyCacheSize() }
+        }
+        return total
+    }
+
+    public func clearBodyCache() async {
+        for f in allFolders() {
+            if let s = try? await folderStore(f) { try? await s.clearBodies() }
+            emit(.messagesChanged(folderID: f.id))
+        }
+    }
+
     public func flushAll() async {
         for s in folderStores.values { try? await s.flush() }
     }

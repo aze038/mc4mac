@@ -6,6 +6,7 @@ enum FolderJournalOp: Codable {
     case remove(uids: [UInt32])
     case body(uid: UInt32, snippet: String, hasAttachments: Bool)
     case threadKey(uid: UInt32, key: String)
+    case bodyRemoved(uid: UInt32)
 }
 
 public actor FolderStore {
@@ -189,6 +190,32 @@ public actor FolderStore {
         try compact()
     }
 
+    public func bodyCacheSize() -> Int {
+        let files = (try? FileManager.default.contentsOfDirectory(at: bodiesURL, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return files.reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+    }
+
+    @discardableResult
+    public func pruneBodies(keepingNewest keep: Int) throws -> Int {
+        let withBody = messages.values.filter { $0.hasBody }.sorted { $0.date > $1.date }
+        guard withBody.count > keep else { return 0 }
+        var removed = 0
+        for m in withBody.dropFirst(keep) {
+            try? FileManager.default.removeItem(at: bodyURL(m.uid))
+            try journal(.bodyRemoved(uid: m.uid))
+            apply(.bodyRemoved(uid: m.uid))
+            removed += 1
+        }
+        try compactIfNeeded()
+        return removed
+    }
+
+    public func clearBodies() throws {
+        try pruneBodies(keepingNewest: 0)
+        let files = (try? FileManager.default.contentsOfDirectory(at: bodiesURL, includingPropertiesForKeys: nil)) ?? []
+        for f in files { try? FileManager.default.removeItem(at: f) }
+    }
+
     private func bodyURL(_ uid: UInt32) -> URL { bodiesURL.appendingPathComponent("\(uid).eml") }
 
     private func apply(_ op: FolderJournalOp) {
@@ -209,6 +236,8 @@ public actor FolderStore {
             messages[uid]?.hasBody = true
         case .threadKey(let uid, let key):
             messages[uid]?.threadKey = key
+        case .bodyRemoved(let uid):
+            messages[uid]?.hasBody = false
         }
     }
 
