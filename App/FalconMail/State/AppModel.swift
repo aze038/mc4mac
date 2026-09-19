@@ -105,6 +105,7 @@ final class AppModel {
     var threads: [MessageThread] = []
     var selectedMessageIDs = Set<String>()
     var expandedThreadIDs = Set<String>()
+    var accountsNeedingSignIn = Set<UUID>()
     @ObservationIgnored var lastMailSelection: SidebarSelection?
     var isSearching = false
     var statusText = "Ready"
@@ -388,7 +389,13 @@ final class AppModel {
                 case .started(let id): self.statusText = "Syncing \(self.accountName(id))"
                 case .progress(_, let text): self.statusText = text
                 case .finished: self.statusText = "Up to date"
-                case .error(let id, let message): self.statusText = "\(self.accountName(id)): \(message)"
+                case .error(let id, let message):
+                    if message == FalconError.notAuthenticated.localizedDescription {
+                        self.accountsNeedingSignIn.insert(id)
+                        self.statusText = "\(self.accountName(id)) needs to sign in again"
+                    } else {
+                        self.statusText = "\(self.accountName(id)): \(message)"
+                    }
                 case .actionFailed(_, let message): self.showActionError(message)
                 case .online(let id, let on): self.online[id] = on
                 case .newMessages(let id, let folderID, let list):
@@ -1362,6 +1369,7 @@ final class AppModel {
         var account = accounts.first { $0.email.caseInsensitiveCompare(result.email) == .orderedSame }
             ?? AccountInfo.google(email: result.email, displayName: result.name)
         account.authMethod = "oauth"
+        accountsNeedingSignIn.remove(account.id)
         try await tokens.save(result.token, for: account.id)
         try await store.saveAccount(account)
         await refreshAccounts()

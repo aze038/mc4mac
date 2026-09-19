@@ -55,8 +55,34 @@ extension ISO8601DateFormatter {
 
 public enum Log {
     public static var isEnabled = true
+    private static let queue = DispatchQueue(label: "falconmail.log")
+    private static let fileURL: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FalconMail", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent("falconmail.log")
+    }()
+    private static let stamp: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
     public static func info(_ area: String, _ message: @autoclosure () -> String) {
         guard isEnabled else { return }
-        print("[FalconMail][\(area)] \(message())")
+        let line = "\(stamp.string(from: Date())) [\(area)] \(message())\n"
+        print(line, terminator: "")
+        queue.async {
+            if let size = try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int, size > 2_000_000 {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+            if let handle = try? FileHandle(forWritingTo: fileURL) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: Data(line.utf8))
+                try? handle.close()
+            } else {
+                try? Data(line.utf8).write(to: fileURL)
+            }
+        }
     }
 }

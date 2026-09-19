@@ -145,7 +145,11 @@ public actor TokenStore {
         guard var token = try token(for: accountID) else { throw FalconError.notAuthenticated }
         if token.isExpiringSoon {
             guard let config = clientConfigProvider() else { throw FalconError.notAuthenticated }
-            token = try await GoogleOAuth(config: config).refresh(token)
+            do {
+                token = try await GoogleOAuth(config: config).refresh(token)
+            } catch FalconError.http(let status, _) where status == 400 || status == 401 {
+                throw FalconError.notAuthenticated
+            }
             try save(token, for: accountID)
         }
         return token.accessToken

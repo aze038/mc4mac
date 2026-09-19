@@ -140,6 +140,7 @@ struct MessageReaderView: View {
         if let rendered {
             HTMLView(html: rendered)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.white)
         } else if loading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -267,8 +268,8 @@ enum MessageRenderer {
         let csp = allowRemote
             ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
             : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
-        let style = "<style>:root{color-scheme:light dark;} html,body{margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:CanvasText;padding:16px 22px 28px 22px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid #999;margin:0;padding-left:10px;opacity:0.8;} a{color:#0a84ff;}</style>"
-        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
+        let style = "<style>:root{color-scheme:light;} html,body{background:#ffffff;margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1d1d1f;padding:16px 22px 28px 22px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid #c7c7cc;margin:0;padding-left:10px;color:#3a3a3c;} a{color:#0a66c2;}</style>"
+        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
             body = html
@@ -300,7 +301,7 @@ enum WebViewPool {
         config.processPool = processPool
         config.defaultWebpagePreferences.allowsContentJavaScript = false
         let view = WKWebView(frame: .zero, configuration: config)
-        view.setValue(false, forKey: "drawsBackground")
+        view.underPageBackgroundColor = .white
         return view
     }
 

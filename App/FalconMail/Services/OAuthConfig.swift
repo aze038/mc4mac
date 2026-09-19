@@ -6,9 +6,6 @@ enum OAuthConfigLoader {
     static let keychainAccount = "google.oauth.client"
 
     static func load() -> OAuthClientConfig? {
-        if let stored = try? keychain.loadCodable(OAuthClientConfig.self, account: keychainAccount), !stored.clientID.isEmpty {
-            return stored
-        }
         if let id = Bundle.main.object(forInfoDictionaryKey: "FalconGoogleClientID") as? String, isUsable(id) {
             return OAuthClientConfig(clientID: id, clientSecret: Bundle.main.object(forInfoDictionaryKey: "FalconGoogleClientSecret") as? String)
         }
@@ -16,6 +13,9 @@ enum OAuthConfigLoader {
            let dict = NSDictionary(contentsOf: url) as? [String: Any],
            let id = dict["ClientID"] as? String, isUsable(id) {
             return OAuthClientConfig(clientID: id, clientSecret: dict["ClientSecret"] as? String)
+        }
+        if let stored = try? keychain.loadCodable(OAuthClientConfig.self, account: keychainAccount), !stored.clientID.isEmpty {
+            return stored
         }
         return nil
     }

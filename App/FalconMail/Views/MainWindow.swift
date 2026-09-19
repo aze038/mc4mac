@@ -139,7 +139,11 @@ struct StatusBar: View {
         HStack(spacing: 12) {
             Circle().fill(model.online.values.contains(false) ? Color.orange : Color.green).frame(width: 8, height: 8)
             Text(model.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            if model.online.values.contains(false) {
+            ForEach(model.accounts.filter { model.accountsNeedingSignIn.contains($0.id) }) { account in
+                Button("Sign in to \(account.email) again") { signInAgain(account) }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+            if model.online.values.contains(false) && model.accountsNeedingSignIn.isEmpty {
                 Button("Offline · Retry") { model.syncNow() }.buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
             }
             Spacer()
@@ -187,6 +191,12 @@ struct StatusBar: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Color.secondary.opacity(0.14), in: Capsule())
+        }
+    }
+
+    private func signInAgain(_ account: AccountInfo) {
+        Task {
+            do { try await model.addGoogleAccount(loginHint: account.email) } catch { model.errorMessage = error.localizedDescription }
         }
     }
 

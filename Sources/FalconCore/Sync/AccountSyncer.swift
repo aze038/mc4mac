@@ -96,6 +96,7 @@ public actor AccountSyncer {
                 break
             } catch {
                 if Task.isCancelled { break }
+                Log.info("sync", "\(account.email): \(error.localizedDescription)")
                 events.yield(.error(accountID: account.id, message: error.localizedDescription))
                 events.yield(.online(accountID: account.id, false))
                 await syncClient?.logout()
