@@ -57,7 +57,7 @@ public struct MigrationOptions: Sendable {
 
     public static var defaultBufferBytes: Int {
         let physical = Int(ProcessInfo.processInfo.physicalMemory)
-        return min(1024 * 1024 * 1024, max(64 * 1024 * 1024, physical / 8))
+        return min(256 * 1024 * 1024, max(64 * 1024 * 1024, physical / 64))
     }
 }
 
