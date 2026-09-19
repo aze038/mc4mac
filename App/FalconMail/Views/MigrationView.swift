@@ -15,7 +15,7 @@ struct MigrationView: View {
     @State private var mapping: [String: MigrationTarget] = [:]
     @State private var includeTrashJunk = false
     @State private var labelMigrated = true
-    @State private var connections = 8
+    @State private var connections = 5
     @State private var verifying = false
     @State private var uploadedBytes = 0
     @State private var rateSamples: [(Date, Int)] = []
@@ -99,8 +99,10 @@ struct MigrationView: View {
             Toggle("Include Deleted Items and Junk", isOn: $includeTrashJunk)
                 .onChange(of: includeTrashJunk) { _, _ in rebuildMapping() }
             Toggle("Label uploaded mail “Migrated”", isOn: $labelMigrated)
-            Stepper("\(connections) upload connections", value: $connections, in: 1...12)
+            Stepper("\(connections) upload connections", value: $connections, in: 1...8)
                 .disabled(running)
+            Text("Gmail allows 15 IMAP connections per mailbox, shared with this app's own sync and any other mail client on the account. Connections from a stopped run keep counting for a few minutes.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
     }
