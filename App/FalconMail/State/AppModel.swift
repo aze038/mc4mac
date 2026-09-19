@@ -59,6 +59,8 @@ final class AppModel: ObservableObject {
     @AppStorage("groupByThread") var groupByThread = true { didSet { rebuildThreads() } }
     @AppStorage("undoSendSeconds") var undoSendSeconds = 10
     @AppStorage("loadRemoteImages") var loadRemoteImages = false
+    @AppStorage("openInWindowOnDoubleClick") var openInWindowOnDoubleClick = true
+    @AppStorage("appearance") var appearance = AppAppearance.system.rawValue
 
     private var bodyCache: [String: MIMEMessage] = [:]
     private var listeners: [Task<Void, Never>] = []

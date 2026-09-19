@@ -4,6 +4,7 @@
 name: FalconMail
 options:
   bundleIdPrefix: com.falconmail
+  developmentLanguage: en
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -34,6 +35,9 @@ targets:
         NSHumanReadableCopyright: "Copyright © 2026 FalconMail"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
+          NSAllowsArbitraryLoadsInWebContent: true
+        CFBundleDevelopmentRegion: en
+        CFBundleAllowMixedLocalizations: true
         FalconUpdateRepository: aze038/mc4mac
         FalconGoogleClientID: ""
         FalconGoogleClientSecret: ""
@@ -54,6 +58,8 @@ targets:
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
         DEAD_CODE_STRIPPING: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
       configs:
         Release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"

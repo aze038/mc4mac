@@ -122,3 +122,12 @@ it. The file store above gives parallel writes per folder, instant startup from
 a binary snapshot, and human-readable journals for debugging. The trade-off is
 memory proportional to the number of cached headers, which the per-folder sync
 window keeps bounded.
+
+## Localization
+
+UI strings are SwiftUI string literals, which are localization keys by
+default. `App/FalconMail/Resources/Localizable.xcstrings` is the string
+catalog with the translations (Russian, Turkish, Azerbaijani and German so
+far). macOS picks the language from System Settings; untranslated strings fall
+back to English. Xcode adds new keys to the catalog on each build; translators
+edit the catalog in Xcode or as JSON.

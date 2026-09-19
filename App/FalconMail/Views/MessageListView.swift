@@ -3,6 +3,7 @@ import FalconCore
 
 struct MessageListView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +27,11 @@ struct MessageListView: View {
             List(model.threads, selection: $model.selectedMessageIDs) { thread in
                 MessageRow(thread: thread)
                     .tag(thread.id)
+                    .simultaneousGesture(TapGesture(count: 2).onEnded {
+                        if model.openInWindowOnDoubleClick { openWindow(value: thread.latest.id) }
+                    })
                     .contextMenu {
+                        Button("Open in New Window") { openWindow(value: thread.latest.id) }
                         Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
                         Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
                         Button("Archive") { model.archive(thread.messages) }
@@ -34,6 +39,11 @@ struct MessageListView: View {
                     }
             }
             .listStyle(.inset)
+            .onKeyPress(.return) {
+                guard let t = model.currentThread else { return .ignored }
+                openWindow(value: t.latest.id)
+                return .handled
+            }
             .overlay {
                 if model.threads.isEmpty && !model.isSearching {
                     ContentUnavailableView(model.accounts.isEmpty ? "Add an account to get started" : "No messages", systemImage: "tray")
