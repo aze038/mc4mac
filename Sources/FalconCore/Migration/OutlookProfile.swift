@@ -1,11 +1,24 @@
 import Foundation
 
+public struct OutlookAccount: Identifiable, Hashable, Sendable {
+    public var id: Int
+    public var email: String
+    public var name: String
+    public var folderCount: Int
+    public var messageCount: Int
+    public var label: String { email.isEmpty ? (name.isEmpty ? "Account \(id)" : name) : email }
+}
+
 public struct OutlookProfile: MigrationSource {
-    public let identifier: String
-    public let title: String
+    public private(set) var identifier: String
+    public private(set) var title: String
     public let dataURL: URL
     public let accountEmail: String
-    public let folders: [SourceFolder]
+    public private(set) var folders: [SourceFolder]
+    public let accounts: [OutlookAccount]
+    public private(set) var selectedAccounts: [OutlookAccount] = []
+    private let allFolders: [SourceFolder]
+    private let folderAccounts: [String: Int]
     private let rows: [OutlookMailRow]
     private let sourcesByUUID: [String: URL]
 
@@ -39,8 +52,11 @@ public struct OutlookProfile: MigrationSource {
         let snapshot = try OutlookProfile.snapshotDatabase(at: dataURL)
         defer { try? FileManager.default.removeItem(at: snapshot.deletingLastPathComponent()) }
 
-        let accounts = try OutlookProfile.query(snapshot, "select Record_RecordID as id, Account_EmailAddress as email, Account_Name as name from AccountsMail")
-        accountEmail = accounts.first?["email"] as? String ?? ""
+        var accountRows = try OutlookProfile.query(snapshot, "select Record_RecordID as id, Account_EmailAddress as email, Account_Name as name from AccountsMail")
+        if let exchange = try? OutlookProfile.query(snapshot, "select Record_RecordID as id, Account_EmailAddress as email, Account_Name as name from AccountsExchange") {
+            accountRows.append(contentsOf: exchange)
+        }
+        accountEmail = accountRows.first?["email"] as? String ?? ""
         title = "Outlook · " + (accountEmail.isEmpty ? profileName : accountEmail)
 
         let folderRows = try OutlookProfile.query(snapshot, "select Record_RecordID as id, Folder_ParentID as parent, Folder_SpecialFolderType as special, Folder_Name as name, Record_AccountUID as account from Folders")
@@ -70,10 +86,13 @@ public struct OutlookProfile: MigrationSource {
         sourcesByUUID = index
 
         var byID: [Int: (parent: Int, special: Int, name: String)] = [:]
+        var accountOf: [String: Int] = [:]
         for f in folderRows {
             guard let id = OutlookProfile.int(f["id"]) else { continue }
             byID[id] = (OutlookProfile.int(f["parent"]) ?? -1, OutlookProfile.int(f["special"]) ?? 0, f["name"] as? String ?? "")
+            accountOf[String(id)] = (OutlookProfile.int(f["account"]) ?? 0) & 0xFFFF_FFFF
         }
+        folderAccounts = accountOf
         let counts = Dictionary(grouping: rows.filter { $0.sourceUUID != nil }, by: \.folderID).mapValues(\.count)
         var list: [SourceFolder] = []
         for (id, f) in byID where counts[id, default: 0] > 0 {
@@ -89,7 +108,46 @@ public struct OutlookProfile: MigrationSource {
             list.append(SourceFolder(id: String(id), name: OutlookProfile.displayName(f.name), path: path.joined(separator: "/"),
                                      kind: OutlookProfile.kind(special: f.special, name: f.name), messageCount: counts[id, default: 0]))
         }
-        folders = list.sorted { ($0.kind.order, $0.path) < ($1.kind.order, $1.path) }
+        let sorted = list.sorted { ($0.kind.order, $0.path) < ($1.kind.order, $1.path) }
+        allFolders = sorted
+        folders = sorted
+        var accounts: [OutlookAccount] = []
+        for a in accountRows {
+            guard let id = OutlookProfile.int(a["id"]) else { continue }
+            let owned = sorted.filter { accountOf[$0.id] == id }
+            accounts.append(OutlookAccount(id: id, email: (a["email"] as? String ?? "").trimmed, name: (a["name"] as? String ?? "").trimmed,
+                                           folderCount: owned.count, messageCount: owned.reduce(0) { $0 + $1.messageCount }))
+        }
+        let known = Set(accounts.map(\.id))
+        let local = sorted.filter { !known.contains(accountOf[$0.id] ?? 0) }
+        if !local.isEmpty {
+            accounts.append(OutlookAccount(id: 0, email: "", name: "On My Computer", folderCount: local.count, messageCount: local.reduce(0) { $0 + $1.messageCount }))
+        }
+        self.accounts = accounts.filter { $0.folderCount > 0 }
+    }
+
+    public func selecting(_ accountIDs: Set<Int>) -> OutlookProfile {
+        var copy = self
+        let profileName = dataURL.deletingLastPathComponent().lastPathComponent
+        let chosen = accounts.filter { accountIDs.contains($0.id) }
+        copy.selectedAccounts = chosen
+        guard !chosen.isEmpty, chosen.count < accounts.count else {
+            copy.selectedAccounts = []
+            copy.folders = allFolders
+            copy.identifier = "outlook:" + profileName
+            copy.title = "Outlook · " + (accountEmail.isEmpty ? profileName : accountEmail)
+            return copy
+        }
+        let known = Set(accounts.map(\.id))
+        let wanted = Set(chosen.map(\.id))
+        copy.folders = allFolders.filter { f in
+            let owner = folderAccounts[f.id] ?? 0
+            let effective = known.contains(owner) ? owner : 0
+            return wanted.contains(effective)
+        }
+        copy.identifier = "outlook:" + profileName + ":" + wanted.sorted().map(String.init).joined(separator: "+")
+        copy.title = "Outlook · " + chosen.map(\.label).joined(separator: ", ")
+        return copy
     }
 
     public func messages(in folder: SourceFolder) throws -> [SourceMessage] {

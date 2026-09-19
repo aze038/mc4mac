@@ -8,6 +8,8 @@ struct MigrationView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var profiles: [URL] = []
+    @State private var profile: OutlookProfile?
+    @State private var outlookAccountIDs: Set<Int> = []
     @State private var source: (any MigrationSource)?
     @State private var sourceTitle = ""
     @State private var loadingSource = false
@@ -41,6 +43,7 @@ struct MigrationView: View {
             Text("Reads your Outlook for Mac mailbox or an .olm archive and uploads every message straight to the matching folder over \(MigrationOptions().uploaders) parallel connections, using up to \(ByteCountFormatter.string(fromByteCount: Int64(MigrationOptions.defaultBufferBytes), countStyle: .memory)) of memory and no disk space. Messages that already exist in the target are skipped, so it is safe to run again.")
                 .foregroundStyle(.secondary)
             sourceSection
+            accountSection
             targetSection
             if source != nil { mappingTable }
             progressSection
@@ -85,6 +88,47 @@ struct MigrationView: View {
             if loadingSource { ProgressView().controlSize(.small) }
             Spacer()
         }
+    }
+
+    @ViewBuilder private var accountSection: some View {
+        if let profile, profile.accounts.count > 1 {
+            HStack {
+                Text("Accounts").frame(width: 60, alignment: .trailing).foregroundStyle(.secondary)
+                Menu(outlookAccountsTitle) {
+                    Button { outlookAccountIDs = []; applyOutlookAccounts() } label: {
+                        Label("All accounts in this profile", systemImage: outlookAccountIDs.isEmpty ? "checkmark" : "")
+                    }
+                    Divider()
+                    ForEach(profile.accounts) { a in
+                        Button {
+                            if outlookAccountIDs.contains(a.id) { outlookAccountIDs.remove(a.id) } else { outlookAccountIDs.insert(a.id) }
+                            if outlookAccountIDs.count == profile.accounts.count { outlookAccountIDs = [] }
+                            applyOutlookAccounts()
+                        } label: {
+                            Label("\(a.label) · \(a.messageCount) messages", systemImage: outlookAccountIDs.contains(a.id) ? "checkmark" : "")
+                        }
+                    }
+                }
+                .fixedSize()
+                .disabled(running)
+                Text("Tick one or more accounts, or leave all selected.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+    }
+
+    private var outlookAccountsTitle: String {
+        guard let profile, !outlookAccountIDs.isEmpty else { return "All accounts" }
+        return profile.accounts.filter { outlookAccountIDs.contains($0.id) }.map(\.label).joined(separator: ", ")
+    }
+
+    private func applyOutlookAccounts() {
+        guard let profile else { return }
+        let selected = profile.selecting(outlookAccountIDs)
+        source = selected
+        sourceTitle = selected.title
+        rebuildMapping()
+        refreshUndoAvailability()
     }
 
     private var targetSection: some View {
@@ -217,6 +261,8 @@ struct MigrationView: View {
             await MainActor.run {
                 loadingSource = false
                 if let loaded {
+                    profile = loaded
+                    outlookAccountIDs = []
                     source = loaded
                     sourceTitle = loaded.title
                     rebuildMapping()
@@ -239,6 +285,8 @@ struct MigrationView: View {
             await MainActor.run {
                 loadingSource = false
                 if let loaded {
+                    profile = nil
+                    outlookAccountIDs = []
                     source = loaded
                     sourceTitle = loaded.title
                     rebuildMapping()
