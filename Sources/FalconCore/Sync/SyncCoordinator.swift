@@ -26,16 +26,18 @@ public actor SyncCoordinator {
     }
 
     public var bodyPrefetch = 150
+    public var maxOfflineBodyBytes = 5 * 1024 * 1024
 
-    public func setBodyPrefetch(_ count: Int) async {
+    public func setBodyPrefetch(_ count: Int, maxBytes: Int? = nil) async {
         bodyPrefetch = count
-        for s in syncers.values { await s.setBodyPrefetch(count) }
+        if let maxBytes { maxOfflineBodyBytes = maxBytes }
+        for s in syncers.values { await s.setBodyPrefetch(count, maxBytes: maxOfflineBodyBytes) }
     }
 
     public func start(account: AccountInfo) async {
         if let existing = syncers[account.id] { await existing.stop() }
         let s = AccountSyncer(account: account, store: store, tokens: tokens, rules: rules, indexer: indexer, events: eventContinuation)
-        await s.setBodyPrefetch(bodyPrefetch)
+        await s.setBodyPrefetch(bodyPrefetch, maxBytes: maxOfflineBodyBytes)
         syncers[account.id] = s
         await s.start()
     }

@@ -62,7 +62,9 @@ final class AppModel: ObservableObject {
     @AppStorage("loadRemoteImages") var loadRemoteImages = false
     @AppStorage("openInWindowOnDoubleClick") var openInWindowOnDoubleClick = true
     @AppStorage("appearance") var appearance = AppAppearance.system.rawValue
-    @AppStorage("offlineBodies") var offlineBodies = 150 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies) } } }
+    @AppStorage("offlineBodies") var offlineBodies = 150 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
+    @AppStorage("maxOfflineMB") var maxOfflineMB = 5 { didSet { Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) } } }
+    @Published var cacheSizeBytes = 0
 
     private var bodyCache: [String: MIMEMessage] = [:]
     private var listeners: [Task<Void, Never>] = []
@@ -91,7 +93,7 @@ final class AppModel: ObservableObject {
         }
         updates.beforeRelaunch = { [weak self] in await self?.prepareForRelaunch() }
         updates.start()
-        await coordinator.setBodyPrefetch(offlineBodies)
+        await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024)
         await refreshAccounts()
         archiveRecords = await archives.all()
         contactList = await contacts.all()
@@ -396,6 +398,18 @@ final class AppModel: ObservableObject {
             }
         }
         contactList = await contacts.all()
+    }
+
+    func refreshCacheSize() async {
+        cacheSizeBytes = await store.cacheSizeBytes()
+    }
+
+    func clearCache() {
+        Task {
+            await store.clearBodyCache()
+            await refreshCacheSize()
+            statusText = "Offline copies removed"
+        }
     }
 
     func runRulesNow() {
