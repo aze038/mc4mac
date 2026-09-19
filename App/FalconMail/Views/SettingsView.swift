@@ -16,13 +16,39 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @EnvironmentObject var model: AppModel
+    @AppStorage("notificationSound") private var notificationSound = "Ping"
+    @AppStorage("notificationsEnabled") private var notificationsEnabled = true
 
     var body: some View {
         Form {
-            Toggle("Group messages by conversation", isOn: $model.groupByThread)
-            Toggle("Load remote images in messages", isOn: $model.loadRemoteImages)
-            Picker("Undo send window", selection: $model.undoSendSeconds) {
-                ForEach([0, 5, 10, 20, 30], id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+            Section("Appearance") {
+                Picker("Theme", selection: $model.appearance) {
+                    ForEach(AppAppearance.allCases) { a in Text(a.title).tag(a.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                Text("Language follows the macOS setting in System Settings → General → Language & Region.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Reading") {
+                Toggle("Group messages by conversation", isOn: $model.groupByThread)
+                Toggle("Open messages in a new window on double-click", isOn: $model.openInWindowOnDoubleClick)
+                Toggle("Load remote images in messages", isOn: $model.loadRemoteImages)
+            }
+            Section("Sending") {
+                Picker("Undo send window", selection: $model.undoSendSeconds) {
+                    ForEach([0, 5, 10, 20, 30], id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
+                }
+            }
+            Section("Notifications") {
+                Toggle("Notify about new mail", isOn: $notificationsEnabled)
+                HStack {
+                    Picker("Notification sound", selection: $notificationSound) {
+                        Text("None").tag(SystemSounds.none)
+                        ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
+                    }
+                    Button { SystemSounds.play(notificationSound) } label: { Image(systemName: "play.circle") }
+                        .disabled(notificationSound == SystemSounds.none)
+                }
             }
         }
         .formStyle(.grouped)

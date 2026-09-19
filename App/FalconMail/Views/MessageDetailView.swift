@@ -30,6 +30,7 @@ struct MessageCard: View {
     @State var expanded: Bool
     @State private var parsed: MIMEMessage?
     @State private var loading = false
+    @State private var allowRemoteImages = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -53,7 +54,10 @@ struct MessageCard: View {
             if expanded {
                 if let parsed {
                     if !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments) }
-                    HTMLView(html: MessageRenderer.html(for: parsed, allowRemote: model.loadRemoteImages))
+                    if !model.loadRemoteImages && !allowRemoteImages && MessageRenderer.hasRemoteImages(parsed) {
+                        RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
+                    }
+                    HTMLView(html: MessageRenderer.html(for: parsed, allowRemote: model.loadRemoteImages || allowRemoteImages))
                         .frame(minHeight: 200)
                 } else if loading {
                     ProgressView().padding()
@@ -133,13 +137,35 @@ struct AttachmentStrip: View {
     }
 }
 
+struct RemoteImagesBanner: View {
+    let loadOnce: () -> Void
+    let loadAlways: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "photo").foregroundStyle(.secondary)
+            Text("Remote images are blocked in this message.").font(.callout)
+            Spacer()
+            Button("Load Images", action: loadOnce).controlSize(.small)
+            Button("Always Load", action: loadAlways).controlSize(.small)
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
 enum MessageRenderer {
+    static func hasRemoteImages(_ parsed: MIMEMessage) -> Bool {
+        guard let html = parsed.textHTML?.lowercased() else { return false }
+        return html.contains("src=\"http") || html.contains("src='http") || html.contains("url(http") || html.contains("src=http")
+    }
+
     static func html(for parsed: MIMEMessage, allowRemote: Bool) -> String {
         let csp = allowRemote
-            ? "default-src 'none'; img-src * data: cid:; style-src 'unsafe-inline'; font-src *;"
+            ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
             : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
-        let style = "<style>body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.45;color:-apple-system-label;margin:0;padding:4px 0;word-wrap:break-word;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} blockquote{border-left:2px solid #ccc;margin:0;padding-left:10px;color:#666;} a{color:#0a66c2;}</style>"
-        let head = "<meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
+        let style = "<style>:root{color-scheme:light dark;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.45;color:CanvasText;margin:0;padding:4px 0;word-wrap:break-word;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} blockquote{border-left:2px solid #999;margin:0;padding-left:10px;opacity:0.8;} a{color:#0a84ff;}</style>"
+        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light dark\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
             body = html

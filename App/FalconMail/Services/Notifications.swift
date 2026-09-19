@@ -1,10 +1,12 @@
-import Foundation
+import SwiftUI
 import UserNotifications
 import FalconCore
 
 @MainActor
 final class NotificationService {
     private var authorized = false
+    @AppStorage("notificationSound") var soundName = "Ping"
+    @AppStorage("notificationsEnabled") var enabled = true
 
     func requestPermission() async {
         let center = UNUserNotificationCenter.current()
@@ -12,14 +14,14 @@ final class NotificationService {
     }
 
     func notify(newMessages: [MessageSummary], accountEmail: String) {
-        guard authorized, !newMessages.isEmpty else { return }
+        guard enabled, authorized, !newMessages.isEmpty else { return }
+        SystemSounds.play(soundName)
         let center = UNUserNotificationCenter.current()
         for m in newMessages.prefix(5) {
             let content = UNMutableNotificationContent()
             content.title = m.from.displayName
             content.subtitle = accountEmail
             content.body = m.subject.isEmpty ? m.snippet : m.subject
-            content.sound = .default
             content.userInfo = ["messageID": m.id]
             center.add(UNNotificationRequest(identifier: m.id, content: content, trigger: nil))
         }
