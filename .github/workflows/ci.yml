@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and test (macOS, Apple Silicon)
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.2.app || sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: FalconCore tests
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee swift-test.log
+
+      - name: Build FalconMail app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project FalconMail.xcodeproj \
+            -scheme FalconMail \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee xcodebuild.log | grep -E "error:|warning: unre|\*\* BUILD|Compiling|Linking" || true
+          grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
+
+      - name: Collect errors
+        if: failure()
+        run: |
+          echo "## Build errors" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          { grep -E "error:" xcodebuild.log swift-test.log 2>/dev/null || true; } | sort -u | head -200 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            xcodebuild.log
+            swift-test.log
+          if-no-files-found: ignore
