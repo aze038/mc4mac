@@ -66,26 +66,12 @@ struct ComposeView: View {
                     ScrollView(.horizontal) {
                         HStack {
                             ForEach(attachments) { a in
-                                HStack(spacing: 4) {
-                                    Image(systemName: editSessions[a.id] != nil ? "pencil.circle.fill" : "paperclip")
-                                        .foregroundStyle(editSessions[a.id] != nil ? Color.accentColor : Color.primary)
-                                    Text(a.filename).font(.caption)
-                                    Text(ByteCountFormatter.string(fromByteCount: Int64(a.data.count), countStyle: .file)).font(.caption2).foregroundStyle(.secondary)
-                                    Menu {
-                                        Button(editSessions[a.id] == nil ? "Edit in Default App" : "Reopen in Default App") { edit(a) }
-                                        if editSessions[a.id] != nil { Button("Stop Watching for Changes") { editSessions[a.id]?.stop(); editSessions[a.id] = nil } }
-                                        Button("Save As…") {
-                                            let panel = NSSavePanel()
-                                            panel.nameFieldStringValue = a.filename
-                                            if panel.runModal() == .OK, let url = panel.url { try? a.data.write(to: url) }
-                                        }
-                                        Divider()
-                                        Button("Remove", role: .destructive) { editSessions[a.id]?.stop(); editSessions[a.id] = nil; draft?.attachments.removeAll { $0.id == a.id } }
-                                    } label: { Image(systemName: "chevron.down.circle") }
-                                    .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 18)
-                                }
-                                .padding(4).background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-                                .help(editSessions[a.id] != nil ? "Open in \(a.filename.split(separator: ".").last.map { String($0).uppercased() } ?? "the editor"). Saves are picked up automatically." : a.filename)
+                                ComposeAttachmentChip(
+                                    attachment: a,
+                                    isEditing: editSessions[a.id] != nil,
+                                    onEdit: { edit(a) },
+                                    onStopWatching: { stopWatching(a.id) },
+                                    onRemove: { remove(a.id) })
                             }
                         }
                     }
@@ -148,6 +134,16 @@ struct ComposeView: View {
         }
     }
 
+    private func stopWatching(_ id: UUID) {
+        editSessions[id]?.stop()
+        editSessions[id] = nil
+    }
+
+    private func remove(_ id: UUID) {
+        stopWatching(id)
+        draft?.attachments.removeAll { $0.id == id }
+    }
+
     private func discard() {
         editSessions.values.forEach { $0.stop() }
         model.drafts[draftID] = nil
@@ -163,6 +159,48 @@ struct ComposeView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+struct ComposeAttachmentChip: View {
+    let attachment: OutgoingAttachment
+    let isEditing: Bool
+    let onEdit: () -> Void
+    let onStopWatching: () -> Void
+    let onRemove: () -> Void
+
+    private var sizeText: String {
+        ByteCountFormatter.string(fromByteCount: Int64(attachment.data.count), countStyle: .file)
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: isEditing ? "pencil.circle.fill" : "paperclip")
+                .foregroundStyle(isEditing ? Color.accentColor : Color.primary)
+            Text(attachment.filename).font(.caption)
+            Text(sizeText).font(.caption2).foregroundStyle(.secondary)
+            Menu {
+                Button(isEditing ? "Reopen in Default App" : "Edit in Default App", action: onEdit)
+                if isEditing { Button("Stop Watching for Changes", action: onStopWatching) }
+                Button("Save As…", action: saveAs)
+                Divider()
+                Button("Remove", role: .destructive, action: onRemove)
+            } label: {
+                Image(systemName: "chevron.down.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 18)
+        }
+        .padding(4)
+        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+        .help(isEditing ? "Saves in the external editor are picked up automatically." : attachment.filename)
+    }
+
+    private func saveAs() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = attachment.filename
+        if panel.runModal() == .OK, let url = panel.url { try? attachment.data.write(to: url) }
     }
 }
 
