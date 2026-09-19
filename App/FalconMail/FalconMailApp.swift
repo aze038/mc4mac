@@ -38,6 +38,7 @@ struct FalconMailApp: App {
                 Divider()
                 Button("Add Account…") { NotificationCenter.default.post(name: .falconAddAccount, object: nil) }
                 Divider()
+                Button("Migrate from Outlook…") { NotificationCenter.default.post(name: .falconMigrate, object: nil) }
                 Button("Import Mail…") { NotificationCenter.default.post(name: .falconImport, object: nil) }
                 Button("Export Selected as .eml…") { NotificationCenter.default.post(name: .falconExport, object: nil) }
             }
@@ -312,6 +313,7 @@ extension Notification.Name {
     static let falconAddAccount = Notification.Name("falcon.addAccount")
     static let falconNewMeeting = Notification.Name("falcon.newMeeting")
     static let falconImport = Notification.Name("falcon.import")
+    static let falconMigrate = Notification.Name("falcon.migrate")
     static let falconExport = Notification.Name("falcon.export")
     static let falconArchive = Notification.Name("falcon.archive")
     static let falconExportArchive = Notification.Name("falcon.exportArchive")

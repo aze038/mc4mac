@@ -141,6 +141,18 @@ public actor IMAPClient {
         return out
     }
 
+    public func fetchMessageIDs(uidRange: String) async throws -> [String] {
+        let responses = try await run("UID FETCH \(uidRange) (UID BODY.PEEK[HEADER.FIELDS (Message-ID)])")
+        var out: [String] = []
+        for r in responses {
+            if case .fetch(let item) = r, let header = item.headerSection {
+                let id = AddressParser.messageIDs(MIMEHeaders.parse(header).first("Message-ID")).first ?? ""
+                if !id.isEmpty { out.append(id) }
+            }
+        }
+        return out
+    }
+
     public func fetchFlags(uidRange: String) async throws -> [(uid: UInt32, flags: [String])] {
         let responses = try await run("UID FETCH \(uidRange) (UID FLAGS)")
         var out: [(UInt32, [String])] = []
