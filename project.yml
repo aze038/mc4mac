@@ -1,0 +1,55 @@
+# XcodeGen project definition. Generate the Xcode project with:
+#   brew install xcodegen && xcodegen generate
+# then open FalconMail.xcodeproj.
+name: FalconMail
+options:
+  bundleIdPrefix: com.falconmail
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+packages:
+  FalconCore:
+    path: .
+targets:
+  FalconMail:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/FalconMail
+        excludes:
+          - "Config/GoogleOAuth.example.plist"
+    dependencies:
+      - package: FalconCore
+        product: FalconCore
+    info:
+      path: App/FalconMail/Info.plist
+      properties:
+        CFBundleName: FalconMail
+        CFBundleDisplayName: FalconMail
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.productivity
+        NSHumanReadableCopyright: "Copyright © 2026 FalconMail"
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: false
+    entitlements:
+      path: App/FalconMail/FalconMail.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.network.server: true
+        com.apple.security.files.user-selected.read-write: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.falconmail.app
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: minimal
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO

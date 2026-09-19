@@ -1,0 +1,13 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+.build/
+.swiftpm/
+*.xcuserstate
+# Secrets
+App/FalconMail/Config/GoogleOAuth.plist
+# macOS
+.DS_Store
