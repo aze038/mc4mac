@@ -98,7 +98,21 @@ jobs:
         run: |
           APP="build/Build/Products/Release/FalconMail.app"
           ZIP="FalconMail-$APP_VERSION.zip"
+          DMG="FalconMail-$APP_VERSION.dmg"
           ditto -c -k --keepParent "$APP" "$ZIP"
+          brew install create-dmg
+          rm -rf dmg-root && mkdir dmg-root && cp -R "$APP" dmg-root/
+          create-dmg \
+            --volname "FalconMail $APP_VERSION" \
+            --background scripts/dmg-background.png \
+            --window-pos 200 120 --window-size 540 380 \
+            --icon-size 128 \
+            --icon "FalconMail.app" 135 175 \
+            --hide-extension "FalconMail.app" \
+            --app-drop-link 405 175 \
+            --no-internet-enable \
+            "$DMG" dmg-root || test -f "$DMG"
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
           SHA=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
           MANDATORY="${{ github.event.inputs.mandatory || 'false' }}"
           cat > update.json <<JSON
@@ -111,7 +125,9 @@ jobs:
           cat update.json
           echo "ZIP=$ZIP" >> "$GITHUB_ENV"
           if [ -z "${SIGN_IDENTITY:-}" ]; then
-            echo "NOTE=This build is not signed with a Developer ID. To run it: right-click FalconMail.app, choose Open, or run xattr -dr com.apple.quarantine FalconMail.app." >> "$GITHUB_ENV"
+            echo "NOTE=Download the .dmg, open it and drag FalconMail to Applications. This build is not signed with a Developer ID yet, so on first launch right-click FalconMail and choose Open." >> "$GITHUB_ENV"
+          else
+            echo "NOTE=Download the .dmg, open it and drag FalconMail to Applications." >> "$GITHUB_ENV"
           fi
 
       - name: Publish GitHub Release
@@ -124,5 +140,6 @@ jobs:
             ${{ github.event.inputs.mandatory == 'true' && '[mandatory]' || '' }}
             ${{ env.NOTE }}
           files: |
+            ${{ env.DMG }}
             ${{ env.ZIP }}
             update.json

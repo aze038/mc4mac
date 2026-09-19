@@ -9,7 +9,8 @@ menu or Settings → Updates.
 
 | Asset | Required | Purpose |
 | --- | --- | --- |
-| `FalconMail-<version>.zip` | yes | The signed and notarized `FalconMail.app`, zipped with `ditto -c -k --keepParent` |
+| `FalconMail-<version>.dmg` | for people | Drag-to-Applications disk image |
+| `FalconMail-<version>.zip` | yes | The same app zipped with `ditto -c -k --keepParent`; the in-app updater downloads this one |
 | `update.json` | no | Metadata, see below |
 
 The release tag is the version, for example `v0.2.0`. It is compared with the
