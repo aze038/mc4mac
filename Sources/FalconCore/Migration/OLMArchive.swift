@@ -5,51 +5,68 @@ public struct OLMArchive: MigrationSource {
     public let title: String
     public let folders: [SourceFolder]
     private let zip: ZipReader
-    private let entriesByFolder: [String: [ZipEntry]]
-    private let attachmentsByTail: [String: ZipEntry]
+    private let entriesByFolder: [String: [Int32]]
+    private let attachmentsByTail: [UInt64: Int32]
 
     public init(url: URL) throws {
-        zip = try ZipReader(url: url)
-        identifier = "olm:" + url.lastPathComponent + ":" + String(zip.entries.count)
-        title = "OLM · " + url.lastPathComponent
-        var grouped: [String: [ZipEntry]] = [:]
-        var tails: [String: ZipEntry] = [:]
-        for e in zip.entries {
-            if e.name.contains("__Attachments") {
-                let tail = e.name.split(separator: "/").suffix(2).joined(separator: "/")
-                if tails[tail] == nil { tails[tail] = e }
-                continue
+        var grouped: [String: [Int32]] = [:]
+        var tails: [UInt64: Int32] = [:]
+        let messagesMarker = Array("com.microsoft.__Messages/".utf8)
+        let attachmentsMarker = Array("__Attachments".utf8)
+        let xmlSuffix = Array(".xml".utf8)
+        zip = try ZipReader(url: url) { index, name in
+            if OLMArchive.contains(name, attachmentsMarker) {
+                let tail = OLMArchive.tail(name, components: 2)
+                let h = ZipReader.hash(tail)
+                if tails[h] == nil { tails[h] = Int32(index) }
+                return
             }
-            guard e.name.hasSuffix(".xml"), e.name.contains("com.microsoft.__Messages/") else { continue }
-            let parts = e.name.components(separatedBy: "com.microsoft.__Messages/")
-            guard parts.count == 2 else { continue }
-            let folderPath = parts[1].split(separator: "/").dropLast().joined(separator: "/")
-            guard !folderPath.isEmpty else { continue }
-            grouped[folderPath, default: []].append(e)
+            guard OLMArchive.hasSuffix(name, xmlSuffix), let range = OLMArchive.find(name, messagesMarker) else { return }
+            let rest = UnsafeRawBufferPointer(rebasing: name[range.upperBound...])
+            guard let lastSlash = rest.lastIndex(of: 0x2F), lastSlash > 0 else { return }
+            let folder = String(decoding: UnsafeRawBufferPointer(rebasing: rest[..<lastSlash]), as: UTF8.self)
+            grouped[folder, default: []].append(Int32(index))
         }
         entriesByFolder = grouped
         attachmentsByTail = tails
+        identifier = "olm:" + url.lastPathComponent + ":" + String(zip.entryCount)
+        title = "OLM · " + url.lastPathComponent
         folders = grouped.map { path, entries in
             let name = path.split(separator: "/").last.map(String.init) ?? path
             return SourceFolder(id: path, name: name, path: path, kind: OLMArchive.kind(for: name, path: path), messageCount: entries.count)
         }.sorted { ($0.kind.order, $0.path) < ($1.kind.order, $1.path) }
     }
 
-    static func kind(for name: String, path: String) -> SourceFolderKind {
-        let n = name.lowercased()
-        let top = path.split(separator: "/").first.map { String($0).lowercased() } ?? n
-        if top != n && top != "inbox" { return .other }
-        switch n {
-        case "inbox", "posteingang", "boîte de réception", "входящие", "gelen kutusu": return .inbox
-        case "sent items", "sent", "sent mail", "gesendete elemente", "отправленные", "gönderilmiş öğeler": return .sent
-        case "drafts", "entwürfe", "черновики", "taslaklar": return .drafts
-        case "deleted items", "trash", "gelöschte elemente", "удаленные", "silinmiş öğeler": return .trash
-        case "junk e-mail", "junk email", "junk", "spam", "junk-e-mail", "нежелательная почта": return .junk
-        case "archive", "archives", "archiv", "архив", "arşiv": return .archive
-        case "outbox", "postausgang", "исходящие", "giden kutusu": return .outbox
-        case "calendar", "contacts", "notes", "tasks", "journal": return .system
-        default: return .other
+    static func contains(_ hay: UnsafeRawBufferPointer, _ needle: [UInt8]) -> Bool { find(hay, needle) != nil }
+
+    static func hasSuffix(_ hay: UnsafeRawBufferPointer, _ suffix: [UInt8]) -> Bool {
+        guard hay.count >= suffix.count else { return false }
+        return Array(hay.suffix(suffix.count)) == suffix
+    }
+
+    static func find(_ hay: UnsafeRawBufferPointer, _ needle: [UInt8]) -> Range<Int>? {
+        guard !needle.isEmpty, hay.count >= needle.count else { return nil }
+        var i = 0
+        while i + needle.count <= hay.count {
+            var match = true
+            for j in 0..<needle.count where hay[i + j] != needle[j] { match = false; break }
+            if match { return i..<(i + needle.count) }
+            i += 1
         }
+        return nil
+    }
+
+    static func tail(_ name: UnsafeRawBufferPointer, components: Int) -> UnsafeRawBufferPointer {
+        var seen = 0
+        var i = name.count - 1
+        while i >= 0 {
+            if name[i] == 0x2F {
+                seen += 1
+                if seen == components { return UnsafeRawBufferPointer(rebasing: name[(i + 1)...]) }
+            }
+            i -= 1
+        }
+        return name
     }
 
     func attachmentEntry(_ path: String) -> ZipEntry? {
@@ -57,14 +74,15 @@ public struct OLMArchive: MigrationSource {
         let decoded = path.removingPercentEncoding ?? path
         if let e = zip.entry(named: decoded) { return e }
         let tail = decoded.split(separator: "/").suffix(2).joined(separator: "/")
-        return attachmentsByTail[tail]
+        return attachmentsByTail[ZipReader.hash(tail)].flatMap { zip.entry(at: Int($0)) }
     }
 
     public func messages(in folder: SourceFolder) throws -> [SourceMessage] {
         let archive = self
         let folderID = folder.id
-        return (entriesByFolder[folder.id] ?? []).map { entry in
-            SourceMessage(folderID: folderID, messageID: "", isRead: true, isFlagged: false, date: nil, load: {
+        return (entriesByFolder[folder.id] ?? []).compactMap { index in
+            guard let entry = archive.zip.entry(at: Int(index)) else { return nil }
+            return SourceMessage(folderID: folderID, messageID: "", isRead: true, isFlagged: false, date: nil, load: {
                 try archive.render(try OLMMessage(xml: try archive.zip.data(for: entry)))
             }, prepare: {
                 let parsed = try OLMMessage(xml: try archive.zip.data(for: entry))
@@ -95,6 +113,24 @@ public struct OLMArchive: MigrationSource {
             return try zip.data(for: e)
         })
     }
+
+    static func kind(for name: String, path: String) -> SourceFolderKind {
+        let n = name.lowercased()
+        let top = path.split(separator: "/").first.map { String($0).lowercased() } ?? n
+        if top != n && top != "inbox" { return .other }
+        switch n {
+        case "inbox", "posteingang", "boîte de réception", "входящие", "gelen kutusu": return .inbox
+        case "sent items", "sent", "sent mail", "gesendete elemente", "отправленные", "gönderilmiş öğeler": return .sent
+        case "drafts", "entwürfe", "черновики", "taslaklar": return .drafts
+        case "deleted items", "trash", "gelöschte elemente", "удаленные", "silinmiş öğeler": return .trash
+        case "junk e-mail", "junk email", "junk", "spam", "junk-e-mail", "нежелательная почта": return .junk
+        case "archive", "archives", "archiv", "архив", "arşiv": return .archive
+        case "outbox", "postausgang", "исходящие", "giden kutusu": return .outbox
+        case "calendar", "contacts", "notes", "tasks", "journal": return .system
+        default: return .other
+        }
+    }
+
 }
 
 struct OLMMessage {

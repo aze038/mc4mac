@@ -124,6 +124,8 @@ actor PayloadQueue {
 
     init(limit: Int) { self.limit = limit }
 
+    var bufferedBytes: Int { bytes }
+
     func push(_ item: MigrationItem) async {
         while bytes >= limit && !finished {
             await withCheckedContinuation { producers.append($0) }
@@ -170,9 +172,9 @@ enum MemoryFootprint {
         return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
     }
 
-    static func waitBelow(_ ceiling: Int) async {
+    static func waitBelow(_ ceiling: Int, whileQueueHolds queue: PayloadQueue) async {
         var waited = 0
-        while MemoryFootprint.current() > ceiling, waited < 600, !Task.isCancelled {
+        while MemoryFootprint.current() > ceiling, waited < 50, !Task.isCancelled, await queue.bufferedBytes > 0 {
             try? await Task.sleep(nanoseconds: 100_000_000)
             waited += 1
         }
@@ -206,7 +208,7 @@ public actor MigrationRunner {
     private var report = MigrationReport()
     private var processed = 0
     private var total = 0
-    private let prefetchLimit = 40_000
+    private let prefetchLimit = 250_000
     public var options = MigrationOptions()
     private var pendingLabel: [String: [UInt32]] = [:]
 
@@ -309,7 +311,7 @@ public actor MigrationRunner {
                         into queue: PayloadQueue, progress: @escaping @Sendable (MigrationProgress) -> Void) async {
         let ceiling = options.memoryCeiling
         while let light = await cursor.next(), !Task.isCancelled {
-            await MemoryFootprint.waitBelow(ceiling)
+            await MemoryFootprint.waitBelow(ceiling, whileQueueHolds: queue)
             let message: SourceMessage
             do { message = try light.prepared() } catch {
                 await noteFailed(progress, "\(folder.path): \(error.localizedDescription)")

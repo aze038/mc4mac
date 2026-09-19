@@ -128,6 +128,7 @@ final class AppModel {
     var keyChordHint: String?
     var mutedThreads: [MutedThread] = []
     var notificationPolicy = NotificationPolicy()
+    var migrationInProgress = false
 
     private var searchTextStorage = ""
     var searchText: String {
@@ -422,8 +423,10 @@ final class AppModel {
     func accountName(_ id: UUID) -> String { accounts.first { $0.id == id }?.email ?? "account" }
 
     private func announce(_ list: [MessageSummary], accountID: UUID, folderID: UUID) {
-        guard let account = accounts.first(where: { $0.id == accountID }), let folder = folder(folderID) else { return }
-        notifications.notify(newMessages: list, account: account, folder: folder, policy: notificationPolicy)
+        guard !migrationInProgress, let account = accounts.first(where: { $0.id == accountID }), let folder = folder(folderID) else { return }
+        let recent = list.filter { $0.date > Date().addingTimeInterval(-48 * 3600) }
+        guard !recent.isEmpty else { return }
+        notifications.notify(newMessages: recent, account: account, folder: folder, policy: notificationPolicy)
     }
 
     func setNotifyMode(_ mode: NotifyMode, for accountID: UUID) {

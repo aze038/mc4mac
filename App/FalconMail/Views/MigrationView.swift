@@ -267,6 +267,7 @@ struct MigrationView: View {
     private func undo() {
         guard let source, let accountID = targetAccountID, let account = model.accounts.first(where: { $0.id == accountID }) else { return }
         running = true
+        model.migrationInProgress = true
         status = "Connecting to \(account.email)"
         done = 0; total = 0
         task = Task {
@@ -291,6 +292,7 @@ struct MigrationView: View {
                 status = "Undo failed: \(error.localizedDescription)"
             }
             running = false
+            model.migrationInProgress = false
         }
     }
 
@@ -298,6 +300,7 @@ struct MigrationView: View {
         guard let source, let accountID = targetAccountID, let account = model.accounts.first(where: { $0.id == accountID }) else { return }
         self.dryRun = dryRun
         running = true
+        model.migrationInProgress = true
         status = "Connecting to \(account.email)"
         log = []
         done = 0; total = 0; appended = 0; existing = 0; failed = 0
@@ -341,6 +344,7 @@ struct MigrationView: View {
                 status = "Failed: \(error.localizedDescription)"
             }
             running = false
+            model.migrationInProgress = false
         }
     }
 }
