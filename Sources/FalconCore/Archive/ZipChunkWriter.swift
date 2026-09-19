@@ -104,10 +104,19 @@ final class ZipChunkWriter {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone.current
         let c = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
-        let year = max(1980, min(2107, c.year ?? 1980))
-        let time = UInt16(((c.hour ?? 0) << 11) | ((c.minute ?? 0) << 5) | ((c.second ?? 0) / 2))
-        let d = UInt16(((year - 1980) << 9) | ((c.month ?? 1) << 5) | (c.day ?? 1))
-        return (time, d)
+        let year: Int = max(1980, min(2107, c.year ?? 1980))
+        let hour: Int = c.hour ?? 0
+        let minute: Int = c.minute ?? 0
+        let second: Int = c.second ?? 0
+        let month: Int = c.month ?? 1
+        let day: Int = c.day ?? 1
+        var time: Int = hour << 11
+        time |= minute << 5
+        time |= second / 2
+        var d: Int = (year - 1980) << 9
+        d |= month << 5
+        d |= day
+        return (UInt16(time), UInt16(d))
     }
 }
 
