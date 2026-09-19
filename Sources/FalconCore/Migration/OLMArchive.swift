@@ -43,6 +43,15 @@ public struct OLMArchive: MigrationSource {
         }
     }
 
+    static func attachmentEntry(_ path: String, in zip: ZipReader) -> ZipEntry? {
+        if let e = zip.entry(named: path) { return e }
+        let decoded = path.removingPercentEncoding ?? path
+        if let e = zip.entry(named: decoded) { return e }
+        let tail = decoded.split(separator: "/").suffix(2).joined(separator: "/")
+        guard !tail.isEmpty else { return nil }
+        return zip.entries.first { $0.name.hasSuffix(tail) && $0.name.contains("__Attachments") }
+    }
+
     public func messages(in folder: SourceFolder) throws -> [SourceMessage] {
         let zip = self.zip
         return (entriesByFolder[folder.id] ?? []).map { entry in
@@ -52,7 +61,7 @@ public struct OLMArchive: MigrationSource {
                                  date: parsed?.date) {
                 let message = try OLMMessage(xml: try zip.data(for: entry))
                 return try message.mime(loading: { path in
-                    guard let e = zip.entry(named: path) else { return nil }
+                    guard let e = OLMArchive.attachmentEntry(path, in: zip) else { return nil }
                     return try zip.data(for: e)
                 })
             }
@@ -75,40 +84,57 @@ struct OLMMessage {
         attachments = delegate.attachments
     }
 
-    var messageID: String { AddressParser.messageIDs(values["OPFMessageCopyMessageID"]).first ?? (values["OPFMessageCopyMessageID"].map { "<" + $0.trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "<>")) + ">" } ?? "") }
-    var subject: String { values["OPFMessageCopySubject"] ?? "" }
-    var isRead: Bool { values["OPFMessageIsRead"] == "1" || values["OPFMessageIsRead"]?.lowercased() == "true" }
-    var isFlagged: Bool { (Int(values["OPFMessageCopyFlagStatus"] ?? "0") ?? 0) > 0 }
+    func value(_ key: String) -> String? { values[key.lowercased()] }
+    func people(_ key: String) -> [EmailAddress] { addresses[key.lowercased()] ?? [] }
+
+    var messageID: String {
+        guard let raw = value("OPFMessageCopyMessageID")?.trimmed, !raw.isEmpty else { return "" }
+        return AddressParser.messageIDs(raw).first ?? "<" + raw.trimmingCharacters(in: CharacterSet(charactersIn: "<>")) + ">"
+    }
+    var subject: String { value("OPFMessageCopySubject") ?? "" }
+    var isRead: Bool { ["1", "true", "yes"].contains((value("OPFMessageIsRead") ?? "").lowercased()) }
+    var isFlagged: Bool { (Int(value("OPFMessageCopyFlagStatus") ?? "0") ?? 0) > 0 }
 
     var date: Date? {
         for key in ["OPFMessageCopyReceivedTime", "OPFMessageCopySentTime", "OPFMessageCopyModDate"] {
-            if let s = values[key], let d = OLMMessage.parseDate(s) { return d }
+            if let s = value(key), let d = OLMMessage.parseDate(s) { return d }
         }
         return nil
     }
 
-    static func parseDate(_ s: String) -> Date? {
+    private static let plainFormats: [DateFormatter] = ["yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm"].map { fmt in
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = fmt
+        return f
+    }
+
+    static func parseDate(_ raw: String) -> Date? {
+        let s = raw.trimmed
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         if let d = f.date(from: s) { return d }
-        f.formatOptions = [.withFullDate, .withTime, .withDashSeparatorInDate, .withColonSeparatorInTime]
-        return f.date(from: s)
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        for p in plainFormats { if let d = p.date(from: s) { return d } }
+        return RFC5322Date.parse(s)
     }
 
     func mime(loading: (String) throws -> Data?) throws -> Data {
-        let from = addresses["OPFMessageCopyFromAddresses"]?.first ?? addresses["OPFMessageCopySenderAddress"]?.first ?? EmailAddress(address: "unknown@localhost")
+        let from = people("OPFMessageCopyFromAddresses").first ?? people("OPFMessageCopySenderAddress").first ?? EmailAddress(address: "unknown@localhost")
         var files: [OutgoingAttachment] = []
         for a in attachments {
             guard let data = try loading(a.url) else { continue }
             files.append(OutgoingAttachment(filename: a.name, mimeType: a.type.isEmpty ? "application/octet-stream" : a.type, data: data,
                                             contentID: a.contentID.isEmpty ? nil : a.contentID))
         }
-        let html = values["OPFMessageCopyHTMLBody"].flatMap { $0.trimmed.isEmpty ? nil : $0 }
-        let text = values["OPFMessageCopyBody"] ?? html.map(HTMLText.plainText(from:)) ?? ""
-        let message = OutgoingMessage(from: from, to: addresses["OPFMessageCopyToAddresses"] ?? [], cc: addresses["OPFMessageCopyCCAddresses"] ?? [],
-                                      bcc: addresses["OPFMessageCopyBCCAddresses"] ?? [], subject: subject, textBody: text, htmlBody: html,
-                                      attachments: files, inReplyTo: values["OPFMessageCopyInReplyTo"],
-                                      references: AddressParser.messageIDs(values["OPFMessageCopyReferences"]),
+        let html = value("OPFMessageCopyHTMLBody").flatMap { $0.trimmed.isEmpty ? nil : $0 }
+        let text = value("OPFMessageCopyBody").flatMap { $0.trimmed.isEmpty ? nil : $0 } ?? html.map(HTMLText.plainText(from:)) ?? ""
+        let message = OutgoingMessage(from: from, to: people("OPFMessageCopyToAddresses"), cc: people("OPFMessageCopyCCAddresses"),
+                                      bcc: people("OPFMessageCopyBCCAddresses"), subject: subject, textBody: text, htmlBody: html,
+                                      attachments: files, inReplyTo: value("OPFMessageCopyInReplyTo"),
+                                      references: AddressParser.messageIDs(value("OPFMessageCopyReferences")),
                                       messageID: messageID.isEmpty ? nil : messageID, date: date ?? Date())
         return MIMEBuilder.build(message)
     }
@@ -127,7 +153,7 @@ final class OLMParserDelegate: NSObject, XMLParserDelegate {
         if elementName == "emailAddress", let parent = stack.dropLast().last {
             let address = attributes["OPFContactEmailAddressAddress"] ?? ""
             let name = attributes["OPFContactEmailAddressName"] ?? ""
-            if !address.isEmpty { addresses[parent, default: []].append(EmailAddress(name: name == address ? "" : name, address: address)) }
+            if !address.isEmpty { addresses[parent.lowercased(), default: []].append(EmailAddress(name: name == address ? "" : name, address: address)) }
         }
         if elementName == "messageAttachment" {
             attachments.append((attributes["OPFAttachmentName"] ?? "attachment", attributes["OPFAttachmentContentType"] ?? "",
@@ -144,7 +170,7 @@ final class OLMParserDelegate: NSObject, XMLParserDelegate {
     }
 
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName: String?) {
-        if stack.count == 2 || elementName.hasPrefix("OPFMessage") { values[elementName] = text }
+        if stack.count == 2 || elementName.hasPrefix("OPFMessage") { values[elementName.lowercased()] = text }
         stack.removeLast()
         text = ""
     }
