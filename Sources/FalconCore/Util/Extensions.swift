@@ -15,11 +15,9 @@ extension Data {
     }
 
     public static func random(count: Int) -> Data {
-        var d = Data(count: count)
-        d.withUnsafeMutableBytes { buf in
-            for i in 0..<count { buf[i] = UInt8.random(in: 0...255) }
-        }
-        return d
+        var bytes = [UInt8](repeating: 0, count: count)
+        for i in 0..<count { bytes[i] = UInt8.random(in: 0...255) }
+        return Data(bytes)
     }
 
     public var utf8Lossy: String { String(decoding: self, as: UTF8.self) }
