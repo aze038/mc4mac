@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 60
     env:
       VERSION: ${{ github.event.inputs.version || github.ref_name }}
+      HAS_CERT: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,7 +44,7 @@ jobs:
           xcodegen generate
 
       - name: Import signing certificate
-        if: ${{ env.MACOS_CERTIFICATE_P12 != '' }}
+        if: env.HAS_CERT == 'true'
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -68,7 +70,7 @@ jobs:
           grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
 
       - name: Notarize
-        if: ${{ env.SIGN_IDENTITY != '' && secrets.APPLE_ID != '' }}
+        if: env.HAS_CERT == 'true' && env.HAS_NOTARY == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
