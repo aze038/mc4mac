@@ -43,20 +43,25 @@ struct MigrationView: View {
     private var targetFolders: [FolderInfo] { targetAccountID.flatMap { model.folders[$0] } ?? [] }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Migrate mail to Google Workspace").font(.title2.bold())
-            Text("Reads your Outlook for Mac mailbox or an .olm archive and uploads every message straight to the matching folder, using no disk space. Messages that already exist in the target are skipped, so it is safe to run again.")
-                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            sourceSection
-            accountSection
-            targetSection
-            if source != nil { mappingTable }
-            progressSection
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Migrate mail to Google Workspace").font(.title2.bold())
+                    Text("Reads your Outlook for Mac mailbox or an .olm archive and uploads every message straight to the matching folder, using no disk space. Messages that already exist in the target are skipped, so it is safe to run again.")
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    sourceSection
+                    accountSection
+                    targetSection
+                    if source != nil { mappingTable }
+                    progressSection
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Divider()
-            buttons
+            buttons.padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .padding(20)
-        .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity, minHeight: 560, idealHeight: 700, maxHeight: .infinity)
+        .frame(minWidth: 760, idealWidth: 820, maxWidth: .infinity, minHeight: 420, idealHeight: 680, maxHeight: .infinity)
         .alert("Start the migration?", isPresented: $confirmStart) {
             Button("Start") { start(dryRun: false) }
             Button("Cancel", role: .cancel) {}
@@ -205,8 +210,7 @@ struct MigrationView: View {
                     targetPicker(folder)
                 }
             }
-            .frame(minHeight: 120)
-            .frame(maxHeight: .infinity)
+            .frame(height: min(260, CGFloat(max(3, (source?.folders.count ?? 0))) * 28 + 12))
         }
     }
 
@@ -244,7 +248,7 @@ struct MigrationView: View {
                 }
                 if !log.isEmpty {
                     ScrollView { Text(log.suffix(40).joined(separator: "\n")).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                        .frame(height: 90)
+                        .frame(height: 72)
                 }
             }
         }
