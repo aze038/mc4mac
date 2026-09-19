@@ -98,10 +98,9 @@ public struct GoogleDriveStorage: ArchiveStorage {
     }
 }
 
-final class DriveUploadSession: ArchiveUploadSession, @unchecked Sendable {
+actor DriveUploadSession: ArchiveUploadSession {
     private let api: GoogleAPI
     private let sessionURL: URL
-    private let lock = NSLock()
     private var buffer = Data()
     private var sent = 0
     private let pieceSize = 8 * 1024 * 1024
@@ -113,16 +112,12 @@ final class DriveUploadSession: ArchiveUploadSession, @unchecked Sendable {
     }
 
     func write(_ data: Data) async throws {
-        lock.lock()
         buffer.append(data)
-        lock.unlock()
         while buffer.count >= pieceSize {
             let count = (buffer.count / granularity) * granularity
-            let piece = buffer.prefix(count)
-            try await send(Data(piece), total: nil)
-            lock.lock()
+            let piece = Data(buffer.prefix(count))
             buffer.removeFirst(count)
-            lock.unlock()
+            try await send(piece, total: nil)
         }
     }
 
