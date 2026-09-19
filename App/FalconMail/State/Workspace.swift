@@ -76,7 +76,7 @@ extension AppModel {
         var kept: [WorkspaceTab] = []
         for t in open + minimized {
             switch t {
-            case .compose(let id): if drafts[id] != nil { kept.append(t) }
+            case .compose: continue
             case .message(let id):
                 if let m = try? await store.message(id: id) {
                     tabTitles[t.id] = m.subject.isEmpty ? "(no subject)" : m.subject

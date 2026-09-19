@@ -92,14 +92,19 @@ struct ComposeView: View {
                     Button(showCcBcc ? "Hide Cc/Bcc" : "Cc/Bcc") { showCcBcc.toggle() }.buttonStyle(.link)
                 }
                 RecipientField(label: "To", text: binding(\.to))
+                Divider()
                 if showCcBcc || !(draft?.cc.isEmpty ?? true) || !(draft?.bcc.isEmpty ?? true) {
                     RecipientField(label: "Cc", text: binding(\.cc))
+                    Divider()
                     RecipientField(label: "Bcc", text: binding(\.bcc))
+                    Divider()
                 }
                 HStack {
                     Text("Subject").frame(width: 60, alignment: .trailing).foregroundStyle(.secondary)
-                    TextField("", text: binding(\.subject)).textFieldStyle(.plain)
+                    TextField("Subject", text: binding(\.subject)).textFieldStyle(.plain)
                 }
+                .padding(.vertical, 4)
+                Divider()
                 scheduleBanner
                 if let attachments = draft?.attachments, !attachments.isEmpty {
                     ScrollView(.horizontal) {
