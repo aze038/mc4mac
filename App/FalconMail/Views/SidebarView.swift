@@ -50,6 +50,8 @@ struct SidebarView: View {
                 .badge(inboxUnread)
             Label("Calendar", systemImage: "calendar")
                 .tag(SidebarSelection.calendar)
+            Label("Contacts", systemImage: "person.2")
+                .tag(SidebarSelection.contacts)
             Label("Outbox", systemImage: "paperplane")
                 .tag(SidebarSelection.outbox)
                 .badge(pendingOutbox)

@@ -18,8 +18,11 @@ public actor FolderStore {
     private var journalOps = 0
     private var loaded = false
     private let compactThreshold = 2000
+    private var terms: [String: Set<UInt32>] = [:]
+    private var termOps = 0
 
     private var snapshotURL: URL { directory.appendingPathComponent("index.plist") }
+    private var termsURL: URL { directory.appendingPathComponent("terms.plist") }
     private var journalURL: URL { directory.appendingPathComponent("journal.jsonl") }
     private var bodiesURL: URL { directory.appendingPathComponent("Bodies", isDirectory: true) }
 
@@ -44,7 +47,52 @@ public actor FolderStore {
             }
         }
         for m in messages.values where !m.messageID.isEmpty { byMessageID[m.messageID] = m.uid }
+        if let data = AtomicFile.read(termsURL), let stored = try? PropertyListDecoder().decode([String: [UInt32]].self, from: data) {
+            terms = stored.mapValues { Set($0) }
+        } else {
+            for m in messages.values { index(m) }
+        }
         if journalOps > compactThreshold { try compact() }
+    }
+
+    private func index(_ m: MessageSummary) {
+        let text = m.subject + " " + m.from.rfc5322 + " " + (m.to + m.cc).map { $0.rfc5322 }.joined(separator: " ") + " " + m.snippet
+        for t in ArchiveTerms.tokenize(text, limit: 2000) { terms[t, default: []].insert(m.uid) }
+        termOps += 1
+    }
+
+    private func index(uid: UInt32, text: String) {
+        for t in ArchiveTerms.tokenize(text, limit: 5000) { terms[t, default: []].insert(uid) }
+        termOps += 1
+    }
+
+    public func search(tokens: Set<String>) -> [UInt32] {
+        guard !tokens.isEmpty else { return [] }
+        var result: Set<UInt32>?
+        for token in tokens {
+            var hits = terms[token] ?? []
+            if token.count >= 3 {
+                for (key, uids) in terms where key.hasPrefix(token) { hits.formUnion(uids) }
+            }
+            result = result.map { $0.intersection(hits) } ?? hits
+            if result?.isEmpty == true { break }
+        }
+        return (result ?? []).filter { messages[$0] != nil }
+    }
+
+    private func saveTermsIfNeeded(force: Bool = false) throws {
+        guard force || termOps >= 200 else { return }
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let live = Set(messages.keys)
+        var cleaned: [String: [UInt32]] = [:]
+        for (k, v) in terms {
+            let kept = v.intersection(live)
+            if !kept.isEmpty { cleaned[k] = Array(kept) }
+        }
+        terms = cleaned.mapValues { Set($0) }
+        try AtomicFile.write(try encoder.encode(cleaned), to: termsURL)
+        termOps = 0
     }
 
     public var count: Int { messages.count }
@@ -76,8 +124,10 @@ public actor FolderStore {
         for m in batch {
             try journal(.upsert(m))
             apply(.upsert(m))
+            index(m)
         }
         try compactIfNeeded()
+        try saveTermsIfNeeded()
     }
 
     public func setFlags(_ updates: [(uid: UInt32, flags: MessageFlags)]) throws -> [UInt32] {
@@ -104,6 +154,7 @@ public actor FolderStore {
     public func removeAll() throws {
         messages.removeAll()
         byMessageID.removeAll()
+        terms.removeAll()
         journalHandle?.closeFile()
         journalHandle = nil
         try? FileManager.default.removeItem(at: directory)
@@ -117,11 +168,13 @@ public actor FolderStore {
         apply(.threadKey(uid: uid, key: key))
     }
 
-    public func storeBody(uid: UInt32, raw: Data, snippet: String, hasAttachments: Bool) throws {
+    public func storeBody(uid: UInt32, raw: Data, snippet: String, hasAttachments: Bool, searchText: String = "") throws {
         try raw.write(to: bodyURL(uid), options: .atomic)
         guard messages[uid] != nil else { return }
         try journal(.body(uid: uid, snippet: snippet, hasAttachments: hasAttachments))
         apply(.body(uid: uid, snippet: snippet, hasAttachments: hasAttachments))
+        if !searchText.isEmpty { index(uid: uid, text: String(searchText.prefix(200_000))) }
+        try saveTermsIfNeeded()
     }
 
     public func body(uid: UInt32) -> Data? {
@@ -182,6 +235,7 @@ public actor FolderStore {
         encoder.outputFormat = .binary
         let data = try encoder.encode(Array(messages.values))
         try AtomicFile.write(data, to: snapshotURL)
+        try saveTermsIfNeeded(force: true)
         journalHandle?.closeFile()
         journalHandle = nil
         try? FileManager.default.removeItem(at: journalURL)

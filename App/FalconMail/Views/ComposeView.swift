@@ -20,6 +20,7 @@ struct ComposeView: View {
             if draft != nil { form } else { ProgressView() }
         }
         .frame(minWidth: 600, minHeight: 480)
+        .background(PopupWindowAccessor())
         .onAppear { draft = model.drafts[draftID] }
         .onDisappear { editSessions.values.forEach { $0.stop() } }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
