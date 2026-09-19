@@ -198,7 +198,7 @@ struct HTMLView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> WKWebView {
-        let view = WebViewPool.acquire()
+        let view = MainActor.assumeIsolated { WebViewPool.acquire() }
         view.navigationDelegate = context.coordinator
         context.coordinator.lastHTML = ""
         return view
@@ -212,7 +212,7 @@ struct HTMLView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
-        WebViewPool.release(view)
+        MainActor.assumeIsolated { WebViewPool.release(view) }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {

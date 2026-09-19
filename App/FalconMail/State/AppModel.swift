@@ -22,18 +22,18 @@ struct MessageThread: Identifiable, Hashable {
 @MainActor
 @Observable
 final class AppModel {
-    @ObservationIgnored let layout = FileLayout()
-    @ObservationIgnored let store: MailStore
-    @ObservationIgnored let tokens: TokenStore
-    @ObservationIgnored let rules: RuleStore
-    @ObservationIgnored let indexer = SpotlightIndexer()
-    @ObservationIgnored let coordinator: SyncCoordinator
-    @ObservationIgnored let outbox: Outbox
-    @ObservationIgnored let contacts: ContactStore
-    @ObservationIgnored let archives: ArchiveRecordStore
-    @ObservationIgnored let notifications = NotificationService()
-    @ObservationIgnored let updates = UpdateManager()
-    @ObservationIgnored let session: SessionStore
+    let layout = FileLayout()
+    let store: MailStore
+    let tokens: TokenStore
+    let rules: RuleStore
+    let indexer = SpotlightIndexer()
+    let coordinator: SyncCoordinator
+    let outbox: Outbox
+    let contacts: ContactStore
+    let archives: ArchiveRecordStore
+    let notifications = NotificationService()
+    let updates = UpdateManager()
+    let session: SessionStore
 
     var accounts: [AccountInfo] = []
     var folders: [UUID: [FolderInfo]] = [:]
