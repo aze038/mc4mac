@@ -25,6 +25,7 @@ struct MessageDetailView: View {
 
 struct MessageCard: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     let message: MessageSummary
     @State var expanded: Bool
     @State private var parsed: MIMEMessage?
@@ -46,6 +47,9 @@ struct MessageCard: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { expanded.toggle() }
+            .contextMenu {
+                Button("Open in New Window") { openWindow(value: message.id) }
+            }
             if expanded {
                 if let parsed {
                     if !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments) }
@@ -67,6 +71,32 @@ struct MessageCard: View {
             parsed = await model.parsedBody(for: message)
             loading = false
         }
+    }
+}
+
+struct MessageWindowView: View {
+    @EnvironmentObject var model: AppModel
+    let messageID: String
+    @State private var message: MessageSummary?
+
+    var body: some View {
+        Group {
+            if let message {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(message.subject.isEmpty ? "(no subject)" : message.subject)
+                            .font(.title3.bold())
+                            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 8)
+                        MessageCard(message: message, expanded: true)
+                    }
+                }
+                .navigationTitle(message.subject.isEmpty ? "Message" : message.subject)
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(minWidth: 480, minHeight: 400)
+        .task { message = try? await model.store.message(id: messageID) }
     }
 }
 
@@ -93,6 +123,8 @@ struct AttachmentStrip: View {
                         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
+                    .onDrag { AttachmentTempFiles.itemProvider(filename: a.filename, data: a.data) }
+                    .help("Drag into a compose window or onto the Desktop")
                 }
             }
         }
