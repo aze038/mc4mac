@@ -29,7 +29,10 @@ struct ComposeView: View {
         .frame(minWidth: 600, minHeight: embedded ? 0 : 480)
         .background(embedded ? nil : PopupWindowAccessor())
         .onAppear { load() }
-        .onDisappear { editSessions.values.forEach { $0.stop() } }
+        .onDisappear {
+            editSessions.values.forEach { $0.stop() }
+            if !embedded { model.saveDraftToServer(draftID) }
+        }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             Task {
                 for url in await AttachmentTempFiles.fileURLs(from: providers) {

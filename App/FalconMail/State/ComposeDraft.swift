@@ -15,6 +15,12 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     var scheduledAt: Date?
     var historyPlain: String = ""
     var historyHTML: String = ""
+    var sourceMessageID: String?
+
+    var isBlank: Bool {
+        to.trimmed.isEmpty && cc.trimmed.isEmpty && bcc.trimmed.isEmpty && subject.trimmed.isEmpty && attachments.isEmpty
+            && body.replacingOccurrences(of: historyPlain, with: "").trimmed.isEmpty
+    }
 
     static func reply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
@@ -110,9 +116,9 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         return (plain, html)
     }
 
-    func outgoing(from account: AccountInfo) throws -> OutgoingMessage {
+    func outgoing(from account: AccountInfo, requireRecipients: Bool = true) throws -> OutgoingMessage {
         let toList = AddressParser.parse(to)
-        guard !toList.isEmpty || !AddressParser.parse(cc).isEmpty || !AddressParser.parse(bcc).isEmpty else {
+        guard !requireRecipients || !toList.isEmpty || !AddressParser.parse(cc).isEmpty || !AddressParser.parse(bcc).isEmpty else {
             throw FalconError.invalidInput("Add at least one recipient.")
         }
         let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"

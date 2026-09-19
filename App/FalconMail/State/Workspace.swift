@@ -35,7 +35,7 @@ extension AppModel {
         tabs.removeAll { $0 == tab }
         minimizedTabs.removeAll { $0 == tab }
         if activeTab == tab { activeTab = tabs.last }
-        if case .compose(let id) = tab, let d = drafts[id], isEmptyDraft(d) { drafts[id] = nil }
+        if case .compose(let id) = tab { saveDraftToServer(id) }
         saveSession()
     }
 
@@ -70,11 +70,6 @@ extension AppModel {
         case .message: return "envelope.open"
         case .compose: return "square.and.pencil"
         }
-    }
-
-    private func isEmptyDraft(_ d: ComposeDraft) -> Bool {
-        d.to.isEmpty && d.cc.isEmpty && d.bcc.isEmpty && d.subject.isEmpty && d.attachments.isEmpty &&
-            d.body.replacingOccurrences(of: ComposeDraft.signatureBlock(accounts.first { $0.id == d.accountID } ?? AccountInfo(email: "", displayName: "")), with: "").trimmed.isEmpty
     }
 
     func restoreTabs(_ open: [WorkspaceTab], minimized: [WorkspaceTab], active: WorkspaceTab?) async {

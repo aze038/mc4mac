@@ -18,9 +18,7 @@ struct FalconMailApp: App {
                 .environmentObject(model.updates)
                 .task {
                     await model.bootstrap()
-                    let restore = model.windowsToRestore
-                    for id in restore.messages { openWindow(value: id) }
-                    for id in restore.drafts { openWindow(value: id) }
+                    for id in model.windowsToRestore { openWindow(value: id) }
                 }
                 .onAppear {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }

@@ -483,6 +483,17 @@ public actor AccountSyncer {
     }
 
     @discardableResult
+    public func purge(_ messages: [MessageSummary]) async throws -> [MailActionRecord] {
+        var records: [MailActionRecord] = []
+        for (folderID, group) in Dictionary(grouping: messages, by: { $0.folderID }) {
+            guard let folder = await store.folder(folderID) else { continue }
+            records.append(try await removeLocally(group, in: folder, kind: .delete, verb: .expunge,
+                                                   destinationPath: "", destinationName: folder.name))
+        }
+        return records
+    }
+
+    @discardableResult
     public func archive(_ messages: [MessageSummary]) async throws -> [MailActionRecord] {
         let name = await archiveDestinationName()
         var records: [MailActionRecord] = []

@@ -328,11 +328,11 @@ final class AppModel {
         Task { await syncContacts() }
     }
 
-    var windowsToRestore: (messages: [String], drafts: [UUID]) {
+    var windowsToRestore: [String] {
         let state = restoredState
         restoredState = nil
-        let tabDrafts = Set((tabs + minimizedTabs).compactMap { if case .compose(let id) = $0 { return id } else { return nil } })
-        return (state?.openMessageWindows ?? [], drafts.keys.filter { !tabDrafts.contains($0) })
+        saveLeftoverDrafts()
+        return state?.openMessageWindows ?? []
     }
 
     func currentSessionState() -> SessionState {
@@ -1221,8 +1221,42 @@ final class AppModel {
                 showActionError("Could not open that draft.")
                 return
             }
-            openCompose(ComposeDraft.from(parsed: parsed, accountID: message.accountID))
+            var draft = ComposeDraft.from(parsed: parsed, accountID: message.accountID)
+            draft.sourceMessageID = message.id
+            openCompose(draft)
         }
+    }
+
+    func saveDraftToServer(_ id: UUID) {
+        guard let draft = drafts[id] else { return }
+        drafts[id] = nil
+        guard !draft.isBlank, let account = accounts.first(where: { $0.id == draft.accountID }) else { return }
+        Task {
+            guard let folder = folder(accountID: account.id, role: .drafts), let syncer = await coordinator.syncer(for: account.id) else {
+                drafts[id] = draft
+                return
+            }
+            do {
+                let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
+                try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
+                await purgeStoredDraft(draft.sourceMessageID)
+                statusText = "Draft saved to \(folder.name)"
+            } catch {
+                drafts[id] = draft
+                showActionError("Could not save the draft: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func purgeStoredDraft(_ messageID: String?) async {
+        guard let messageID, let stored = try? await store.message(id: messageID) else { return }
+        removeFromList([stored])
+        perform([stored], announcing: false) { try await $0.purge($1) }
+    }
+
+    func saveLeftoverDrafts() {
+        let openIDs = Set((tabs + minimizedTabs).compactMap { if case .compose(let id) = $0 { return id } else { return nil } })
+        for id in drafts.keys where !openIDs.contains(id) { saveDraftToServer(id) }
     }
 
     private func markReadOnOpen(_ message: MessageSummary) {
@@ -1239,6 +1273,7 @@ final class AppModel {
                 await outbox.setUndoWindow(TimeInterval(undoSendSeconds))
                 let item = try await outbox.enqueue(accountID: account.id, from: account.email, message: message, sendAt: draft.scheduledAt)
                 await writeSidecar(draft, for: item.id)
+                await purgeStoredDraft(draft.sourceMessageID)
                 try? await contacts.recordUse(accountID: account.id, addresses: message.to + message.cc + message.bcc)
                 contactList = await contacts.all()
             } catch {

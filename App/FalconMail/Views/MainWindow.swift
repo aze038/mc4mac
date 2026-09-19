@@ -139,6 +139,9 @@ struct StatusBar: View {
         HStack(spacing: 12) {
             Circle().fill(model.online.values.contains(false) ? Color.orange : Color.green).frame(width: 8, height: 8)
             Text(model.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            if model.online.values.contains(false) {
+                Button("Offline · Retry") { model.syncNow() }.buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
+            }
             Spacer()
             chordCapsule
             actionErrorCapsule
