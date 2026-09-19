@@ -97,6 +97,7 @@ public struct GitHubReleaseClient: Sendable {
 
     func request(_ url: URL, accept: String) -> URLRequest {
         var r = URLRequest(url: url)
+        r.timeoutInterval = 15
         r.setValue(accept, forHTTPHeaderField: "Accept")
         r.setValue("FalconMail", forHTTPHeaderField: "User-Agent")
         r.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")

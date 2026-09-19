@@ -3,43 +3,38 @@ import CryptoKit
 
 public enum UpdateInstaller {
     public static func download(_ request: URLRequest, expectedSHA256: String?, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        var req = request
+        req.timeoutInterval = 60
+        let delegate = DownloadProgress(progress: progress)
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let (tmp, response) = try await session.download(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw FalconError.http(status, "download failed") }
-        let total = response.expectedContentLength
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("FalconMail-Update-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let fileURL = dir.appendingPathComponent("update.zip")
-        FileManager.default.createFile(atPath: fileURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: fileURL)
-        var hasher = SHA256()
-        var buffer = Data()
-        var received: Int64 = 0
-        var lastReport = Date.distantPast
-        for try await byte in bytes {
-            buffer.append(byte)
-            if buffer.count >= 1 << 16 {
-                try handle.write(contentsOf: buffer)
-                hasher.update(data: buffer)
-                received += Int64(buffer.count)
-                buffer.removeAll(keepingCapacity: true)
-                if total > 0, Date().timeIntervalSince(lastReport) > 0.2 {
-                    lastReport = Date()
-                    progress(Double(received) / Double(total))
-                }
-            }
-        }
-        if !buffer.isEmpty {
-            try handle.write(contentsOf: buffer)
-            hasher.update(data: buffer)
-        }
-        try handle.close()
+        try FileManager.default.moveItem(at: tmp, to: fileURL)
         progress(1)
         if let expected = expectedSHA256?.lowercased(), !expected.isEmpty {
-            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            let data = try Data(contentsOf: fileURL)
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
             guard digest == expected else { throw FalconError.storage("Downloaded file failed its checksum") }
         }
         return fileURL
+    }
+
+    final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        let progress: @Sendable (Double) -> Void
+        init(progress: @escaping @Sendable (Double) -> Void) { self.progress = progress }
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
+                        totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+            guard totalBytesExpectedToWrite > 0 else { return }
+            progress(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        }
+
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
     }
 
     public static func extractApp(from zip: URL) throws -> URL {
