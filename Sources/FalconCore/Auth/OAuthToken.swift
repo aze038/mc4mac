@@ -26,4 +26,12 @@ public struct OAuthClientConfig: Codable, Sendable, Hashable {
         self.clientID = clientID
         self.clientSecret = clientSecret
     }
+
+    public var reversedClientScheme: String? {
+        let suffix = ".apps.googleusercontent.com"
+        guard clientID.hasSuffix(suffix) else { return nil }
+        return "com.googleusercontent.apps." + String(clientID.dropLast(suffix.count))
+    }
+
+    public var hasSecret: Bool { !(clientSecret ?? "").isEmpty }
 }

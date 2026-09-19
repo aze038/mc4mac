@@ -38,7 +38,10 @@ jobs:
           if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ]; then
             plutil -replace FalconGoogleClientID -string "$GOOGLE_OAUTH_CLIENT_ID" App/FalconMail/Info.plist
             plutil -replace FalconGoogleClientSecret -string "${GOOGLE_OAUTH_CLIENT_SECRET:-}" App/FalconMail/Info.plist
-            echo "Google sign-in embedded"
+            PREFIX="${GOOGLE_OAUTH_CLIENT_ID%.apps.googleusercontent.com}"
+            SCHEME="com.googleusercontent.apps.$PREFIX"
+            plutil -replace CFBundleURLTypes -json "[{\"CFBundleURLName\":\"Google Sign-In\",\"CFBundleURLSchemes\":[\"$SCHEME\"]}]" App/FalconMail/Info.plist
+            echo "Google sign-in embedded with URL scheme $SCHEME"
           else
             echo "::warning::GOOGLE_OAUTH_CLIENT_ID secret is not set; this build has no Google sign-in"
           fi
