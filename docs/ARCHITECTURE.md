@@ -131,3 +131,10 @@ catalog with the translations (Russian, Turkish, Azerbaijani and German so
 far). macOS picks the language from System Settings; untranslated strings fall
 back to English. Xcode adds new keys to the catalog on each build; translators
 edit the catalog in Xcode or as JSON.
+
+## App icon
+
+`scripts/render_icon.py` draws the icon (macOS squircle, glass envelope) with
+Pillow and writes every size into `App/FalconMail/Assets.xcassets`. It also
+renders the DMG background. Re-run it after changing the design; the PNGs are
+committed so Xcode and CI never need Python.
