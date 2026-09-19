@@ -141,4 +141,16 @@ extension MigrationTests {
         XCTAssertEqual(state.done, [other])
         XCTAssertEqual(state.appended.count, 1)
     }
+
+    func testGmailImportMultipartBody() throws {
+        let metadata = Data("{\"labelIds\":[\"INBOX\"]}".utf8)
+        let raw = Data("Subject: hi\r\n\r\nbody\r\n".utf8)
+        let body = String(decoding: GmailImporter.multipart(metadata: metadata, raw: raw, boundary: "B"), as: UTF8.self)
+        XCTAssertTrue(body.hasPrefix("--B\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{\"labelIds\":[\"INBOX\"]}\r\n--B\r\nContent-Type: message/rfc822\r\n\r\nSubject: hi"))
+        XCTAssertTrue(body.hasSuffix("\r\n--B--\r\n"))
+        XCTAssertTrue(GmailImporter.isRateLimited(FalconError.http(429, "")))
+        XCTAssertTrue(GmailImporter.isRateLimited(FalconError.http(403, "userRateLimitExceeded")))
+        XCTAssertFalse(GmailImporter.isRateLimited(FalconError.http(403, "insufficientPermissions")))
+        XCTAssertFalse(GmailImporter.isRateLimited(FalconError.http(400, "bad request")))
+    }
 }

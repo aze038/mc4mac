@@ -243,6 +243,9 @@ public actor MigrationRunner {
     private let prefetchLimit = 250_000
     public var options = MigrationOptions()
     private var pendingLabel: [String: [UInt32]] = [:]
+    private var gmail: GmailImporter?
+    private var migratedLabelID: String?
+    private var labelIDsByPath: [String: [String]] = [:]
 
     public static func stateURL(source: MigrationSource, account: AccountInfo, layout: FileLayout) -> URL {
         let safe = source.identifier.replacingOccurrences(of: "[^A-Za-z0-9._-]", with: "_", options: .regularExpression)
@@ -264,6 +267,36 @@ public actor MigrationRunner {
     }
 
     public func setOptions(_ o: MigrationOptions) { options = o }
+
+    public func setGmailImporter(_ importer: GmailImporter?) { gmail = importer }
+
+    public var usesGmailAPI: Bool { gmail != nil }
+
+    private func gmailLabelIDs(for targetPath: String) async throws -> [String] {
+        if let cached = labelIDsByPath[targetPath] { return cached }
+        guard let gmail else { return [] }
+        var ids: [String] = []
+        if let folder = existingFolders.first(where: { $0.path == targetPath }) {
+            switch folder.role {
+            case .inbox: ids = ["INBOX"]
+            case .sent: ids = ["SENT"]
+            case .drafts: ids = ["DRAFT"]
+            case .trash: ids = ["TRASH"]
+            case .junk: ids = ["SPAM"]
+            case .all: ids = []
+            default:
+                if let id = try await gmail.labelID(named: targetPath, create: true) { ids = [id] }
+            }
+        } else if let id = try await gmail.labelID(named: targetPath, create: true) {
+            ids = [id]
+        }
+        if options.labelMigrated {
+            if migratedLabelID == nil { migratedLabelID = try await gmail.labelID(named: options.labelName, create: true) }
+            if let migratedLabelID { ids.append(migratedLabelID) }
+        }
+        labelIDsByPath[targetPath] = ids
+        return ids
+    }
 
     public var appendedCount: Int { appendedRecords.count }
 
@@ -456,7 +489,7 @@ public actor MigrationRunner {
 
     private func upload(from queue: PayloadQueue, index: Int, preloaded: Bool, progress: @escaping @Sendable (MigrationProgress) -> Void) async throws {
         var connection: IMAPClient?
-        if index > 0 {
+        if index > 0, gmail == nil {
             do { connection = try await reconnect() } catch {
                 progress(.log("Connection \(index + 1) not opened (\(error.localizedDescription)); continuing with fewer connections"))
                 return
@@ -483,8 +516,13 @@ public actor MigrationRunner {
                         break
                     }
                     attempt += 1
-                    if let c = connection { await c.logout() } else { await client.logout() }
                     let delay = min(60, 5 * (1 << attempt))
+                    if GmailImporter.isRateLimited(error) {
+                        progress(.log("Gmail asked to slow down — retrying in \(delay)s"))
+                        try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                        continue
+                    }
+                    if let c = connection { await c.logout() } else { await client.logout() }
                     progress(.log("Connection \(index + 1): \(error.localizedDescription) — retrying in \(delay)s"))
                     try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
                     do {
@@ -519,12 +557,21 @@ public actor MigrationRunner {
         if item.isFlagged { flags.insert(.flagged) }
         if item.folderKind == .drafts { flags.insert(.draft) }
         let payload = item.payload ?? Data()
+        if let gmail {
+            var labels = try await gmailLabelIDs(for: item.targetPath)
+            if !item.isRead { labels.append("UNREAD") }
+            if item.isFlagged { labels.append("STARRED") }
+            _ = try await gmail.importMessage(payload, labelIDs: labels)
+            noteAppended(item, uid: nil, bytes: payload.count, progress: progress)
+            return
+        }
         let date = item.date ?? MIMEParser.parseHeaders(payload).first("Date").flatMap(RFC5322Date.parse)
         let uid = try await c.append(mailbox: item.targetPath, message: payload, flags: flags.imapFlags, date: date)
         noteAppended(item, uid: uid, bytes: payload.count, progress: progress)
     }
 
     static func isTransient(_ error: Error) -> Bool {
+        if GmailImporter.isRateLimited(error) { return true }
         switch error {
         case FalconError.network: return true
         case FalconError.protocolError(let text):

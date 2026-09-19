@@ -8,7 +8,9 @@ public struct GoogleScopes {
     public static let contacts = "https://www.googleapis.com/auth/contacts.readonly"
     public static let otherContacts = "https://www.googleapis.com/auth/contacts.other.readonly"
     public static let email = "https://www.googleapis.com/auth/userinfo.email"
-    public static let all = [mail, driveFile, calendar, contacts, otherContacts, email]
+    public static let gmailInsert = "https://www.googleapis.com/auth/gmail.insert"
+    public static let gmailLabels = "https://www.googleapis.com/auth/gmail.labels"
+    public static let all = [mail, driveFile, calendar, contacts, otherContacts, email, gmailInsert, gmailLabels]
 }
 
 public struct PKCEPair: Sendable {
