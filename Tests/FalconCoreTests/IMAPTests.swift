@@ -59,4 +59,12 @@ final class IMAPTests: XCTestCase {
         XCTAssertEqual(ModifiedUTF7.encode("éléments"), "&AOk-l&AOk-ments")
         XCTAssertEqual(ModifiedUTF7.decode("Tom &- Jerry"), "Tom & Jerry")
     }
+
+    func testGoogleThrottleIsRecognisedSoSyncWaitsInsteadOfHammering() {
+        XCTAssertTrue(AccountSyncer.isThrottled(FalconError.network("server closed session: Account exceeded command or bandwidth limits.")))
+        XCTAssertTrue(AccountSyncer.isThrottled(FalconError.protocolError("Too many simultaneous connections")))
+        XCTAssertTrue(AccountSyncer.isThrottled(FalconError.protocolError("[LIMIT] Please try again later")))
+        XCTAssertFalse(AccountSyncer.isThrottled(FalconError.network("connection closed by peer")))
+        XCTAssertFalse(AccountSyncer.isThrottled(FalconError.notAuthenticated))
+    }
 }

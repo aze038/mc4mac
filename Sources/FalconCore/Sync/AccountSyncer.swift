@@ -26,8 +26,18 @@ public actor AccountSyncer {
     private var syncRequested = false
     private var backoff: TimeInterval = 5
     public var initialWindow = 1000
+    public var catchUpWindow = 2000
     public var bodyPrefetch = 150
     public var maxOfflineBodyBytes = 5 * 1024 * 1024
+    public var bodyPrefetchBudget = 64 * 1024 * 1024
+    private var pendingCatchUp = false
+
+    static func isThrottled(_ error: Error) -> Bool {
+        let text = error.localizedDescription.lowercased()
+        return text.contains("bandwidth limit") || text.contains("command or bandwidth")
+            || text.contains("too many simultaneous") || text.contains("lockdown")
+            || text.contains("try again later") || text.contains("bandwidth limits")
+    }
     public var undoWindow: TimeInterval = 5
     private let batchSize = 100
     private var held: [UUID: HeldAction] = [:]
@@ -91,18 +101,31 @@ public actor AccountSyncer {
                 try await syncAll(client)
                 lastFullSync = Date()
                 events.yield(.finished(accountID: account.id))
+                if pendingCatchUp {
+                    pendingCatchUp = false
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    continue
+                }
                 try await idleLoop(client)
             } catch is CancellationError {
                 break
             } catch {
                 if Task.isCancelled { break }
                 Log.info("sync", "\(account.email): \(error.localizedDescription)")
-                events.yield(.error(accountID: account.id, message: error.localizedDescription))
+                if AccountSyncer.isThrottled(error) {
+                    backoff = max(backoff * 2, 1800)
+                    backoff = min(backoff, 7200)
+                    let minutes = Int(backoff / 60)
+                    events.yield(.error(accountID: account.id,
+                                        message: "Google paused mail access for \(account.email) because too much was downloaded at once. Waiting \(minutes) minutes, then continuing on its own."))
+                } else {
+                    events.yield(.error(accountID: account.id, message: error.localizedDescription))
+                    backoff = min(max(backoff * 2, 5), 300)
+                }
                 events.yield(.online(accountID: account.id, false))
                 await syncClient?.logout()
                 syncClient = nil
                 try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
-                backoff = min(backoff * 2, 300)
             }
         }
     }
@@ -186,7 +209,14 @@ public actor AccountSyncer {
                 uids = Array(all.suffix(initialWindow))
                 folder.oldestSyncedUID = uids.first ?? 0
             } else {
-                uids = try await client.uidSearch("UID \(folder.lastSyncedUID + 1):*").filter { $0 > folder.lastSyncedUID }
+                let fresh = try await client.uidSearch("UID \(folder.lastSyncedUID + 1):*").filter { $0 > folder.lastSyncedUID }.sorted()
+                if fresh.count > catchUpWindow {
+                    uids = Array(fresh.prefix(catchUpWindow))
+                    pendingCatchUp = true
+                    Log.info("sync", "\(account.email) \(folder.path): \(fresh.count) new messages, taking \(uids.count) this pass")
+                } else {
+                    uids = fresh
+                }
             }
             var start = 0
             while start < uids.count {
@@ -253,9 +283,12 @@ public actor AccountSyncer {
         guard !candidates.isEmpty else { return }
         var texts: [String: String] = [:]
         var updated: [MessageSummary] = []
+        var spent = 0
         for m in candidates {
             try Task.checkCancellation()
+            guard spent + m.size <= bodyPrefetchBudget else { break }
             guard let raw = try? await client.fetchMessage(uid: m.uid) else { continue }
+            spent += raw.count
             let parsed = MIMEParser.parse(raw)
             try await fs.storeBody(uid: m.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty, searchText: parsed.bestText)
             if let s = await fs.message(uid: m.uid) { updated.append(s); texts[s.id] = parsed.bestText }
