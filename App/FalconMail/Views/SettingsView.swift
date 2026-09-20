@@ -119,6 +119,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 760, height: 620)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var header: some View {

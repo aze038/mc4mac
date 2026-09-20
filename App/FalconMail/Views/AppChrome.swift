@@ -1,17 +1,17 @@
 import SwiftUI
 import AppKit
 
-/// Applies the theme colour and text size the General settings pane offers.
+/// Applies the theme colour, text size and material choice the General settings pane offers.
+/// Window opacity is never touched: an unopaque window stops AppKit clearing its backing store,
+/// which leaves stale pixels and other windows showing through.
 struct ThemedRoot: ViewModifier {
     @AppStorage(Pref.theme) private var theme = AccentTheme.blue.rawValue
     @AppStorage(Pref.textSize) private var textSize = 0
-    @AppStorage(Pref.transparency) private var transparency = true
 
     func body(content: Content) -> some View {
         content
             .tint(AccentTheme(rawValue: theme)?.colour ?? .accentColor)
             .environment(\.appTextScale, 1 + CGFloat(textSize) * 0.06)
-            .background(WindowTransparency(enabled: transparency))
     }
 }
 
@@ -43,23 +43,17 @@ struct ScaledFont: ViewModifier {
     }
 }
 
-struct WindowTransparency: NSViewRepresentable {
-    let enabled: Bool
+/// The background behind the ribbon strips. Translucent when the reader wants it, a solid
+/// window colour otherwise. Either way the window itself stays opaque: clearing a window's
+/// backing store stops AppKit repainting it and leaves other windows showing through.
+struct ChromeBackground: View {
+    @AppStorage(Pref.transparency) private var transparency = true
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { apply(view) }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { apply(view) }
-    }
-
-    private func apply(_ view: NSView) {
-        guard let window = view.window else { return }
-        window.titlebarAppearsTransparent = enabled
-        window.isOpaque = !enabled
-        window.backgroundColor = enabled ? .clear : .windowBackgroundColor
+    var body: some View {
+        if transparency {
+            Rectangle().fill(.bar)
+        } else {
+            Rectangle().fill(Color(nsColor: .windowBackgroundColor))
+        }
     }
 }

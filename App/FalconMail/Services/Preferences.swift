@@ -73,6 +73,11 @@ enum ListDensity: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Earlier builds stored "comfortable"; it maps to the middle density.
+    static func stored(_ raw: String) -> ListDensity {
+        ListDensity(rawValue: raw) ?? (raw == "comfortable" ? .roomy : .cozy)
+    }
+
     var title: LocalizedStringKey {
         switch self {
         case .roomy: return "Roomy"

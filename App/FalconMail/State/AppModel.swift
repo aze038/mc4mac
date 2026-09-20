@@ -13,6 +13,14 @@ enum FocusedTab: String, CaseIterable, Identifiable {
 enum SmartFolder: String, Hashable, Codable, CaseIterable {
     case unread, flagged, attachments
 
+    var scope: MessageScope {
+        switch self {
+        case .unread: return .unread
+        case .flagged: return .flagged
+        case .attachments: return .attachments
+        }
+    }
+
     var title: String {
         switch self {
         case .unread: return "Unread"
@@ -126,13 +134,26 @@ final class AppModel {
     let session: SessionStore
     let moveTargets: MoveTargets
 
-    var accounts: [AccountInfo] = []
-    var folders: [UUID: [FolderInfo]] = [:]
+    var accounts: [AccountInfo] = [] {
+        didSet { myAddressCache = Set(accounts.map { $0.email.lowercased() }) }
+    }
+    var folders: [UUID: [FolderInfo]] = [:] {
+        didSet { rebuildFolderIndex() }
+    }
+    @ObservationIgnored private var folderByID: [UUID: FolderInfo] = [:]
+    @ObservationIgnored private var junkFolderIDCache = Set<UUID>()
+    var unifiedUnread = 0
     var selection: SidebarSelection? = .unified
     var messages: [MessageSummary] = []
     var threads: [MessageThread] = []
     var selectedMessageIDs = Set<String>()
-    var expandedThreadIDs = Set<String>()
+    var expandedThreadIDs = Set<String>() {
+        didSet { if expandedThreadIDs != oldValue { rebuildRows() } }
+    }
+    /// The rendered row list. Kept as stored state because building it walks every thread, and
+    /// SwiftUI reads it on each body evaluation.
+    var rowCache: [ListRow] = []
+    var rowIndex: [String: ListRow] = [:]
     var accountsNeedingSignIn = Set<UUID>()
     @ObservationIgnored var lastMailSelection: SidebarSelection?
     var isSearching = false
@@ -144,7 +165,11 @@ final class AppModel {
     var actionError: String?
     var actionErrorNeedsDismissal = false
     var pendingUndo: PendingUndo?
-    var contactList: [ContactInfo] = []
+    var contactList: [ContactInfo] = [] {
+        didSet { contactAddressCache = Set(contactList.map { $0.email.lowercased() }) }
+    }
+    @ObservationIgnored private var contactAddressCache = Set<String>()
+    @ObservationIgnored private var myAddressCache = Set<String>()
     var openMessageWindows = Set<String>()
     var tabs: [WorkspaceTab] = []
     var minimizedTabs: [WorkspaceTab] = []
@@ -162,10 +187,15 @@ final class AppModel {
     }
     var workOffline = Preferences.bool(Pref.offlineMode, default: false)
     var allAccountsExpanded = true
+    /// How many messages the list holds. Growing this is what "Load older messages" does first;
+    /// only once the window covers everything stored does it ask the server for more.
+    var listWindow = AppModel.listPageSize
+    var storedInSelection = 0
+    static let listPageSize = 300
     var focusedTab = FocusedTab.focused
     private var listDensityStorage = Preferences.string("listDensity", default: ListDensity.cozy.rawValue)
     var listDensity: ListDensity {
-        get { ListDensity(rawValue: listDensityStorage) ?? .cozy }
+        get { ListDensity.stored(listDensityStorage) }
         set { listDensityStorage = newValue.rawValue; Preferences.set(newValue.rawValue, "listDensity") }
     }
 
@@ -409,8 +439,7 @@ final class AppModel {
         await reloadMessages()
         if let s = restoredState {
             let ids = Set(s.selectedMessageIDs)
-            let rowIDs = Set(rows.map(\.id))
-            selectedMessageIDs = ids.filter { rowIDs.contains($0) }
+            selectedMessageIDs = ids.filter { rowIndex[$0] != nil }
             await restoreTabs(s.openTabs, minimized: s.minimizedTabs, active: s.activeTab)
         }
         Task { await syncContacts() }
@@ -614,11 +643,8 @@ final class AppModel {
         refreshDockBadge()
     }
 
-    var unifiedUnreadCount: Int {
-        accounts.reduce(0) { total, account in
-            total + (folders[account.id] ?? []).filter { $0.role == .inbox }.reduce(0) { $0 + $1.unreadCount }
-        }
-    }
+    /// Maintained whenever folders change, so reading it from a view body costs nothing.
+    var unifiedUnreadCount: Int { unifiedUnread }
 
     private func refreshDockBadge() {
         guard dockBadgeStorage else {
@@ -638,7 +664,9 @@ final class AppModel {
         }
         guard relevant, reloadTask == nil else { return }
         reloadTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            // A busy sync can deliver dozens of batches a second. Coalescing them into one
+            // reload keeps the list from being rebuilt faster than anyone can read it.
+            try? await Task.sleep(nanoseconds: 600_000_000)
             await self?.reloadMessages()
             self?.reloadTask = nil
         }
@@ -650,13 +678,21 @@ final class AppModel {
                 await runFullSearch(query)
                 return
             }
+            let window = listWindow
             switch selection {
-            case .unified: messages = try await store.unifiedInbox()
+            case .unified:
+                messages = try await store.unifiedInbox(limit: window)
+                storedInSelection = try await store.unifiedCount()
             case .smart(let kind):
-                let everything = try await store.unifiedInbox()
-                messages = everything.filter { kind.matches($0) }
-            case .folder(let id): messages = try await store.messages(in: id)
-            default: messages = []
+                let scope = kind.scope
+                messages = try await store.unifiedInbox(limit: window, scope: scope)
+                storedInSelection = try await store.unifiedCount(scope: scope)
+            case .folder(let id):
+                messages = try await store.messages(in: id, limit: window)
+                storedInSelection = try await store.storedCount(in: id)
+            default:
+                messages = []
+                storedInSelection = 0
             }
             rebuildThreads()
         } catch {
@@ -674,8 +710,7 @@ final class AppModel {
     private var visibleMessages: [MessageSummary] {
         var list = messages
         if !Preferences.bool(Pref.showSentInConversations, default: true) {
-            let mine = Set(accounts.map { $0.email.lowercased() })
-            list = list.filter { !mine.contains($0.from.address.lowercased()) }
+            list = list.filter { !myAddressCache.contains($0.from.address.lowercased()) }
         }
         if Preferences.bool(Pref.focusedInbox, default: false), showsMessageList {
             list = list.filter { isFocused($0) == (focusedTab == .focused) }
@@ -693,13 +728,10 @@ final class AppModel {
         let bulk = ["noreply", "no-reply", "donotreply", "do-not-reply", "notifications", "notification",
                     "newsletter", "news", "info", "support", "marketing", "mailer", "bounce", "updates", "alerts"]
         if bulk.contains(where: { local.contains($0) }) { return false }
-        let mine = Set(accounts.map { $0.email.lowercased() })
-        return message.to.contains { mine.contains($0.address.lowercased()) }
+        return message.to.contains { myAddressCache.contains($0.address.lowercased()) }
     }
 
-    private var knownContactAddresses: Set<String> {
-        Set(contactList.map { $0.email.lowercased() })
-    }
+    private var knownContactAddresses: Set<String> { contactAddressCache }
 
     private func passesFilters(_ thread: MessageThread) -> Bool {
         filtersStorage.allSatisfy { filter in thread.messages.contains { filter.matches($0) } }
@@ -718,8 +750,8 @@ final class AppModel {
         threads = sort.apply(filtered, ascending: sortAscendingStorage,
                              names: { [weak self] in self?.accountName($0) ?? "Account" },
                              folders: { [weak self] in self?.folder($0)?.name ?? "Folder" })
-        let rowIDs = Set(rows.map(\.id))
-        let valid = selectedMessageIDs.filter { rowIDs.contains($0) }
+        rebuildRows()
+        let valid = selectedMessageIDs.filter { rowIndex[$0] != nil }
         if valid != selectedMessageIDs { selectedMessageIDs = valid }
     }
 
@@ -798,6 +830,7 @@ final class AppModel {
     func select(_ s: SidebarSelection?) {
         cancelPendingRead()
         selection = s
+        listWindow = AppModel.listPageSize
         selectedMessageIDs = []
         expandedThreadIDs = []
         switch s {
@@ -812,28 +845,23 @@ final class AppModel {
 
     var selectedThreads: [MessageThread] { threads.filter { selectedMessageIDs.contains($0.id) } }
     var selectedMessages: [MessageSummary] {
+        guard !selectedMessageIDs.isEmpty else { return [] }
         var seen = Set<String>()
         var out: [MessageSummary] = []
-        for row in rows where selectedMessageIDs.contains(row.id) {
-            switch row {
-            case .group: continue
+        for id in selectedMessageIDs {
+            switch rowIndex[id] {
             case .thread(let thread):
                 for m in thread.messages where seen.insert(m.id).inserted { out.append(m) }
             case .message(let m, _):
                 if seen.insert(m.id).inserted { out.append(m) }
+            default: continue
             }
         }
         return out
     }
     var firstSelectedMessage: MessageSummary? { selectedMessages.first }
 
-    private var junkFolderIDs: Set<UUID> {
-        var ids = Set<UUID>()
-        for list in folders.values {
-            for f in list where f.role == .junk { ids.insert(f.id) }
-        }
-        return ids
-    }
+    private var junkFolderIDs: Set<UUID> { junkFolderIDCache }
 
     var selectionIsAllInJunk: Bool {
         let list = selectedMessages
@@ -841,6 +869,11 @@ final class AppModel {
     }
     var currentThread: MessageThread? {
         guard selectedMessageIDs.count == 1, let id = selectedMessageIDs.first else { return nil }
+        switch rowIndex[id] {
+        case .thread(let thread): return thread
+        case .message(let message, _): return MessageThread(messages: [message])
+        default: break
+        }
         if let thread = threads.first(where: { $0.id == id }) { return thread }
         guard let messageID = ListRow.childMessageID(id) else { return nil }
         for thread in threads {
@@ -850,7 +883,24 @@ final class AppModel {
     }
 
     func account(for message: MessageSummary) -> AccountInfo? { accounts.first { $0.id == message.accountID } }
-    func folder(_ id: UUID) -> FolderInfo? { folders.values.flatMap { $0 }.first { $0.id == id } }
+    func folder(_ id: UUID) -> FolderInfo? { folderByID[id] }
+
+    private func rebuildFolderIndex() {
+        var byID: [UUID: FolderInfo] = [:]
+        var junk = Set<UUID>()
+        var unread = 0
+        for (accountID, list) in folders {
+            let enabled = accounts.first { $0.id == accountID }?.isEnabled ?? true
+            for f in list {
+                byID[f.id] = f
+                if f.role == .junk { junk.insert(f.id) }
+                if f.role == .inbox, enabled { unread += f.unreadCount }
+            }
+        }
+        folderByID = byID
+        junkFolderIDCache = junk
+        unifiedUnread = unread
+    }
 
     var showsMessageList: Bool {
         switch selection {
@@ -1237,8 +1287,9 @@ final class AppModel {
 
     private func removeFromList(_ list: [MessageSummary]) {
         let ids = Set(list.map(\.id))
-        let current = rows
-        let touchesSelection = current.contains { selectedMessageIDs.contains($0.id) && rowVanishes($0, removing: ids) }
+        let current = rowCache
+        let touchesSelection = !selectedMessageIDs.isEmpty
+            && selectedMessageIDs.contains { id in rowIndex[id].map { rowVanishes($0, removing: ids) } ?? false }
         let target = touchesSelection ? advanceTarget(removing: ids, in: current) : nil
         messages.removeAll { ids.contains($0.id) }
         rebuildThreads()
@@ -1399,7 +1450,14 @@ final class AppModel {
         Task { await coordinator.syncNow() }
     }
 
+    var canShowMore: Bool { messages.count < storedInSelection }
+
     func loadOlder() {
+        if canShowMore {
+            listWindow += AppModel.listPageSize
+            Task { await reloadMessages() }
+            return
+        }
         guard case .folder(let id) = selection, let folder = folder(id) else { return }
         Task {
             guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }

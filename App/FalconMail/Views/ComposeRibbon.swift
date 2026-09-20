@@ -25,7 +25,7 @@ struct ComposeRibbon: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             RibbonTabStrip(tabs: ComposeTab.allCases.map { ($0, $0.title) }, selection: $tab)
-                .padding(.horizontal, 14)
+                .padding(.horizontal, RibbonMetrics.edgeInset)
                 .padding(.top, 6)
             Divider().opacity(0.4)
             switch tab {
@@ -33,7 +33,7 @@ struct ComposeRibbon: View {
             case .options: optionsTab
             }
         }
-        .background(.bar)
+        .background(ChromeBackground())
     }
 
     private var messageTab: some View {
@@ -108,8 +108,7 @@ struct ComposeRibbon: View {
                     .labelsHidden().frame(width: 36).help("Text colour")
             }
         }
-        .frame(height: RibbonMetrics.tileHeight)
-        .fixedSize(horizontal: true, vertical: false)
+        .frame(width: 292, height: RibbonMetrics.tileHeight, alignment: .leading)
     }
 
     private var paragraphGroup: some View {
@@ -128,8 +127,7 @@ struct ComposeRibbon: View {
                 FormatIcon("text.justify", "Justify") { formatter.align(.justified) }
             }
         }
-        .frame(height: RibbonMetrics.tileHeight)
-        .fixedSize(horizontal: true, vertical: false)
+        .frame(width: 146, height: RibbonMetrics.tileHeight, alignment: .leading)
     }
 
     private var optionsTab: some View {

@@ -26,7 +26,7 @@ struct CommandBar: View {
         VStack(spacing: 0) {
             quickAccessRow
             RibbonTabStrip(tabs: AppRibbonTab.allCases.map { ($0, $0.title) }, selection: tab)
-                .padding(.horizontal, 14)
+                .padding(.horizontal, RibbonMetrics.edgeInset)
                 .padding(.top, 2)
             Divider().opacity(0.4)
             Group {
@@ -37,7 +37,7 @@ struct CommandBar: View {
                 }
             }
         }
-        .background(.bar)
+        .background(ChromeBackground())
     }
 
     private var quickAccessRow: some View {
@@ -56,7 +56,7 @@ struct CommandBar: View {
             }
         }
         .frame(height: 28)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, RibbonMetrics.edgeInset)
     }
 }
 
@@ -64,11 +64,12 @@ struct HomeRibbon: View {
     @Environment(AppModel.self) private var model
 
     private var hasSelection: Bool { !model.selectedMessageIDs.isEmpty }
-    private var hasSingle: Bool { model.currentThread != nil }
-    private var first: MessageSummary? { model.firstSelectedMessage }
 
     var body: some View {
-        RibbonBody {
+        let thread = model.currentThread
+        let hasSingle = thread != nil
+        let first = thread?.latest
+        return RibbonBody {
             RibbonTile(title: "New\nEmail", symbol: "envelope", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.composeNew() }
             RibbonMenuTile(title: "New\nItems", symbol: "envelope.badge.person.crop", enabled: !model.accounts.isEmpty) {
                 Button("Message") { model.composeNew() }
@@ -129,11 +130,11 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: RibbonMetrics.miniGap) {
                 RibbonSearchField()
                 RibbonMiniItem(title: "Address Book", symbol: "person.text.rectangle") { model.showModule(.people) }
             }
-            .frame(height: RibbonMetrics.tileHeight)
+            .frame(height: RibbonMetrics.tileHeight, alignment: .center)
             RibbonSeparator()
 
             RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: .green, enabled: !model.accounts.isEmpty) { model.syncNow() }

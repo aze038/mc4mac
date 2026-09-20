@@ -21,6 +21,15 @@ public actor FolderStore {
     private let compactThreshold = 2000
     private var terms: [String: Set<UInt32>] = [:]
     private var termOps = 0
+    private var sortedTermKeys: [String] = []
+    private var termKeysDirty = true
+    private var unreadTally = 0
+    private let journalEncoder = JSONEncoder()
+    private let snapshotEncoder: PropertyListEncoder = {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        return encoder
+    }()
 
     private var snapshotURL: URL { directory.appendingPathComponent("index.plist") }
     private var termsURL: URL { directory.appendingPathComponent("terms.plist") }
@@ -53,17 +62,23 @@ public actor FolderStore {
         } else {
             for m in messages.values { index(m) }
         }
-        if journalOps > compactThreshold { try compact() }
+        if journalOps > compactionThreshold { try compact() }
     }
 
     private func index(_ m: MessageSummary) {
         let text = m.subject + " " + m.from.rfc5322 + " " + (m.to + m.cc).map { $0.rfc5322 }.joined(separator: " ") + " " + m.snippet
-        for t in ArchiveTerms.tokenize(text, limit: 2000) { terms[t, default: []].insert(m.uid) }
+        for t in ArchiveTerms.tokenize(text, limit: 2000) {
+            if terms[t] == nil { termKeysDirty = true }
+            terms[t, default: []].insert(m.uid)
+        }
         termOps += 1
     }
 
     private func index(uid: UInt32, text: String) {
-        for t in ArchiveTerms.tokenize(text, limit: 5000) { terms[t, default: []].insert(uid) }
+        for t in ArchiveTerms.tokenize(text, limit: 5000) {
+            if terms[t] == nil { termKeysDirty = true }
+            terms[t, default: []].insert(uid)
+        }
         termOps += 1
     }
 
@@ -73,7 +88,9 @@ public actor FolderStore {
         for token in tokens {
             var hits = terms[token] ?? []
             if token.count >= 3 {
-                for (key, uids) in terms where key.hasPrefix(token) { hits.formUnion(uids) }
+                for key in termKeys(withPrefix: token) {
+                    if let uids = terms[key] { hits.formUnion(uids) }
+                }
             }
             result = result.map { $0.intersection(hits) } ?? hits
             if result?.isEmpty == true { break }
@@ -81,18 +98,53 @@ public actor FolderStore {
         return (result ?? []).filter { messages[$0] != nil }
     }
 
-    private func saveTermsIfNeeded(force: Bool = false) throws {
-        guard force || termOps >= 200 else { return }
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
-        let live = Set(messages.keys)
-        var cleaned: [String: [UInt32]] = [:]
-        for (k, v) in terms {
-            let kept = v.intersection(live)
-            if !kept.isEmpty { cleaned[k] = Array(kept) }
+    /// Binary-searches the sorted term keys instead of scanning every key in the folder.
+    /// A folder of a hundred thousand messages carries hundreds of thousands of keys, so the
+    /// scan this replaces cost more than the search itself.
+    private func termKeys(withPrefix prefix: String) -> ArraySlice<String> {
+        refreshTermKeysIfNeeded()
+        var low = 0
+        var high = sortedTermKeys.count
+        while low < high {
+            let mid = (low + high) / 2
+            if sortedTermKeys[mid] < prefix { low = mid + 1 } else { high = mid }
         }
-        terms = cleaned.mapValues { Set($0) }
-        try AtomicFile.write(try encoder.encode(cleaned), to: termsURL)
+        let start = low
+        high = sortedTermKeys.count
+        while low < high {
+            let mid = (low + high) / 2
+            if sortedTermKeys[mid].hasPrefix(prefix) || sortedTermKeys[mid] < prefix { low = mid + 1 } else { high = mid }
+        }
+        return sortedTermKeys[start..<low]
+    }
+
+    private func refreshTermKeysIfNeeded() {
+        guard termKeysDirty else { return }
+        sortedTermKeys = terms.keys.sorted()
+        termKeysDirty = false
+    }
+
+    /// Writes the search index out. The threshold grows with the folder so a large mailbox does not
+    /// rewrite a multi-megabyte index dozens of times during one sync. Dead postings are dropped
+    /// only when the snapshot is rewritten, since that is the point where they can accumulate.
+    private func saveTermsIfNeeded(force: Bool = false, pruning: Bool = false) throws {
+        let threshold = max(200, messages.count / 20)
+        guard force || termOps >= threshold else { return }
+        if pruning {
+            let live = Set(messages.keys)
+            var cleaned: [String: Set<UInt32>] = [:]
+            cleaned.reserveCapacity(terms.count)
+            for (k, v) in terms {
+                let kept = v.intersection(live)
+                if !kept.isEmpty { cleaned[k] = kept }
+            }
+            terms = cleaned
+            termKeysDirty = true
+        }
+        var encodable: [String: [UInt32]] = [:]
+        encodable.reserveCapacity(terms.count)
+        for (k, v) in terms { encodable[k] = Array(v) }
+        try AtomicFile.write(try snapshotEncoder.encode(encodable), to: termsURL)
         termOps = 0
     }
 
@@ -100,6 +152,38 @@ public actor FolderStore {
 
     public func all() -> [MessageSummary] {
         Array(messages.values)
+    }
+
+    /// The newest `limit` messages that match `scope`, newest first.
+    /// Only dates and uids are sorted, so a folder holding a hundred thousand messages
+    /// never copies its whole contents to answer a list reload.
+    public func newest(_ limit: Int, scope: MessageScope = .all) -> [MessageSummary] {
+        guard limit > 0 else { return [] }
+        var keys: [(date: Date, uid: UInt32)] = []
+        keys.reserveCapacity(messages.count)
+        for (uid, m) in messages where scope.matches(m) {
+            keys.append((m.date, uid))
+        }
+        keys.sort { $0.date > $1.date }
+        var out: [MessageSummary] = []
+        out.reserveCapacity(min(limit, keys.count))
+        for entry in keys.prefix(limit) {
+            if let m = messages[entry.uid] { out.append(m) }
+        }
+        return out
+    }
+
+    public func matchCount(_ scope: MessageScope) -> Int {
+        guard scope != .all else { return messages.count }
+        var total = 0
+        for m in messages.values where scope.matches(m) { total += 1 }
+        return total
+    }
+
+    public func unreadCount() -> Int {
+        var total = 0
+        for m in messages.values where !m.isRead { total += 1 }
+        return total
     }
 
     public func message(uid: UInt32) -> MessageSummary? { messages[uid] }
@@ -197,10 +281,12 @@ public actor FolderStore {
 
     @discardableResult
     public func pruneBodies(keepingNewest keep: Int) throws -> Int {
-        let withBody = messages.values.filter { $0.hasBody }.sorted { $0.date > $1.date }
-        guard withBody.count > keep else { return 0 }
+        var keys: [(date: Date, uid: UInt32)] = []
+        for (uid, m) in messages where m.hasBody { keys.append((m.date, uid)) }
+        guard keys.count > keep else { return 0 }
+        keys.sort { $0.date > $1.date }
         var removed = 0
-        for m in withBody.dropFirst(keep) {
+        for m in keys.dropFirst(keep) {
             try? FileManager.default.removeItem(at: bodyURL(m.uid))
             try journal(.bodyRemoved(uid: m.uid))
             apply(.bodyRemoved(uid: m.uid))
@@ -249,22 +335,27 @@ public actor FolderStore {
             journalHandle = try FileHandle(forWritingTo: journalURL)
             _ = try journalHandle?.seekToEnd()
         }
-        var line = try JSONEncoder().encode(op)
+        var line = try journalEncoder.encode(op)
         line.append(0x0A)
         try journalHandle?.write(contentsOf: line)
         journalOps += 1
     }
 
+    /// Rewriting the snapshot copies and encodes every message in the folder, so the threshold
+    /// scales with the folder. A small mailbox still compacts often; a hundred-thousand-message
+    /// folder compacts once per ten thousand journal entries instead of fifty times per sync.
+    private var compactionThreshold: Int {
+        max(compactThreshold, messages.count / 10)
+    }
+
     private func compactIfNeeded() throws {
-        if journalOps >= compactThreshold { try compact() }
+        if journalOps >= compactionThreshold { try compact() }
     }
 
     private func compact() throws {
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
-        let data = try encoder.encode(Array(messages.values))
+        let data = try snapshotEncoder.encode(Array(messages.values))
         try AtomicFile.write(data, to: snapshotURL)
-        try saveTermsIfNeeded(force: true)
+        try saveTermsIfNeeded(force: true, pruning: true)
         journalHandle?.closeFile()
         journalHandle = nil
         try? FileManager.default.removeItem(at: journalURL)

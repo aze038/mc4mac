@@ -5,6 +5,15 @@ struct MessageListView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
     @AppStorage(Pref.focusedInbox) private var focusedInbox = false
+    @AppStorage(Pref.showPreview) private var showPreview = true
+    @AppStorage(Pref.showSenderImage) private var showSenderImage = true
+    @AppStorage(Pref.quickActions) private var quickActionsRaw = QuickAction.defaults
+    @AppStorage(Pref.leftSwipe) private var leftSwipeRaw = SwipeAction.archive.rawValue
+    @AppStorage(Pref.rightSwipe) private var rightSwipeRaw = SwipeAction.none.rawValue
+
+    private var quickActions: [QuickAction] {
+        quickActionsRaw.split(separator: ",").compactMap { QuickAction(rawValue: String($0)) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,8 +46,10 @@ struct MessageListView: View {
     private var listHeader: some View {
         HStack(spacing: 8) {
             Text(model.listTitle).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-            Text("\(model.threads.count)").font(.caption).foregroundStyle(.secondary)
-                .help("Conversations shown")
+            Text("\(model.threads.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .help(model.storedInSelection > model.messages.count
+                      ? "Showing the newest \(model.messages.count) of \(model.storedInSelection) messages"
+                      : "Conversations shown")
             Spacer()
             sortMenu
             densityMenu
@@ -189,10 +200,14 @@ struct MessageListView: View {
                 .padding(.top, 10).padding(.bottom, 2)
                 .selectionDisabled()
         case .thread(let thread):
-            ConversationRow(thread: thread)
+            ConversationRow(thread: thread,
+                            density: model.listDensity,
+                            showPreview: showPreview,
+                            showSenderImage: showSenderImage,
+                            quickActions: quickActions)
                 .contextMenu { rowMenu(thread) }
-                .swipeActions(edge: .leading) { swipeButton(Preferences.string(Pref.leftSwipe, default: SwipeAction.archive.rawValue), thread) }
-                .swipeActions(edge: .trailing) { swipeButton(Preferences.string(Pref.rightSwipe, default: SwipeAction.none.rawValue), thread) }
+                .swipeActions(edge: .leading) { swipeButton(leftSwipeRaw, thread) }
+                .swipeActions(edge: .trailing) { swipeButton(rightSwipeRaw, thread) }
         case .message(let message, _):
             ChildMessageRow(message: message)
                 .contextMenu { rowMenu(MessageThread(messages: [message])) }
@@ -225,10 +240,24 @@ struct MessageListView: View {
     }
 
     @ViewBuilder private var loadOlderBar: some View {
-        if case .folder = model.selection, model.searchText.isEmpty {
+        if model.searchText.isEmpty, model.canShowMore || isFolder {
             Divider()
-            Button("Load older messages") { model.loadOlder() }.buttonStyle(.link).padding(6)
+            HStack(spacing: 8) {
+                Button(model.canShowMore ? "Show more" : "Load older messages") { model.loadOlder() }
+                    .buttonStyle(.link)
+                if model.storedInSelection > model.messages.count {
+                    Text("\(model.messages.count) of \(model.storedInSelection)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(6)
         }
+    }
+
+    private var isFolder: Bool {
+        if case .folder = model.selection { return true }
+        return false
     }
 
     @ViewBuilder private func rowMenu(_ thread: MessageThread) -> some View {
@@ -250,15 +279,16 @@ struct MessageListView: View {
 struct ConversationRow: View {
     @Environment(AppModel.self) private var model
     let thread: MessageThread
-    @AppStorage(Pref.showPreview) private var showPreview = true
-    @AppStorage(Pref.showSenderImage) private var showSenderImage = true
+    let density: ListDensity
+    let showPreview: Bool
+    let showSenderImage: Bool
+    let quickActions: [QuickAction]
     @State private var hovering = false
 
     private var unread: Bool { thread.unreadCount > 0 }
 
     var body: some View {
         let m = thread.latest
-        let density = model.listDensity
         let compact = density == .compact
         let previewLines = showPreview ? density.previewLines : 0
         HStack(alignment: .top, spacing: 8) {
@@ -290,7 +320,7 @@ struct ConversationRow: View {
                     }
                     Spacer(minLength: 4)
                     if hovering {
-                        quickActions(for: thread)
+                        quickActionRow(for: thread)
                     } else {
                         ForEach(model.categories(for: m)) { category in
                             Circle().fill(category.swatch).frame(width: 7, height: 7).help(category.name)
@@ -319,9 +349,9 @@ struct ConversationRow: View {
         .onHover { hovering = $0 }
     }
 
-    private func quickActions(for thread: MessageThread) -> some View {
+    private func quickActionRow(for thread: MessageThread) -> some View {
         HStack(spacing: 6) {
-            ForEach(QuickAction.enabled()) { action in
+            ForEach(quickActions) { action in
                 Button { run(action, on: thread) } label: {
                     Image(systemName: symbol(action, thread))
                         .font(.system(size: 11))

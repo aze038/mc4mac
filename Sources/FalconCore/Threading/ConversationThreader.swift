@@ -22,14 +22,28 @@ public enum ConversationThreader {
         return "subject:" + normalizedSubject(subject)
     }
 
+    /// Groups messages into conversations, newest first.
+    /// The input must already be in date-descending order; sorting it again here doubled the cost
+    /// of every list reload.
     public static func group(_ messages: [MessageSummary]) -> [[MessageSummary]] {
-        var byKey: [String: [MessageSummary]] = [:]
-        var order: [String] = []
-        for m in messages.sorted(by: { $0.date > $1.date }) {
+        var byKey: [String: Int] = [:]
+        byKey.reserveCapacity(messages.count)
+        var buckets: [[MessageSummary]] = []
+        buckets.reserveCapacity(messages.count)
+        for m in messages {
             let key = m.threadKey.isEmpty ? m.id : m.threadKey
-            if byKey[key] == nil { order.append(key) }
-            byKey[key, default: []].append(m)
+            if let slot = byKey[key] {
+                buckets[slot].append(m)
+            } else {
+                byKey[key] = buckets.count
+                buckets.append([m])
+            }
         }
-        return order.map { byKey[$0]! }
+        return buckets
+    }
+
+    /// For callers that cannot guarantee ordering.
+    public static func groupUnordered(_ messages: [MessageSummary]) -> [[MessageSummary]] {
+        group(messages.sorted { $0.date > $1.date })
     }
 }

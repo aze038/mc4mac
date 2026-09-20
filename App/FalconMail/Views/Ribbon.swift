@@ -1,23 +1,40 @@
 import SwiftUI
 
 enum RibbonMetrics {
-    static let tileWidth: CGFloat = 68
-    static let tileHeight: CGFloat = 74
-    static let glyph: CGFloat = 24
+    /// Every tile is the same size, so a row of them lines up whatever the caption says.
+    static let tileWidth: CGFloat = 78
+    static let tileHeight: CGFloat = 76
+    static let tileGap: CGFloat = 2
+    static let edgeInset: CGFloat = 12
+
+    static let glyphBox: CGFloat = 26
+    static let glyphSize: CGFloat = 22
+    static let glyphWeight: Font.Weight = .regular
+
     static let caption: CGFloat = 11
-    static let bodyHeight: CGFloat = 86
+    /// Two caption lines are always reserved, so a one-line tile and a two-line tile
+    /// put their icons at the same height.
+    static let captionBlock: CGFloat = 28
+    static let captionTop: CGFloat = 4
+
+    static let miniRow: CGFloat = 22
+    static let miniGap: CGFloat = 3
+    static let miniWidth: CGFloat = 104
+
+    static let disabledOpacity: CGFloat = 0.45
+    static var bodyHeight: CGFloat { tileHeight + 10 }
 }
 
 struct RibbonGlyph: View {
     let symbol: String
     var tint: Color?
-    var size: CGFloat = RibbonMetrics.glyph
+    var size: CGFloat = RibbonMetrics.glyphSize
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: size, weight: .thin))
-            .foregroundStyle(tint ?? Color.primary.opacity(0.85))
-            .frame(height: size)
+            .font(.system(size: size, weight: RibbonMetrics.glyphWeight))
+            .foregroundStyle(tint ?? Color.primary.opacity(0.88))
+            .frame(width: size + 4, height: size)
     }
 }
 
@@ -29,7 +46,37 @@ struct RibbonCaption: View {
             .font(.system(size: RibbonMetrics.caption))
             .multilineTextAlignment(.center)
             .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
+            .minimumScaleFactor(0.85)
+            .frame(width: RibbonMetrics.tileWidth - 6, height: RibbonMetrics.captionBlock, alignment: .top)
+    }
+}
+
+/// The shared body of every tile: a centred glyph over a caption box of fixed height.
+private struct TileFace: View {
+    let title: String
+    let symbol: String
+    var tint: Color?
+    var enabled: Bool
+
+    var body: some View {
+        VStack(spacing: RibbonMetrics.captionTop) {
+            RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil)
+            RibbonCaption(title: title)
+        }
+        .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight, alignment: .top)
+        .padding(.top, 6)
+        .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
+    }
+}
+
+private struct TileBackground: ViewModifier {
+    let hovering: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight)
+            .background(hovering ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
+            .contentShape(RoundedRectangle(cornerRadius: 5))
     }
 }
 
@@ -43,22 +90,18 @@ struct RibbonTile: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 5) {
-                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil)
-                RibbonCaption(title: title)
-            }
-            .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight)
-            .opacity(enabled ? 1 : 0.38)
-            .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(RoundedRectangle(cornerRadius: 5))
+            TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled)
+                .modifier(TileBackground(hovering: hovering && enabled))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
         .onHover { hovering = $0 }
-        .help(title)
+        .help(title.replacingOccurrences(of: "\n", with: " "))
     }
 }
 
+/// A tile whose face runs the primary action and whose corner chevron opens a menu.
+/// The chevron sits inside the tile so the glyph stays centred, the way Outlook draws it.
 struct RibbonSplitTile<Content: View>: View {
     let title: String
     let symbol: String
@@ -69,34 +112,36 @@ struct RibbonSplitTile<Content: View>: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 0) {
+        ZStack(alignment: .bottomTrailing) {
             Button { action?() } label: {
-                VStack(spacing: 5) {
-                    RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil)
-                    RibbonCaption(title: title)
-                }
-                .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight)
-                .opacity(enabled ? 1 : 0.38)
-                .contentShape(Rectangle())
+                TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled)
             }
             .buttonStyle(.plain)
             .disabled(!enabled || action == nil)
 
             Menu { menu() } label: {
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .frame(width: 16)
+            .padding(.trailing, 3)
+            .padding(.bottom, 2)
             .disabled(!enabled)
+            .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
         }
-        .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .modifier(TileBackground(hovering: hovering && enabled))
         .onHover { hovering = $0 }
-        .help(title)
+        .help(title.replacingOccurrences(of: "\n", with: " "))
     }
 }
 
+/// A tile that is entirely a menu. Same footprint as a plain tile, with the chevron
+/// tucked into the corner rather than widening the tile.
 struct RibbonMenuTile<Content: View>: View {
     let title: String
     let symbol: String
@@ -107,24 +152,23 @@ struct RibbonMenuTile<Content: View>: View {
 
     var body: some View {
         Menu { menu() } label: {
-            VStack(spacing: 5) {
-                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil)
-                HStack(spacing: 2) {
-                    RibbonCaption(title: title)
-                    Image(systemName: "chevron.down").font(.system(size: 8)).foregroundStyle(.secondary)
-                }
+            ZStack(alignment: .bottomTrailing) {
+                TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 6)
+                    .padding(.bottom, 4)
+                    .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
             }
-            .frame(width: RibbonMetrics.tileWidth + 8, height: RibbonMetrics.tileHeight)
-            .opacity(enabled ? 1 : 0.38)
-            .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(RoundedRectangle(cornerRadius: 5))
+            .modifier(TileBackground(hovering: hovering && enabled))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(!enabled)
         .onHover { hovering = $0 }
-        .help(title)
+        .help(title.replacingOccurrences(of: "\n", with: " "))
     }
 }
 
@@ -139,13 +183,13 @@ struct RibbonMiniItem: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil, size: 15).frame(width: 18)
+                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil, size: 14).frame(width: 18)
                 Text(title).font(.system(size: 12)).lineLimit(1)
                 Spacer(minLength: 0)
             }
-            .frame(height: 24)
             .padding(.horizontal, 4)
-            .opacity(enabled ? 1 : 0.38)
+            .frame(width: RibbonMetrics.miniWidth, height: RibbonMetrics.miniRow, alignment: .leading)
+            .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
             .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 4))
             .contentShape(RoundedRectangle(cornerRadius: 4))
         }
@@ -156,19 +200,21 @@ struct RibbonMiniItem: View {
     }
 }
 
+/// Two or three small rows stacked to the height of one tile, centred against it.
 struct RibbonMiniColumn<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) { content() }
-            .frame(height: RibbonMetrics.tileHeight, alignment: .center)
-            .fixedSize(horizontal: true, vertical: false)
+        VStack(alignment: .leading, spacing: RibbonMetrics.miniGap) { content() }
+            .frame(width: RibbonMetrics.miniWidth, height: RibbonMetrics.tileHeight, alignment: .center)
     }
 }
 
 struct RibbonSeparator: View {
     var body: some View {
-        Divider().frame(height: RibbonMetrics.tileHeight - 8).padding(.horizontal, 7)
+        Divider()
+            .frame(height: RibbonMetrics.tileHeight - 12)
+            .padding(.horizontal, 6)
     }
 }
 
@@ -179,22 +225,23 @@ struct RibbonPill: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: RibbonMetrics.captionTop) {
             Button { isOn.toggle() } label: {
-                HStack(spacing: 6) {
-                    if isOn { Text(onLabel).font(.system(size: 12, weight: .medium)).foregroundStyle(.white) }
-                    Circle().fill(.white).frame(width: 17, height: 17).shadow(radius: 1, y: 0.5)
-                    if !isOn { Text(offLabel).font(.system(size: 12, weight: .medium)).foregroundStyle(.white) }
+                HStack(spacing: 5) {
+                    if isOn { Text(onLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(.white) }
+                    Circle().fill(.white).frame(width: 16, height: 16).shadow(radius: 1, y: 0.5)
+                    if !isOn { Text(offLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(.white) }
                 }
                 .padding(.horizontal, 5).padding(.vertical, 3)
                 .background(isOn ? Color(red: 0.24, green: 0.72, blue: 0.4) : Color.secondary.opacity(0.7), in: Capsule())
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            Text(caption).font(.system(size: RibbonMetrics.caption)).lineLimit(1)
+            .frame(height: RibbonMetrics.glyphBox)
+            RibbonCaption(title: caption)
         }
-        .frame(height: RibbonMetrics.tileHeight)
-        .fixedSize(horizontal: true, vertical: false)
+        .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight, alignment: .top)
+        .padding(.top, 6)
         .help(caption)
     }
 }
@@ -204,12 +251,12 @@ struct RibbonTabStrip<Tab: Hashable>: View {
     @Binding var selection: Tab
 
     var body: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 20) {
             ForEach(tabs, id: \.tab) { entry in
                 Button { selection = entry.tab } label: {
                     VStack(spacing: 3) {
                         Text(entry.title)
-                            .font(.system(size: 13.5, weight: selection == entry.tab ? .semibold : .regular))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(selection == entry.tab ? Color.primary : Color.secondary)
                         Rectangle()
                             .fill(selection == entry.tab ? Color.accentColor : .clear)
@@ -235,8 +282,8 @@ struct RibbonQuickButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 14, weight: .light))
-                .frame(width: 26, height: 22)
+                .font(.system(size: 13, weight: .regular))
+                .frame(width: 24, height: 20)
                 .opacity(enabled ? 0.85 : 0.3)
                 .background(hovering && enabled ? Color.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 4))
                 .contentShape(RoundedRectangle(cornerRadius: 4))
@@ -248,22 +295,20 @@ struct RibbonQuickButton: View {
     }
 }
 
+/// The ribbon row. Always scrollable, so the layout is measured once rather than
+/// twice as ViewThatFits would, and so nothing is ever silently clipped.
 struct RibbonBody<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            row
-            ScrollView(.horizontal, showsIndicators: false) { row }
+        ScrollView(.horizontal) {
+            HStack(alignment: .center, spacing: RibbonMetrics.tileGap) {
+                content()
+            }
+            .padding(.horizontal, RibbonMetrics.edgeInset)
+            .frame(height: RibbonMetrics.bodyHeight)
         }
+        .scrollIndicators(.automatic)
         .frame(height: RibbonMetrics.bodyHeight)
-    }
-
-    private var row: some View {
-        HStack(alignment: .center, spacing: 1) {
-            content()
-            Spacer(minLength: 10)
-        }
-        .padding(.horizontal, 8)
     }
 }

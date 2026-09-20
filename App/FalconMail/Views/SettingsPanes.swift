@@ -82,7 +82,7 @@ struct GeneralSettings: View {
             }
 
             SettingsRow(label: "Transparency:") {
-                Toggle("Enable window transparency", isOn: $transparency)
+                Toggle("Blur the ribbon over the window behind", isOn: $transparency)
             }
 
             Divider()
@@ -1016,7 +1016,9 @@ struct ContactsSettings: View {
 struct PrivacySettings: View {
     @Environment(AppModel.self) private var model
     @AppStorage("stripTrackingPixels") private var stripTracking = true
-    @AppStorage("warnBeforeExternalLinks") private var warnLinks = false
+    @State private var contacts: [String] = []
+    @State private var domains: [String] = []
+    @State private var newTrust = ""
 
     var body: some View {
         @Bindable var model = model
@@ -1024,17 +1026,83 @@ struct PrivacySettings: View {
             SettingsRow(label: "Remote content:") {
                 Toggle("Load remote images in messages", isOn: $model.loadRemoteImages)
                 Toggle("Block known tracking pixels even when images load", isOn: $stripTracking)
-                Text("Remote images tell the sender when a message was opened and from roughly where. FalconMail blocks them until you ask.")
+                Text("Remote images tell the sender when a message was opened and roughly from where. FalconMail blocks them until you ask.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+
             Divider()
-            SettingsRow(label: "Links:") {
-                Toggle("Ask before opening a link that does not match its text", isOn: $warnLinks)
+
+            SettingsRow(label: "Links in messages:") {
+                Text("Every link is clickable, but one from a sender you have not trusted asks first and shows where it really goes. A link written to look like a different address always asks, even from a trusted sender.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 440, alignment: .leading)
+
+                HStack(spacing: 6) {
+                    TextField("person@example.com or example.com", text: $newTrust)
+                        .frame(width: 280)
+                        .onSubmit { addTrust() }
+                    Button("Trust") { addTrust() }.disabled(newTrust.trimmed.isEmpty)
+                }
+
+                TrustList(title: "Trusted senders", entries: contacts, empty: "No senders trusted yet.") { entry in
+                    LinkGuard.forget(contact: entry)
+                    reload()
+                }
+                TrustList(title: "Trusted domains", entries: domains, empty: "No domains trusted yet.") { entry in
+                    LinkGuard.forget(domain: entry)
+                    reload()
+                }
             }
-            Divider()
-            SettingsRow(label: "Diagnostics:") {
-                Text("FalconMail sends no usage data anywhere. Mail, tokens and the search index stay on this Mac and in your own mailbox.")
-                    .font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear { reload() }
+    }
+
+    private func addTrust() {
+        let entry = newTrust.trimmed.lowercased()
+        guard !entry.isEmpty else { return }
+        if entry.contains("@") {
+            LinkGuard.trustedContacts.insert(entry)
+        } else {
+            LinkGuard.trustedDomains.insert(entry)
+        }
+        newTrust = ""
+        reload()
+    }
+
+    private func reload() {
+        contacts = LinkGuard.trustedContacts.sorted()
+        domains = LinkGuard.trustedDomains.sorted()
+    }
+}
+
+struct TrustList: View {
+    let title: String
+    let entries: [String]
+    let empty: String
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 12, weight: .medium))
+            if entries.isEmpty {
+                Text(empty).font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(entries, id: \.self) { entry in
+                            HStack {
+                                Text(entry).font(.system(size: 12))
+                                Spacer()
+                                Button("Remove") { onRemove(entry) }
+                                    .buttonStyle(.link).font(.caption)
+                            }
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 8)
+                        }
+                    }
+                }
+                .frame(width: 440, height: min(CGFloat(entries.count) * 24 + 8, 120))
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
             }
         }
     }

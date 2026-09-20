@@ -145,7 +145,7 @@ struct MessageReaderView: View {
 
     @ViewBuilder private var content: some View {
         if let rendered {
-            HTMLView(html: rendered)
+            HTMLView(html: rendered, sender: message.from)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.white)
         } else if loading {
@@ -304,7 +304,7 @@ enum MessageRenderer {
             }
             body = body.replacingOccurrences(of: "(?is)<script[^>]*>.*?</script>", with: "", options: .regularExpression)
         } else {
-            body = "<pre>" + HTMLText.escape(parsed.textPlain ?? "") + "</pre>"
+            body = "<pre>" + HTMLLinkify.escapeAndLink(parsed.textPlain ?? "") + "</pre>"
         }
         if let range = body.range(of: "<head>", options: .caseInsensitive) {
             body.insert(contentsOf: head, at: range.upperBound)
@@ -338,6 +338,7 @@ enum WebViewPool {
 
 struct HTMLView: NSViewRepresentable {
     let html: String
+    var sender: EmailAddress? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -345,10 +346,12 @@ struct HTMLView: NSViewRepresentable {
         let view = MainActor.assumeIsolated { WebViewPool.acquire() }
         view.navigationDelegate = context.coordinator
         context.coordinator.lastHTML = ""
+        context.coordinator.sender = sender
         return view
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
+        context.coordinator.sender = sender
         if context.coordinator.lastHTML != html {
             context.coordinator.lastHTML = html
             view.loadHTMLString(html, baseURL: nil)
@@ -361,11 +364,13 @@ struct HTMLView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML = ""
+        var sender: EmailAddress?
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
-                NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
+                let sender = self.sender
+                Task { @MainActor in LinkGuard.open(url, from: sender) }
                 return
             }
             decisionHandler(.allow)

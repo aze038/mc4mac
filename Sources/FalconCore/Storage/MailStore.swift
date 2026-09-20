@@ -1,5 +1,20 @@
 import Foundation
 
+/// Which messages a list wants. Kept here so the filtering happens inside the store actor
+/// rather than by copying every message to the main thread first.
+public enum MessageScope: String, Sendable, Hashable {
+    case all, unread, flagged, attachments
+
+    public func matches(_ m: MessageSummary) -> Bool {
+        switch self {
+        case .all: return true
+        case .unread: return !m.isRead
+        case .flagged: return m.isFlagged
+        case .attachments: return m.hasAttachments
+        }
+    }
+}
+
 public enum StoreChange: Sendable {
     case accountsChanged
     case foldersChanged(accountID: UUID)
@@ -136,6 +151,18 @@ public actor MailStore {
         return await s.all().sorted { $0.date > $1.date }
     }
 
+    /// The newest `limit` messages in a folder. Use this for anything the reader looks at:
+    /// pulling an entire folder into memory stalls the interface once a mailbox grows large.
+    public func messages(in folderID: UUID, limit: Int, scope: MessageScope = .all) async throws -> [MessageSummary] {
+        guard let f = folder(folderID) else { return [] }
+        return await (try await folderStore(f)).newest(limit, scope: scope)
+    }
+
+    public func storedCount(in folderID: UUID, scope: MessageScope = .all) async throws -> Int {
+        guard let f = folder(folderID) else { return 0 }
+        return await (try await folderStore(f)).matchCount(scope)
+    }
+
     public func unifiedInbox() async throws -> [MessageSummary] {
         var out: [MessageSummary] = []
         for a in accounts {
@@ -144,6 +171,25 @@ public actor MailStore {
             }
         }
         return out.sorted { $0.date > $1.date }
+    }
+
+    public func unifiedInbox(limit: Int, scope: MessageScope = .all) async throws -> [MessageSummary] {
+        var out: [MessageSummary] = []
+        for a in accounts {
+            guard let inbox = folder(accountID: a.id, role: .inbox) else { continue }
+            out.append(contentsOf: try await messages(in: inbox.id, limit: limit, scope: scope))
+        }
+        guard out.count > limit else { return out.sorted { $0.date > $1.date } }
+        return Array(out.sorted { $0.date > $1.date }.prefix(limit))
+    }
+
+    public func unifiedCount(scope: MessageScope = .all) async throws -> Int {
+        var total = 0
+        for a in accounts {
+            guard let inbox = folder(accountID: a.id, role: .inbox) else { continue }
+            total += try await storedCount(in: inbox.id, scope: scope)
+        }
+        return total
     }
 
     public func message(id: String) async throws -> MessageSummary? {
@@ -162,9 +208,12 @@ public actor MailStore {
 
     public func refreshCounts(folderID: UUID) async throws {
         guard var f = folder(folderID) else { return }
-        let all = try await folderStore(f).all()
-        f.totalCount = all.count
-        f.unreadCount = all.filter { !$0.isRead }.count
+        let store = try await folderStore(f)
+        let total = await store.count
+        let unread = await store.unreadCount()
+        guard f.totalCount != total || f.unreadCount != unread else { return }
+        f.totalCount = total
+        f.unreadCount = unread
         try updateFolder(f)
     }
 

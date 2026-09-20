@@ -76,15 +76,19 @@ enum ListSort: String, CaseIterable, Identifiable {
         }
     }
 
+    private static let monthFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMMM yyyy"
+        return f
+    }()
+
     static func dayKey(_ date: Date) -> String {
         let cal = Calendar.current
         if cal.isDateInToday(date) { return "Today" }
         if cal.isDateInYesterday(date) { return "Yesterday" }
         if let week = cal.date(byAdding: .day, value: -7, to: Date()), date > week { return "Earlier this week" }
         if let month = cal.date(byAdding: .month, value: -1, to: Date()), date > month { return "Earlier this month" }
-        let f = DateFormatter()
-        f.dateFormat = "MMMM yyyy"
-        return f.string(from: date)
+        return monthFormatter.string(from: date)
     }
 
     static func sizeBand(_ bytes: Int) -> String {
@@ -178,25 +182,53 @@ extension AppModel {
         }
     }
 
-    var rows: [ListRow] {
+    var rows: [ListRow] { rowCache }
+
+    /// Rebuilds the rendered row list and the id lookup used by selection.
+    /// Called when threads, grouping or expansion change, never from a view body.
+    func rebuildRows() {
         var out: [ListRow] = []
-        out.reserveCapacity(threads.count)
+        out.reserveCapacity(threads.count + expandedThreadIDs.count)
+        var index: [String: ListRow] = [:]
+        index.reserveCapacity(threads.count + expandedThreadIDs.count)
         var lastGroup: String?
         let sort = ListSort(rawValue: listSort) ?? .date
+        let grouping = showInGroups
+        var nameCache: [UUID: String] = [:]
+        var folderCache: [UUID: String] = [:]
         for thread in threads {
-            if showInGroups {
-                let title = sort.key(thread, names: { self.accountName($0) }, folders: { self.folder($0)?.name ?? "Folder" })
+            if grouping {
+                let title = sort.key(thread,
+                                     names: { id in
+                                         if let cached = nameCache[id] { return cached }
+                                         let value = self.accountName(id)
+                                         nameCache[id] = value
+                                         return value
+                                     },
+                                     folders: { id in
+                                         if let cached = folderCache[id] { return cached }
+                                         let value = self.folder(id)?.name ?? "Folder"
+                                         folderCache[id] = value
+                                         return value
+                                     })
                 if title != lastGroup {
                     out.append(.group(title))
                     lastGroup = title
                 }
             }
-            out.append(.thread(thread))
+            let row = ListRow.thread(thread)
+            out.append(row)
+            index[row.id] = row
             if thread.messages.count > 1, expandedThreadIDs.contains(thread.id) {
-                for message in thread.messages { out.append(.message(message, threadID: thread.id)) }
+                for message in thread.messages {
+                    let child = ListRow.message(message, threadID: thread.id)
+                    out.append(child)
+                    index[child.id] = child
+                }
             }
         }
-        return out
+        rowIndex = index
+        rowCache = out
     }
 
     var currentConversation: MessageThread? {
@@ -207,6 +239,7 @@ extension AppModel {
     }
 
     var hasExpandableThreads: Bool { threads.contains { $0.messages.count > 1 } }
+
 
     var canCollapseSomething: Bool { !expandedThreadIDs.isEmpty }
 

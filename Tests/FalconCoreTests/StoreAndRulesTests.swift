@@ -111,3 +111,73 @@ final class StoreAndRulesTests: XCTestCase {
         XCTAssertEqual(SMTPClient.dotStuffed(Data("a\r\n.b\r\n..".utf8)), Data("a\r\n..b\r\n...".utf8))
     }
 }
+
+extension StoreAndRulesTests {
+    /// A mailbox with many messages must be able to answer "the newest page" without
+    /// materialising or sorting the whole folder, which is what froze the interface at 100k.
+    func testFolderStoreNewestPage() async throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let accountID = UUID(), folderID = UUID()
+        let store = FolderStore(accountID: accountID, folderID: folderID, directory: tmp)
+        try await store.load()
+
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        var batch: [MessageSummary] = []
+        for uid in 1...500 {
+            var m = summary(uid: UInt32(uid), subject: "Message \(uid)", from: "a@b", messageID: "<\(uid)@b>")
+            m.accountID = accountID
+            m.folderID = folderID
+            m.date = base.addingTimeInterval(Double(uid))
+            var flags: MessageFlags = []
+            if uid % 5 == 0 { flags.insert(.flagged) }
+            if uid % 2 == 0 { flags.insert(.seen) }
+            m.apply(flags: flags)
+            batch.append(m)
+        }
+        try await store.upsert(batch)
+
+        let page = await store.newest(10)
+        XCTAssertEqual(page.count, 10)
+        XCTAssertEqual(page.first?.uid, 500)
+        XCTAssertEqual(page.last?.uid, 491)
+        XCTAssertEqual(page.map(\.date), page.map(\.date).sorted(by: >))
+
+        let flagged = await store.newest(4, scope: .flagged)
+        XCTAssertEqual(flagged.count, 4)
+        XCTAssertTrue(flagged.allSatisfy { $0.isFlagged })
+        XCTAssertEqual(flagged.first?.uid, 500)
+
+        let unread = await store.matchCount(.unread)
+        XCTAssertEqual(unread, 250)
+        let unreadTally = await store.unreadCount()
+        XCTAssertEqual(unreadTally, 250)
+        let allCount = await store.matchCount(.all)
+        XCTAssertEqual(allCount, 500)
+        let emptyPage = await store.newest(0)
+        XCTAssertEqual(emptyPage.count, 0)
+        let wholeFolder = await store.newest(10_000)
+        XCTAssertEqual(wholeFolder.count, 500)
+    }
+
+    /// Grouping assumes its input is already newest-first; the sort it used to repeat
+    /// doubled the cost of every list reload.
+    func testThreaderKeepsIncomingOrder() {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        var a = summary(uid: 1, subject: "Root", from: "a@b", messageID: "<1@b>")
+        a.threadKey = "t1"
+        a.date = base.addingTimeInterval(300)
+        var b = summary(uid: 2, subject: "Other", from: "c@d", messageID: "<2@d>")
+        b.threadKey = "t2"
+        b.date = base.addingTimeInterval(200)
+        var c = summary(uid: 3, subject: "Re: Root", from: "a@b", messageID: "<3@b>")
+        c.threadKey = "t1"
+        c.date = base.addingTimeInterval(100)
+
+        let grouped = ConversationThreader.group([a, b, c])
+        XCTAssertEqual(grouped.count, 2)
+        XCTAssertEqual(grouped[0].map(\.uid), [1, 3])
+        XCTAssertEqual(grouped[1].map(\.uid), [2])
+        XCTAssertEqual(ConversationThreader.groupUnordered([c, a, b])[0].map(\.uid), [1, 3])
+    }
+}

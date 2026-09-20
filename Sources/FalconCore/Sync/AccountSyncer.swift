@@ -75,7 +75,8 @@ public actor AccountSyncer {
 
     public func start() {
         guard loopTask == nil else { return }
-        loopTask = Task { [weak self] in
+        // Background priority so a long sync always yields to anything the reader is doing.
+        loopTask = Task(priority: .utility) { [weak self] in
             await self?.loop()
         }
     }
@@ -286,9 +287,9 @@ public actor AccountSyncer {
 
     private func prefetchBodies(folder: FolderInfo, fs: FolderStore, client: IMAPClient, preferred: [MessageSummary]) async throws {
         guard folder.role == .inbox || preferred.count <= bodyPrefetch else { return }
-        let all = await fs.all().sorted { $0.date > $1.date }
         if (try? await fs.pruneBodies(keepingNewest: bodyPrefetch)) ?? 0 > 0 { await store.notifyMessagesChanged(folderID: folder.id) }
-        let candidates = all.prefix(bodyPrefetch).filter { !$0.hasBody && $0.size <= min(maxOfflineBodyBytes, maxEagerPrefetchBytes) }
+        let newest = await fs.newest(bodyPrefetch)
+        let candidates = newest.filter { !$0.hasBody && $0.size <= min(maxOfflineBodyBytes, maxEagerPrefetchBytes) }
         guard !candidates.isEmpty else { return }
         var texts: [String: String] = [:]
         var updated: [MessageSummary] = []
