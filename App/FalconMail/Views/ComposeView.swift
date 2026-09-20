@@ -4,7 +4,8 @@ import UniformTypeIdentifiers
 import FalconCore
 
 struct ComposeView: View {
-    @State private var editor: NSTextView?
+    @State private var formatter = TextFormatter()
+    @State private var tab = ComposeTab.message
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
@@ -12,13 +13,15 @@ struct ComposeView: View {
     var embedded = false
     var onClose: (() -> Void)? = nil
     @State private var draft: ComposeDraft?
-    @State private var showCcBcc = false
+    @State private var showCc = Preferences.bool(Pref.showCcByDefault, default: false)
+    @State private var showBcc = Preferences.bool(Pref.showBccByDefault, default: false)
     @State private var showSchedule = false
     @State private var scheduleDate = Date().addingTimeInterval(3600)
     @State private var error: String?
     @State private var dropTargeted = false
     @State private var editSessions: [UUID: AttachmentEditSession] = [:]
     @State private var showAttachmentWarning = false
+    @State private var showDrivePicker = false
     @FocusState private var bodyFocused: Bool
     @AppStorage(AttachmentWarning.enabledKey) private var warnAboutAttachments = true
     @AppStorage(AttachmentWarning.keywordsKey) private var attachmentKeywords = AttachmentWarning.defaultKeywords
@@ -51,6 +54,16 @@ struct ComposeView: View {
                     .allowsHitTesting(false)
             }
         }
+        .sheet(isPresented: $showDrivePicker) {
+            if let account = draft?.accountID ?? model.accounts.first?.id {
+                DrivePicker(accountID: account, mode: .attach) { name, data in
+                    let type = UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+                    draft?.attachments.append(OutgoingAttachment(filename: name, mimeType: type, data: data))
+                    commitDraft()
+                }
+                .environment(model)
+            }
+        }
         .alert("Cannot send", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
@@ -68,83 +81,166 @@ struct ComposeView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
+            if embedded { inlineActionBar } else { ribbon }
+            Divider()
+            headerFields
+            Divider()
             if embedded {
-                HStack(spacing: 10) {
-                    Button { send() } label: { Label("Send", systemImage: "paperplane.fill") }
-                        .buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
-                    Button { attach() } label: { Label("Attach", systemImage: "paperclip") }
-                    Button { showSchedule = true } label: { Label("Schedule", systemImage: "clock") }
-                        .popover(isPresented: $showSchedule) { schedulePopover }
-                    Spacer()
-                    Button { popOut() } label: { Label("Separate Window", systemImage: "macwindow.on.rectangle") }
-                    Button(role: .destructive) { discard() } label: { Label("Discard", systemImage: "trash") }
-                }
-                .buttonStyle(.borderless)
-                .labelStyle(.titleAndIcon)
-                .padding(8)
+                InlineFormatBar(formatter: formatter)
                 Divider()
             }
-            VStack(spacing: 6) {
-                HStack {
-                    Picker("From", selection: binding(\.accountID)) {
-                        ForEach(model.accounts) { a in Text(a.email).tag(a.id) }
-                    }
-                    Spacer()
-                    Button(showCcBcc ? "Hide Cc/Bcc" : "Cc/Bcc") { showCcBcc.toggle() }.buttonStyle(.link)
-                }
-                RecipientField(label: "To", text: binding(\.to))
-                Divider()
-                if showCcBcc || !(draft?.cc.isEmpty ?? true) || !(draft?.bcc.isEmpty ?? true) {
-                    RecipientField(label: "Cc", text: binding(\.cc))
-                    Divider()
-                    RecipientField(label: "Bcc", text: binding(\.bcc))
-                    Divider()
-                }
-                HStack {
-                    Text("Subject").frame(width: 60, alignment: .trailing).foregroundStyle(.secondary)
-                    TextField("Subject", text: binding(\.subject)).textFieldStyle(.plain)
-                }
-                .padding(.vertical, 4)
-                Divider()
-                scheduleBanner
-                if let attachments = draft?.attachments, !attachments.isEmpty {
-                    ScrollView(.horizontal) {
-                        HStack {
-                            ForEach(attachments) { a in
-                                ComposeAttachmentChip(
-                                    attachment: a,
-                                    isEditing: editSessions[a.id] != nil,
-                                    onEdit: { edit(a) },
-                                    onStopWatching: { stopWatching(a.id) },
-                                    onRemove: { remove(a.id) })
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(12)
-            Divider()
-            FormatBar(editor: editor,
-                      onEditSignatures: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) },
-                      onInsertSignature: { insertSignature() })
-            Divider()
             RichTextEditor(rtf: binding(\.bodyRTF), plain: binding(\.body)) { view in
-                Task { @MainActor in editor = view }
-            }
-        }
-        .toolbar {
-            if !embedded {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button(role: .destructive) { discard() } label: { Label("Discard", systemImage: "trash") }
-                    Button { attach() } label: { Label("Attach", systemImage: "paperclip") }
-                    Button { showSchedule = true } label: { Label("Schedule", systemImage: "clock") }
-                        .popover(isPresented: $showSchedule) { schedulePopover }
-                    Button { send() } label: { Label("Send", systemImage: "paperplane.fill") }
-                        .keyboardShortcut(.return, modifiers: .command)
+                Task { @MainActor in
+                    formatter.editor = view
+                    view.isContinuousSpellCheckingEnabled = Preferences.bool(Pref.checkSpelling, default: true)
+                    view.isGrammarCheckingEnabled = Preferences.bool(Pref.checkGrammar, default: true)
+                    view.isAutomaticQuoteSubstitutionEnabled = Preferences.bool(Pref.smartQuotes, default: true)
+                    view.isAutomaticDashSubstitutionEnabled = Preferences.bool(Pref.smartQuotes, default: true)
+                    view.isAutomaticLinkDetectionEnabled = Preferences.bool(Pref.smartLinks, default: true)
                 }
             }
         }
         .navigationTitle(draft?.subject.isEmpty == false ? draft!.subject : "New Message")
+    }
+
+    private var ribbon: some View {
+        ComposeRibbon(tab: $tab,
+                      formatter: formatter,
+                      showsBcc: $showBcc,
+                      canSend: !(draft?.to.isEmpty ?? true),
+                      onSend: { send() },
+                      onAttachFile: { attach() },
+                      onAttachFromDrive: { attachFromDrive() },
+                      onInsertSignature: { insertSignature() },
+                      onEditSignatures: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) },
+                      onCycleBackground: { model.cycleAppearance() })
+    }
+
+    private var inlineActionBar: some View {
+        HStack(spacing: 14) {
+            InlineAction(title: "Send", symbol: "paperplane", prominent: true, enabled: !(draft?.to.isEmpty ?? true)) { send() }
+            InlineAction(title: "Discard", symbol: "trash") { discard() }
+            InlineAction(title: "Attach", symbol: "paperclip") { attach() }
+            InlineAction(title: "Signature", symbol: "signature") { insertSignature() }
+            Menu {
+                Button("Schedule Send…") { showSchedule = true }
+                Button("Attach from Google Drive…") { attachFromDrive() }
+                Button("Insert Table") { formatter.insertTable() }
+                Button("Insert Link…") { formatter.insertLink() }
+                Divider()
+                Toggle("Show Cc", isOn: $showCc)
+                Toggle("Show Bcc", isOn: $showBcc)
+                Divider()
+                Button("Check Spelling") { formatter.checkSpelling() }
+                Button("Edit Signatures…") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+            } label: {
+                Image(systemName: "ellipsis").font(.system(size: 14))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .popover(isPresented: $showSchedule) { schedulePopover }
+            Spacer()
+            Button { popOut() } label: { Image(systemName: "macwindow.on.rectangle") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Open in a separate window")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(.bar)
+    }
+
+    private var headerFields: some View {
+        VStack(spacing: 0) {
+            ComposeFieldRow(label: "From:") {
+                Picker("", selection: binding(\.accountID)) {
+                    ForEach(model.accounts) { a in
+                        Text(a.displayName.isEmpty ? a.email : "\(a.displayName) (\(a.email))").tag(a.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            } trailing: {
+                HStack(spacing: 10) {
+                    Button { model.cycleAppearance() } label: { Image(systemName: "sun.max") }
+                        .buttonStyle(.plain).help("Switch background")
+                    Button { withAnimation(.easeInOut(duration: 0.15)) { showCc.toggle(); showBcc = showCc ? showBcc : false } } label: {
+                        Image(systemName: showCc ? "chevron.up" : "chevron.down")
+                    }
+                    .buttonStyle(.plain).help(showCc ? "Hide Cc and Bcc" : "Show Cc and Bcc")
+                    Button { popOut() } label: { Image(systemName: "arrow.up.forward.app") }
+                        .buttonStyle(.plain).help("Open in a separate window")
+                }
+                .foregroundStyle(.secondary)
+                .font(.system(size: 12))
+            }
+
+            ComposeFieldRow(label: "To:") {
+                RecipientField(label: "", text: binding(\.to))
+            } trailing: {
+                HStack(spacing: 8) {
+                    if !showCc {
+                        Button("Cc") { showCc = true }.buttonStyle(.plain).foregroundStyle(.secondary).font(.system(size: 12))
+                    }
+                    if !showBcc {
+                        Button("Bcc") { showBcc = true; showCc = true }.buttonStyle(.plain).foregroundStyle(.secondary).font(.system(size: 12))
+                    }
+                    AddressBookButton { model.showModule(.people) }
+                }
+            }
+
+            if showCc {
+                ComposeFieldRow(label: "Cc:") {
+                    RecipientField(label: "", text: binding(\.cc))
+                } trailing: {
+                    AddressBookButton { model.showModule(.people) }
+                }
+            }
+            if showBcc {
+                ComposeFieldRow(label: "Bcc:") {
+                    RecipientField(label: "", text: binding(\.bcc))
+                } trailing: {
+                    AddressBookButton { model.showModule(.people) }
+                }
+            }
+
+            ComposeFieldRow(label: "Subject:") {
+                TextField("", text: binding(\.subject)).textFieldStyle(.plain)
+            } trailing: {
+                Menu {
+                    Picker("Importance", selection: binding(\.importance)) {
+                        Text("Low").tag("low")
+                        Text("Normal").tag("normal")
+                        Text("High").tag("high")
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Text("Importance").font(.system(size: 12))
+                }
+                .menuStyle(.borderlessButton).fixedSize().foregroundStyle(.secondary)
+            }
+
+            scheduleBanner
+            attachmentStrip
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder private var attachmentStrip: some View {
+        if let attachments = draft?.attachments, !attachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    ForEach(attachments) { a in
+                        ComposeAttachmentChip(
+                            attachment: a,
+                            isEditing: editSessions[a.id] != nil,
+                            onEdit: { edit(a) },
+                            onStopWatching: { stopWatching(a.id) },
+                            onRemove: { remove(a.id) })
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
     }
 
     @ViewBuilder private var scheduleBanner: some View {
@@ -180,7 +276,7 @@ struct ComposeView: View {
     private func insertSignature() {
         guard let account = model.accounts.first(where: { $0.id == draft?.accountID }) ?? model.accounts.first else { return }
         let text = ComposeDraft.signatureBlock(account)
-        guard !text.isEmpty, let editor else { return }
+        guard !text.isEmpty, let editor = formatter.editor else { return }
         editor.insertText(text, replacementRange: editor.selectedRange())
         editor.didChangeText()
     }
@@ -229,6 +325,10 @@ struct ComposeView: View {
             draft?.attachments.append(OutgoingAttachment(filename: url.lastPathComponent, mimeType: type, data: data))
         }
         commitDraft()
+    }
+
+    private func attachFromDrive() {
+        showDrivePicker = true
     }
 
     private func edit(_ a: OutgoingAttachment) {

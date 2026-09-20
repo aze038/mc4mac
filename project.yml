@@ -38,6 +38,9 @@ targets:
           NSAllowsArbitraryLoadsInWebContent: true
         CFBundleDevelopmentRegion: en
         CFBundleAllowMixedLocalizations: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.falconmail.mailto
+            CFBundleURLSchemes: [mailto]
         FalconUpdateRepository: aze038/mc4mac
         FalconGoogleClientID: ""
         FalconGoogleClientSecret: ""

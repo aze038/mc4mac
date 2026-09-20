@@ -59,7 +59,7 @@ final class NotificationService {
         guard mode != .off else { return }
         let wanted = newMessages.filter { policy.allows($0, mode: mode, accountEmail: account.email) }
         guard !wanted.isEmpty else { return }
-        SystemSounds.play(soundName)
+        SoundLibrary.play(.newMail)
         let center = UNUserNotificationCenter.current()
         for m in wanted.prefix(5) {
             let content = UNMutableNotificationContent()

@@ -1,24 +1,31 @@
 import SwiftUI
 import FalconCore
 
+/// The horizontal module switcher that sits along the bottom of the sidebar, as Outlook does.
 struct ModuleRail: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        VStack(spacing: 4) {
+        HStack(spacing: 2) {
             ForEach(AppModule.allCases) { module in
-                RailButton(title: module.title, symbol: module.symbol, selected: model.module == module, badge: module == .mail ? model.unifiedUnreadCount : 0) {
+                RailButton(title: module.title,
+                           symbol: module.symbol,
+                           selected: model.module == module,
+                           badge: module == .mail ? model.unifiedUnreadCount : 0) {
                     model.showModule(module)
                 }
             }
-            Spacer()
+            RailButton(title: "Notes", symbol: "note.text", selected: false, badge: 0) {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+            Spacer(minLength: 0)
             SettingsLink {
                 RailLabel(title: "Settings", symbol: "gearshape", selected: false, badge: 0)
             }
             .buttonStyle(.plain)
         }
-        .padding(.vertical, 8)
-        .frame(width: 52)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
@@ -47,28 +54,25 @@ struct RailLabel: View {
     @State private var hovering = false
 
     var body: some View {
-        VStack(spacing: 2) {
-            Image(systemName: symbol)
-                .font(.system(size: 18, weight: .regular))
-                .frame(height: 18)
-                .overlay(alignment: .topTrailing) { badgeView }
-            Text(title).font(.system(size: 9))
-        }
-        .frame(width: 44, height: 42)
-        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
-        .background(selected ? Color.accentColor.opacity(0.14) : (hovering ? Color.primary.opacity(0.06) : Color.clear), in: RoundedRectangle(cornerRadius: 8))
-        .contentShape(RoundedRectangle(cornerRadius: 8))
-        .onHover { hovering = $0 }
+        Image(systemName: symbol)
+            .font(.system(size: 16, weight: .regular))
+            .frame(width: 34, height: 26)
+            .overlay(alignment: .topTrailing) { badgeView }
+            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+            .background(selected ? Color.accentColor.opacity(0.14) : (hovering ? Color.primary.opacity(0.06) : Color.clear),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .onHover { hovering = $0 }
     }
 
     @ViewBuilder private var badgeView: some View {
         if badge > 0 {
             Text(badge > 99 ? "99+" : "\(badge)")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 4).padding(.vertical, 1)
+                .padding(.horizontal, 3).padding(.vertical, 0.5)
                 .background(Color.red, in: Capsule())
-                .offset(x: 10, y: -6)
+                .offset(x: 4, y: -1)
         }
     }
 }

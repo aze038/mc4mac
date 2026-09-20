@@ -120,19 +120,85 @@ enum RichText {
 }
 
 
-/// A text view whose plain Paste adopts FalconMail's formatting, the way Outlook and Word do by default.
+/// A text view whose plain Paste adopts FalconMail's formatting the way Outlook and Word do:
+/// structure such as tables, lists and links survives, while fonts and colours become FalconMail's.
 final class ComposeTextView: NSTextView {
     override func paste(_ sender: Any?) {
         pasteMatchingFalconMailStyle()
     }
 
     @objc func pasteMatchingFalconMailStyle() {
-        pasteAsPlainText(nil)
-        normaliseTypingAttributes()
+        guard let source = ComposeTextView.attributedFromPasteboard() else {
+            pasteAsPlainText(nil)
+            normaliseTypingAttributes()
+            return
+        }
+        insertRestyled(source)
     }
 
     @objc func pasteKeepingSourceFormatting() {
         pasteAsRichText(nil)
+    }
+
+    @objc func pastePlainText() {
+        pasteAsPlainText(nil)
+        normaliseTypingAttributes()
+    }
+
+    /// Reads the richest representation the source app offered. Excel, Word and browsers all put
+    /// RTF or HTML on the pasteboard, which is what carries the table grid.
+    static func attributedFromPasteboard() -> NSAttributedString? {
+        let board = NSPasteboard.general
+        if let data = board.data(forType: .rtfd),
+           let value = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil) {
+            return value
+        }
+        if let data = board.data(forType: .rtf),
+           let value = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) {
+            return value
+        }
+        if let data = board.data(forType: .html),
+           let value = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html,
+                                                                    .characterEncoding: String.Encoding.utf8.rawValue],
+                                               documentAttributes: nil) {
+            return value
+        }
+        return nil
+    }
+
+    private func insertRestyled(_ source: NSAttributedString) {
+        let restyled = ComposeTextView.restyle(source, to: typingAttributes[.font] as? NSFont ?? RichText.defaultFont)
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: restyled.string) else { return }
+        textStorage?.replaceCharacters(in: range, with: restyled)
+        setSelectedRange(NSRange(location: range.location + restyled.length, length: 0))
+        didChangeText()
+    }
+
+    /// Keeps every structural attribute, replaces the typeface and size with the composer's, and
+    /// drops source colours so pasted text stays readable in both light and dark appearance.
+    static func restyle(_ source: NSAttributedString, to base: NSFont) -> NSAttributedString {
+        let output = NSMutableAttributedString(attributedString: source)
+        let whole = NSRange(location: 0, length: output.length)
+        let manager = NSFontManager.shared
+        output.beginEditing()
+        output.enumerateAttributes(in: whole) { attributes, range, _ in
+            var font = base
+            if let existing = attributes[.font] as? NSFont {
+                let traits = manager.traits(of: existing)
+                if traits.contains(.boldFontMask) { font = manager.convert(font, toHaveTrait: .boldFontMask) }
+                if traits.contains(.italicFontMask) { font = manager.convert(font, toHaveTrait: .italicFontMask) }
+            }
+            output.addAttribute(.font, value: font, range: range)
+            if attributes[.link] == nil {
+                output.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+            }
+            if let background = attributes[.backgroundColor] as? NSColor, background.alphaComponent < 0.05 {
+                output.removeAttribute(.backgroundColor, range: range)
+            }
+        }
+        output.endEditing()
+        return output
     }
 
     private func normaliseTypingAttributes() {
@@ -148,7 +214,9 @@ final class ComposeTextView: NSTextView {
     }
 
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        if item.action == #selector(pasteKeepingSourceFormatting) || item.action == #selector(pasteMatchingFalconMailStyle) {
+        if item.action == #selector(pasteKeepingSourceFormatting)
+            || item.action == #selector(pasteMatchingFalconMailStyle)
+            || item.action == #selector(pastePlainText) {
             return NSPasteboard.general.canReadObject(forClasses: [NSAttributedString.self, NSString.self], options: nil)
         }
         return super.validateMenuItem(item)

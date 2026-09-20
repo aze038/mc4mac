@@ -1,129 +1,255 @@
 import SwiftUI
 import FalconCore
 
-struct SettingsView: View {
-    var body: some View {
-        TabView {
-            GeneralSettings().tabItem { Label("General", systemImage: "gear") }
-            AccountSettings().tabItem { Label("Accounts", systemImage: "person.crop.circle") }
-            RulesSettings().tabItem { Label("Rules", systemImage: "line.3.horizontal.decrease.circle") }
-            NotificationSettings().tabItem { Label("Notifications", systemImage: "bell.badge") }
-            GoogleSettings().tabItem { Label("Advanced", systemImage: "wrench.and.screwdriver") }
-            UpdateSettings().tabItem { Label("Updates", systemImage: "arrow.down.circle") }
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general, accounts, notifications, categories, fonts, autoCorrect, spelling
+    case reading, composing, signatures, rules, junk, search
+    case calendar, contacts, privacy, updates
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .accounts: return "Accounts"
+        case .notifications: return "Notifications & Sounds"
+        case .categories: return "Categories"
+        case .fonts: return "Fonts"
+        case .autoCorrect: return "AutoCorrect"
+        case .spelling: return "Spelling & Grammar"
+        case .reading: return "Reading"
+        case .composing: return "Composing"
+        case .signatures: return "Signatures"
+        case .rules: return "Rules"
+        case .junk: return "Junk"
+        case .search: return "Search"
+        case .calendar: return "Calendar"
+        case .contacts: return "Contacts"
+        case .privacy: return "Privacy"
+        case .updates: return "Updates"
         }
-        .frame(width: 680, height: 520)
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "switch.2"
+        case .accounts: return "person.crop.square.filled.and.at.rectangle"
+        case .notifications: return "alarm"
+        case .categories: return "square.grid.2x2"
+        case .fonts: return "textformat"
+        case .autoCorrect: return "text.badge.checkmark"
+        case .spelling: return "checkmark.bubble"
+        case .reading: return "envelope.open"
+        case .composing: return "square.and.pencil"
+        case .signatures: return "signature"
+        case .rules: return "arrow.triangle.branch"
+        case .junk: return "xmark.bin"
+        case .search: return "magnifyingglass"
+        case .calendar: return "calendar"
+        case .contacts: return "person.2"
+        case .privacy: return "lock.shield"
+        case .updates: return "arrow.down.circle"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .general: return .gray
+        case .accounts: return .blue
+        case .notifications: return .blue
+        case .categories: return .orange
+        case .fonts: return .blue
+        case .autoCorrect: return .orange
+        case .spelling: return .green
+        case .reading: return .blue
+        case .composing: return .yellow
+        case .signatures: return .purple
+        case .rules: return .purple
+        case .junk: return .red
+        case .search: return .teal
+        case .calendar: return .red
+        case .contacts: return .blue
+        case .privacy: return .blue
+        case .updates: return .green
+        }
+    }
+
+    var keywords: String {
+        switch self {
+        case .general: return "appearance theme density text size sidebar transparency"
+        case .accounts: return "email imap smtp password google sign in"
+        case .notifications: return "sound alert badge vip banner"
+        case .categories: return "colour label tag"
+        case .fonts: return "typeface size compose reading"
+        case .autoCorrect: return "replace capitalise autoformat text completion"
+        case .spelling: return "grammar writing style check"
+        case .reading: return "preview conversation swipe mark read images quick actions"
+        case .composing: return "reply forward attribution undo send cc bcc format"
+        case .signatures: return "signature default new reply"
+        case .rules: return "filter mute automation"
+        case .junk: return "spam blocked safe senders"
+        case .search: return "results mailbox folder saved"
+        case .calendar: return "work week reminder time zone weather"
+        case .contacts: return "people address book sync"
+        case .privacy: return "remote images tracking telemetry"
+        case .updates: return "version release install"
+        }
+    }
+
+    static let personal: [SettingsPane] = [.general, .accounts, .notifications, .categories, .fonts, .autoCorrect, .spelling]
+    static let email: [SettingsPane] = [.reading, .composing, .signatures, .rules, .junk, .search]
+    static let other: [SettingsPane] = [.calendar, .contacts, .privacy, .updates]
+}
+
+struct SettingsView: View {
+    @State private var pane: SettingsPane?
+    @State private var query = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            Group {
+                if let pane, query.isEmpty {
+                    detail(pane)
+                } else {
+                    grid
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: 760, height: 620)
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text(pane == nil || !query.isEmpty ? "FalconMail Settings" : pane!.title)
+                .font(.system(size: 15, weight: .semibold))
+            Spacer()
+            if pane != nil {
+                Button("Show All") { pane = nil; query = "" }
+                    .controlSize(.regular)
+            }
+            SettingsSearchField(text: $query)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.bar)
+    }
+
+    private var matches: [SettingsPane] {
+        let needle = query.trimmed.lowercased()
+        guard !needle.isEmpty else { return SettingsPane.allCases }
+        return SettingsPane.allCases.filter {
+            $0.title.lowercased().contains(needle) || $0.keywords.contains(needle)
+        }
+    }
+
+    private var grid: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                group("Personal Settings", SettingsPane.personal)
+                group("Email", SettingsPane.email)
+                group("Other", SettingsPane.other)
+            }
+            .padding(.bottom, 20)
+        }
+        .overlay {
+            if matches.isEmpty {
+                ContentUnavailableView("Nothing matches “\(query)”", systemImage: "magnifyingglass")
+            }
+        }
+    }
+
+    @ViewBuilder private func group(_ title: String, _ panes: [SettingsPane]) -> some View {
+        let shown = panes.filter { matches.contains($0) }
+        if !shown.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title).font(.system(size: 14, weight: .semibold))
+                    .padding(.horizontal, 18).padding(.top, 14)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), alignment: .leading, spacing: 14) {
+                    ForEach(shown) { item in
+                        SettingsTile(pane: item) { pane = item; query = "" }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.03))
+            Divider()
+        }
+    }
+
+    @ViewBuilder private func detail(_ pane: SettingsPane) -> some View {
+        switch pane {
+        case .general: GeneralSettings()
+        case .accounts: AccountSettings()
+        case .notifications: NotificationSettings()
+        case .categories: CategoriesSettings()
+        case .fonts: FontsSettings()
+        case .autoCorrect: AutoCorrectSettings()
+        case .spelling: SpellingSettings()
+        case .reading: ReadingSettings()
+        case .composing: ComposingSettings()
+        case .signatures: SignaturesSettings()
+        case .rules: RulesSettings()
+        case .junk: JunkSettings()
+        case .search: SearchSettings()
+        case .calendar: CalendarSettings()
+        case .contacts: ContactsSettings()
+        case .privacy: PrivacySettings()
+        case .updates: UpdateSettings()
+        }
     }
 }
 
-struct GeneralSettings: View {
-    @Environment(AppModel.self) private var model
-    @AppStorage(AttachmentWarning.enabledKey) private var warnAboutAttachments = true
-    @AppStorage(AttachmentWarning.keywordsKey) private var attachmentKeywords = AttachmentWarning.defaultKeywords
+struct SettingsTile: View {
+    let pane: SettingsPane
+    let action: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        form.task { await model.refreshCacheSize() }
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: pane.symbol)
+                    .font(.system(size: 26, weight: .light))
+                    .foregroundStyle(pane.tint)
+                    .frame(height: 30)
+                Text(pane.title)
+                    .font(.system(size: 12))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: 92, height: 76)
+            .background(hovering ? Color.primary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
+}
 
-    private var form: some View {
-        @Bindable var model = model
-        return Form {
-            Section("Appearance") {
-                Picker("Theme", selection: $model.appearance) {
-                    ForEach(AppAppearance.allCases) { a in Text(a.title).tag(a.rawValue) }
-                }
-                .pickerStyle(.segmented)
-                Text("Language follows the macOS setting in System Settings → General → Language & Region.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Offline and storage") {
-                Picker("Keep offline copies per folder", selection: $model.offlineBodies) {
-                    Text("Online only").tag(0)
-                    Text("50 newest").tag(50)
-                    Text("150 newest").tag(150)
-                    Text("500 newest").tag(500)
-                    Text("2,000 newest").tag(2000)
-                }
-                Picker("Skip offline copies larger than", selection: $model.maxOfflineMB) {
-                    Text("1 MB").tag(1)
-                    Text("5 MB").tag(5)
-                    Text("20 MB").tag(20)
-                    Text("No limit").tag(10_000)
-                }
-                HStack {
-                    Text("Offline copies on this Mac: \(ByteCountFormatter.string(fromByteCount: Int64(model.cacheSizeBytes), countStyle: .file))")
-                    Spacer()
-                    Button("Clear") { model.clearCache() }
-                }
-                Text("Older copies are removed automatically as new mail arrives. Headers and the search index stay, about 200 bytes per message. Sent mail waits in the Outbox until you are online.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            readingSection
-            triageSection
-            keyboardSection
-            composingSection
-            Section("Sending") {
-                Picker("Undo send window", selection: $model.undoSendSeconds) {
-                    ForEach([0, 5, 10, 20, 30], id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
-                }
+struct SettingsSearchField: View {
+    @Binding var text: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondary)
+            TextField("Search", text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .frame(width: 150)
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain)
             }
         }
-        .formStyle(.grouped)
-        .padding()
-    }
-
-    private var readingSection: some View {
-        @Bindable var model = model
-        return Section("Reading") {
-            Toggle("Group messages by conversation", isOn: $model.groupByThread)
-            Toggle("Open messages in a separate window instead of a tab", isOn: $model.openInWindowOnDoubleClick)
-            Toggle("Load remote images in messages", isOn: $model.loadRemoteImages)
-            Picker("Mark messages as read", selection: $model.markReadPolicy) {
-                ForEach(MarkReadPolicy.allCases) { policy in Text(policy.title).tag(policy.rawValue) }
-            }
-            if model.markReadPolicy == MarkReadPolicy.delay.rawValue {
-                Picker("Delay", selection: $model.markReadDelaySeconds) {
-                    ForEach([1, 2, 3, 5, 10], id: \.self) { Text($0 == 1 ? "1 second" : "\($0) seconds").tag($0) }
-                }
-            }
-            Picker("After archiving, deleting or moving", selection: $model.advanceAfterAction) {
-                ForEach(AdvanceAfterAction.allCases) { action in Text(action.title).tag(action.rawValue) }
-            }
-            Text("Choose Never to keep unread counts intact while you scan.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var keyboardSection: some View {
-        @Bindable var model = model
-        return Section("Keyboard") {
-            Toggle("Use single-key shortcuts in the message list", isOn: $model.singleKeyShortcuts)
-            Text("e archive, Delete trash, ! junk or not junk, m mute, u read or unread, s flag, v move, Shift+V move again, j and k next and previous conversation, n and p next and previous unread, c new message, r reply, a reply all, f forward, / search, and g followed by i, t, d, a or j to jump to a mailbox.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Every one of these also has a menu item, so they can be rebound in System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var composingSection: some View {
-        Section("Composing") {
-            Toggle("Warn when a message mentions an attachment but has none", isOn: $warnAboutAttachments)
-            TextField("Words that suggest an attachment", text: $attachmentKeywords, axis: .vertical)
-                .lineLimit(2...5)
-                .disabled(!warnAboutAttachments)
-            Text("Separate the words with commas. Only what you type is checked, never the quoted reply or your signature.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var triageSection: some View {
-        @Bindable var model = model
-        return Section("Triage") {
-            Picker("Undo window for archive, delete and move", selection: $model.undoActionSeconds) {
-                ForEach([0, 3, 5, 10], id: \.self) { Text($0 == 0 ? "Off" : "\($0) seconds").tag($0) }
-            }
-            Text("Actions apply on this Mac straight away and reach the server when the window ends. Press Command+Z while the capsule is showing to take one back.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(focused ? Color.accentColor : Color.primary.opacity(0.15), lineWidth: focused ? 2 : 1))
     }
 }
 
@@ -452,6 +578,7 @@ struct RuleEditor: View {
 }
 
 struct NotificationSettings: View {
+    @State private var soundPresetToken = 0
     @Environment(AppModel.self) private var model
     @AppStorage("notificationSound") private var notificationSound = "Ping"
     @AppStorage("notificationsEnabled") private var notificationsEnabled = true
@@ -470,25 +597,45 @@ struct NotificationSettings: View {
     }
 
     private var soundsSection: some View {
-        @Bindable var model = model
-        return Section("Notifications") {
+        Section("Notifications") {
             Toggle("Notify about new mail", isOn: $notificationsEnabled)
-            HStack {
-                Picker("Notification sound", selection: $notificationSound) {
-                    Text("None").tag(SystemSounds.none)
-                    ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
+            Picker("Sound preset", selection: Binding(get: { SoundLibrary.preset }, set: { SoundLibrary.preset = $0; soundPresetToken += 1 })) {
+                ForEach(SoundPreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                        .disabled(preset == .outlook && !SoundLibrary.outlookAvailable)
                 }
-                Button { SystemSounds.play(notificationSound) } label: { Image(systemName: "play.circle") }
-                    .disabled(notificationSound == SystemSounds.none)
             }
-            HStack {
-                Picker("Sent mail sound", selection: $model.sentSound) {
-                    Text("None").tag(SystemSounds.none)
-                    ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
+            .pickerStyle(.segmented)
+            Text(SoundLibrary.preset == .outlook && !SoundLibrary.outlookAvailable
+                 ? "Microsoft Outlook is not installed on this Mac, so FalconMail falls back to its own sounds."
+                 : SoundLibrary.preset.detail)
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            ForEach(MailSound.allCases) { sound in
+                HStack {
+                    if SoundLibrary.preset == .custom {
+                        Picker(sound.title, selection: Binding(get: { SoundLibrary.customName(sound) },
+                                                               set: { Preferences.set($0, SoundLibrary.customKey(sound)); soundPresetToken += 1 })) {
+                            Text("None").tag(SystemSounds.none)
+                            ForEach(SystemSounds.names, id: \.self) { Text($0).tag($0) }
+                        }
+                    } else {
+                        LabeledContent(sound.title, value: soundDescription(sound))
+                    }
+                    Button { SoundLibrary.play(sound) } label: { Image(systemName: "play.circle") }
+                        .buttonStyle(.borderless)
+                        .disabled(SoundLibrary.preset == .silent)
                 }
-                Button { SystemSounds.play(model.sentSound) } label: { Image(systemName: "play.circle") }
-                    .disabled(model.sentSound == SystemSounds.none)
             }
+            .id(soundPresetToken)
+        }
+    }
+
+    private func soundDescription(_ sound: MailSound) -> String {
+        switch SoundLibrary.preset {
+        case .silent: return "Silent"
+        case .outlook: return SoundLibrary.outlookURL(for: sound) != nil ? "Outlook \(sound.outlookFile)" : sound.systemName
+        case .falcon: return sound.systemName
+        case .custom: return SoundLibrary.customName(sound)
         }
     }
 

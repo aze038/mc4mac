@@ -4,10 +4,12 @@ import FalconCore
 struct MessageListView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    @AppStorage(Pref.focusedInbox) private var focusedInbox = false
 
     var body: some View {
         VStack(spacing: 0) {
             listHeader
+            focusedTabs
             filterBar
             Divider()
             if model.isSearching {
@@ -18,6 +20,18 @@ struct MessageListView: View {
         }
         .background(Color(nsColor: .controlBackgroundColor))
         .onChange(of: model.selectedMessageIDs) { _, _ in model.selectionDidChange() }
+    }
+
+    @ViewBuilder private var focusedTabs: some View {
+        if focusedInbox && model.showsMessageList {
+            Picker("", selection: Binding(get: { model.focusedTab }, set: { model.focusedTab = $0; Task { await model.reloadMessages() } })) {
+                ForEach(FocusedTab.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+        }
     }
 
     private var listHeader: some View {
@@ -177,9 +191,31 @@ struct MessageListView: View {
         case .thread(let thread):
             ConversationRow(thread: thread)
                 .contextMenu { rowMenu(thread) }
+                .swipeActions(edge: .leading) { swipeButton(Preferences.string(Pref.leftSwipe, default: SwipeAction.archive.rawValue), thread) }
+                .swipeActions(edge: .trailing) { swipeButton(Preferences.string(Pref.rightSwipe, default: SwipeAction.none.rawValue), thread) }
         case .message(let message, _):
             ChildMessageRow(message: message)
                 .contextMenu { rowMenu(MessageThread(messages: [message])) }
+        }
+    }
+
+    @ViewBuilder private func swipeButton(_ raw: String, _ thread: MessageThread) -> some View {
+        let action = SwipeAction(rawValue: raw) ?? .none
+        if action != .none {
+            Button {
+                switch action {
+                case .archive: model.archive(thread.messages)
+                case .delete: model.delete(thread.messages)
+                case .markRead: model.markRead(thread.messages, !thread.latest.isRead)
+                case .flag: model.setFlagged(thread.messages, !thread.latest.isFlagged)
+                case .move: model.openMovePalette()
+                case .junk: model.toggleJunk(thread.messages)
+                case .none: break
+                }
+            } label: {
+                Label(action.title, systemImage: action.symbol)
+            }
+            .tint(action == .delete ? .red : (action == .flag ? .orange : .accentColor))
         }
     }
 
@@ -214,20 +250,23 @@ struct MessageListView: View {
 struct ConversationRow: View {
     @Environment(AppModel.self) private var model
     let thread: MessageThread
+    @AppStorage(Pref.showPreview) private var showPreview = true
+    @AppStorage(Pref.showSenderImage) private var showSenderImage = true
+    @State private var hovering = false
 
     private var unread: Bool { thread.unreadCount > 0 }
 
-    @Environment(AppModel.self) private var listModel
-
     var body: some View {
         let m = thread.latest
-        let compact = listModel.listDensity == .compact
+        let density = model.listDensity
+        let compact = density == .compact
+        let previewLines = showPreview ? density.previewLines : 0
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(unread ? Color.accentColor : Color.clear)
                 .frame(width: 3)
                 .padding(.vertical, compact ? 3 : 5)
-            if !compact || thread.messages.count > 1 {
+            if showSenderImage, !compact || thread.messages.count > 1 {
                 AvatarView(name: m.from.displayName, address: m.from.address, size: compact ? 20 : 26)
                     .padding(.top, compact ? 1 : 2)
             }
@@ -237,9 +276,9 @@ struct ConversationRow: View {
                         .font(.system(size: 13, weight: unread ? .semibold : .regular))
                         .lineLimit(1)
                     if thread.messages.count > 1 {
-                        Button { listModel.toggleExpanded(thread) } label: {
+                        Button { model.toggleExpanded(thread) } label: {
                             HStack(spacing: 2) {
-                                Image(systemName: listModel.isExpanded(thread) ? "chevron.down" : "chevron.right")
+                                Image(systemName: model.isExpanded(thread) ? "chevron.down" : "chevron.right")
                                     .font(.system(size: 8, weight: .bold))
                                 Text("\(thread.messages.count)").font(.system(size: 10, weight: .medium))
                             }
@@ -247,31 +286,73 @@ struct ConversationRow: View {
                             .background(Color.secondary.opacity(0.15), in: Capsule())
                         }
                         .buttonStyle(.plain)
-                        .help(listModel.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
+                        .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
                     }
                     Spacer(minLength: 4)
-                    if m.hasAttachments { Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(.secondary) }
-                    if m.isFlagged { Image(systemName: "flag.fill").font(.system(size: 10)).foregroundStyle(.orange) }
-                    Text(MessageRow.dateText(m.date))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    if hovering {
+                        quickActions(for: thread)
+                    } else {
+                        ForEach(model.categories(for: m)) { category in
+                            Circle().fill(category.swatch).frame(width: 7, height: 7).help(category.name)
+                        }
+                        if m.hasAttachments { Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(.secondary) }
+                        if m.isFlagged { Image(systemName: "flag.fill").font(.system(size: 10)).foregroundStyle(.orange) }
+                        Text(MessageRow.dateText(m.date))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Text(m.subject.isEmpty ? "(no subject)" : m.subject)
                     .font(.system(size: 12.5, weight: unread ? .medium : .regular))
                     .foregroundStyle(unread ? .primary : .secondary)
                     .lineLimit(1)
-                if !compact {
+                if previewLines > 0 {
                     Text(m.snippet.isEmpty ? " " : m.snippet)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(previewLines)
                 }
             }
         }
-        .padding(.vertical, compact ? 4 : 6)
+        .padding(.vertical, density.rowPadding)
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 
+    private func quickActions(for thread: MessageThread) -> some View {
+        HStack(spacing: 6) {
+            ForEach(QuickAction.enabled()) { action in
+                Button { run(action, on: thread) } label: {
+                    Image(systemName: symbol(action, thread))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(Text(action.title))
+            }
+        }
+    }
+
+    private func symbol(_ action: QuickAction, _ thread: MessageThread) -> String {
+        switch action {
+        case .markRead: return thread.latest.isRead ? "envelope.badge" : "envelope.open"
+        case .flag: return thread.latest.isFlagged ? "flag.slash" : "flag"
+        default: return action.symbol
+        }
+    }
+
+    private func run(_ action: QuickAction, on thread: MessageThread) {
+        switch action {
+        case .delete: model.delete(thread.messages)
+        case .archive: model.archive(thread.messages)
+        case .flag: model.setFlagged(thread.messages, !thread.latest.isFlagged)
+        case .move: model.openMovePalette()
+        case .markRead: model.markRead(thread.messages, !thread.latest.isRead)
+        case .snooze: model.mute([thread])
+        }
+    }
 }
 
 struct ChildMessageRow: View {

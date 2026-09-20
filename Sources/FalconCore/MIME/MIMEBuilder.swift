@@ -30,11 +30,12 @@ public struct OutgoingMessage: Sendable, Hashable {
     public var references: [String]
     public var messageID: String
     public var date: Date
+    public var importance: String = "normal"
 
     public init(from: EmailAddress, to: [EmailAddress], cc: [EmailAddress] = [], bcc: [EmailAddress] = [],
                 replyTo: EmailAddress? = nil, subject: String, textBody: String, htmlBody: String? = nil,
                 attachments: [OutgoingAttachment] = [], inReplyTo: String? = nil, references: [String] = [],
-                messageID: String? = nil, date: Date = Date()) {
+                messageID: String? = nil, date: Date = Date(), importance: String = "normal") {
         self.from = from
         self.to = to
         self.cc = cc
@@ -48,6 +49,7 @@ public struct OutgoingMessage: Sendable, Hashable {
         self.references = references
         self.messageID = messageID ?? OutgoingMessage.generateMessageID(domain: from.address.split(separator: "@").last.map(String.init) ?? "falconmail.local")
         self.date = date
+        self.importance = importance
     }
 
     public var allRecipients: [String] { (to + cc + bcc).map { $0.address } }
@@ -68,6 +70,11 @@ public enum MIMEBuilder {
         out += "Subject: \(RFC2047.encode(m.subject))\r\n"
         out += "Message-ID: \(m.messageID)\r\n"
         if let irt = m.inReplyTo, !irt.isEmpty { out += "In-Reply-To: \(irt)\r\n" }
+        switch m.importance {
+        case "high": out += "Importance: High\r\nX-Priority: 1\r\n"
+        case "low": out += "Importance: Low\r\nX-Priority: 5\r\n"
+        default: break
+        }
         if !m.references.isEmpty { out += fold("References", m.references.joined(separator: "\r\n ")) }
         out += "MIME-Version: 1.0\r\n"
         out += "X-Mailer: FalconMail\r\n"

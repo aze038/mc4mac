@@ -17,6 +17,7 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     var historyPlain: String = ""
     var historyHTML: String = ""
     var sourceMessageID: String?
+    var importance: String = "normal"
 
     var isBlank: Bool {
         to.trimmed.isEmpty && cc.trimmed.isEmpty && bcc.trimmed.isEmpty && subject.trimmed.isEmpty && attachments.isEmpty
@@ -93,27 +94,42 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     static let separatorLine = AttachmentReminder.separatorLine
 
     static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> (plain: String, html: String) {
+        let mode = AttributionMode(rawValue: Preferences.string(Pref.attributionMode, default: AttributionMode.standard.rawValue)) ?? .standard
+        let indent = Preferences.bool(Pref.indentOriginal, default: false)
         let f = DateFormatter()
         f.dateStyle = .full
         f.timeStyle = .short
         let sent = f.string(from: message.date)
         let to = message.to.map { $0.rfc5322 }.joined(separator: "; ")
         let cc = message.cc.map { $0.rfc5322 }.joined(separator: "; ")
-        var plain = "\n" + separatorLine + "\n"
-        plain += "From: \(message.from.rfc5322)\n"
-        plain += "Sent: \(sent)\n"
-        plain += "To: \(to)\n"
-        if !cc.isEmpty { plain += "Cc: \(cc)\n" }
-        plain += "Subject: \(message.subject)\n\n"
-        plain += (parsed?.bestText ?? message.snippet).trimmed + "\n"
 
+        var plain = "\n" + separatorLine + "\n"
         var html = "<hr style=\"border:none;border-top:1px solid #b5b5b5;margin:18px 0 10px 0\">"
-        html += "<div style=\"font-size:13px;color:#555;margin-bottom:10px\">"
-        html += "<b>From:</b> \(HTMLText.escape(message.from.rfc5322))<br>"
-        html += "<b>Sent:</b> \(HTMLText.escape(sent))<br>"
-        html += "<b>To:</b> \(HTMLText.escape(to))<br>"
-        if !cc.isEmpty { html += "<b>Cc:</b> \(HTMLText.escape(cc))<br>" }
-        html += "<b>Subject:</b> \(HTMLText.escape(message.subject))</div>"
+        switch mode {
+        case .none:
+            break
+        case .custom:
+            let line = customAttribution(message: message, sent: sent)
+            plain += line + "\n\n"
+            html += "<div style=\"font-size:13px;color:#555;margin-bottom:10px\">\(HTMLText.escape(line))</div>"
+        case .standard:
+            plain += "From: \(message.from.rfc5322)\n"
+            plain += "Sent: \(sent)\n"
+            plain += "To: \(to)\n"
+            if !cc.isEmpty { plain += "Cc: \(cc)\n" }
+            plain += "Subject: \(message.subject)\n\n"
+            html += "<div style=\"font-size:13px;color:#555;margin-bottom:10px\">"
+            html += "<b>From:</b> \(HTMLText.escape(message.from.rfc5322))<br>"
+            html += "<b>Sent:</b> \(HTMLText.escape(sent))<br>"
+            html += "<b>To:</b> \(HTMLText.escape(to))<br>"
+            if !cc.isEmpty { html += "<b>Cc:</b> \(HTMLText.escape(cc))<br>" }
+            html += "<b>Subject:</b> \(HTMLText.escape(message.subject))</div>"
+        }
+
+        let originalText = (parsed?.bestText ?? message.snippet).trimmed
+        plain += (indent ? originalText.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n") : originalText) + "\n"
+
+        let quoteStyle = indent ? "border-left:3px solid #b5b5b5;padding-left:10px;margin-left:2px" : ""
         if let original = parsed?.textHTML, !original.trimmed.isEmpty {
             var inner = original
             for a in parsed?.attachments ?? [] where a.contentID != nil {
@@ -121,19 +137,36 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
             }
             inner = inner.replacingOccurrences(of: "(?is)<script[^>]*>.*?</script>", with: "", options: .regularExpression)
             inner = inner.replacingOccurrences(of: "(?is)<(/?)(html|head|body)[^>]*>", with: "", options: .regularExpression)
-            html += "<div>\(inner)</div>"
+            html += "<div style=\"\(quoteStyle)\">\(inner)</div>"
         } else {
-            html += "<div style=\"white-space:pre-wrap\">\(HTMLText.escape(parsed?.bestText ?? message.snippet))</div>"
+            html += "<div style=\"white-space:pre-wrap;\(quoteStyle)\">\(HTMLText.escape(originalText))</div>"
         }
         return (plain, html)
     }
 
+    static func customAttribution(message: MessageSummary, sent: String) -> String {
+        Preferences.string(Pref.attributionFormat, default: "On [DATE], \"[NAME]\" <[ADDRESS]> wrote:")
+            .replacingOccurrences(of: "[DATE]", with: sent)
+            .replacingOccurrences(of: "[NAME]", with: message.from.name.isEmpty ? message.from.address : message.from.name)
+            .replacingOccurrences(of: "[ADDRESS]", with: message.from.address)
+    }
+
     func outgoing(from account: AccountInfo, requireRecipients: Bool = true) throws -> OutgoingMessage {
         let toList = AddressParser.parse(to)
+        var ccList = AddressParser.parse(cc)
+        var bccList = AddressParser.parse(bcc)
+        if Preferences.bool(Pref.autoCopySelf, default: false) {
+            let me = EmailAddress(name: account.displayName, address: account.email)
+            let alreadyThere = (toList + ccList + bccList).contains { $0.address.caseInsensitiveCompare(account.email) == .orderedSame }
+            if !alreadyThere {
+                if Preferences.string(Pref.autoCopyMode, default: "bcc") == "cc" { ccList.append(me) } else { bccList.append(me) }
+            }
+        }
         guard !requireRecipients || !toList.isEmpty || !AddressParser.parse(cc).isEmpty || !AddressParser.parse(bcc).isEmpty else {
             throw FalconError.invalidInput("Add at least one recipient.")
         }
         let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
+        let priority = importance
         var html: String
         if let rtf = bodyRTF, let rich = RichText.html(fromRTF: rtf) {
             if !historyHTML.isEmpty, !historyPlain.isEmpty, body.hasSuffix(historyPlain) {
@@ -142,14 +175,14 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
                    let ownHTML = RichText.html(fromRTF: ownRTF) {
                     html = "<html><body style=\"\(style)\">\(ownHTML)\(historyHTML)</body></html>"
                     return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                                           cc: AddressParser.parse(cc), bcc: AddressParser.parse(bcc), subject: subject, textBody: body,
-                                           htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references)
+                                           cc: ccList, bcc: bccList, subject: subject, textBody: body,
+                                           htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: priority)
                 }
             }
             html = "<html><body style=\"\(style)\">\(rich)</body></html>"
             return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                                   cc: AddressParser.parse(cc), bcc: AddressParser.parse(bcc), subject: subject, textBody: body,
-                                   htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references)
+                                   cc: ccList, bcc: bccList, subject: subject, textBody: body,
+                                   htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: priority)
         }
         if !historyPlain.isEmpty, body.hasSuffix(historyPlain), !historyHTML.isEmpty {
             let own = String(body.dropLast(historyPlain.count))
@@ -158,8 +191,8 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
             html = "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(body))</body></html>"
         }
         return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                               cc: AddressParser.parse(cc), bcc: AddressParser.parse(bcc), subject: subject, textBody: body,
-                               htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references)
+                               cc: ccList, bcc: bccList, subject: subject, textBody: body,
+                               htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: priority)
     }
 }
 

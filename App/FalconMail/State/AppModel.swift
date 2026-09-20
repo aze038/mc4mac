@@ -3,8 +3,36 @@ import Observation
 import AppKit
 import FalconCore
 
+enum FocusedTab: String, CaseIterable, Identifiable {
+    case focused, other
+
+    var id: String { rawValue }
+    var title: LocalizedStringKey { self == .focused ? "Focused" : "Other" }
+}
+
+enum SmartFolder: String, Hashable, Codable, CaseIterable {
+    case unread, flagged, attachments
+
+    var title: String {
+        switch self {
+        case .unread: return "Unread"
+        case .flagged: return "Flagged"
+        case .attachments: return "With Attachments"
+        }
+    }
+
+    func matches(_ message: MessageSummary) -> Bool {
+        switch self {
+        case .unread: return !message.isRead
+        case .flagged: return message.isFlagged
+        case .attachments: return message.hasAttachments
+        }
+    }
+}
+
 enum SidebarSelection: Hashable, Codable {
     case unified
+    case smart(SmartFolder)
     case folder(UUID)
     case archive(UUID)
     case calendar
@@ -128,9 +156,16 @@ final class AppModel {
     var keyChordHint: String?
     var mutedThreads: [MutedThread] = []
     var syncingAccounts: Set<UUID> = []
-    private var listDensityStorage = Preferences.string("listDensity", default: ListDensity.comfortable.rawValue)
+    var categoryCache: [MailCategory] = CategoryStore.load()
+    var categoryAssignments: [String: [String]] = CategoryStore.assignments() {
+        didSet { CategoryStore.saveAssignments(categoryAssignments) }
+    }
+    var workOffline = Preferences.bool(Pref.offlineMode, default: false)
+    var allAccountsExpanded = true
+    var focusedTab = FocusedTab.focused
+    private var listDensityStorage = Preferences.string("listDensity", default: ListDensity.cozy.rawValue)
     var listDensity: ListDensity {
-        get { ListDensity(rawValue: listDensityStorage) ?? .comfortable }
+        get { ListDensity(rawValue: listDensityStorage) ?? .cozy }
         set { listDensityStorage = newValue.rawValue; Preferences.set(newValue.rawValue, "listDensity") }
     }
 
@@ -312,6 +347,7 @@ final class AppModel {
     @ObservationIgnored private var submittedSearchQuery: String?
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored var openMainWindow: (@MainActor () -> Void)?
+    @ObservationIgnored var openComposeWindow: (@MainActor (UUID) -> Void)?
 
     private func applyOfflineSettings() {
         Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) }
@@ -469,7 +505,7 @@ final class AppModel {
                 let sent = Set(items.filter { $0.status == .sent }.map { $0.id })
                 let newlySent = sent.subtracting(self.knownSentIDs)
                 if !self.knownSentIDs.isEmpty || !self.outboxItems.isEmpty, !newlySent.isEmpty {
-                    SystemSounds.play(self.sentSound)
+                    SoundLibrary.play(.sent)
                 }
                 for id in newlySent { self.discardSidecar(id) }
                 self.knownSentIDs = sent
@@ -616,6 +652,9 @@ final class AppModel {
             }
             switch selection {
             case .unified: messages = try await store.unifiedInbox()
+            case .smart(let kind):
+                let everything = try await store.unifiedInbox()
+                messages = everything.filter { kind.matches($0) }
             case .folder(let id): messages = try await store.messages(in: id)
             default: messages = []
             }
@@ -633,8 +672,33 @@ final class AppModel {
     }
 
     private var visibleMessages: [MessageSummary] {
-        guard !liveSearchNeedle.isEmpty else { return messages }
-        return messages.filter { matchesNeedle($0) }
+        var list = messages
+        if !Preferences.bool(Pref.showSentInConversations, default: true) {
+            let mine = Set(accounts.map { $0.email.lowercased() })
+            list = list.filter { !mine.contains($0.from.address.lowercased()) }
+        }
+        if Preferences.bool(Pref.focusedInbox, default: false), showsMessageList {
+            list = list.filter { isFocused($0) == (focusedTab == .focused) }
+        }
+        guard !liveSearchNeedle.isEmpty else { return list }
+        return list.filter { matchesNeedle($0) }
+    }
+
+    /// Mail from someone in the address book, or addressed to the reader by name, counts as Focused.
+    /// Anything that looks like a mailing list or a no-reply sender falls to Other.
+    func isFocused(_ message: MessageSummary) -> Bool {
+        let address = message.from.address.lowercased()
+        if knownContactAddresses.contains(address) { return true }
+        let local = address.split(separator: "@").first.map(String.init) ?? ""
+        let bulk = ["noreply", "no-reply", "donotreply", "do-not-reply", "notifications", "notification",
+                    "newsletter", "news", "info", "support", "marketing", "mailer", "bounce", "updates", "alerts"]
+        if bulk.contains(where: { local.contains($0) }) { return false }
+        let mine = Set(accounts.map { $0.email.lowercased() })
+        return message.to.contains { mine.contains($0.address.lowercased()) }
+    }
+
+    private var knownContactAddresses: Set<String> {
+        Set(contactList.map { $0.email.lowercased() })
     }
 
     private func passesFilters(_ thread: MessageThread) -> Bool {
@@ -737,7 +801,7 @@ final class AppModel {
         selectedMessageIDs = []
         expandedThreadIDs = []
         switch s {
-        case .unified, .folder, .archive, .outbox: lastMailSelection = s
+        case .unified, .smart, .folder, .archive, .outbox: lastMailSelection = s
         default: break
         }
         resetSearch()
@@ -790,7 +854,7 @@ final class AppModel {
 
     var showsMessageList: Bool {
         switch selection {
-        case .unified, .folder: return true
+        case .unified, .smart, .folder: return true
         default: return false
         }
     }
@@ -1129,6 +1193,11 @@ final class AppModel {
 
     func selectionDidChange() {
         cancelPendingRead()
+        if Preferences.bool(Pref.autoExpandConversation, default: true),
+           selectedMessageIDs.count == 1, let id = selectedMessageIDs.first,
+           let thread = threads.first(where: { $0.id == id }), thread.messages.count > 1 {
+            expandedThreadIDs.insert(id)
+        }
         guard readPolicy == .delay else { return }
         guard selectedMessageIDs.count == 1, let id = selectedMessageIDs.first else { return }
         guard let selected = threads.first(where: { $0.id == id }), selected.unreadCount > 0 else { return }
@@ -1288,6 +1357,42 @@ final class AppModel {
 
     private func muteTitle(_ record: MutedThread) -> String {
         record.subject.isEmpty ? "(no subject)" : record.subject
+    }
+
+    func setWorkOffline(_ offline: Bool) {
+        workOffline = offline
+        Preferences.set(offline, Pref.offlineMode)
+        Task {
+            if offline {
+                await coordinator.stopAll()
+                statusText = "Working offline"
+            } else {
+                await coordinator.startAll()
+                statusText = "Ready"
+            }
+        }
+    }
+
+    func createFolder(named name: String, in account: AccountInfo) {
+        Task {
+            guard let syncer = await coordinator.syncer(for: account.id) else {
+                errorMessage = "\(account.email) is not connected yet."
+                return
+            }
+            do {
+                try await syncer.createMailbox(named: name)
+                await refreshAccounts()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func purgeEverything(in folder: FolderInfo) {
+        let doomed = messages.filter { $0.folderID == folder.id }
+        guard !doomed.isEmpty else { return }
+        removeFromList(doomed)
+        perform(doomed, announcing: false) { try await $0.purge($1) }
     }
 
     func syncNow() {

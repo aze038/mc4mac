@@ -784,6 +784,15 @@ public actor AccountSyncer {
     public func openArchiveSourceClient() async throws -> IMAPClient {
         try await makeClient()
     }
+
+    public func createMailbox(named name: String) async throws {
+        let client = try await makeClient()
+        defer { Task { await client.logout() } }
+        try await client.createFolder(name)
+        let listed = try await client.listFolders()
+        _ = try await store.reconcileFolders(accountID: account.id, listed: listed)
+        await requestSync()
+    }
 }
 
 

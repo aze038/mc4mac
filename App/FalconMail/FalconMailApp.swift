@@ -14,6 +14,7 @@ struct FalconMailApp: App {
     var body: some Scene {
         WindowGroup("FalconMail", id: FalconMailApp.mailboxWindowID) {
             MainWindow()
+                .themedRoot()
                 .environment(model)
                 .environmentObject(model.updates)
                 .task {
@@ -22,10 +23,15 @@ struct FalconMailApp: App {
                 }
                 .onAppear {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }
+                    model.openComposeWindow = { openWindow(value: $0) }
                     appDelegate.model = model
                     AppAppearance.apply(model.appearance)
                 }
                 .onOpenURL { url in
+                    if url.scheme?.lowercased() == "mailto" {
+                        model.composeFromMailto(url)
+                        return
+                    }
                     Task { _ = await URLCallbackRouter.shared.deliver(url) }
                 }
                 .onChange(of: model.appearance) { _, new in AppAppearance.apply(new) }
@@ -92,20 +98,20 @@ struct FalconMailApp: App {
 
         WindowGroup("Message", for: String.self) { $messageID in
             if let id = messageID {
-                MessageWindowView(messageID: id).environment(model).environmentObject(model.updates)
+                MessageWindowView(messageID: id).themedRoot().environment(model).environmentObject(model.updates)
             }
         }
         .defaultSize(width: 720, height: 640)
 
         WindowGroup("Compose", for: UUID.self) { $draftID in
             if let id = draftID {
-                ComposeView(draftID: id).environment(model).environmentObject(model.updates)
+                ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates)
             }
         }
         .defaultSize(width: 720, height: 600)
 
         Settings {
-            SettingsView().environment(model).environmentObject(model.updates)
+            SettingsView().themedRoot().environment(model).environmentObject(model.updates)
         }
     }
 

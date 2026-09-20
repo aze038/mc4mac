@@ -103,8 +103,11 @@ struct QuickLookHostView: NSViewRepresentable {
 }
 
 struct AttachmentStrip: View {
+    @Environment(AppModel.self) private var model
     let attachments: [MIMEAttachment]
     var html: String? = nil
+    var accountID: UUID? = nil
+    @State private var driveTarget: MIMEAttachment?
     @State private var selectedIndex = 0
     @State private var focusToken = 0
     @State private var tempURLs: [String: URL] = [:]
@@ -133,6 +136,8 @@ struct AttachmentStrip: View {
                             Button("Quick Look") { select(index); toggleQuickLook() }
                             Button("Open") { open(a) }
                             Button("Save As…") { saveAs(a) }
+                            Button("Save to Google Drive…") { driveTarget = a }
+                                .disabled(driveAccount == nil)
                             Button("Copy") { copyToPasteboard(a) }
                         }
                 }
@@ -143,6 +148,15 @@ struct AttachmentStrip: View {
             QuickLookHostView(urls: visible.map { url(for: $0) }, selectedIndex: $selectedIndex, focusToken: focusToken)
                 .frame(width: 0, height: 0)
         )
+        .sheet(item: $driveTarget) { attachment in
+            if let account = driveAccount {
+                DrivePicker(accountID: account, mode: .save,
+                            savingName: attachment.filename,
+                            savingData: attachment.data,
+                            savingMime: attachment.mimeType)
+                    .environment(model)
+            }
+        }
         .onKeyPress(.space) { toggleQuickLook(); return .handled }
         .onKeyPress(.return) { if let a = current { open(a) }; return .handled }
         .onKeyPress("s", phases: .down) { press in
@@ -158,6 +172,11 @@ struct AttachmentStrip: View {
     }
 
     private var current: MIMEAttachment? { visible.indices.contains(selectedIndex) ? visible[selectedIndex] : nil }
+
+    private var driveAccount: UUID? {
+        if let accountID, model.accounts.contains(where: { $0.id == accountID && !$0.usesPassword }) { return accountID }
+        return model.accounts.first { !$0.usesPassword }?.id
+    }
 
     private func select(_ index: Int) {
         selectedIndex = index

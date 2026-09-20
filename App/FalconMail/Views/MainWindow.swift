@@ -12,43 +12,28 @@ struct MainWindow: View {
     @State private var showOpenArchiveSheet = false
     @State private var showImportPicker = false
     @State private var importTarget: FolderInfo?
+    @AppStorage(Pref.readingPane) private var readingPane = ReadingPanePosition.right.rawValue
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.activeTab == nil {
-                CommandBar()
-                Divider()
-            }
+            CommandBar()
+            Divider()
             if !model.tabs.isEmpty {
                 WorkspaceTabStrip()
                 Divider()
             }
-            HStack(spacing: 0) {
-                ModuleRail()
-                Divider()
-                ZStack {
-                    moduleContent
-                        .opacity(model.activeTab == nil ? 1 : 0)
-                        .allowsHitTesting(model.activeTab == nil)
-                    if let tab = model.activeTab {
-                        WorkspaceTabContent(tab: tab)
-                            .id(tab.id)
-                            .background(Color(nsColor: .windowBackgroundColor))
-                    }
-                    if model.showsMovePalette {
-                        MovePalette()
-                    }
+            ZStack {
+                moduleContent
+                if model.showsMovePalette {
+                    MovePalette()
                 }
             }
+            WindowTrayBar()
+            Divider()
+            StatusBar()
         }
         .background(MailboxWindowAccessor())
         .background(KeyRouterView(model: model))
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 0) {
-                WindowTrayBar()
-                StatusBar()
-            }
-        }
         .sheet(isPresented: Binding(get: { updates.shouldPrompt }, set: { _ in })) { UpdateSheet().environmentObject(updates) }
         .disabled(updates.isMandatory)
         .sheet(isPresented: $showArchiveSheet) { ArchiveSheet().environment(model) }
@@ -70,21 +55,47 @@ struct MainWindow: View {
         .onChange(of: model.drafts.count) { _, _ in model.saveSession() }
     }
 
+    private var pane: ReadingPanePosition { ReadingPanePosition(rawValue: readingPane) ?? .right }
+
     @ViewBuilder private var moduleContent: some View {
         switch model.module {
         case .calendar: CalendarView()
         case .people: ContactsView()
         case .mail:
-            NavigationSplitView {
-                SidebarView()
-                    .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
-            } content: {
-                contentColumn
-                    .navigationSplitViewColumnWidth(min: 340, ideal: 400, max: 600)
-            } detail: {
-                detailColumn
+            switch pane {
+            case .right:
+                NavigationSplitView {
+                    SidebarView()
+                        .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
+                } content: {
+                    contentColumn
+                        .navigationSplitViewColumnWidth(min: 340, ideal: 400, max: 600)
+                } detail: {
+                    detailColumn
+                }
+                .navigationSplitViewStyle(.balanced)
+            case .below:
+                NavigationSplitView {
+                    SidebarView()
+                        .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
+                } detail: {
+                    VSplitView {
+                        contentColumn.frame(minHeight: 180)
+                        detailColumn.frame(minHeight: 180)
+                    }
+                }
+            case .off:
+                NavigationSplitView {
+                    SidebarView()
+                        .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
+                } detail: {
+                    if model.activeTab != nil {
+                        detailColumn
+                    } else {
+                        contentColumn
+                    }
+                }
             }
-            .navigationSplitViewStyle(.balanced)
         }
     }
 
@@ -98,16 +109,22 @@ struct MainWindow: View {
     }
 
     @ViewBuilder private var detailColumn: some View {
-        switch model.selection {
-        case .outbox, .archive: EmptyView()
-        default:
-            if let thread = model.currentThread {
-                MessageReaderView(message: thread.latest, conversation: model.currentConversation)
-                    .id(thread.latest.id)
-            } else if model.selectedMessageIDs.count > 1 {
-                ContentUnavailableView("\(model.selectedMessageIDs.count) conversations selected", systemImage: "envelope.badge")
-            } else {
-                ContentUnavailableView("No message selected", systemImage: "envelope.open")
+        if let tab = model.activeTab {
+            WorkspaceTabContent(tab: tab)
+                .id(tab.id)
+                .background(Color(nsColor: .textBackgroundColor))
+        } else {
+            switch model.selection {
+            case .outbox, .archive: EmptyView()
+            default:
+                if let thread = model.currentThread {
+                    MessageReaderView(message: thread.latest, conversation: model.currentConversation)
+                        .id(thread.latest.id)
+                } else if model.selectedMessageIDs.count > 1 {
+                    ContentUnavailableView("\(model.selectedMessageIDs.count) conversations selected", systemImage: "envelope.badge")
+                } else {
+                    ContentUnavailableView("No message selected", systemImage: "envelope.open")
+                }
             }
         }
     }
@@ -138,6 +155,8 @@ struct StatusBar: View {
     var body: some View {
         HStack(spacing: 12) {
             Circle().fill(model.online.values.contains(false) ? Color.orange : Color.green).frame(width: 8, height: 8)
+            Text("Items: \(model.itemCount)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            Divider().frame(height: 11)
             Text(model.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             ForEach(model.accounts.filter { model.accountsNeedingSignIn.contains($0.id) }) { account in
                 Button("Sign in to \(account.email) again") { signInAgain(account) }

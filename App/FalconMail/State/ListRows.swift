@@ -172,6 +172,7 @@ extension AppModel {
         if !searchText.trimmed.isEmpty { return "Search results" }
         switch selection {
         case .unified: return "All Inboxes"
+        case .smart(let kind): return kind.title
         case .folder(let id): return folder(id)?.name ?? "Folder"
         default: return ""
         }
