@@ -193,6 +193,12 @@ struct AccountDetail: View {
     @State private var busy = false
     @State private var message: String?
 
+    private var downloadedText: String {
+        let bytes = model.downloadedToday[account.id] ?? 0
+        let used = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        return "\(used) of a safe daily allowance. Google suspends IMAP access past 2.5 GB a day, so FalconMail stops copying mail for offline reading well before that."
+    }
+
     private var statusText: String {
         if !account.isEnabled { return "Paused" }
         return model.online[account.id] == false ? "Offline or sign-in needed" : "Connected"
@@ -205,6 +211,7 @@ struct AccountDetail: View {
                 LabeledContent("Email", value: account.email)
                 LabeledContent("Sign-in", value: account.usesPassword ? "Username and password" : "Google account")
                 LabeledContent("Status", value: statusText)
+                LabeledContent("Downloaded today", value: downloadedText)
                 Toggle("Keep this account in sync", isOn: Binding(get: { account.isEnabled },
                                                                  set: { model.setAccountSyncing(account, $0) }))
                 Text(account.isEnabled

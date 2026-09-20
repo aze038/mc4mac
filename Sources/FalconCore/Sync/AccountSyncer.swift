@@ -30,6 +30,13 @@ public actor AccountSyncer {
     public var bodyPrefetch = 150
     public var maxOfflineBodyBytes = 5 * 1024 * 1024
     public var bodyPrefetchBudget = 64 * 1024 * 1024
+    /// Google allows 2,500 MB of IMAP download per account per day and suspends the account past it.
+    /// Eager prefetching stops well below that; opening a message by hand may go a little further.
+    public var dailyPrefetchBudget = 900 * 1024 * 1024
+    public var dailyHardCeiling = 1_800 * 1024 * 1024
+    public var maxEagerPrefetchBytes = 1024 * 1024
+    private let meter = BandwidthMeter.shared
+    private var budgetNoticeGiven = false
     private var pendingCatchUp = false
 
     static func isThrottled(_ error: Error) -> Bool {
@@ -100,6 +107,7 @@ public actor AccountSyncer {
                 await replayPendingOperations()
                 try await syncAll(client)
                 lastFullSync = Date()
+                await meter.persist()
                 events.yield(.finished(accountID: account.id))
                 if pendingCatchUp {
                     pendingCatchUp = false
@@ -277,9 +285,10 @@ public actor AccountSyncer {
     }
 
     private func prefetchBodies(folder: FolderInfo, fs: FolderStore, client: IMAPClient, preferred: [MessageSummary]) async throws {
+        guard folder.role == .inbox || preferred.count <= bodyPrefetch else { return }
         let all = await fs.all().sorted { $0.date > $1.date }
         if (try? await fs.pruneBodies(keepingNewest: bodyPrefetch)) ?? 0 > 0 { await store.notifyMessagesChanged(folderID: folder.id) }
-        let candidates = all.prefix(bodyPrefetch).filter { !$0.hasBody && $0.size <= maxOfflineBodyBytes }
+        let candidates = all.prefix(bodyPrefetch).filter { !$0.hasBody && $0.size <= min(maxOfflineBodyBytes, maxEagerPrefetchBytes) }
         guard !candidates.isEmpty else { return }
         var texts: [String: String] = [:]
         var updated: [MessageSummary] = []
@@ -287,7 +296,17 @@ public actor AccountSyncer {
         for m in candidates {
             try Task.checkCancellation()
             guard spent + m.size <= bodyPrefetchBudget else { break }
+            guard await meter.allows(m.size, for: account.id, budget: dailyPrefetchBudget) else {
+                if !budgetNoticeGiven {
+                    budgetNoticeGiven = true
+                    let used = await meter.spentToday(account.id) / 1_000_000
+                    Log.info("sync", "\(account.email): \(used) MB downloaded today, pausing offline copies until tomorrow")
+                    events.yield(.progress(accountID: account.id, text: "\(account.email) has downloaded \(used) MB today; new mail still arrives and messages open on demand"))
+                }
+                break
+            }
             guard let raw = try? await client.fetchMessage(uid: m.uid) else { continue }
+            await meter.record(raw.count, for: account.id)
             spent += raw.count
             let parsed = MIMEParser.parse(raw)
             try await fs.storeBody(uid: m.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty, searchText: parsed.bestText)
@@ -436,7 +455,11 @@ public actor AccountSyncer {
         if let cached = await fs.body(uid: message.uid) { return cached }
         let client = try await connectedOpClient()
         if await client.selectedMailbox != folder.path { _ = try await client.select(folder.path) }
+        guard await meter.allows(message.size, for: account.id, budget: dailyHardCeiling) else {
+            throw MigrationErrorShim.overBudget(account.email)
+        }
         let raw = try await client.fetchMessage(uid: message.uid)
+        await meter.record(raw.count, for: account.id)
         let parsed = MIMEParser.parse(raw)
         try await fs.storeBody(uid: message.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty, searchText: parsed.bestText)
         if let s = await fs.message(uid: message.uid) { await indexer.index([s], bodies: [s.id: parsed.bestText]) }
@@ -760,5 +783,12 @@ public actor AccountSyncer {
 
     public func openArchiveSourceClient() async throws -> IMAPClient {
         try await makeClient()
+    }
+}
+
+
+enum MigrationErrorShim {
+    static func overBudget(_ email: String) -> FalconError {
+        .network("\(email) has reached today's safe download limit. Mail already on this Mac stays available, and downloading resumes tomorrow.")
     }
 }

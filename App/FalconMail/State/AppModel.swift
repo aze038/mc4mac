@@ -134,6 +134,14 @@ final class AppModel {
         set { listDensityStorage = newValue.rawValue; Preferences.set(newValue.rawValue, "listDensity") }
     }
 
+    var downloadedToday: [UUID: Int] = [:]
+
+    func refreshBandwidth() async {
+        var out: [UUID: Int] = [:]
+        for account in accounts { out[account.id] = await BandwidthMeter.shared.spentToday(account.id) }
+        downloadedToday = out
+    }
+
     var offlineAccounts: [AccountInfo] {
         guard accountsNeedingSignIn.isEmpty else { return [] }
         return accounts.filter { $0.isEnabled && online[$0.id] == false }
@@ -438,6 +446,7 @@ final class AppModel {
                 case .finished(let id):
                     self.syncingAccounts.remove(id)
                     self.statusText = "Up to date"
+                    await self.refreshBandwidth()
                 case .error(let id, let message):
                     self.syncingAccounts.remove(id)
                     if message == FalconError.notAuthenticated.localizedDescription {
