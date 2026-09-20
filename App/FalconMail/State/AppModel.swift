@@ -186,7 +186,24 @@ final class AppModel {
         }
     }
 
-    private var listSortStorage = Preferences.string("listSort", default: ListSort.newest.rawValue)
+    private var listSortStorage = Preferences.string("listSort", default: ListSort.date.rawValue)
+    private var sortAscendingStorage = Preferences.bool("listSortAscending", default: false)
+    var sortAscending: Bool {
+        get { sortAscendingStorage }
+        set { sortAscendingStorage = newValue; Preferences.set(newValue, "listSortAscending"); rebuildThreads() }
+    }
+    private var showInGroupsStorage = Preferences.bool("showInGroups", default: false)
+    var showInGroups: Bool {
+        get { showInGroupsStorage }
+        set { showInGroupsStorage = newValue; Preferences.set(newValue, "showInGroups"); rebuildThreads() }
+    }
+
+    func restoreListDefaults() {
+        listSort = ListSort.date.rawValue
+        sortAscending = false
+        showInGroups = false
+        groupByThread = true
+    }
     var listSort: String {
         get { listSortStorage }
         set { listSortStorage = newValue; Preferences.set(newValue, "listSort"); rebuildThreads() }
@@ -624,7 +641,10 @@ final class AppModel {
             grouped = visible.map { MessageThread(messages: [$0]) }
         }
         let filtered = filtersStorage.isEmpty ? grouped : grouped.filter { passesFilters($0) || selectedMessageIDs.contains($0.id) }
-        threads = ListSort(rawValue: listSortStorage)?.apply(filtered) ?? filtered
+        let sort = ListSort(rawValue: listSortStorage) ?? .date
+        threads = sort.apply(filtered, ascending: sortAscendingStorage,
+                             names: { [weak self] in self?.accountName($0) ?? "Account" },
+                             folders: { [weak self] in self?.folder($0)?.name ?? "Folder" })
         let rowIDs = Set(rows.map(\.id))
         let valid = selectedMessageIDs.filter { rowIDs.contains($0) }
         if valid != selectedMessageIDs { selectedMessageIDs = valid }
@@ -723,6 +743,7 @@ final class AppModel {
         var out: [MessageSummary] = []
         for row in rows where selectedMessageIDs.contains(row.id) {
             switch row {
+            case .group: continue
             case .thread(let thread):
                 for m in thread.messages where seen.insert(m.id).inserted { out.append(m) }
             case .message(let m, _):
@@ -906,6 +927,33 @@ final class AppModel {
     func commitPalette(_ folder: FolderInfo) {
         showsMovePalette = false
         move(selectedMessages, to: folder)
+    }
+
+    func forwardAsAttachment(_ messages: [MessageSummary]) {
+        guard let first = messages.first, let account = account(for: first) else { return }
+        Task {
+            var parts: [OutgoingAttachment] = []
+            for m in messages {
+                guard let raw = await rawBody(for: m) else { continue }
+                var name = m.subject.trimmed.isEmpty ? "Forwarded message" : m.subject.trimmed
+                name = name.replacingOccurrences(of: "[/:\\\\]", with: "-", options: .regularExpression)
+                if name.count > 60 { name = String(name.prefix(60)) }
+                parts.append(OutgoingAttachment(filename: name + ".eml", mimeType: "message/rfc822", data: raw))
+            }
+            guard !parts.isEmpty else {
+                errorMessage = "Could not read the original message to attach it."
+                return
+            }
+            if parts.count == 1, let raw = await rawBody(for: first) {
+                openCompose(.forwardAsAttachment(first, raw: raw, account: account))
+                return
+            }
+            var draft = ComposeDraft(accountID: account.id)
+            draft.subject = "Fwd: \(parts.count) messages"
+            draft.body = "\n\n" + ComposeDraft.signatureBlock(account)
+            draft.attachments = parts
+            openCompose(draft)
+        }
     }
 
     func parsedBody(for message: MessageSummary) async -> MIMEMessage? {
@@ -1094,6 +1142,7 @@ final class AppModel {
 
     private func rowVanishes(_ row: ListRow, removing ids: Set<String>) -> Bool {
         switch row {
+        case .group: return false
         case .thread(let thread): return thread.messages.allSatisfy { ids.contains($0.id) }
         case .message(let message, _): return ids.contains(message.id)
         }

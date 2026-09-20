@@ -24,41 +24,121 @@ enum AppModule: String, CaseIterable, Identifiable {
 }
 
 enum ListSort: String, CaseIterable, Identifiable {
-    case newest, oldest, unreadFirst, sender
+    case date, from, to, subject, size, flag, status, attachments, account, folder
 
     var id: String { rawValue }
 
     var title: LocalizedStringKey {
         switch self {
-        case .newest: return "Recent"
-        case .oldest: return "Oldest"
-        case .unreadFirst: return "Unread first"
-        case .sender: return "Sender"
+        case .date: return "Date"
+        case .from: return "From"
+        case .to: return "To"
+        case .subject: return "Subject"
+        case .size: return "Size"
+        case .flag: return "Flag Status"
+        case .status: return "Status"
+        case .attachments: return "Attachments"
+        case .account: return "Account"
+        case .folder: return "Folder"
         }
     }
 
-    func apply(_ threads: [MessageThread]) -> [MessageThread] {
+    /// The label for the "ascending" end of this field, shown like Outlook's "Oldest at Top".
+    var ascendingTitle: LocalizedStringKey {
         switch self {
-        case .newest: return threads
-        case .oldest: return threads.reversed()
-        case .unreadFirst: return threads.filter { $0.unreadCount > 0 } + threads.filter { $0.unreadCount == 0 }
-        case .sender: return threads.sorted { $0.latest.from.displayName.localizedCaseInsensitiveCompare($1.latest.from.displayName) == .orderedAscending }
+        case .date: return "Oldest at Top"
+        case .size: return "Smallest at Top"
+        default: return "A at Top"
         }
+    }
+
+    var descendingTitle: LocalizedStringKey {
+        switch self {
+        case .date: return "Newest at Top"
+        case .size: return "Largest at Top"
+        default: return "Z at Top"
+        }
+    }
+
+    func key(_ thread: MessageThread, names: (UUID) -> String, folders: (UUID) -> String) -> String {
+        let m = thread.latest
+        switch self {
+        case .date: return ListSort.dayKey(m.date)
+        case .from: return m.from.displayName.isEmpty ? m.from.address : m.from.displayName
+        case .to: return m.to.first.map { $0.displayName.isEmpty ? $0.address : $0.displayName } ?? "No recipient"
+        case .subject: return m.subject.isEmpty ? "(no subject)" : String(m.subject.prefix(1)).uppercased()
+        case .size: return ListSort.sizeBand(m.size)
+        case .flag: return m.isFlagged ? "Flagged" : "Not flagged"
+        case .status: return thread.unreadCount > 0 ? "Unread" : "Read"
+        case .attachments: return m.hasAttachments ? "With attachments" : "No attachments"
+        case .account: return names(m.accountID)
+        case .folder: return folders(m.folderID)
+        }
+    }
+
+    static func dayKey(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        if let week = cal.date(byAdding: .day, value: -7, to: Date()), date > week { return "Earlier this week" }
+        if let month = cal.date(byAdding: .month, value: -1, to: Date()), date > month { return "Earlier this month" }
+        let f = DateFormatter()
+        f.dateFormat = "MMMM yyyy"
+        return f.string(from: date)
+    }
+
+    static func sizeBand(_ bytes: Int) -> String {
+        switch bytes {
+        case ..<25_000: return "Tiny (under 25 KB)"
+        case ..<100_000: return "Small (under 100 KB)"
+        case ..<1_000_000: return "Medium (under 1 MB)"
+        case ..<5_000_000: return "Large (under 5 MB)"
+        default: return "Huge (5 MB and over)"
+        }
+    }
+
+    func apply(_ threads: [MessageThread], ascending: Bool, names: (UUID) -> String, folders: (UUID) -> String) -> [MessageThread] {
+        let sorted: [MessageThread]
+        switch self {
+        case .date:
+            sorted = threads.sorted { $0.latest.date > $1.latest.date }
+        case .size:
+            sorted = threads.sorted { $0.latest.size > $1.latest.size }
+        case .flag:
+            sorted = threads.sorted { ($0.latest.isFlagged ? 0 : 1, $0.latest.date.timeIntervalSince1970 * -1) < ($1.latest.isFlagged ? 0 : 1, $1.latest.date.timeIntervalSince1970 * -1) }
+        case .status:
+            sorted = threads.sorted { ($0.unreadCount > 0 ? 0 : 1, $0.latest.date.timeIntervalSince1970 * -1) < ($1.unreadCount > 0 ? 0 : 1, $1.latest.date.timeIntervalSince1970 * -1) }
+        case .attachments:
+            sorted = threads.sorted { ($0.latest.hasAttachments ? 0 : 1, $0.latest.date.timeIntervalSince1970 * -1) < ($1.latest.hasAttachments ? 0 : 1, $1.latest.date.timeIntervalSince1970 * -1) }
+        default:
+            sorted = threads.sorted {
+                let a = key($0, names: names, folders: folders)
+                let b = key($1, names: names, folders: folders)
+                if a.localizedCaseInsensitiveCompare(b) == .orderedSame { return $0.latest.date > $1.latest.date }
+                return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+            }
+        }
+        return ascending ? sorted.reversed() : sorted
     }
 }
 
 enum ListRow: Identifiable, Hashable {
+    case group(String)
     case thread(MessageThread)
     case message(MessageSummary, threadID: String)
 
     static let childPrefix = "child:"
+    static let groupPrefix = "group:"
 
     var id: String {
         switch self {
+        case .group(let title): return ListRow.groupPrefix + title
         case .thread(let t): return t.id
         case .message(let m, _): return ListRow.childTag(m.id)
         }
     }
+
+    var isGroup: Bool { if case .group = self { return true } else { return false } }
 
     static func childTag(_ messageID: String) -> String { childPrefix + messageID }
 
@@ -100,7 +180,16 @@ extension AppModel {
     var rows: [ListRow] {
         var out: [ListRow] = []
         out.reserveCapacity(threads.count)
+        var lastGroup: String?
+        let sort = ListSort(rawValue: listSort) ?? .date
         for thread in threads {
+            if showInGroups {
+                let title = sort.key(thread, names: { self.accountName($0) }, folders: { self.folder($0)?.name ?? "Folder" })
+                if title != lastGroup {
+                    out.append(.group(title))
+                    lastGroup = title
+                }
+            }
             out.append(.thread(thread))
             if thread.messages.count > 1, expandedThreadIDs.contains(thread.id) {
                 for message in thread.messages { out.append(.message(message, threadID: thread.id)) }
@@ -187,6 +276,7 @@ extension AppModel {
 
     private func rowIsUnread(_ row: ListRow) -> Bool {
         switch row {
+        case .group: return false
         case .thread(let t): return t.unreadCount > 0
         case .message(let m, _): return !m.isRead
         }

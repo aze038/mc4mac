@@ -109,9 +109,14 @@ final class WindowTray: ObservableObject {
     }
 
     nonisolated static func installMinimizeHook() {
-        guard let original = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.miniaturize(_:))),
-              let replacement = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.falcon_miniaturize(_:))) else { return }
-        method_exchangeImplementations(original, replacement)
+        if let original = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.miniaturize(_:))),
+           let replacement = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.falcon_miniaturize(_:))) {
+            method_exchangeImplementations(original, replacement)
+        }
+        if let original = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.performMiniaturize(_:))),
+           let replacement = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.falcon_performMiniaturize(_:))) {
+            method_exchangeImplementations(original, replacement)
+        }
     }
 }
 
@@ -126,6 +131,14 @@ extension NSWindow {
             MainActor.assumeIsolated { WindowTray.shared.minimize(self) }
         } else {
             falcon_miniaturize(sender)
+        }
+    }
+
+    @objc func falcon_performMiniaturize(_ sender: Any?) {
+        if identifier?.rawValue == WindowTray.popupIdentifier {
+            MainActor.assumeIsolated { WindowTray.shared.minimize(self) }
+        } else {
+            falcon_performMiniaturize(sender)
         }
     }
 }
@@ -176,7 +189,7 @@ struct WindowTrayBar: View {
                 ForEach(tray.entries) { e in
                     HStack(spacing: 6) {
                         Image(systemName: "macwindow").font(.caption)
-                        Text(e.title).font(.caption).lineLimit(1).frame(maxWidth: 220)
+                        Text(e.title).font(.caption).lineLimit(1).frame(maxWidth: 260)
                         Button { tray.close(e) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 4)

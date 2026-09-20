@@ -41,6 +41,8 @@ struct MessageListView: View {
         .padding(.bottom, 6)
     }
 
+    private var currentSort: ListSort { ListSort(rawValue: model.listSort) ?? .date }
+
     private var sortMenu: some View {
         Menu {
             ForEach(ListSort.allCases) { sort in
@@ -48,10 +50,27 @@ struct MessageListView: View {
                     if model.listSort == sort.rawValue { Label(sort.title, systemImage: "checkmark") } else { Text(sort.title) }
                 }
             }
+            Divider()
+            Button { model.groupByThread.toggle() } label: {
+                if model.groupByThread { Label("Conversations", systemImage: "checkmark") } else { Text("Conversations") }
+            }
+            Divider()
+            Button { model.sortAscending = true } label: {
+                if model.sortAscending { Label(currentSort.ascendingTitle, systemImage: "checkmark") } else { Text(currentSort.ascendingTitle) }
+            }
+            Button { model.sortAscending = false } label: {
+                if !model.sortAscending { Label(currentSort.descendingTitle, systemImage: "checkmark") } else { Text(currentSort.descendingTitle) }
+            }
+            Divider()
+            Button { model.showInGroups.toggle() } label: {
+                if model.showInGroups { Label("Show in Groups", systemImage: "checkmark") } else { Text("Show in Groups") }
+            }
+            Divider()
+            Button("Restore to Defaults") { model.restoreListDefaults() }
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: "arrow.up.arrow.down").font(.system(size: 10))
-                Text(ListSort(rawValue: model.listSort)?.title ?? "Recent").font(.caption)
+                Text(currentSort.title).font(.caption)
             }
             .foregroundStyle(.secondary)
         }
@@ -148,6 +167,13 @@ struct MessageListView: View {
 
     @ViewBuilder private func rowView(_ row: ListRow) -> some View {
         switch row {
+        case .group(let title):
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .padding(.top, 10).padding(.bottom, 2)
+                .selectionDisabled()
         case .thread(let thread):
             ConversationRow(thread: thread)
                 .contextMenu { rowMenu(thread) }
@@ -201,7 +227,6 @@ struct ConversationRow: View {
                 .fill(unread ? Color.accentColor : Color.clear)
                 .frame(width: 3)
                 .padding(.vertical, compact ? 3 : 5)
-            chevron
             if !compact || thread.messages.count > 1 {
                 AvatarView(name: m.from.displayName, address: m.from.address, size: compact ? 20 : 26)
                     .padding(.top, compact ? 1 : 2)
@@ -212,10 +237,17 @@ struct ConversationRow: View {
                         .font(.system(size: 13, weight: unread ? .semibold : .regular))
                         .lineLimit(1)
                     if thread.messages.count > 1 {
-                        Text("\(thread.messages.count)")
-                            .font(.system(size: 10, weight: .medium))
+                        Button { listModel.toggleExpanded(thread) } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: listModel.isExpanded(thread) ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 8, weight: .bold))
+                                Text("\(thread.messages.count)").font(.system(size: 10, weight: .medium))
+                            }
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Color.secondary.opacity(0.15), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help(listModel.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
                     }
                     Spacer(minLength: 4)
                     if m.hasAttachments { Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(.secondary) }
@@ -240,21 +272,6 @@ struct ConversationRow: View {
         .contentShape(Rectangle())
     }
 
-    @ViewBuilder private var chevron: some View {
-        if thread.messages.count > 1 {
-            Button { model.toggleExpanded(thread) } label: {
-                Image(systemName: model.isExpanded(thread) ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14, height: 14)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 10)
-            .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
-        } else {
-            Color.clear.frame(width: 14, height: 14)
-        }
-    }
 }
 
 struct ChildMessageRow: View {

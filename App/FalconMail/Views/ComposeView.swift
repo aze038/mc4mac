@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 import FalconCore
 
 struct ComposeView: View {
+    @State private var editor: NSTextView?
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
@@ -123,10 +124,13 @@ struct ComposeView: View {
             }
             .padding(12)
             Divider()
-            TextEditor(text: binding(\.body))
-                .font(.system(size: 14))
-                .padding(8)
-                .focused($bodyFocused)
+            FormatBar(editor: editor,
+                      onEditSignatures: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) },
+                      onInsertSignature: { insertSignature() })
+            Divider()
+            RichTextEditor(rtf: binding(\.bodyRTF), plain: binding(\.body)) { view in
+                Task { @MainActor in editor = view }
+            }
         }
         .toolbar {
             if !embedded {
@@ -171,6 +175,14 @@ struct ComposeView: View {
             }
         }
         .padding(16).frame(width: 320)
+    }
+
+    private func insertSignature() {
+        guard let account = model.accounts.first(where: { $0.id == draft?.accountID }) ?? model.accounts.first else { return }
+        let text = ComposeDraft.signatureBlock(account)
+        guard !text.isEmpty, let editor else { return }
+        editor.insertText(text, replacementRange: editor.selectedRange())
+        editor.didChangeText()
     }
 
     private func load() {

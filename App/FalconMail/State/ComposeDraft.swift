@@ -9,6 +9,7 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     var bcc: String = ""
     var subject: String = ""
     var body: String = ""
+    var bodyRTF: Data?
     var attachments: [OutgoingAttachment] = []
     var inReplyTo: String?
     var references: [String] = []
@@ -48,6 +49,17 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         d.historyHTML = h.html
         d.body = "\n\n" + signatureBlock(account) + h.plain
         d.attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
+        return d
+    }
+
+    static func forwardAsAttachment(_ message: MessageSummary, raw: Data, account: AccountInfo) -> ComposeDraft {
+        var d = ComposeDraft(accountID: account.id)
+        d.subject = message.subject.lowercased().hasPrefix("fwd:") ? message.subject : "Fwd: \(message.subject)"
+        d.body = "\n\n" + signatureBlock(account)
+        var name = message.subject.trimmed.isEmpty ? "Forwarded message" : message.subject.trimmed
+        name = name.replacingOccurrences(of: "[/:\\\\]", with: "-", options: .regularExpression)
+        if name.count > 60 { name = String(name.prefix(60)) }
+        d.attachments = [OutgoingAttachment(filename: name + ".eml", mimeType: "message/rfc822", data: raw)]
         return d
     }
 
@@ -123,6 +135,22 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         }
         let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
         var html: String
+        if let rtf = bodyRTF, let rich = RichText.html(fromRTF: rtf) {
+            if !historyHTML.isEmpty, !historyPlain.isEmpty, body.hasSuffix(historyPlain) {
+                let ownPlain = String(body.dropLast(historyPlain.count))
+                if let ownRTF = RichText.trimmedRTF(rtf, keepingPrefixOfLength: ownPlain.count),
+                   let ownHTML = RichText.html(fromRTF: ownRTF) {
+                    html = "<html><body style=\"\(style)\">\(ownHTML)\(historyHTML)</body></html>"
+                    return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
+                                           cc: AddressParser.parse(cc), bcc: AddressParser.parse(bcc), subject: subject, textBody: body,
+                                           htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references)
+                }
+            }
+            html = "<html><body style=\"\(style)\">\(rich)</body></html>"
+            return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
+                                   cc: AddressParser.parse(cc), bcc: AddressParser.parse(bcc), subject: subject, textBody: body,
+                                   htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references)
+        }
         if !historyPlain.isEmpty, body.hasSuffix(historyPlain), !historyHTML.isEmpty {
             let own = String(body.dropLast(historyPlain.count))
             html = "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(own))</div>\(historyHTML)</body></html>"

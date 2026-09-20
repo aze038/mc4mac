@@ -109,6 +109,8 @@ struct MessageReaderView: View {
         Toggle("Show original colours", isOn: $originalColours)
             .help("Render this message on its own white background instead of FalconMail's")
         Divider()
+        Button("Forward as Attachment") { model.forwardAsAttachment([message]) }
+        Divider()
         Button("Archive") { model.archive([message]); onDidAct?() }
         Button("Delete") { model.delete([message]); onDidAct?() }
         Button(message.isFlagged ? "Unflag" : "Flag") { model.setFlagged([message], !message.isFlagged) }
