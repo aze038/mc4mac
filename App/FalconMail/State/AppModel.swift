@@ -127,6 +127,21 @@ final class AppModel {
     var focusSearchToken = 0
     var keyChordHint: String?
     var mutedThreads: [MutedThread] = []
+    var syncingAccounts: Set<UUID> = []
+
+    var syncingSummary: String? {
+        let names = accounts.filter { syncingAccounts.contains($0.id) }.map(\.email)
+        guard !names.isEmpty else { return nil }
+        return names.count == 1 ? "Syncing \(names[0])" : "Syncing \(names.count) accounts"
+    }
+    private var collapsedAccountsStorage = Set(Preferences.string("collapsedAccounts", default: "").split(separator: ",").map(String.init))
+
+    func isAccountExpanded(_ id: UUID) -> Bool { !collapsedAccountsStorage.contains(id.uuidString) }
+
+    func setAccountExpanded(_ id: UUID, _ expanded: Bool) {
+        if expanded { collapsedAccountsStorage.remove(id.uuidString) } else { collapsedAccountsStorage.insert(id.uuidString) }
+        Preferences.set(collapsedAccountsStorage.sorted().joined(separator: ","), "collapsedAccounts")
+    }
     var notificationPolicy = NotificationPolicy()
     var migrationInProgress = false
 
@@ -387,10 +402,17 @@ final class AppModel {
             guard let self else { return }
             for await event in self.coordinator.events {
                 switch event {
-                case .started(let id): self.statusText = "Syncing \(self.accountName(id))"
-                case .progress(_, let text): self.statusText = text
-                case .finished: self.statusText = "Up to date"
+                case .started(let id):
+                    self.syncingAccounts.insert(id)
+                    self.statusText = "Syncing \(self.accountName(id))"
+                case .progress(let id, let text):
+                    self.syncingAccounts.insert(id)
+                    self.statusText = text
+                case .finished(let id):
+                    self.syncingAccounts.remove(id)
+                    self.statusText = "Up to date"
                 case .error(let id, let message):
+                    self.syncingAccounts.remove(id)
                     if message == FalconError.notAuthenticated.localizedDescription {
                         self.accountsNeedingSignIn.insert(id)
                         self.statusText = "\(self.accountName(id)) needs to sign in again"
@@ -1409,6 +1431,22 @@ final class AppModel {
             try? await store.removeAccount(account.id)
             await refreshAccounts()
             if case .folder = selection { select(.unified) }
+        }
+    }
+
+    func setAccountSyncing(_ account: AccountInfo, _ on: Bool) {
+        var updated = account
+        updated.isEnabled = on
+        if let i = accounts.firstIndex(where: { $0.id == account.id }) { accounts[i] = updated }
+        Task {
+            try? await store.saveAccount(updated)
+            if on {
+                await coordinator.start(account: updated)
+            } else {
+                await coordinator.stop(accountID: updated.id)
+                online[updated.id] = false
+            }
+            await refreshAccounts()
         }
     }
 

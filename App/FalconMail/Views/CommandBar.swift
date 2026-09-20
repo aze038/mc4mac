@@ -9,6 +9,19 @@ struct CommandBar: View {
     private var first: MessageSummary? { model.firstSelectedMessage }
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            ribbon.environment(\.ribbonShowsLabels, true)
+            ribbon.environment(\.ribbonShowsLabels, false)
+            ScrollView(.horizontal, showsIndicators: false) {
+                ribbon.environment(\.ribbonShowsLabels, false)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.bar)
+    }
+
+    private var ribbon: some View {
         HStack(spacing: 2) {
             NewMailButton()
             RibbonDivider()
@@ -31,14 +44,22 @@ struct CommandBar: View {
             Spacer(minLength: 12)
             RibbonSearchField()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(.bar)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct RibbonLabelsKey: EnvironmentKey { static let defaultValue = true }
+
+extension EnvironmentValues {
+    var ribbonShowsLabels: Bool {
+        get { self[RibbonLabelsKey.self] }
+        set { self[RibbonLabelsKey.self] = newValue }
     }
 }
 
 struct NewMailButton: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.ribbonShowsLabels) private var showsLabels
 
     var body: some View {
         Menu {
@@ -50,8 +71,9 @@ struct NewMailButton: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "square.and.pencil")
-                Text("New Mail")
+                if showsLabels { Text("New Mail").lineLimit(1) }
             }
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 4)
         } primaryAction: {
             model.composeNew()
@@ -60,6 +82,8 @@ struct NewMailButton: View {
         .buttonStyle(.borderedProminent)
         .controlSize(.regular)
         .disabled(model.accounts.isEmpty)
+        .fixedSize()
+        .help("New Mail")
         .padding(.trailing, 4)
     }
 }
@@ -90,6 +114,7 @@ struct RibbonButton: View {
 }
 
 struct RibbonLabel: View {
+    @Environment(\.ribbonShowsLabels) private var showsLabels
     let title: LocalizedStringKey
     let symbol: String
     var hovering = false
@@ -97,12 +122,16 @@ struct RibbonLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(Color.accentColor)
-            Text(title).font(.system(size: 12.5))
+            if showsLabels {
+                Text(title).font(.system(size: 12.5)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            }
         }
-        .padding(.horizontal, 8)
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, showsLabels ? 8 : 7)
         .padding(.vertical, 6)
         .background(hovering ? Color.primary.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
         .contentShape(RoundedRectangle(cornerRadius: 6))
+        .help(title)
     }
 }
 
@@ -192,7 +221,7 @@ struct RibbonSearchField: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .frame(width: 280)
+        .frame(minWidth: 150, idealWidth: 220, maxWidth: 320)
         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(focused ? Color.accentColor.opacity(0.6) : Color.clear))
         .onChange(of: model.focusSearchToken) { _, _ in focused = true }

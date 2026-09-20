@@ -17,7 +17,9 @@ struct SidebarView: View {
         List(selection: selectionBinding) {
             topSection
             ForEach(model.accounts) { account in
-                AccountFolderSection(account: account, folders: model.folders[account.id] ?? [], offline: model.online[account.id] == false)
+                AccountFolderSection(account: account, folders: model.folders[account.id] ?? [], offline: model.online[account.id] == false,
+                                     expanded: Binding(get: { model.isAccountExpanded(account.id) },
+                                                       set: { model.setAccountExpanded(account.id, $0) }))
             }
             if !model.archiveRecords.isEmpty {
                 archiveSection
@@ -61,18 +63,44 @@ struct AccountFolderSection: View {
     let account: AccountInfo
     let folders: [FolderInfo]
     let offline: Bool
+    @Binding var expanded: Bool
+
+    private var hiddenUnread: Int {
+        folders.filter { $0.role == .inbox }.reduce(0) { $0 + $1.unreadCount }
+    }
 
     var body: some View {
         Section {
-            ForEach(folders.filter { $0.isSelectable }) { folder in
-                FolderRow(folder: folder).tag(SidebarSelection.folder(folder.id))
+            if expanded {
+                ForEach(folders.filter { $0.isSelectable }) { folder in
+                    FolderRow(folder: folder).tag(SidebarSelection.folder(folder.id))
+                }
             }
         } header: {
-            HStack {
-                Text(account.email)
-                Spacer()
-                if offline { Image(systemName: "wifi.slash").foregroundStyle(.orange) }
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .frame(width: 10)
+                    Text(account.email).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    if !account.isEnabled {
+                        Image(systemName: "pause.circle").foregroundStyle(.secondary).help("Paused in Settings → Accounts")
+                    } else if offline {
+                        Image(systemName: "wifi.slash").foregroundStyle(.orange)
+                    }
+                    if !expanded, hiddenUnread > 0 {
+                        Text("\(hiddenUnread)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help(expanded ? "Hide the folders of \(account.email)" : "Show the folders of \(account.email)")
         }
     }
 }

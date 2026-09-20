@@ -50,6 +50,7 @@ public actor SyncCoordinator {
     }
 
     public func start(account: AccountInfo) async {
+        guard account.isEnabled else { await stop(accountID: account.id); return }
         if let existing = syncers[account.id] { await existing.stop() }
         let s = AccountSyncer(account: account, store: store, tokens: tokens, rules: rules, mutes: mutes,
                               indexer: indexer, pendingActions: pendingActions, events: eventContinuation)

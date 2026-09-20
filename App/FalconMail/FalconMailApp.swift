@@ -218,6 +218,16 @@ struct QueuedNotificationAction {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+        if let hidden = sender.windows.first(where: { $0.isMiniaturized }) {
+            hidden.deminiaturize(nil)
+            hidden.makeKeyAndOrderFront(nil)
+            return false
+        }
+        return true
+    }
+
     var model: AppModel? {
         didSet { MainActor.assumeIsolated { deliverQueuedActions() } }
     }

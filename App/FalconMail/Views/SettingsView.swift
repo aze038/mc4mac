@@ -137,9 +137,9 @@ struct AccountSettings: View {
             VStack(spacing: 0) {
                 List(model.accounts, selection: $selected) { a in
                     HStack(spacing: 10) {
-                        Image(systemName: a.usesPassword ? "server.rack" : "g.circle.fill")
+                        Image(systemName: a.isEnabled ? (a.usesPassword ? "server.rack" : "g.circle.fill") : "pause.circle")
                             .font(.title2)
-                            .foregroundStyle(model.online[a.id] == false ? Color.orange : Color.accentColor)
+                            .foregroundStyle(!a.isEnabled ? Color.secondary : (model.online[a.id] == false ? Color.orange : Color.accentColor))
                         VStack(alignment: .leading) {
                             Text(a.displayName.isEmpty ? a.email : a.displayName).font(.headline)
                             Text(a.email).font(.caption).foregroundStyle(.secondary)
@@ -193,13 +193,24 @@ struct AccountDetail: View {
     @State private var busy = false
     @State private var message: String?
 
+    private var statusText: String {
+        if !account.isEnabled { return "Paused" }
+        return model.online[account.id] == false ? "Offline or sign-in needed" : "Connected"
+    }
+
     var body: some View {
         Form {
             Section("Account") {
                 TextField("Name", text: $displayName)
                 LabeledContent("Email", value: account.email)
                 LabeledContent("Sign-in", value: account.usesPassword ? "Username and password" : "Google account")
-                LabeledContent("Status", value: model.online[account.id] == false ? "Offline or sign-in needed" : "Connected")
+                LabeledContent("Status", value: statusText)
+                Toggle("Keep this account in sync", isOn: Binding(get: { account.isEnabled },
+                                                                 set: { model.setAccountSyncing(account, $0) }))
+                Text(account.isEnabled
+                     ? "Turn this off to stop FalconMail contacting this mailbox. Mail already downloaded stays available offline. Useful when Google has paused access after a large download, so the app waits quietly instead of retrying."
+                     : "Paused. FalconMail is not contacting this mailbox at all. Turn it back on when you want mail to flow again.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("Servers") {
                 LabeledContent("Incoming (IMAP)", value: "\(account.imapHost):\(account.imapPort) SSL/TLS")

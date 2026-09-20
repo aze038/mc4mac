@@ -149,11 +149,25 @@ struct StatusBar: View {
             Spacer()
             chordCapsule
             actionErrorCapsule
+            syncCapsule
             undoCapsule
             sendingCapsules
         }
         .padding(.horizontal, 12).padding(.vertical, 5)
         .background(.bar)
+    }
+
+    @ViewBuilder private var syncCapsule: some View {
+        if let summary = model.syncingSummary {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
+                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color.primary.opacity(0.06), in: Capsule())
+            .help("FalconMail is checking these accounts for new mail")
+            .transition(.opacity)
+        }
     }
 
     @ViewBuilder private var chordCapsule: some View {
