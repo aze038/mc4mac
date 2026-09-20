@@ -21,8 +21,10 @@ struct MessageReaderView: View {
     @State private var allowRemoteImages = false
     @State private var hasRemote = false
     @State private var showDetails = false
+    @State private var originalColours = false
+    @Environment(\.colorScheme) private var colorScheme
 
-    private var renderKey: String { "\(message.id)|\(allowRemoteImages)|\(model.loadRemoteImages)" }
+    private var renderKey: String { "\(message.id)|\(allowRemoteImages)|\(model.loadRemoteImages)|\(originalColours)|\(colorScheme == .dark)" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -104,6 +106,9 @@ struct MessageReaderView: View {
     }
 
     @ViewBuilder private var moreMenu: some View {
+        Toggle("Show original colours", isOn: $originalColours)
+            .help("Render this message on its own white background instead of FalconMail's")
+        Divider()
         Button("Archive") { model.archive([message]); onDidAct?() }
         Button("Delete") { model.delete([message]); onDidAct?() }
         Button(message.isFlagged ? "Unflag" : "Flag") { model.setFlagged([message], !message.isFlagged) }
@@ -158,8 +163,11 @@ struct MessageReaderView: View {
         }
         guard let parsed else { return }
         let allow = model.loadRemoteImages || allowRemoteImages
+        let dark = colorScheme == .dark
+        let original = originalColours
         let result = await Task.detached(priority: .userInitiated) {
-            (MessageRenderer.html(for: parsed, allowRemote: allow), MessageRenderer.hasRemoteImages(parsed))
+            (MessageRenderer.html(for: parsed, allowRemote: allow, dark: dark, forceOriginal: original),
+             MessageRenderer.hasRemoteImages(parsed))
         }.value
         rendered = result.0
         hasRemote = result.1
@@ -264,12 +272,26 @@ enum MessageRenderer {
         return html.contains("src=\"http") || html.contains("src='http") || html.contains("url(http") || html.contains("src=http")
     }
 
-    static func html(for parsed: MIMEMessage, allowRemote: Bool) -> String {
+    /// A message that paints its own canvas keeps it; a plain one adopts the app's colours.
+    static func designsItsOwnCanvas(_ parsed: MIMEMessage) -> Bool {
+        guard let html = parsed.textHTML?.lowercased(), !html.trimmed.isEmpty else { return false }
+        for marker in ["bgcolor", "background-color", "background:", "<table"] where html.contains(marker) { return true }
+        return false
+    }
+
+    static func html(for parsed: MIMEMessage, allowRemote: Bool, dark: Bool, forceOriginal: Bool) -> String {
         let csp = allowRemote
             ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
             : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
-        let style = "<style>:root{color-scheme:light;} html,body{background:#ffffff;margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1d1d1f;padding:16px 22px 28px 22px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid #c7c7cc;margin:0;padding-left:10px;color:#3a3a3c;} a{color:#0a66c2;}</style>"
-        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
+        let ownCanvas = forceOriginal || designsItsOwnCanvas(parsed)
+        let scheme = ownCanvas || !dark ? "light" : "dark"
+        let background = ownCanvas ? "#ffffff" : (dark ? "#1e1f24" : "#ffffff")
+        let text = ownCanvas ? "#1d1d1f" : (dark ? "#e6e7ea" : "#1d1d1f")
+        let quote = ownCanvas ? "#3a3a3c" : (dark ? "#a9adb6" : "#3a3a3c")
+        let rule = ownCanvas ? "#c7c7cc" : (dark ? "#3a3d45" : "#c7c7cc")
+        let link = ownCanvas || !dark ? "#0a66c2" : "#6aa9ff"
+        let style = "<style>:root{color-scheme:\(scheme);} html,body{background:\(background);margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:\(text);padding:18px 24px 30px 24px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid \(rule);margin:0;padding-left:12px;color:\(quote);} a{color:\(link);}</style>"
+        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"\(scheme)\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
             body = html

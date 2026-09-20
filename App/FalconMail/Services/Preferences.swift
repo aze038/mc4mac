@@ -8,6 +8,19 @@ enum Preferences {
     static func set(_ value: Any, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
 }
 
+enum ListDensity: String, CaseIterable, Identifiable {
+    case compact, comfortable
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .compact: return "Compact"
+        case .comfortable: return "Comfortable"
+        }
+    }
+}
+
 enum AppAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
 

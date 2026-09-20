@@ -163,7 +163,7 @@ public actor AccountSyncer {
         let folders = try await store.reconcileFolders(accountID: account.id, listed: listed)
         for f in folders where f.isSelectable && f.role != .all {
             try Task.checkCancellation()
-            events.yield(.progress(accountID: account.id, text: "Syncing \(f.name)"))
+            events.yield(.progress(accountID: account.id, text: "Checking \(f.name) in \(account.email)"))
             try await syncFolder(f, client: client)
         }
     }

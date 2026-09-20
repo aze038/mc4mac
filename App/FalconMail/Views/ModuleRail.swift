@@ -18,7 +18,7 @@ struct ModuleRail: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 8)
-        .frame(width: 64)
+        .frame(width: 52)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
@@ -47,14 +47,14 @@ struct RailLabel: View {
     @State private var hovering = false
 
     var body: some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 2) {
             Image(systemName: symbol)
                 .font(.system(size: 18, weight: .regular))
-                .frame(height: 22)
+                .frame(height: 18)
                 .overlay(alignment: .topTrailing) { badgeView }
-            Text(title).font(.system(size: 10))
+            Text(title).font(.system(size: 9))
         }
-        .frame(width: 54, height: 50)
+        .frame(width: 44, height: 42)
         .foregroundStyle(selected ? Color.accentColor : Color.secondary)
         .background(selected ? Color.accentColor.opacity(0.14) : (hovering ? Color.primary.opacity(0.06) : Color.clear), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(RoundedRectangle(cornerRadius: 8))

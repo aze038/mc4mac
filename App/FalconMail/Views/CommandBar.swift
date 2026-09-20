@@ -121,7 +121,7 @@ struct RibbonLabel: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(Color.accentColor)
+            Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(.primary.opacity(0.78))
             if showsLabels {
                 Text(title).font(.system(size: 12.5)).lineLimit(1).fixedSize(horizontal: true, vertical: false)
             }

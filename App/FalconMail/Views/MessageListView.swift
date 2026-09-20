@@ -24,8 +24,10 @@ struct MessageListView: View {
         HStack(spacing: 8) {
             Text(model.listTitle).font(.system(size: 15, weight: .semibold)).lineLimit(1)
             Text("\(model.threads.count)").font(.caption).foregroundStyle(.secondary)
+                .help("Conversations shown")
             Spacer()
             sortMenu
+            densityMenu
             if model.hasExpandableThreads {
                 Button { model.canCollapseSomething ? model.collapseAll() : model.expandAll() } label: {
                     Image(systemName: model.canCollapseSomething ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
@@ -57,6 +59,21 @@ struct MessageListView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Sort order")
+    }
+
+    private var densityMenu: some View {
+        Menu {
+            Picker("Density", selection: Binding(get: { model.listDensity }, set: { model.listDensity = $0 })) {
+                ForEach(ListDensity.allCases) { d in Text(d.title).tag(d) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: "line.3.horizontal").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Row density")
     }
 
     @ViewBuilder private var filterBar: some View {
@@ -174,17 +191,22 @@ struct ConversationRow: View {
 
     private var unread: Bool { thread.unreadCount > 0 }
 
+    @Environment(AppModel.self) private var listModel
+
     var body: some View {
         let m = thread.latest
+        let compact = listModel.listDensity == .compact
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 1.5)
                 .fill(unread ? Color.accentColor : Color.clear)
                 .frame(width: 3)
-                .padding(.vertical, 6)
+                .padding(.vertical, compact ? 3 : 5)
             chevron
-            AvatarView(name: m.from.displayName, address: m.from.address, size: 32)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
+            if !compact || thread.messages.count > 1 {
+                AvatarView(name: m.from.displayName, address: m.from.address, size: compact ? 20 : 26)
+                    .padding(.top, compact ? 1 : 2)
+            }
+            VStack(alignment: .leading, spacing: compact ? 1 : 2) {
                 HStack(spacing: 6) {
                     Text(m.from.displayName)
                         .font(.system(size: 13, weight: unread ? .semibold : .regular))
@@ -196,25 +218,25 @@ struct ConversationRow: View {
                             .background(Color.secondary.opacity(0.15), in: Capsule())
                     }
                     Spacer(minLength: 4)
+                    if m.hasAttachments { Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(.secondary) }
+                    if m.isFlagged { Image(systemName: "flag.fill").font(.system(size: 10)).foregroundStyle(.orange) }
                     Text(MessageRow.dateText(m.date))
                         .font(.system(size: 11))
-                        .foregroundStyle(unread ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 4) {
-                    Text(m.subject.isEmpty ? "(no subject)" : m.subject)
-                        .font(.system(size: 13, weight: unread ? .medium : .regular))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if m.hasAttachments { Image(systemName: "paperclip").font(.system(size: 11)).foregroundStyle(.secondary) }
-                    if m.isFlagged { Image(systemName: "flag.fill").font(.system(size: 11)).foregroundStyle(.red) }
-                }
-                Text(m.snippet.isEmpty ? " " : m.snippet)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                Text(m.subject.isEmpty ? "(no subject)" : m.subject)
+                    .font(.system(size: 12.5, weight: unread ? .medium : .regular))
+                    .foregroundStyle(unread ? .primary : .secondary)
                     .lineLimit(1)
+                if !compact {
+                    Text(m.snippet.isEmpty ? " " : m.snippet)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, compact ? 4 : 6)
         .contentShape(Rectangle())
     }
 

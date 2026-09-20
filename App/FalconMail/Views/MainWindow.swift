@@ -143,8 +143,9 @@ struct StatusBar: View {
                 Button("Sign in to \(account.email) again") { signInAgain(account) }
                     .buttonStyle(.borderedProminent).controlSize(.small)
             }
-            if model.online.values.contains(false) && model.accountsNeedingSignIn.isEmpty {
-                Button("Offline · Retry") { model.syncNow() }.buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
+            ForEach(model.offlineAccounts) { account in
+                Button("\(account.email) is offline · Retry") { model.syncNow() }
+                    .buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
             }
             Spacer()
             chordCapsule

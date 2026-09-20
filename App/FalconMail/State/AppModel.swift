@@ -128,6 +128,16 @@ final class AppModel {
     var keyChordHint: String?
     var mutedThreads: [MutedThread] = []
     var syncingAccounts: Set<UUID> = []
+    private var listDensityStorage = Preferences.string("listDensity", default: ListDensity.comfortable.rawValue)
+    var listDensity: ListDensity {
+        get { ListDensity(rawValue: listDensityStorage) ?? .comfortable }
+        set { listDensityStorage = newValue.rawValue; Preferences.set(newValue.rawValue, "listDensity") }
+    }
+
+    var offlineAccounts: [AccountInfo] {
+        guard accountsNeedingSignIn.isEmpty else { return [] }
+        return accounts.filter { $0.isEnabled && online[$0.id] == false }
+    }
 
     var syncingSummary: String? {
         let names = accounts.filter { syncingAccounts.contains($0.id) }.map(\.email)
@@ -404,7 +414,7 @@ final class AppModel {
                 switch event {
                 case .started(let id):
                     self.syncingAccounts.insert(id)
-                    self.statusText = "Syncing \(self.accountName(id))"
+                    self.statusText = "Checking \(self.accountName(id)) for new mail"
                 case .progress(let id, let text):
                     self.syncingAccounts.insert(id)
                     self.statusText = text
