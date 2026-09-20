@@ -11,7 +11,6 @@ struct MainWindow: View {
     @State private var showExportArchiveSheet = false
     @State private var showOpenArchiveSheet = false
     @State private var showImportPicker = false
-    @State private var showMigration = false
     @State private var importTarget: FolderInfo?
 
     var body: some View {
@@ -56,7 +55,6 @@ struct MainWindow: View {
         .sheet(isPresented: $showExportArchiveSheet) { ArchiveSheet(localExport: true).environment(model) }
         .sheet(isPresented: $showOpenArchiveSheet) { OpenArchiveSheet().environment(model) }
         .sheet(item: $importTarget) { folder in ImportSheet(folder: folder).environment(model) }
-        .sheet(isPresented: $showMigration) { MigrationView().environment(model) }
         .alert("FalconMail", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: {
@@ -66,7 +64,6 @@ struct MainWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .falconExportArchive)) { _ in showExportArchiveSheet = true }
         .onReceive(NotificationCenter.default.publisher(for: .falconOpenArchive)) { _ in showOpenArchiveSheet = true }
         .onReceive(NotificationCenter.default.publisher(for: .falconImport)) { _ in startImport() }
-        .onReceive(NotificationCenter.default.publisher(for: .falconMigrate)) { _ in showMigration = true }
         .onReceive(NotificationCenter.default.publisher(for: .falconExport)) { _ in exportSelected() }
         .onChange(of: model.selectedMessageIDs) { _, _ in model.saveSession() }
         .onChange(of: model.openMessageWindows) { _, _ in model.saveSession() }
