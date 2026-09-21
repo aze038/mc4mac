@@ -67,6 +67,9 @@ struct ComposeView: View {
         .alert("Cannot send", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
+        // Outermost, so the drop target and every other wrapper span the window's full height,
+        // title band included; a wrapper that stops at the safe area clips the title row.
+        .ignoresSafeArea(.container, edges: embedded ? [] : .top)
     }
 
     private var form: some View {
@@ -81,10 +84,16 @@ struct ComposeView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
-            if embedded { inlineActionBar } else { ribbon }
-            Divider()
+            if embedded {
+                inlineActionBar
+                Divider()
+            } else {
+                titleRow
+                ribbon
+                Rectangle().fill(OLColor.chromeLine).frame(height: 1)
+            }
             headerFields
-            Divider()
+            Rectangle().fill(OLColor.fieldBandLine).frame(height: 1)
             if embedded {
                 InlineFormatBar(formatter: formatter)
                 Divider()
@@ -100,13 +109,38 @@ struct ComposeView: View {
                 }
             }
         }
+        .background(OLColor.reading)
         .navigationTitle(draft?.subject.isEmpty == false ? draft!.subject : "New Message")
+    }
+
+    /// Outlook's compose title row: quick actions after the traffic lights, "Untitled · account".
+    private var titleRow: some View {
+        let account = model.accounts.first { $0.id == draft?.accountID }?.email ?? ""
+        let subject = draft?.subject.isEmpty == false ? draft!.subject : "Untitled"
+        return ZStack {
+            Text(account.isEmpty ? subject : "\(subject) • \(account)")
+                .font(.system(size: OL.titleFont))
+                .foregroundStyle(OLColor.title)
+                .lineLimit(1)
+                .padding(.horizontal, 200)
+            HStack(spacing: OL.quickPitch - 20) {
+                RibbonQuickButton(symbol: "square.and.arrow.down", title: "Save draft") { commitDraft() }
+                RibbonQuickButton(symbol: "arrow.uturn.backward", title: "Undo") { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
+                RibbonQuickButton(symbol: "arrow.uturn.forward", title: "Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+                RibbonQuickButton(symbol: "paperclip", title: "Attach a file") { attach() }
+                Spacer()
+            }
+            .padding(.leading, OL.quickIconsStart)
+        }
+        .frame(height: OL.titleRow)
+        .background(OLColor.chrome, ignoresSafeAreaEdges: [])
     }
 
     private var ribbon: some View {
         ComposeRibbon(tab: $tab,
                       formatter: formatter,
                       showsBcc: $showBcc,
+                      importance: binding(\.importance),
                       canSend: !(draft?.to.isEmpty ?? true),
                       onSend: { send() },
                       onAttachFile: { attach() },
@@ -148,81 +182,68 @@ struct ComposeView: View {
         .background(.bar)
     }
 
+    /// Outlook's header band: From only when there is a choice, To, Cc, Bcc on request, Subject;
+    /// the address book glyph at the right of the recipient rows.
     private var headerFields: some View {
         VStack(spacing: 0) {
-            ComposeFieldRow(label: "From:") {
-                Picker("", selection: binding(\.accountID)) {
-                    ForEach(model.accounts) { a in
-                        Text(a.displayName.isEmpty ? a.email : "\(a.displayName) (\(a.email))").tag(a.id)
+            if model.accounts.count > 1 {
+                ComposeFieldRow(label: "From:") {
+                    Menu {
+                        ForEach(model.accounts) { a in
+                            Button(a.displayName.isEmpty ? a.email : "\(a.displayName) (\(a.email))") { draft?.accountID = a.id; commitDraft() }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(model.accounts.first { $0.id == draft?.accountID }?.email ?? "")
+                                .font(.system(size: OL.composeLabelFont))
+                                .foregroundStyle(OLColor.text)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(OLColor.icon)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                } trailing: {
+                    Color.clear.frame(width: OL.composeSubjectRight, height: 1)
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-            } trailing: {
-                HStack(spacing: 10) {
-                    Button { model.cycleAppearance() } label: { Image(systemName: "sun.max") }
-                        .buttonStyle(.plain).help("Switch background")
-                    Button { withAnimation(.easeInOut(duration: 0.15)) { showCc.toggle(); showBcc = showCc ? showBcc : false } } label: {
-                        Image(systemName: showCc ? "chevron.up" : "chevron.down")
-                    }
-                    .buttonStyle(.plain).help(showCc ? "Hide Cc and Bcc" : "Show Cc and Bcc")
-                    Button { popOut() } label: { Image(systemName: "arrow.up.forward.app") }
-                        .buttonStyle(.plain).help("Open in a separate window")
-                }
-                .foregroundStyle(.secondary)
-                .font(.system(size: 12))
             }
-
             ComposeFieldRow(label: "To:") {
                 RecipientField(label: "", text: binding(\.to))
             } trailing: {
-                HStack(spacing: 8) {
-                    if !showCc {
-                        Button("Cc") { showCc = true }.buttonStyle(.plain).foregroundStyle(.secondary).font(.system(size: 12))
-                    }
-                    if !showBcc {
-                        Button("Bcc") { showBcc = true; showCc = true }.buttonStyle(.plain).foregroundStyle(.secondary).font(.system(size: 12))
-                    }
-                    AddressBookButton { model.showModule(.people) }
-                }
+                bookButton
             }
-
-            if showCc {
-                ComposeFieldRow(label: "Cc:") {
-                    RecipientField(label: "", text: binding(\.cc))
-                } trailing: {
-                    AddressBookButton { model.showModule(.people) }
-                }
+            ComposeFieldRow(label: "Cc:") {
+                RecipientField(label: "", text: binding(\.cc))
+            } trailing: {
+                bookButton
             }
             if showBcc {
                 ComposeFieldRow(label: "Bcc:") {
                     RecipientField(label: "", text: binding(\.bcc))
                 } trailing: {
-                    AddressBookButton { model.showModule(.people) }
+                    bookButton
                 }
             }
-
             ComposeFieldRow(label: "Subject:") {
                 TextField("", text: binding(\.subject)).textFieldStyle(.plain)
             } trailing: {
-                Menu {
-                    Picker("Importance", selection: binding(\.importance)) {
-                        Text("Low").tag("low")
-                        Text("Normal").tag("normal")
-                        Text("High").tag("high")
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    Text("Importance").font(.system(size: 12))
-                }
-                .menuStyle(.borderlessButton).fixedSize().foregroundStyle(.secondary)
+                Color.clear.frame(width: OL.composeSubjectRight, height: 1)
             }
-
             scheduleBanner
             attachmentStrip
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.top, OL.composeBandTop)
+        .padding(.bottom, OL.composeBandBottom - (OL.composeRowPitch - OL.composeField))
+        .background(OLColor.sidebar)
+    }
+
+    private var bookButton: some View {
+        AddressBookButton { model.showModule(.people) }
+            .padding(.leading, OL.composeFieldRight - OL.composeBookRight - OL.composeBookGlyph)
+            .padding(.trailing, OL.composeBookRight)
     }
 
     @ViewBuilder private var attachmentStrip: some View {
@@ -284,6 +305,8 @@ struct ComposeView: View {
     private func load() {
         let stored = model.drafts[draftID]
         draft = stored
+        // A window restored for a draft that no longer exists has nothing to show.
+        if stored == nil, !embedded { dismiss() }
         if let date = stored?.scheduledAt, date > Date() { scheduleDate = date }
         guard !(stored?.to.isEmpty ?? true) else { return }
         Task { @MainActor in bodyFocused = true }
@@ -452,7 +475,7 @@ struct RecipientField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(label).frame(width: 60, alignment: .trailing).foregroundStyle(.secondary)
+                if !label.isEmpty { Text(label).frame(width: 60, alignment: .trailing).foregroundStyle(.secondary) }
                 TextField("", text: $text)
                     .textFieldStyle(.plain)
                     .onChange(of: text) { _, new in
@@ -482,7 +505,7 @@ struct RecipientField: View {
                 }
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                .padding(.leading, 66)
+                .padding(.leading, label.isEmpty ? 0 : 66)
             }
         }
     }

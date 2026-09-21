@@ -11,6 +11,7 @@ struct ComposeRibbon: View {
     @Binding var tab: ComposeTab
     var formatter: TextFormatter
     var showsBcc: Binding<Bool>
+    var importance: Binding<String>
     var canSend: Bool
     var onSend: () -> Void
     var onAttachFile: () -> Void
@@ -31,25 +32,42 @@ struct ComposeRibbon: View {
             case .options: optionsTab
             }
         }
+        // Pinned to its own frame: a background left to ignore the safe area spreads up over the
+        // title row above it.
+        .background(OLColor.chrome, ignoresSafeAreaEdges: [])
         .background(ChromeBackground())
     }
 
+    /// Outlook's Message ribbon: Send · Paste with cut/copy/format · the two-row format block
+    /// (fonts, paragraph marks above; styles, colours, alignment below) · Switch Background ·
+    /// Attach File · Table · Pictures/Signature/Link.
     private var messageTab: some View {
         RibbonBody {
-            RibbonTile(title: "Send", symbol: "paperplane", tint: .accentColor, enabled: canSend, action: onSend)
+            RibbonTile(title: "Send", symbol: "paperplane", enabled: canSend, action: onSend)
             RibbonSeparator()
-            pasteGroup
+            RibbonSplitTile(title: "Paste", symbol: "doc.on.clipboard", action: { formatter.pasteMatchingStyle() }) {
+                Button("Paste and Match FalconMail") { formatter.pasteMatchingStyle() }
+                Button("Paste Keeping Source Formatting") { formatter.pasteKeepingSource() }
+                Button("Paste as Plain Text") { formatter.pastePlain() }
+            }
+            VStack(spacing: 2) {
+                FmtButton("scissors", "Cut", size: 16) { formatter.cut() }
+                FmtButton("doc.on.doc", "Copy", size: 16) { formatter.copy() }
+                FmtButton("paintbrush", "Copy formatting", size: 16) { formatter.copyFormatting() }
+            }
+            .padding(.top, OL.ribbonIconTop + 2)
+            .frame(height: OL.ribbon, alignment: .top)
             RibbonSeparator()
-            fontGroup
+            formatBlock
             RibbonSeparator()
-            paragraphGroup
+            RibbonTile(title: "Switch\nBackground", symbol: "sun.max", action: onCycleBackground)
             RibbonSeparator()
-            RibbonTile(title: "Switch\nBackground", symbol: "sun.max", tint: .yellow, action: onCycleBackground)
-            RibbonSplitTile(title: "Attach\nFile", symbol: "paperclip", tint: .blue, action: onAttachFile) {
+            RibbonSplitTile(title: "Attach\nFile", symbol: "paperclip", action: onAttachFile) {
                 Button("From this Mac…") { onAttachFile() }
                 Button("From Google Drive…") { onAttachFromDrive() }
             }
-            RibbonSplitTile(title: "Table", symbol: "tablecells", tint: .green, action: { formatter.insertTable() }) {
+            RibbonSeparator()
+            RibbonSplitTile(title: "Table", symbol: "tablecells", action: { formatter.insertTable() }) {
                 Button("Insert 3 × 3") { formatter.insertTable(rows: 3, columns: 3) }
                 Button("Insert 4 × 4") { formatter.insertTable(rows: 4, columns: 4) }
                 Button("Insert 2 × 5") { formatter.insertTable(rows: 2, columns: 5) }
@@ -63,73 +81,74 @@ struct ComposeRibbon: View {
         }
     }
 
-    private var pasteGroup: some View {
-        HStack(spacing: 2) {
-            RibbonSplitTile(title: "Paste", symbol: "doc.on.clipboard", action: { formatter.pasteMatchingStyle() }) {
-                Button("Paste and Match FalconMail") { formatter.pasteMatchingStyle() }
-                Button("Paste Keeping Source Formatting") { formatter.pasteKeepingSource() }
-                Button("Paste as Plain Text") { formatter.pastePlain() }
-            }
-            RibbonMiniColumn {
-                RibbonMiniItem(title: "Cut", symbol: "scissors") { formatter.cut() }
-                RibbonMiniItem(title: "Copy", symbol: "doc.on.doc") { formatter.copy() }
-                RibbonMiniItem(title: "Format", symbol: "paintbrush") { formatter.copyFormatting() }
-            }
-        }
-    }
-
-    private var fontGroup: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 3) {
-                Picker("", selection: Binding(get: { formatter.fontName }, set: { formatter.setFontName($0) })) {
-                    ForEach(TextFormatter.families, id: \.self) { Text($0).tag($0) }
+    /// Two rows of twenty-two point controls, the upper at y 71, the lower at y 101 of the
+    /// window, spaced as Outlook spaces them.
+    private var formatBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 0) {
+                FmtPopup(text: formatter.fontName, width: 90) {
+                    ForEach(TextFormatter.families, id: \.self) { name in Button(name) { formatter.setFontName(name) } }
                 }
-                .labelsHidden().frame(width: 132).help("Font")
-                Picker("", selection: Binding(get: { formatter.fontSize }, set: { formatter.setFontSize($0) })) {
-                    ForEach(TextFormatter.sizes, id: \.self) { Text("\(Int($0))").tag($0) }
+                FmtPopup(text: "\(Int(formatter.fontSize))", width: 53) {
+                    ForEach(TextFormatter.sizes, id: \.self) { size in Button("\(Int(size))") { formatter.setFontSize(size) } }
                 }
-                .labelsHidden().frame(width: 64).help("Size")
-                FormatIcon("textformat.size.larger", "Grow text") { formatter.stepFontSize(2) }
-                FormatIcon("textformat.size.smaller", "Shrink text") { formatter.stepFontSize(-2) }
-                FormatIcon("eraser", "Clear formatting") { formatter.clearFormatting() }
+                .padding(.leading, 12)
+                FmtButton("textformat.size.larger", "Grow text") { formatter.stepFontSize(2) }.padding(.leading, 4)
+                FmtButton("textformat.size.smaller", "Shrink text") { formatter.stepFontSize(-2) }.padding(.leading, 4)
+                FmtSeparator()
+                FmtButton("eraser", "Clear formatting") { formatter.clearFormatting() }
+                FmtSeparator()
+                FmtMenuButton("list.bullet", "Bulleted list", action: { formatter.applyList(.disc) }) {
+                    Button("Bullets") { formatter.applyList(.disc) }
+                }
+                FmtMenuButton("list.number", "Numbered list", action: { formatter.applyList(.decimal) }) {
+                    Button("Numbers") { formatter.applyList(.decimal) }
+                }
+                .padding(.leading, 4)
+                FmtSeparator()
+                FmtButton("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }
+                FmtButton("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }.padding(.leading, 4)
+                FmtSeparator()
+                FmtButton("paragraphsign", "Show paragraph marks") { formatter.cycleLineSpacing() }
             }
-            HStack(spacing: 3) {
-                FormatIcon("bold", "Bold") { formatter.toggleBold() }
-                FormatIcon("italic", "Italic") { formatter.toggleItalic() }
-                FormatIcon("underline", "Underline") { formatter.toggleUnderline() }
-                FormatIcon("strikethrough", "Strikethrough") { formatter.toggleStrikethrough() }
-                FormatIcon("textformat.subscript", "Subscript") { formatter.setBaseline(-4) }
-                FormatIcon("textformat.superscript", "Superscript") { formatter.setBaseline(6) }
-                ColorPicker("", selection: Binding(get: { formatter.highlight }, set: { formatter.setHighlight($0) }), supportsOpacity: false)
-                    .labelsHidden().frame(width: 36).help("Highlight")
-                ColorPicker("", selection: Binding(get: { formatter.textColour }, set: { formatter.setTextColour($0) }), supportsOpacity: false)
-                    .labelsHidden().frame(width: 36).help("Text colour")
+            HStack(spacing: 0) {
+                HStack(spacing: 4) {
+                    FmtButton("bold", "Bold") { formatter.toggleBold() }
+                    FmtButton("italic", "Italic") { formatter.toggleItalic() }
+                    FmtButton("underline", "Underline") { formatter.toggleUnderline() }
+                    FmtButton("strikethrough", "Strikethrough") { formatter.toggleStrikethrough() }
+                    FmtButton("textformat.subscript", "Subscript") { formatter.setBaseline(-4) }
+                    FmtButton("textformat.superscript", "Superscript") { formatter.setBaseline(6) }
+                }
+                .padding(.leading, 2)
+                FmtSeparator()
+                FmtColourButton("highlighter", "Highlight", colour: formatter.highlight, palette: TextFormatter.highlightPalette) { formatter.setHighlight($0) }
+                FmtColourButton("textformat", "Text colour", colour: formatter.textColour, palette: TextFormatter.textPalette) { formatter.setTextColour($0) }
+                    .padding(.leading, 4)
+                FmtSeparator()
+                HStack(spacing: 4) {
+                    FmtButton("text.alignleft", "Align left") { formatter.align(.left) }
+                    FmtButton("text.aligncenter", "Centre") { formatter.align(.center) }
+                    FmtButton("text.alignright", "Align right") { formatter.align(.right) }
+                    FmtButton("text.justify", "Justify") { formatter.align(.justified) }
+                }
             }
         }
-        .frame(width: 292, height: OL.ribbon - OL.ribbonIconTop - 8, alignment: .leading).padding(.top, OL.ribbonIconTop)
-    }
-
-    private var paragraphGroup: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 3) {
-                FormatIcon("list.bullet", "Bulleted list") { formatter.applyList(.disc) }
-                FormatIcon("list.number", "Numbered list") { formatter.applyList(.decimal) }
-                FormatIcon("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }
-                FormatIcon("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }
-                FormatIcon("text.line.first.and.arrowtriangle.forward", "Line spacing") { formatter.cycleLineSpacing() }
-            }
-            HStack(spacing: 3) {
-                FormatIcon("text.alignleft", "Align left") { formatter.align(.left) }
-                FormatIcon("text.aligncenter", "Centre") { formatter.align(.center) }
-                FormatIcon("text.alignright", "Align right") { formatter.align(.right) }
-                FormatIcon("text.justify", "Justify") { formatter.align(.justified) }
-            }
-        }
-        .frame(width: 146, height: OL.ribbon - OL.ribbonIconTop - 8, alignment: .leading).padding(.top, OL.ribbonIconTop)
+        .padding(.top, OL.ribbonIconTop + 5)
+        .frame(height: OL.ribbon, alignment: .top)
     }
 
     private var optionsTab: some View {
         RibbonBody {
+            RibbonMenuTile(title: "Importance", symbol: "exclamationmark") {
+                Picker("Importance", selection: importance) {
+                    Text("Low").tag("low")
+                    Text("Normal").tag("normal")
+                    Text("High").tag("high")
+                }
+                .pickerStyle(.inline)
+            }
+            RibbonSeparator()
             RibbonPill(onLabel: "HTML", offLabel: "Plain", caption: "Format Text", isOn: $usesHTML)
             RibbonSeparator()
             RibbonTile(title: "Switch\nBackground", symbol: "sun.max", tint: .yellow, action: onCycleBackground)
@@ -184,28 +203,136 @@ struct ComposeRibbon: View {
     }
 }
 
-struct FormatIcon: View {
+/// A twenty-two point format control in Outlook's grey.
+struct FmtButton: View {
     let symbol: String
     let title: String
+    var size: CGFloat = 13
     let action: () -> Void
     @State private var hovering = false
 
-    init(_ symbol: String, _ title: String, action: @escaping () -> Void) {
+    init(_ symbol: String, _ title: String, size: CGFloat = 13, action: @escaping () -> Void) {
         self.symbol = symbol
         self.title = title
+        self.size = size
         self.action = action
     }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 12))
-                .frame(width: 25, height: 22)
-                .background(hovering ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 4))
-                .contentShape(RoundedRectangle(cornerRadius: 4))
+                .font(.system(size: size, weight: .regular))
+                .foregroundStyle(OLColor.icon)
+                .frame(width: size > 14 ? 18 : 22, height: 22)
+                .background(hovering ? OLColor.hover : Color.clear, in: RoundedRectangle(cornerRadius: 3))
+                .contentShape(RoundedRectangle(cornerRadius: 3))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(title)
+    }
+}
+
+/// A format control with Outlook's small chevron beside it that opens a menu.
+struct FmtMenuButton<Content: View>: View {
+    let symbol: String
+    let title: String
+    let action: () -> Void
+    @ViewBuilder var menu: () -> Content
+
+    init(_ symbol: String, _ title: String, action: @escaping () -> Void, @ViewBuilder menu: @escaping () -> Content) {
+        self.symbol = symbol
+        self.title = title
+        self.action = action
+        self.menu = menu
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            FmtButton(symbol, title, action: action)
+            Menu { menu() } label: {
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                    .frame(width: 10, height: 22).contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+}
+
+/// Highlight and text colour: the glyph over a bar in the current colour, a chevron for the palette.
+struct FmtColourButton: View {
+    let symbol: String
+    let title: String
+    let colour: Color
+    let palette: [(String, Color)]
+    let apply: (Color) -> Void
+
+    init(_ symbol: String, _ title: String, colour: Color, palette: [(String, Color)], apply: @escaping (Color) -> Void) {
+        self.symbol = symbol
+        self.title = title
+        self.colour = colour
+        self.palette = palette
+        self.apply = apply
+    }
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button { apply(colour) } label: {
+                VStack(spacing: 1) {
+                    Image(systemName: symbol).font(.system(size: 12, weight: .regular)).foregroundStyle(OLColor.icon).frame(height: 15)
+                    RoundedRectangle(cornerRadius: 1).fill(colour).frame(width: 16, height: 3)
+                }
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(title)
+            Menu {
+                ForEach(palette, id: \.0) { entry in
+                    Button(entry.0) { apply(entry.1) }
+                }
+            } label: {
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                    .frame(width: 10, height: 22).contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+}
+
+/// The font family and size boxes: dark fields with a chevron.
+struct FmtPopup<Content: View>: View {
+    let text: String
+    let width: CGFloat
+    @ViewBuilder var menu: () -> Content
+
+    var body: some View {
+        Menu { menu() } label: {
+            HStack(spacing: 4) {
+                Text(text).font(.system(size: 13)).foregroundStyle(OLColor.text).lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(OLColor.icon)
+            }
+            .padding(.horizontal, 7)
+            .frame(width: width, height: 22)
+            .background(OLColor.ribbonField, in: RoundedRectangle(cornerRadius: 3))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+}
+
+struct FmtSeparator: View {
+    var body: some View {
+        Rectangle().fill(OLColor.ribbonSeparator).frame(width: 1, height: 22).padding(.horizontal, 8)
     }
 }

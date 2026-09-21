@@ -55,7 +55,7 @@ private struct TileFace: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(OLColor.ribbonLabel)
-                        .frame(width: 10, height: OL.ribbonIconBox)
+                        .frame(width: 6, height: OL.ribbonIconBox)
                 }
             }
             .padding(.top, OL.ribbonIconTop)
@@ -125,7 +125,7 @@ struct RibbonSplitTile<Content: View>: View {
             HStack(spacing: 4) {
                 Color.clear.frame(width: OL.ribbonIconBox, height: OL.ribbonIconBox)
                 Menu { menu() } label: {
-                    Color.clear.frame(width: 10, height: OL.ribbonIconBox).contentShape(Rectangle())
+                    Color.clear.frame(width: 6, height: OL.ribbonIconBox).contentShape(Rectangle())
                 }
                 .menuStyle(.button)
                 .buttonStyle(.plain)

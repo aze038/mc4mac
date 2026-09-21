@@ -18,6 +18,17 @@ final class TextFormatter {
 
     static let sizes: [CGFloat] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48]
 
+    static let highlightPalette: [(String, Color)] = [
+        ("Yellow", .yellow), ("Bright Green", Color(red: 0.4, green: 1, blue: 0.2)), ("Turquoise", .cyan), ("Pink", .pink),
+        ("Blue", .blue), ("Red", .red), ("Dark Blue", Color(red: 0, green: 0.2, blue: 0.5)), ("Teal", .teal),
+        ("Green", .green), ("Violet", .purple), ("Dark Red", Color(red: 0.55, green: 0, blue: 0)), ("Grey", .gray),
+    ]
+    static let textPalette: [(String, Color)] = [
+        ("Automatic", .primary), ("Black", .black), ("Dark Red", Color(red: 0.55, green: 0, blue: 0)), ("Red", .red),
+        ("Orange", .orange), ("Yellow", .yellow), ("Green", .green), ("Blue", .blue), ("Dark Blue", Color(red: 0, green: 0.2, blue: 0.5)),
+        ("Purple", .purple), ("Grey", .gray), ("White", .white),
+    ]
+
     private var composeView: ComposeTextView? { editor as? ComposeTextView }
 
     // MARK: - clipboard

@@ -348,7 +348,7 @@ struct ComposingSettings: View {
     @AppStorage(Pref.showCcByDefault) private var showCc = false
     @AppStorage(Pref.showBccByDefault) private var showBcc = false
     @AppStorage(Pref.replyToSelectedText) private var replyToSelection = false
-    @AppStorage(Pref.composeInWindow) private var composeInWindow = false
+    @AppStorage(Pref.composeInWindow) private var composeInWindow = true
 
     var body: some View {
         @Bindable var model = model

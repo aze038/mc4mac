@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ObjectiveC
+import FalconCore
 
 @MainActor
 final class WindowTray: ObservableObject {
@@ -151,6 +152,19 @@ struct PopupWindowAccessor: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
+            // Message and compose windows draw Outlook's own title row too.
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.styleMask.insert(.fullSizeContentView)
+            window.isMovableByWindowBackground = true
+            window.toolbar = nil
+            window.titlebarSeparatorStyle = .none
+            DispatchQueue.main.async {
+                window.toolbar = nil
+                window.titlebarAppearsTransparent = true
+                window.titleVisibility = .hidden
+                while !window.titlebarAccessoryViewControllers.isEmpty { window.removeTitlebarAccessoryViewController(at: 0) }
+            }
             WindowTray.shared.register(popup: window)
         }
     }

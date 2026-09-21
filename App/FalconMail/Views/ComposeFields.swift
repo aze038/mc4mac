@@ -6,21 +6,26 @@ struct ComposeFieldRow<Content: View, Trailing: View>: View {
     @ViewBuilder var content: () -> Content
     @ViewBuilder var trailing: () -> Trailing
 
+    /// Outlook's header row: the label right-aligned to fifty-six points, the field from sixty-eight,
+    /// nineteen points tall on the window's ground with a one point border, twenty-five points a row.
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 0) {
             Text(label)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .frame(width: 62, alignment: .trailing)
+                .font(.system(size: OL.composeLabelFont))
+                .foregroundStyle(OLColor.text)
+                .lineLimit(1)
+                .frame(width: OL.composeLabelRight, alignment: .trailing)
             content()
+                .font(.system(size: OL.composeLabelFont))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.12)))
+                .frame(height: OL.composeField)
+                .background(OLColor.reading, in: RoundedRectangle(cornerRadius: 2))
+                .overlay(RoundedRectangle(cornerRadius: 2).stroke(OLColor.fieldBorder, lineWidth: 1))
+                .padding(.leading, OL.composeFieldX - OL.composeLabelRight)
             trailing()
         }
-        .padding(.vertical, 3)
+        .frame(height: OL.composeRowPitch, alignment: .top)
     }
 }
 
@@ -35,11 +40,11 @@ struct AddressBookButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "text.book.closed")
-                .font(.system(size: 13))
-                .frame(width: 26, height: 22)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.12)))
+            Image(systemName: "book")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(OLColor.icon)
+                .frame(width: OL.composeBookGlyph, height: OL.composeField)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Address book")
@@ -100,18 +105,18 @@ struct InlineFormatBar: View {
                 .labelsHidden().frame(width: 34).help("Text colour")
 
             Divider().frame(height: 16)
-            FormatIcon("bold", "Bold") { formatter.toggleBold() }
-            FormatIcon("italic", "Italic") { formatter.toggleItalic() }
-            FormatIcon("underline", "Underline") { formatter.toggleUnderline() }
-            FormatIcon("strikethrough", "Strikethrough") { formatter.toggleStrikethrough() }
+            FmtButton("bold", "Bold") { formatter.toggleBold() }
+            FmtButton("italic", "Italic") { formatter.toggleItalic() }
+            FmtButton("underline", "Underline") { formatter.toggleUnderline() }
+            FmtButton("strikethrough", "Strikethrough") { formatter.toggleStrikethrough() }
             ColorPicker("", selection: Binding(get: { formatter.highlight }, set: { formatter.setHighlight($0) }), supportsOpacity: false)
                 .labelsHidden().frame(width: 34).help("Highlight")
-            FormatIcon("textformat.superscript", "Superscript") { formatter.setBaseline(6) }
-            FormatIcon("textformat.subscript", "Subscript") { formatter.setBaseline(-4) }
+            FmtButton("textformat.superscript", "Superscript") { formatter.setBaseline(6) }
+            FmtButton("textformat.subscript", "Subscript") { formatter.setBaseline(-4) }
 
             Divider().frame(height: 16)
-            FormatIcon("list.bullet", "Bulleted list") { formatter.applyList(.disc) }
-            FormatIcon("list.number", "Numbered list") { formatter.applyList(.decimal) }
+            FmtButton("list.bullet", "Bulleted list") { formatter.applyList(.disc) }
+            FmtButton("list.number", "Numbered list") { formatter.applyList(.decimal) }
             Menu {
                 Button("Align Left") { formatter.align(.left) }
                 Button("Centre") { formatter.align(.center) }
@@ -121,12 +126,12 @@ struct InlineFormatBar: View {
                 Image(systemName: "text.alignleft").font(.system(size: 12))
             }
             .menuStyle(.borderlessButton).fixedSize().help("Alignment")
-            FormatIcon("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }
-            FormatIcon("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }
+            FmtButton("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }
+            FmtButton("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }
 
             Divider().frame(height: 16)
-            FormatIcon("photo", "Insert picture") { formatter.insertPicture() }
-            FormatIcon("link", "Insert link") { formatter.insertLink() }
+            FmtButton("photo", "Insert picture") { formatter.insertPicture() }
+            FmtButton("link", "Insert link") { formatter.insertLink() }
             Menu {
                 Button("Insert 3 × 3") { formatter.insertTable(rows: 3, columns: 3) }
                 Button("Insert 4 × 4") { formatter.insertTable(rows: 4, columns: 4) }
@@ -137,8 +142,8 @@ struct InlineFormatBar: View {
             .menuStyle(.borderlessButton).fixedSize().help("Insert table")
 
             Divider().frame(height: 16)
-            FormatIcon("textformat.abc.dottedunderline", "Check spelling") { formatter.checkSpelling() }
-            FormatIcon("eraser", "Clear formatting") { formatter.clearFormatting() }
+            FmtButton("textformat.abc.dottedunderline", "Check spelling") { formatter.checkSpelling() }
+            FmtButton("eraser", "Clear formatting") { formatter.clearFormatting() }
             Menu {
                 Button("Paste and Match FalconMail") { formatter.pasteMatchingStyle() }
                 Button("Paste Keeping Source Formatting") { formatter.pasteKeepingSource() }
@@ -147,8 +152,8 @@ struct InlineFormatBar: View {
                 Image(systemName: "doc.on.clipboard").font(.system(size: 12))
             }
             .menuStyle(.borderlessButton).fixedSize().help("Paste options")
-            FormatIcon("arrow.uturn.backward", "Undo") { formatter.editor?.undoManager?.undo() }
-            FormatIcon("arrow.uturn.forward", "Redo") { formatter.editor?.undoManager?.redo() }
+            FmtButton("arrow.uturn.backward", "Undo") { formatter.editor?.undoManager?.undo() }
+            FmtButton("arrow.uturn.forward", "Redo") { formatter.editor?.undoManager?.redo() }
         }
         .fixedSize(horizontal: true, vertical: false)
     }

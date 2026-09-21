@@ -55,22 +55,20 @@ struct MessageReaderView: View {
                     .padding(.leading, OL.readingTextX - OL.readingIconX - 36)
                     .padding(.top, OL.readingSubjectTop)
                 Spacer(minLength: 8)
-                Menu { moreMenu } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 17, weight: .regular))
+                Button { originalColours.toggle() } label: {
+                    Image(systemName: originalColours ? "sun.max.fill" : "sun.max")
+                        .font(.system(size: 18, weight: .light))
                         .foregroundStyle(OLColor.icon)
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
-                .menuStyle(.button)
                 .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
                 .padding(.trailing, 13)
                 .padding(.top, OL.readingSubjectTop + 1)
-                .help("Message options")
+                .help(originalColours ? "Show this message on FalconMail's background" : "Show this message in its own colours")
             }
             .frame(height: OL.readingAvatarTop, alignment: .top)
+            .contextMenu { moreMenu }
             HStack(alignment: .top, spacing: 0) {
                 AvatarView(name: message.from.displayName, address: message.from.address, size: OL.readingAvatar)
                     .padding(.leading, OL.readingAvatarX)
@@ -224,7 +222,7 @@ struct MessageReaderView: View {
         if let rendered {
             HTMLView(html: rendered, sender: message.from)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.white)
+                .background(OLColor.reading)
         } else if loading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -362,14 +360,16 @@ enum MessageRenderer {
         let csp = allowRemote
             ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
             : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
-        let ownCanvas = forceOriginal || designsItsOwnCanvas(parsed)
+        // Outlook puts every message on its own ground and leaves the message's colours to the
+        // sun switch; a message that paints its own canvas is not an exception.
+        let ownCanvas = forceOriginal
         let scheme = ownCanvas || !dark ? "light" : "dark"
-        let background = ownCanvas ? "#ffffff" : (dark ? "#1e1f24" : "#ffffff")
-        let text = ownCanvas ? "#1d1d1f" : (dark ? "#e6e7ea" : "#1d1d1f")
+        let background = ownCanvas ? "#ffffff" : (dark ? "#1e1e1e" : "#ffffff")
+        let text = ownCanvas ? "#1d1d1f" : (dark ? "#e6e6e6" : "#1e1e1e")
         let quote = ownCanvas ? "#3a3a3c" : (dark ? "#a9adb6" : "#3a3a3c")
         let rule = ownCanvas ? "#c7c7cc" : (dark ? "#3a3d45" : "#c7c7cc")
         let link = ownCanvas || !dark ? "#0a66c2" : "#6aa9ff"
-        let style = "<style>:root{color-scheme:\(scheme);} html,body{background:\(background);margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.55;color:\(text);padding:18px 24px 30px 24px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid \(rule);margin:0;padding-left:12px;color:\(quote);} a{color:\(link);}</style>"
+        let style = "<style>:root{color-scheme:\(scheme);} html,body{background:\(background);margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.4;color:\(text);padding:12px 25px 30px 25px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid \(rule);margin:0;padding-left:12px;color:\(quote);} a{color:\(link);}</style>"
         let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"\(scheme)\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {

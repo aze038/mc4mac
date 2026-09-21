@@ -39,7 +39,7 @@ enum OL {
     static let ribbonLabelPitch: CGFloat = 10.5
     static let ribbonTilePad: CGFloat = 6
     static let ribbonTileGap: CGFloat = 2
-    static let ribbonSeparatorPad: CGFloat = 12
+    static let ribbonSeparatorPad: CGFloat = 10
     static let ribbonSeparatorHeight: CGFloat = 59
     static let ribbonMiniIcon: CGFloat = 16
     static let ribbonMiniFont: CGFloat = 12
@@ -105,6 +105,22 @@ enum OL {
     static let readingBodyX: CGFloat = 25
     static let readingQuoteBarX: CGFloat = 33
 
+    // MARK: compose window (917 × 1006): the header band under the ribbon, y 137–219
+
+    static let composeWindowWidth: CGFloat = 917
+    static let composeWindowHeight: CGFloat = 1006
+    static let composeBandTop: CGFloat = 3
+    static let composeBandBottom: CGFloat = 9
+    static let composeRowPitch: CGFloat = 25
+    static let composeField: CGFloat = 19
+    static let composeLabelRight: CGFloat = 56
+    static let composeFieldX: CGFloat = 68
+    static let composeFieldRight: CGFloat = 50.5
+    static let composeSubjectRight: CGFloat = 17.5
+    static let composeBookGlyph: CGFloat = 16
+    static let composeBookRight: CGFloat = 22
+    static let composeLabelFont: CGFloat = 13
+
     // MARK: the bottom: module rail under the sidebar, status bar across the window
 
     static let rail: CGFloat = 36
@@ -154,6 +170,8 @@ enum OLColor {
     static let icon = dynamic(light: 0x4A4A4A, dark: 0xE1E1E1)
     static let buttonBorder = dynamic(light: 0xB0B0B0, dark: 0x707070)
     static let quoteBar = dynamic(light: 0x8A8A8A, dark: 0xCCCCCC)
+    static let fieldBorder = dynamic(light: 0xC8C8C8, dark: 0x343434)
+    static let fieldBandLine = dynamic(light: 0xB8B8B8, dark: 0x585858)
     static let hover = Color.primary.opacity(0.08)
 
     // Ribbon icon accents, the colours Outlook draws into its otherwise grey glyphs.

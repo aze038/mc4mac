@@ -21,7 +21,7 @@ extension AppModel {
 
     func openCompose(_ draft: ComposeDraft) {
         let id = newDraft(draft)
-        if Preferences.bool(Pref.composeInWindow, default: false), let open = openComposeWindow {
+        if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
             open(id)
         } else {
             openTab(.compose(id))

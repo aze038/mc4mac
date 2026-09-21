@@ -102,14 +102,16 @@ struct FalconMailApp: App {
                 MessageWindowView(messageID: id).themedRoot().environment(model).environmentObject(model.updates)
             }
         }
-        .defaultSize(width: 720, height: 640)
+        .defaultSize(width: 917, height: 1006)
+        .windowStyle(.hiddenTitleBar)
 
         WindowGroup("Compose", for: UUID.self) { $draftID in
             if let id = draftID {
                 ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates)
             }
         }
-        .defaultSize(width: 720, height: 600)
+        .defaultSize(width: 917, height: 1006)
+        .windowStyle(.hiddenTitleBar)
 
         Settings {
             SettingsView().themedRoot().environment(model).environmentObject(model.updates)
