@@ -39,7 +39,7 @@ enum OL {
     static let ribbonLabelPitch: CGFloat = 10.5
     static let ribbonTilePad: CGFloat = 6
     static let ribbonTileGap: CGFloat = 2
-    static let ribbonSeparatorPad: CGFloat = 10
+    static let ribbonSeparatorPad: CGFloat = 8
     static let ribbonSeparatorHeight: CGFloat = 59
     static let ribbonMiniIcon: CGFloat = 16
     static let ribbonMiniFont: CGFloat = 12

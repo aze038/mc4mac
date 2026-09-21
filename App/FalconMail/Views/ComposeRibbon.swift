@@ -62,10 +62,7 @@ struct ComposeRibbon: View {
             RibbonSeparator()
             RibbonTile(title: "Switch\nBackground", symbol: "sun.max", action: onCycleBackground)
             RibbonSeparator()
-            RibbonSplitTile(title: "Attach\nFile", symbol: "paperclip", action: onAttachFile) {
-                Button("From this Mac…") { onAttachFile() }
-                Button("From Google Drive…") { onAttachFromDrive() }
-            }
+            RibbonTile(title: "Attach\nFile", symbol: "paperclip", action: onAttachFile)
             RibbonSeparator()
             RibbonSplitTile(title: "Table", symbol: "tablecells", action: { formatter.insertTable() }) {
                 Button("Insert 3 × 3") { formatter.insertTable(rows: 3, columns: 3) }
@@ -140,6 +137,8 @@ struct ComposeRibbon: View {
 
     private var optionsTab: some View {
         RibbonBody {
+            RibbonTile(title: "Google\nDrive", symbol: "externaldrive", action: onAttachFromDrive)
+            RibbonSeparator()
             RibbonMenuTile(title: "Importance", symbol: "exclamationmark") {
                 Picker("Importance", selection: importance) {
                     Text("Low").tag("low")

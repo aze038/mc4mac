@@ -304,16 +304,25 @@ struct ReaderActionButton: View {
     }
 }
 
+/// A message in its own window, the way Outlook opens one on a double-click: its own title row,
+/// a Message ribbon, then the message.
 struct MessageWindowView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
     let messageID: String
     @State private var message: MessageSummary?
 
     var body: some View {
         Group {
             if let message {
-                MessageReaderView(message: message, context: .window)
-                    .navigationTitle(message.subject.isEmpty ? "Message" : message.subject)
+                VStack(spacing: 0) {
+                    titleRow(message)
+                    MessageWindowRibbon(message: message, close: { dismiss() })
+                    Rectangle().fill(OLColor.chromeLine).frame(height: 1)
+                    MessageReaderView(message: message, context: .window)
+                }
+                .background(OLColor.reading)
+                .navigationTitle(message.subject.isEmpty ? "Message" : message.subject)
             } else {
                 ProgressView()
             }
@@ -323,6 +332,100 @@ struct MessageWindowView: View {
         .task { message = try? await model.store.message(id: messageID) }
         .onAppear { model.openMessageWindows.insert(messageID) }
         .onDisappear { model.openMessageWindows.remove(messageID) }
+        .ignoresSafeArea(.container, edges: .top)
+    }
+
+    private func titleRow(_ message: MessageSummary) -> some View {
+        let account = model.accounts.first { $0.id == message.accountID }?.email ?? ""
+        let subject = message.subject.isEmpty ? "(no subject)" : message.subject
+        return ZStack {
+            Text(account.isEmpty ? subject : "\(subject) • \(account)")
+                .font(.system(size: OL.titleFont))
+                .foregroundStyle(OLColor.title)
+                .lineLimit(1)
+                .padding(.horizontal, 200)
+            HStack(spacing: OL.quickPitch - 20) {
+                RibbonQuickButton(symbol: "square.and.arrow.down", title: "Save as .eml") { NotificationCenter.default.post(name: .falconExport, object: nil) }
+                RibbonQuickButton(symbol: "arrow.uturn.backward", title: "Undo", enabled: model.canUndoAction) { model.undoLastAction() }
+                RibbonQuickButton(symbol: "arrow.uturn.forward", title: "Redo", enabled: false) {}
+                RibbonQuickButton(symbol: "envelope.badge.shield.half.filled", title: "Mark all as read", enabled: model.unifiedUnreadCount > 0) {
+                    model.markAllReadEverywhere()
+                }
+                Spacer()
+            }
+            .padding(.leading, OL.quickIconsStart)
+        }
+        .frame(height: OL.titleRow)
+        .background(OLColor.chrome, ignoresSafeAreaEdges: [])
+    }
+}
+
+/// The ribbon of an opened message: Outlook's Message tab, the same tiles as the Home ribbon
+/// that act on one message.
+struct MessageWindowRibbon: View {
+    @Environment(AppModel.self) private var model
+    let message: MessageSummary
+    let close: () -> Void
+    @State private var tab = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            RibbonTabStrip(tabs: [(0, "Message")], selection: $tab)
+                .padding(.horizontal, OL.tabInset)
+            RibbonBody {
+                RibbonTile(title: "Delete", symbol: "trash") { model.delete([message]); close() }
+                RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen) { model.archive([message]); close() }
+                RibbonSeparator()
+                RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple) { reply(all: false) }
+                RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: OLColor.replyPurple) { reply(all: true) }
+                RibbonTile(title: "Forward", symbol: "arrowshape.turn.up.right", tint: OLColor.forwardBlue) { forward() }
+                RibbonMiniColumn {
+                    RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
+                        model.showModule(.calendar)
+                        NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
+                    }
+                    RibbonMiniItem(title: "Attachment", symbol: "paperclip") { model.forwardAsAttachment([message]) }
+                }
+                RibbonSeparator()
+                RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, action: { model.openMovePalette() }) {
+                    Button("Move to Folder…") { model.openMovePalette() }
+                    Button("Archive") { model.archive([message]); close() }
+                }
+                RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, action: { model.toggleJunk([message]) }) {
+                    Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { model.toggleJunk([message]) }
+                }
+                RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
+                    Button("Run Rules Now") { model.runRulesNow() }
+                }
+                RibbonSeparator()
+                RibbonTile(title: "Read/Unread", symbol: message.isRead ? "envelope" : "envelope.open") { model.markRead([message], !message.isRead) }
+                RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange) {
+                    ForEach(model.categories) { category in
+                        Button(category.name) { model.toggleCategory(category, on: [message]) }
+                    }
+                }
+                RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, action: { model.setFlagged([message], !message.isFlagged) }) {
+                    Button(message.isFlagged ? "Clear Flag" : "Flag Message") { model.setFlagged([message], !message.isFlagged) }
+                }
+            }
+        }
+        .background(OLColor.chrome, ignoresSafeAreaEdges: [])
+    }
+
+    private func reply(all: Bool) {
+        guard let account = model.account(for: message) else { return }
+        Task {
+            let parsed = await model.parsedBody(for: message)
+            model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all))
+        }
+    }
+
+    private func forward() {
+        guard let account = model.account(for: message) else { return }
+        Task {
+            let parsed = await model.parsedBody(for: message)
+            model.openCompose(.forward(message, parsed: parsed, account: account))
+        }
     }
 }
 
@@ -363,14 +466,21 @@ enum MessageRenderer {
         // Outlook puts every message on its own ground and leaves the message's colours to the
         // sun switch; a message that paints its own canvas is not an exception.
         let ownCanvas = forceOriginal
-        let scheme = ownCanvas || !dark ? "light" : "dark"
-        let background = ownCanvas ? "#ffffff" : (dark ? "#1e1e1e" : "#ffffff")
-        let text = ownCanvas ? "#1d1d1f" : (dark ? "#e6e6e6" : "#1e1e1e")
-        let quote = ownCanvas ? "#3a3a3c" : (dark ? "#e6e6e6" : "#1e1e1e")
-        let rule = ownCanvas ? "#c7c7cc" : (dark ? "#cccccc" : "#8a8a8a")
-        let link = ownCanvas || !dark ? "#0a66c2" : "#6aa9ff"
-        let style = "<style>:root{color-scheme:\(scheme);} html,body{background:\(background);margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:12px 29px 30px 29px;word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
-        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"\(scheme)\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
+        // In dark appearance the message is laid out in its own light colours and the whole page
+        // is then inverted, pictures inverted back: black text on white becomes Outlook's light
+        // grey on #1e1e1e, and a message that hard-codes its colours stays readable. The sun
+        // switch shows it un-inverted, as it was written.
+        let inverted = dark && !ownCanvas
+        let background = "#ffffff"
+        let text = "#1d1d1f"
+        let quote = "#1d1d1f"
+        let rule = "#333333"
+        let link = "#0a66c2"
+        let inversion = inverted
+            ? " html{filter:invert(0.885) hue-rotate(180deg);} img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg);}"
+            : ""
+        let style = "<style>:root{color-scheme:light;} html,body{background:\(background);margin:0;}\(inversion) body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:12px 29px 30px 29px;word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
+        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
             body = html
@@ -402,7 +512,10 @@ enum WebViewPool {
         config.processPool = processPool
         config.defaultWebpagePreferences.allowsContentJavaScript = false
         let view = WKWebView(frame: .zero, configuration: config)
-        view.underPageBackgroundColor = .white
+        view.underPageBackgroundColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(hex: 0x1E1E1E) : .white
+        }
+        view.setValue(false, forKey: "drawsBackground")
         return view
     }
 
