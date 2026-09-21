@@ -366,10 +366,10 @@ enum MessageRenderer {
         let scheme = ownCanvas || !dark ? "light" : "dark"
         let background = ownCanvas ? "#ffffff" : (dark ? "#1e1e1e" : "#ffffff")
         let text = ownCanvas ? "#1d1d1f" : (dark ? "#e6e6e6" : "#1e1e1e")
-        let quote = ownCanvas ? "#3a3a3c" : (dark ? "#a9adb6" : "#3a3a3c")
-        let rule = ownCanvas ? "#c7c7cc" : (dark ? "#3a3d45" : "#c7c7cc")
+        let quote = ownCanvas ? "#3a3a3c" : (dark ? "#e6e6e6" : "#1e1e1e")
+        let rule = ownCanvas ? "#c7c7cc" : (dark ? "#cccccc" : "#8a8a8a")
         let link = ownCanvas || !dark ? "#0a66c2" : "#6aa9ff"
-        let style = "<style>:root{color-scheme:\(scheme);} html,body{background:\(background);margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.4;color:\(text);padding:12px 25px 30px 25px;word-wrap:break-word;overflow-wrap:anywhere;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:2px solid \(rule);margin:0;padding-left:12px;color:\(quote);} a{color:\(link);}</style>"
+        let style = "<style>:root{color-scheme:\(scheme);} html,body{background:\(background);margin:0;} body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:12px 29px 30px 29px;word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
         let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"\(scheme)\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
