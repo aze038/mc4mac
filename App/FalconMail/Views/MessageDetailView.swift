@@ -29,60 +29,117 @@ struct MessageReaderView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
             content
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(OLColor.reading)
         .task(id: renderKey) { await load() }
     }
 
+    /// Outlook's reading header, measured: the subject in twenty-two point beside the
+    /// conversation glyph, the sender's circle at forty-six points, the bold name with address, the
+    /// date at the right, "To:" beneath, and the conversation notice as a grey band.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(message.subject.isEmpty ? "(no subject)" : message.subject)
-                .font(.system(size: 20, weight: .semibold))
-                .textSelection(.enabled)
-            HStack(alignment: .top, spacing: 12) {
-                AvatarView(name: message.from.displayName, address: message.from.address, size: 40)
-                senderBlock
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
+                Image(systemName: (conversation?.messages.count ?? 1) > 1 ? "bubble.left.and.bubble.right" : "envelope")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(OLColor.icon)
+                    .frame(width: 36, height: 22)
+                    .padding(.leading, OL.readingIconX)
+                    .padding(.top, OL.readingSubjectTop + 3)
+                Text(message.subject.isEmpty ? "(no subject)" : message.subject)
+                    .font(.system(size: OL.readingSubjectFont, weight: .semibold))
+                    .foregroundStyle(OLColor.text)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+                    .padding(.leading, OL.readingTextX - OL.readingIconX - 36)
+                    .padding(.top, OL.readingSubjectTop)
                 Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 6) {
-                    Text(message.date.formatted(date: .abbreviated, time: .shortened))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    actions
+                Menu { moreMenu } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundStyle(OLColor.icon)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .padding(.trailing, 13)
+                .padding(.top, OL.readingSubjectTop + 1)
+                .help("Message options")
+            }
+            .frame(height: OL.readingAvatarTop, alignment: .top)
+            HStack(alignment: .top, spacing: 0) {
+                AvatarView(name: message.from.displayName, address: message.from.address, size: OL.readingAvatar)
+                    .padding(.leading, OL.readingAvatarX)
+                senderBlock
+                    .padding(.leading, OL.readingSenderX - OL.readingAvatarX - OL.readingAvatar)
+                    .padding(.trailing, OL.readingRightInset)
             }
             conversationHint
-            if let parsed, !parsed.attachments.isEmpty { AttachmentStrip(attachments: parsed.attachments, html: parsed.textHTML, accountID: message.accountID) }
+            if let parsed, !parsed.attachments.isEmpty {
+                AttachmentStrip(attachments: parsed.attachments, html: parsed.textHTML, accountID: message.accountID)
+                    .padding(.horizontal, OL.readingBodyX)
+                    .padding(.top, 10)
+            }
             if !model.loadRemoteImages && !allowRemoteImages && hasRemote {
                 RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
+                    .padding(.horizontal, OL.readingBodyX)
+                    .padding(.top, 10)
             }
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 16)
         .padding(.bottom, 12)
     }
 
+    private var senderLine: String {
+        message.from.name.isEmpty ? message.from.address : "\(message.from.name) <\(message.from.address)>"
+    }
+
     private var senderBlock: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(message.from.displayName).font(.system(size: 14, weight: .semibold))
-            if !message.from.name.isEmpty {
-                Text(message.from.address).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(senderLine)
+                    .font(.system(size: OL.readingSenderFont, weight: .semibold))
+                    .foregroundStyle(OLColor.text)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                Text(message.date.formatted(date: .complete, time: .shortened))
+                    .font(.system(size: OL.readingSenderFont))
+                    .foregroundStyle(OLColor.textMuted)
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            HStack(spacing: 4) {
-                Text("To: " + recipientLine(message.to))
-                    .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(showDetails ? nil : 1)
-                Button(showDetails ? "Hide" : "Details") { showDetails.toggle() }
-                    .buttonStyle(.link).font(.system(size: 11))
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("To:")
+                    .font(.system(size: OL.readingMetaFont, weight: .semibold))
+                    .foregroundStyle(OLColor.text)
+                Text(recipientLine(message.to))
+                    .font(.system(size: OL.readingMetaFont))
+                    .foregroundStyle(OLColor.textMuted)
+                    .lineLimit(showDetails ? nil : 1)
+                    .textSelection(.enabled)
+                    .padding(.leading, 16)
             }
+            .padding(.top, 12)
+            .contentShape(Rectangle())
+            .onTapGesture { showDetails.toggle() }
+            .help(showDetails ? "Click to hide the details" : "Click to see every recipient, the folder and the full date")
             if showDetails {
-                if !message.cc.isEmpty {
-                    Text("Cc: " + recipientLine(message.cc)).font(.system(size: 12)).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    if !message.cc.isEmpty {
+                        Text("Cc: " + recipientLine(message.cc))
+                    }
+                    Text(message.date.formatted(date: .complete, time: .standard))
+                    if let folder = model.folder(message.folderID) {
+                        Text("Folder: " + folder.path)
+                    }
                 }
-                Text(message.date.formatted(date: .complete, time: .standard)).font(.system(size: 12)).foregroundStyle(.secondary)
-                if let folder = model.folder(message.folderID) {
-                    Text("Folder: " + folder.path).font(.system(size: 12)).foregroundStyle(.secondary)
-                }
+                .font(.system(size: OL.readingMetaFont))
+                .foregroundStyle(OLColor.textMuted)
+                .padding(.top, 6)
             }
         }
     }
@@ -129,17 +186,37 @@ struct MessageReaderView: View {
 
     private var thread: MessageThread { conversation ?? MessageThread(messages: [message]) }
 
+    /// Outlook's grey notice band under the header, here for a folded conversation.
     @ViewBuilder private var conversationHint: some View {
         if let conversation, conversation.messages.count > 1, !model.isExpanded(conversation), context == .pane {
-            HStack(spacing: 8) {
-                Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
+            HStack(spacing: 0) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 11))
+                    .foregroundStyle(OLColor.replyPurple)
+                    .frame(width: 16, height: 16)
+                    .padding(.leading, 6)
                 Text("\(conversation.messages.count) messages in this conversation. Showing the latest.")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                Button("Show all") { model.expand(conversation) }.buttonStyle(.link).font(.system(size: 12))
+                    .font(.system(size: OL.readingMetaFont))
+                    .foregroundStyle(OLColor.text)
+                    .lineLimit(1)
+                    .padding(.leading, 8.5)
+                Spacer(minLength: 8)
+                Button { model.expand(conversation) } label: {
+                    Text("Show All")
+                        .font(.system(size: 11))
+                        .foregroundStyle(OLColor.text)
+                        .padding(.horizontal, 8)
+                        .frame(height: 16)
+                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(OLColor.buttonBorder, lineWidth: 1))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 10)
             }
-            .padding(8)
+            .frame(height: OL.readingNotice)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            .background(OLColor.notice)
+            .padding(.top, 19)
         }
     }
 

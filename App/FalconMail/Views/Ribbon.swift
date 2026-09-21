@@ -1,70 +1,69 @@
 import SwiftUI
 
 enum RibbonMetrics {
-    /// Every tile is the same size, so a row of them lines up whatever the caption says.
-    static let tileWidth: CGFloat = 78
-    static let tileHeight: CGFloat = 76
-    static let tileGap: CGFloat = 2
-    static let edgeInset: CGFloat = 12
-
-    static let glyphBox: CGFloat = 26
-    static let glyphSize: CGFloat = 22
-    static let glyphWeight: Font.Weight = .regular
-
-    static let caption: CGFloat = 11
-    /// Two caption lines are always reserved, so a one-line tile and a two-line tile
-    /// put their icons at the same height.
-    static let captionBlock: CGFloat = 28
-    static let captionTop: CGFloat = 4
-
-    static let miniRow: CGFloat = 22
-    static let miniGap: CGFloat = 3
-    static let miniWidth: CGFloat = 104
-
     static let disabledOpacity: CGFloat = 0.45
-    static var bodyHeight: CGFloat { tileHeight + 10 }
 }
 
+/// An Outlook ribbon glyph: a light-weight symbol in Outlook's grey, in a 28 point box, tinted
+/// only where Outlook colours its own icon.
 struct RibbonGlyph: View {
     let symbol: String
     var tint: Color?
-    var size: CGFloat = RibbonMetrics.glyphSize
+    var size: CGFloat = OL.ribbonIcon
+    var box: CGFloat = OL.ribbonIconBox
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: size, weight: RibbonMetrics.glyphWeight))
-            .foregroundStyle(tint ?? Color.primary.opacity(0.88))
-            .frame(width: size + 4, height: size)
+            .font(.system(size: size, weight: .regular))
+            .foregroundStyle(tint ?? OLColor.ribbonIcon)
+            .frame(width: box, height: box)
     }
 }
 
+/// The caption under a tile. Outlook sets its two lines 10.5 points apart, tighter than the
+/// font's own line height, so the lines are laid out one by one.
 struct RibbonCaption: View {
     let title: String
 
     var body: some View {
-        Text(title)
-            .font(.system(size: RibbonMetrics.caption))
-            .multilineTextAlignment(.center)
-            .lineLimit(2)
-            .minimumScaleFactor(0.85)
-            .frame(width: RibbonMetrics.tileWidth - 6, height: RibbonMetrics.captionBlock, alignment: .top)
+        VStack(spacing: OL.ribbonLabelPitch - 13) {
+            ForEach(Array(title.split(separator: "\n").enumerated()), id: \.offset) { _, line in
+                Text(String(line))
+                    .font(.system(size: OL.ribbonLabelFont))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .foregroundStyle(OLColor.ribbonLabel)
     }
 }
 
-/// The shared body of every tile: a centred glyph over a caption box of fixed height.
+/// The face of every tile: the icon row at the top, the caption 44 points down, both centred,
+/// the tile as wide as the wider of the two plus Outlook's six points each side.
 private struct TileFace: View {
     let title: String
     let symbol: String
     var tint: Color?
     var enabled: Bool
+    var chevron = false
 
     var body: some View {
-        VStack(spacing: RibbonMetrics.captionTop) {
-            RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil)
+        ZStack(alignment: .top) {
+            HStack(spacing: 4) {
+                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil)
+                if chevron {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(OLColor.ribbonLabel)
+                        .frame(width: 10, height: OL.ribbonIconBox)
+                }
+            }
+            .padding(.top, OL.ribbonIconTop)
             RibbonCaption(title: title)
+                .padding(.top, OL.ribbonLabelTop)
         }
-        .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight, alignment: .top)
-        .padding(.top, 6)
+        .padding(.horizontal, OL.ribbonTilePad)
+        .frame(height: OL.ribbon, alignment: .top)
         .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
     }
 }
@@ -74,9 +73,13 @@ private struct TileBackground: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight)
-            .background(hovering ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(RoundedRectangle(cornerRadius: 5))
+            .background {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(hovering ? OLColor.hover : Color.clear)
+                    .padding(.top, 2)
+                    .padding(.bottom, 6)
+            }
+            .contentShape(Rectangle())
     }
 }
 
@@ -100,8 +103,8 @@ struct RibbonTile: View {
     }
 }
 
-/// A tile whose face runs the primary action and whose corner chevron opens a menu.
-/// The chevron sits inside the tile so the glyph stays centred, the way Outlook draws it.
+/// A tile whose face runs the primary action and whose chevron, beside the icon as Outlook
+/// draws it, opens a menu.
 struct RibbonSplitTile<Content: View>: View {
     let title: String
     let symbol: String
@@ -112,36 +115,32 @@ struct RibbonSplitTile<Content: View>: View {
     @State private var hovering = false
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Button { action?() } label: {
-                TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled)
-            }
-            .buttonStyle(.plain)
-            .disabled(!enabled || action == nil)
-
-            Menu { menu() } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14, height: 14)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .padding(.trailing, 3)
-            .padding(.bottom, 2)
-            .disabled(!enabled)
-            .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
+        Button { action?() } label: {
+            TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled, chevron: true)
+                .modifier(TileBackground(hovering: hovering && enabled))
         }
-        .modifier(TileBackground(hovering: hovering && enabled))
+        .buttonStyle(.plain)
+        .disabled(!enabled || action == nil)
+        .overlay(alignment: .top) {
+            HStack(spacing: 4) {
+                Color.clear.frame(width: OL.ribbonIconBox, height: OL.ribbonIconBox)
+                Menu { menu() } label: {
+                    Color.clear.frame(width: 10, height: OL.ribbonIconBox).contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(!enabled)
+            }
+            .padding(.top, OL.ribbonIconTop)
+        }
         .onHover { hovering = $0 }
         .help(title.replacingOccurrences(of: "\n", with: " "))
     }
 }
 
-/// A tile that is entirely a menu. Same footprint as a plain tile, with the chevron
-/// tucked into the corner rather than widening the tile.
+/// A tile that is entirely a menu.
 struct RibbonMenuTile<Content: View>: View {
     let title: String
     let symbol: String
@@ -152,18 +151,11 @@ struct RibbonMenuTile<Content: View>: View {
 
     var body: some View {
         Menu { menu() } label: {
-            ZStack(alignment: .bottomTrailing) {
-                TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 6)
-                    .padding(.bottom, 4)
-                    .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
-            }
-            .modifier(TileBackground(hovering: hovering && enabled))
+            TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled, chevron: true)
+                .modifier(TileBackground(hovering: hovering && enabled))
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(!enabled)
@@ -172,6 +164,7 @@ struct RibbonMenuTile<Content: View>: View {
     }
 }
 
+/// One of the small icon-and-caption rows Outlook stacks beside its tiles (Meeting, Attachment).
 struct RibbonMiniItem: View {
     let title: String
     let symbol: String
@@ -183,15 +176,14 @@ struct RibbonMiniItem: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil, size: 14).frame(width: 18)
-                Text(title).font(.system(size: 12)).lineLimit(1)
-                Spacer(minLength: 0)
+                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil, size: OL.ribbonMiniIcon, box: OL.ribbonMiniIcon)
+                Text(title).font(.system(size: OL.ribbonMiniFont)).foregroundStyle(OLColor.ribbonLabel).lineLimit(1)
             }
             .padding(.horizontal, 4)
-            .frame(width: RibbonMetrics.miniWidth, height: RibbonMetrics.miniRow, alignment: .leading)
+            .frame(height: OL.ribbonMiniRow)
             .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
-            .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 4))
-            .contentShape(RoundedRectangle(cornerRadius: 4))
+            .background(hovering && enabled ? OLColor.hover : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -200,21 +192,24 @@ struct RibbonMiniItem: View {
     }
 }
 
-/// Two or three small rows stacked to the height of one tile, centred against it.
+/// Small rows stacked to the height of a tile, top-aligned with the icons beside them.
 struct RibbonMiniColumn<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: RibbonMetrics.miniGap) { content() }
-            .frame(width: RibbonMetrics.miniWidth, height: RibbonMetrics.tileHeight, alignment: .center)
+        VStack(alignment: .leading, spacing: OL.ribbonMiniGap) { content() }
+            .padding(.top, OL.ribbonIconTop)
+            .frame(height: OL.ribbon, alignment: .top)
     }
 }
 
 struct RibbonSeparator: View {
     var body: some View {
-        Divider()
-            .frame(height: RibbonMetrics.tileHeight - 12)
-            .padding(.horizontal, 6)
+        Rectangle()
+            .fill(OLColor.ribbonSeparator)
+            .frame(width: 1, height: OL.ribbonSeparatorHeight)
+            .padding(.top, OL.ribbonIconTop)
+            .padding(.horizontal, OL.ribbonSeparatorPad)
     }
 }
 
@@ -225,7 +220,7 @@ struct RibbonPill: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        VStack(spacing: RibbonMetrics.captionTop) {
+        ZStack(alignment: .top) {
             Button { isOn.toggle() } label: {
                 HStack(spacing: 5) {
                     if isOn { Text(onLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(.white) }
@@ -233,34 +228,39 @@ struct RibbonPill: View {
                     if !isOn { Text(offLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(.white) }
                 }
                 .padding(.horizontal, 5).padding(.vertical, 3)
-                .background(isOn ? Color(red: 0.24, green: 0.72, blue: 0.4) : Color.secondary.opacity(0.7), in: Capsule())
+                .background(isOn ? OLColor.sendGreen : Color.secondary.opacity(0.7), in: Capsule())
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .frame(height: RibbonMetrics.glyphBox)
-            RibbonCaption(title: caption)
+            .frame(height: OL.ribbonIconBox)
+            .padding(.top, OL.ribbonIconTop)
+            RibbonCaption(title: caption).padding(.top, OL.ribbonLabelTop)
         }
-        .frame(width: RibbonMetrics.tileWidth, height: RibbonMetrics.tileHeight, alignment: .top)
-        .padding(.top, 6)
+        .padding(.horizontal, OL.ribbonTilePad)
+        .frame(height: OL.ribbon, alignment: .top)
         .help(caption)
     }
 }
 
+/// Home · Organise · Tools. The chosen tab is bright with a three point white line under it.
 struct RibbonTabStrip<Tab: Hashable>: View {
     let tabs: [(tab: Tab, title: String)]
     @Binding var selection: Tab
 
     var body: some View {
-        HStack(spacing: 20) {
+        HStack(alignment: .top, spacing: OL.tabGap) {
             ForEach(tabs, id: \.tab) { entry in
+                let selected = selection == entry.tab
                 Button { selection = entry.tab } label: {
-                    VStack(spacing: 3) {
+                    VStack(alignment: .leading, spacing: 0) {
                         Text(entry.title)
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(selection == entry.tab ? Color.primary : Color.secondary)
+                            .font(.system(size: OL.tabFont, weight: selected ? .semibold : .medium))
+                            .foregroundStyle(selected ? OLColor.tabSelected : OLColor.tab)
+                            .padding(.top, OL.tabTextTop)
+                            .frame(height: OL.tabUnderlineTop, alignment: .top)
                         Rectangle()
-                            .fill(selection == entry.tab ? Color.accentColor : .clear)
-                            .frame(height: 2)
+                            .fill(selected ? OLColor.tabUnderline : Color.clear)
+                            .frame(height: OL.tabUnderline)
                     }
                     .fixedSize()
                     .contentShape(Rectangle())
@@ -269,6 +269,7 @@ struct RibbonTabStrip<Tab: Hashable>: View {
             }
             Spacer(minLength: 0)
         }
+        .frame(height: OL.tabRow, alignment: .top)
     }
 }
 
@@ -282,10 +283,11 @@ struct RibbonQuickButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 13, weight: .regular))
-                .frame(width: 24, height: 20)
-                .opacity(enabled ? 0.85 : 0.3)
-                .background(hovering && enabled ? Color.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 4))
+                .font(.system(size: OL.quickIcon, weight: .regular))
+                .foregroundStyle(OLColor.ribbonLabel)
+                .frame(width: 20, height: 20)
+                .opacity(enabled ? 1 : 0.35)
+                .background(hovering && enabled ? OLColor.hover : Color.clear, in: RoundedRectangle(cornerRadius: 4))
                 .contentShape(RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
@@ -295,20 +297,20 @@ struct RibbonQuickButton: View {
     }
 }
 
-/// The ribbon row. Always scrollable, so the layout is measured once rather than
-/// twice as ViewThatFits would, and so nothing is ever silently clipped.
+/// The ribbon row: tiles top-aligned, two points apart, eight points in from the edge so the
+/// first icon lands at fourteen. Scrolls sideways when the window is narrower than Outlook's.
 struct RibbonBody<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         ScrollView(.horizontal) {
-            HStack(alignment: .center, spacing: RibbonMetrics.tileGap) {
+            HStack(alignment: .top, spacing: OL.ribbonTileGap) {
                 content()
             }
-            .padding(.horizontal, RibbonMetrics.edgeInset)
-            .frame(height: RibbonMetrics.bodyHeight)
+            .padding(.horizontal, OL.ribbonInset)
+            .frame(height: OL.ribbon, alignment: .top)
         }
-        .scrollIndicators(.automatic)
-        .frame(height: RibbonMetrics.bodyHeight)
+        .scrollIndicators(.never)
+        .frame(height: OL.ribbon)
     }
 }

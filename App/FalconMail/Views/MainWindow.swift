@@ -17,7 +17,6 @@ struct MainWindow: View {
     var body: some View {
         VStack(spacing: 0) {
             CommandBar()
-            Divider()
             if !model.tabs.isEmpty {
                 WorkspaceTabStrip()
                 Divider()
@@ -29,9 +28,10 @@ struct MainWindow: View {
                 }
             }
             WindowTrayBar()
-            Divider()
             StatusBar()
         }
+        .ignoresSafeArea(.container, edges: .top)
+        .background(OLColor.reading)
         .background(MailboxWindowAccessor())
         .background(KeyRouterView(model: model))
         .sheet(isPresented: Binding(get: { updates.shouldPrompt }, set: { _ in })) { UpdateSheet().environmentObject(updates) }
@@ -64,31 +64,16 @@ struct MainWindow: View {
         case .mail:
             switch pane {
             case .right:
-                NavigationSplitView {
-                    SidebarView()
-                        .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
-                } content: {
-                    contentColumn
-                        .navigationSplitViewColumnWidth(min: 340, ideal: 400, max: 600)
-                } detail: {
-                    detailColumn
-                }
-                .navigationSplitViewStyle(.balanced)
+                OutlookColumns { SidebarView() } list: { contentColumn } detail: { detailColumn }
             case .below:
-                NavigationSplitView {
-                    SidebarView()
-                        .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
-                } detail: {
+                OutlookColumns(showList: false) { SidebarView() } list: { EmptyView() } detail: {
                     VSplitView {
                         contentColumn.frame(minHeight: 180)
                         detailColumn.frame(minHeight: 180)
                     }
                 }
             case .off:
-                NavigationSplitView {
-                    SidebarView()
-                        .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 340)
-                } detail: {
+                OutlookColumns(showList: false) { SidebarView() } list: { EmptyView() } detail: {
                     if model.activeTab != nil {
                         detailColumn
                     } else {
@@ -152,12 +137,22 @@ struct StatusBar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
 
+    /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail.
+    private var stateText: String {
+        model.statusText == "Up to date" || model.statusText == "Ready" ? "All folders are up to date." : model.statusText
+    }
+
+    private var connectedText: String? {
+        let online = model.accounts.filter { $0.isEnabled && model.online[$0.id] != false }.map(\.email)
+        return online.isEmpty ? nil : "Connected to: " + online.joined(separator: ", ")
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Circle().fill(model.online.values.contains(false) ? Color.orange : Color.green).frame(width: 8, height: 8)
-            Text("Items: \(model.itemCount)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Divider().frame(height: 11)
-            Text(model.statusText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text("Items: \(model.itemCount)")
+                .font(.system(size: OL.statusFont).monospacedDigit())
+                .foregroundStyle(OLColor.text)
+                .padding(.leading, OL.statusLeftX)
             ForEach(model.accounts.filter { model.accountsNeedingSignIn.contains($0.id) }) { account in
                 Button("Sign in to \(account.email) again") { signInAgain(account) }
                     .buttonStyle(.borderedProminent).controlSize(.small)
@@ -169,25 +164,22 @@ struct StatusBar: View {
             Spacer()
             chordCapsule
             actionErrorCapsule
-            syncCapsule
             undoCapsule
             sendingCapsules
-        }
-        .padding(.horizontal, 12).padding(.vertical, 5)
-        .background(.bar)
-    }
-
-    @ViewBuilder private var syncCapsule: some View {
-        if let summary = model.syncingSummary {
-            HStack(spacing: 6) {
+            if let summary = model.syncingSummary {
                 ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
-                Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(summary).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
+            } else {
+                Text(stateText).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
             }
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Color.primary.opacity(0.06), in: Capsule())
-            .help("FalconMail is checking these accounts for new mail")
-            .transition(.opacity)
+            if let connectedText {
+                Text(connectedText).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
+            }
         }
+        .padding(.trailing, OL.statusRightInset)
+        .frame(height: OL.status)
+        .background(OLColor.status)
+        .overlay(alignment: .top) { Rectangle().fill(OLColor.chromeLine).frame(height: 1) }
     }
 
     @ViewBuilder private var chordCapsule: some View {

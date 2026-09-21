@@ -64,6 +64,8 @@ enum Pref {
 
     static let ribbonTab = "ribbonTab"
     static let readingPane = "readingPanePosition"
+    static let sidebarWidth = "sidebarWidth"
+    static let listWidth = "listWidth"
     static let messagePreviewLines = "messagePreviewLines"
     static let offlineMode = "workOffline"
 }

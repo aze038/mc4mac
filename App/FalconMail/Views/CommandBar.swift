@@ -24,11 +24,9 @@ struct CommandBar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            quickAccessRow
+            titleRow
             RibbonTabStrip(tabs: AppRibbonTab.allCases.map { ($0, $0.title) }, selection: tab)
-                .padding(.horizontal, RibbonMetrics.edgeInset)
-                .padding(.top, 2)
-            Divider().opacity(0.4)
+                .padding(.horizontal, OL.tabInset)
             Group {
                 switch tab.wrappedValue {
                 case .home: HomeRibbon()
@@ -36,16 +34,20 @@ struct CommandBar: View {
                 case .tools: ToolsRibbon()
                 }
             }
+            Rectangle().fill(OLColor.chromeLine).frame(height: 1)
         }
-        .background(ChromeBackground())
+        .background(OLColor.chrome)
     }
 
-    private var quickAccessRow: some View {
+    /// The window's own title row: quick actions after the traffic lights, the folder and
+    /// account in the middle, search at the right.
+    private var titleRow: some View {
         ZStack {
             Text(model.windowTitle)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: OL.titleFont))
+                .foregroundStyle(OLColor.title)
                 .lineLimit(1)
-            HStack(spacing: 2) {
+            HStack(spacing: OL.quickPitch - 20) {
                 RibbonQuickButton(symbol: "square.and.arrow.down", title: "Save all drafts") { model.saveLeftoverDrafts() }
                 RibbonQuickButton(symbol: "arrow.uturn.backward", title: "Undo", enabled: model.canUndoAction) { model.undoLastAction() }
                 RibbonQuickButton(symbol: "arrow.uturn.forward", title: "Redo", enabled: false) {}
@@ -53,10 +55,12 @@ struct CommandBar: View {
                     model.markAllReadEverywhere()
                 }
                 Spacer()
+                TitleSearchField()
             }
+            .padding(.leading, OL.quickIconsStart)
+            .padding(.trailing, OL.searchRightInset)
         }
-        .frame(height: 28)
-        .padding(.horizontal, RibbonMetrics.edgeInset)
+        .frame(height: OL.titleRow)
     }
 }
 
@@ -70,7 +74,7 @@ struct HomeRibbon: View {
         let hasSingle = thread != nil
         let first = thread?.latest
         return RibbonBody {
-            RibbonTile(title: "New\nEmail", symbol: "envelope", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.composeNew() }
+            RibbonTile(title: "New\nEmail", symbol: "envelope", enabled: !model.accounts.isEmpty) { model.composeNew() }
             RibbonMenuTile(title: "New\nItems", symbol: "envelope.badge.person.crop", enabled: !model.accounts.isEmpty) {
                 Button("Message") { model.composeNew() }
                 Button("Meeting") {
@@ -84,12 +88,12 @@ struct HomeRibbon: View {
             RibbonSeparator()
 
             RibbonTile(title: "Delete", symbol: "trash", enabled: hasSelection) { model.delete(model.selectedMessages) }
-            RibbonTile(title: "Archive", symbol: "archivebox", tint: .green, enabled: hasSelection) { model.archive(model.selectedMessages) }
+            RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: hasSelection) { model.archive(model.selectedMessages) }
             RibbonSeparator()
 
-            RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: .purple, enabled: hasSingle) { model.replyToSelection(all: false) }
-            RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: .purple, enabled: hasSingle) { model.replyToSelection(all: true) }
-            RibbonTile(title: "Forward", symbol: "arrowshape.turn.up.right", tint: .blue, enabled: hasSingle) { model.forwardSelection() }
+            RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple, enabled: hasSingle) { model.replyToSelection(all: false) }
+            RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: OLColor.replyPurple, enabled: hasSingle) { model.replyToSelection(all: true) }
+            RibbonTile(title: "Forward", symbol: "arrowshape.turn.up.right", tint: OLColor.forwardBlue, enabled: hasSingle) { model.forwardSelection() }
             RibbonMiniColumn {
                 RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
                     model.showModule(.calendar)
@@ -99,13 +103,13 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Switch\nBackground", symbol: "sun.max", tint: .yellow) { model.cycleAppearance() }
+            RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
             RibbonSeparator()
 
-            RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: .blue, enabled: hasSelection, action: { model.openMovePalette() }) {
+            RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: hasSelection, action: { model.openMovePalette() }) {
                 MoveMenuItems()
             }
-            RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: .red, enabled: hasSelection, action: { model.toggleJunkOnSelection() }) {
+            RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: hasSelection, action: { model.toggleJunkOnSelection() }) {
                 Button(model.selectionIsAllInJunk ? "Not Junk" : "Move to Junk") { model.toggleJunkOnSelection() }
                 Button("Mute Conversation") { model.muteSelection() }
             }
@@ -116,28 +120,27 @@ struct HomeRibbon: View {
             RibbonSeparator()
 
             RibbonTile(title: "Read/Unread", symbol: first?.isRead == false ? "envelope.open" : "envelope", enabled: hasSelection) { model.toggleReadOnSelection() }
-            RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: .orange, enabled: hasSelection) {
+            RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: hasSelection) {
                 CategoryMenuItems()
             }
-            RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: .red, enabled: hasSelection, action: { model.toggleFlagOnSelection() }) {
+            RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: hasSelection, action: { model.toggleFlagOnSelection() }) {
                 Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.toggleFlagOnSelection() }
                 Button("Mark All as Read") { model.markAllReadInSelection() }
             }
             RibbonSeparator()
 
-            RibbonMenuTile(title: "Filter\nEmails", symbol: model.filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill", tint: .blue) {
+            RibbonMenuTile(title: "Filter\nEmails", symbol: model.filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") {
                 FilterMenuItems()
             }
             RibbonSeparator()
 
-            VStack(alignment: .leading, spacing: RibbonMetrics.miniGap) {
-                RibbonSearchField()
+            RibbonMiniColumn {
+                FindContactField()
                 RibbonMiniItem(title: "Address Book", symbol: "person.text.rectangle") { model.showModule(.people) }
             }
-            .frame(height: RibbonMetrics.tileHeight, alignment: .center)
             RibbonSeparator()
 
-            RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: .green, enabled: !model.accounts.isEmpty) { model.syncNow() }
+            RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.syncNow() }
         }
     }
 
@@ -320,17 +323,18 @@ struct FilterMenuItems: View {
     }
 }
 
-struct RibbonSearchField: View {
+/// The search box in the title row, where Outlook keeps it.
+struct TitleSearchField: View {
     @Environment(AppModel.self) private var model
     @FocusState private var focused: Bool
 
     var body: some View {
         @Bindable var model = model
-        return HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 12))
-            TextField("Find a Contact or Message", text: $model.searchText)
+        return HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .medium)).foregroundStyle(OLColor.fieldText)
+            TextField("Search", text: $model.searchText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
+                .font(.system(size: 12))
                 .focused($focused)
                 .onSubmit { Task { await model.runSearch() } }
                 .onExitCommand {
@@ -338,15 +342,32 @@ struct RibbonSearchField: View {
                     focused = false
                 }
             if !model.searchText.isEmpty {
-                Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                Button { model.clearSearch() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(OLColor.fieldText) }
                     .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .frame(width: 190)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(focused ? Color.accentColor.opacity(0.6) : Color.primary.opacity(0.12)))
+        .padding(.horizontal, 6)
+        .frame(width: OL.searchWidth, height: OL.searchHeight)
+        .background(OLColor.field, in: RoundedRectangle(cornerRadius: 4))
         .onChange(of: model.focusSearchToken) { _, _ in focused = true }
+    }
+}
+
+/// "Find a Contact", the small field in the Home ribbon above Address Book.
+struct FindContactField: View {
+    @Environment(AppModel.self) private var model
+    @State private var text = ""
+
+    var body: some View {
+        HStack(spacing: 4) {
+            TextField("Find a Contact", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .onSubmit { model.showModule(.people) }
+        }
+        .padding(.horizontal, 6)
+        .frame(width: OL.findFieldWidth, height: OL.findFieldHeight)
+        .background(OLColor.ribbonField, in: RoundedRectangle(cornerRadius: 3))
+        .padding(.top, 1)
     }
 }

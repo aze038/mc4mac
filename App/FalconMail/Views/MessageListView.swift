@@ -20,14 +20,13 @@ struct MessageListView: View {
             listHeader
             focusedTabs
             filterBar
-            Divider()
             if model.isSearching {
                 ProgressView("Searching…").padding()
             }
             rowList
             loadOlderBar
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(OLColor.list)
         .onChange(of: model.selectedMessageIDs) { _, _ in model.selectionDidChange() }
     }
 
@@ -43,30 +42,34 @@ struct MessageListView: View {
         }
     }
 
+    /// Outlook's list header: "By: Conversations ˅" and the direction arrow, right-aligned in a
+    /// forty-three point band. The folder's name is in the window title, not here.
     private var listHeader: some View {
-        HStack(spacing: 8) {
-            Text(model.listTitle).font(.system(size: 15, weight: .semibold)).lineLimit(1)
-            Text("\(model.threads.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                .help(model.storedInSelection > model.messages.count
-                      ? "Showing the newest \(model.messages.count) of \(model.storedInSelection) messages"
-                      : "Conversations shown")
-            Spacer()
+        HStack(spacing: 14) {
+            Spacer(minLength: 0)
             sortMenu
-            densityMenu
-            if model.hasExpandableThreads {
-                Button { model.canCollapseSomething ? model.collapseAll() : model.expandAll() } label: {
-                    Image(systemName: model.canCollapseSomething ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
-                }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .help(model.canCollapseSomething ? "Collapse all conversations" : "Expand all conversations")
+            Button { model.sortAscending.toggle() } label: {
+                Image(systemName: model.sortAscending ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(OLColor.text)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help(model.sortAscending ? "Oldest first" : "Newest first")
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        .padding(.trailing, OL.listHeaderRightInset)
+        .frame(height: OL.listHeader)
+        .help(model.storedInSelection > model.messages.count
+              ? "Showing the newest \(model.messages.count) of \(model.storedInSelection) messages"
+              : "\(model.threads.count) conversations")
     }
 
     private var currentSort: ListSort { ListSort(rawValue: model.listSort) ?? .date }
+
+    private var arrangementTitle: Text {
+        model.groupByThread ? Text("Conversations") : Text(currentSort.title)
+    }
 
     private var sortMenu: some View {
         Menu {
@@ -93,13 +96,15 @@ struct MessageListView: View {
             Divider()
             Button("Restore to Defaults") { model.restoreListDefaults() }
         } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "arrow.up.arrow.down").font(.system(size: 10))
-                Text(currentSort.title).font(.caption)
+            HStack(spacing: 4) {
+                (Text("By: ") + arrangementTitle)
+                    .font(.system(size: OL.listHeaderFont))
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
             }
-            .foregroundStyle(.secondary)
+            .foregroundStyle(OLColor.text)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Sort order")
@@ -167,9 +172,13 @@ struct MessageListView: View {
             List(model.rows, selection: $model.selectedMessageIDs) { row in
                 rowView(row)
                     .tag(row.id)
-                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 8))
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
-            .listStyle(.inset)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(OLColor.list)
             .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } })
             .onKeyPress(.return) {
                 guard let t = model.currentThread else { return .ignored }
@@ -194,10 +203,11 @@ struct MessageListView: View {
         switch row {
         case .group(let title):
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .padding(.top, 10).padding(.bottom, 2)
+                .font(.system(size: OL.listLineFont, weight: .semibold))
+                .foregroundStyle(OLColor.text)
+                .padding(.leading, OL.listSeparatorX)
+                .frame(height: 26, alignment: .bottomLeading)
+                .padding(.bottom, 4)
                 .selectionDisabled()
         case .thread(let thread):
             ConversationRow(thread: thread,
@@ -241,14 +251,15 @@ struct MessageListView: View {
 
     @ViewBuilder private var loadOlderBar: some View {
         if model.searchText.isEmpty, model.canShowMore || isFolder {
-            Divider()
+            Rectangle().fill(OLColor.divider).frame(height: 1)
             HStack(spacing: 8) {
                 Button(model.canShowMore ? "Show more" : "Load older messages") { model.loadOlder() }
                     .buttonStyle(.link)
+                    .font(.system(size: OL.statusFont))
                 if model.storedInSelection > model.messages.count {
                     Text("\(model.messages.count) of \(model.storedInSelection)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: OL.statusFont).monospacedDigit())
+                        .foregroundStyle(OLColor.textMuted)
                 }
             }
             .padding(6)
@@ -286,65 +297,90 @@ struct ConversationRow: View {
     @State private var hovering = false
 
     private var unread: Bool { thread.unreadCount > 0 }
+    private var selected: Bool { model.selectedMessageIDs.contains(thread.id) }
 
     var body: some View {
         let m = thread.latest
-        let compact = density == .compact
-        let previewLines = showPreview ? density.previewLines : 0
-        HStack(alignment: .top, spacing: 8) {
-            RoundedRectangle(cornerRadius: 1.5)
-                .fill(unread ? Color.accentColor : Color.clear)
-                .frame(width: 3)
-                .padding(.vertical, compact ? 3 : 5)
-            if showSenderImage, !compact || thread.messages.count > 1 {
-                AvatarView(name: m.from.displayName, address: m.from.address, size: compact ? 20 : 26)
-                    .padding(.top, compact ? 1 : 2)
+        ZStack(alignment: .topLeading) {
+            if selected {
+                OLColor.listSelected
+            } else {
+                OLColor.list
+                Rectangle()
+                    .fill(OLColor.divider)
+                    .frame(height: 1)
+                    .padding(.horizontal, OL.listSeparatorX)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
             }
-            VStack(alignment: .leading, spacing: compact ? 1 : 2) {
-                HStack(spacing: 6) {
+            if unread {
+                Rectangle().fill(OLColor.unread).frame(width: 3).padding(.vertical, 4)
+            }
+            if thread.messages.count > 1 {
+                Button { model.toggleExpanded(thread) } label: {
+                    Image(systemName: model.isExpanded(thread) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(OLColor.text)
+                        .frame(width: 12, height: 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, OL.listChevronX)
+                .padding(.top, OL.listNameTop + 3)
+                .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(m.from.displayName)
-                        .font(.system(size: 13, weight: unread ? .semibold : .regular))
+                        .font(.system(size: OL.listNameFont, weight: unread ? .semibold : .regular))
+                        .foregroundStyle(OLColor.text)
                         .lineLimit(1)
-                    if thread.messages.count > 1 {
-                        Button { model.toggleExpanded(thread) } label: {
-                            HStack(spacing: 2) {
-                                Image(systemName: model.isExpanded(thread) ? "chevron.down" : "chevron.right")
-                                    .font(.system(size: 8, weight: .bold))
-                                Text("\(thread.messages.count)").font(.system(size: 10, weight: .medium))
-                            }
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
-                    }
                     Spacer(minLength: 4)
                     if hovering {
                         quickActionRow(for: thread)
                     } else {
-                        ForEach(model.categories(for: m)) { category in
-                            Circle().fill(category.swatch).frame(width: 7, height: 7).help(category.name)
+                        HStack(spacing: 4) {
+                            ForEach(model.categories(for: m)) { category in
+                                Circle().fill(category.swatch).frame(width: 8, height: 8).help(category.name)
+                            }
+                            if m.hasAttachments {
+                                Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(OLColor.textMuted)
+                            }
+                            if m.isFlagged {
+                                Image(systemName: "flag.fill").font(.system(size: 12)).foregroundStyle(OLColor.flagRed)
+                            }
                         }
-                        if m.hasAttachments { Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(.secondary) }
-                        if m.isFlagged { Image(systemName: "flag.fill").font(.system(size: 10)).foregroundStyle(.orange) }
-                        Text(MessageRow.dateText(m.date))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                        .padding(.trailing, OL.listIconRight - OL.listRightInset)
                     }
                 }
-                Text(m.subject.isEmpty ? "(no subject)" : m.subject)
-                    .font(.system(size: 12.5, weight: unread ? .medium : .regular))
-                    .foregroundStyle(unread ? .primary : .secondary)
-                    .lineLimit(1)
-                if previewLines > 0 {
+                .frame(height: OL.listLinePitch, alignment: .top)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(m.subject.isEmpty ? "(no subject)" : m.subject)
+                        .font(.system(size: OL.listLineFont))
+                        .foregroundStyle(OLColor.text)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(MessageRow.dateText(m.date))
+                        .font(.system(size: OL.listLineFont))
+                        .foregroundStyle(OLColor.textMuted)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .padding(.top, 2)
+                .frame(height: OL.listLinePitch, alignment: .top)
+                if showPreview {
                     Text(m.snippet.isEmpty ? " " : m.snippet)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(previewLines)
+                        .font(.system(size: OL.listLineFont))
+                        .foregroundStyle(OLColor.textMuted)
+                        .lineLimit(1)
+                        .padding(.top, 2)
+                        .frame(height: OL.listLinePitch, alignment: .top)
                 }
             }
+            .padding(.leading, OL.listTextX)
+            .padding(.trailing, OL.listRightInset)
+            .padding(.top, OL.listNameTop - 2)
         }
-        .padding(.vertical, density.rowPadding)
+        .frame(height: showPreview ? OL.listRow : OL.listRow - OL.listLinePitch)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
     }
@@ -354,8 +390,8 @@ struct ConversationRow: View {
             ForEach(quickActions) { action in
                 Button { run(action, on: thread) } label: {
                     Image(systemName: symbol(action, thread))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12))
+                        .foregroundStyle(OLColor.textMuted)
                         .frame(width: 18, height: 16)
                         .contentShape(Rectangle())
                 }
@@ -363,6 +399,7 @@ struct ConversationRow: View {
                 .help(Text(action.title))
             }
         }
+        .padding(.trailing, OL.listIconRight - OL.listRightInset)
     }
 
     private func symbol(_ action: QuickAction, _ thread: MessageThread) -> String {
@@ -385,34 +422,67 @@ struct ConversationRow: View {
     }
 }
 
+/// One message of an expanded conversation: the same three lines, set in from the left.
 struct ChildMessageRow: View {
+    @Environment(AppModel.self) private var model
     let message: MessageSummary
 
+    private var selected: Bool { model.selectedMessageIDs.contains(message.id) }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(message.isRead ? Color.clear : Color.accentColor)
-                .frame(width: 7, height: 7)
-                .padding(.top, 9)
-            AvatarView(name: message.from.displayName, address: message.from.address, size: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
+        ZStack(alignment: .topLeading) {
+            if selected {
+                OLColor.listSelected
+            } else {
+                OLColor.list
+                Rectangle()
+                    .fill(OLColor.divider)
+                    .frame(height: 1)
+                    .padding(.horizontal, OL.listSeparatorX)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+            }
+            if !message.isRead {
+                Rectangle().fill(OLColor.unread).frame(width: 3).padding(.vertical, 4)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(message.from.displayName)
-                        .font(.system(size: 12.5, weight: message.isRead ? .regular : .semibold))
+                        .font(.system(size: OL.listNameFont, weight: message.isRead ? .regular : .semibold))
+                        .foregroundStyle(OLColor.text)
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    if message.hasAttachments { Image(systemName: "paperclip").font(.system(size: 10)).foregroundStyle(.secondary) }
-                    if message.isFlagged { Image(systemName: "flag.fill").font(.system(size: 10)).foregroundStyle(.red) }
-                    Text(MessageRow.dateText(message.date)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        if message.hasAttachments { Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(OLColor.textMuted) }
+                        if message.isFlagged { Image(systemName: "flag.fill").font(.system(size: 12)).foregroundStyle(OLColor.flagRed) }
+                    }
+                    .padding(.trailing, OL.listIconRight - OL.listRightInset)
                 }
+                .frame(height: OL.listLinePitch, alignment: .top)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(message.subject.isEmpty ? "(no subject)" : message.subject)
+                        .font(.system(size: OL.listLineFont))
+                        .foregroundStyle(OLColor.text)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(MessageRow.dateText(message.date))
+                        .font(.system(size: OL.listLineFont))
+                        .foregroundStyle(OLColor.textMuted)
+                        .fixedSize()
+                }
+                .padding(.top, 2)
+                .frame(height: OL.listLinePitch, alignment: .top)
                 Text(message.snippet.isEmpty ? " " : message.snippet)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: OL.listLineFont))
+                    .foregroundStyle(OLColor.textMuted)
                     .lineLimit(1)
+                    .padding(.top, 2)
+                    .frame(height: OL.listLinePitch, alignment: .top)
             }
+            .padding(.leading, OL.listTextX + 20)
+            .padding(.trailing, OL.listRightInset)
+            .padding(.top, OL.listNameTop - 2)
         }
-        .padding(.leading, 44)
-        .padding(.vertical, 4)
+        .frame(height: OL.listRow)
         .contentShape(Rectangle())
     }
 }

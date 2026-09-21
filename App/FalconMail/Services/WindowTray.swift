@@ -164,6 +164,13 @@ struct MailboxWindowAccessor: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
+            // The chrome draws its own title row, Outlook's way: the window's title bar is see-through
+            // and the traffic lights sit over the chrome.
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.styleMask.insert(.fullSizeContentView)
+            window.isMovableByWindowBackground = true
+            window.toolbar = nil
             WindowTray.shared.register(mailbox: window)
         }
     }

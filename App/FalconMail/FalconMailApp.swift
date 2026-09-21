@@ -36,7 +36,8 @@ struct FalconMailApp: App {
                 }
                 .onChange(of: model.appearance) { _, new in AppAppearance.apply(new) }
         }
-        .defaultSize(width: 1280, height: 800)
+        .defaultSize(width: 1728, height: 1084)
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Message") { model.composeNew() }

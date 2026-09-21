@@ -1,0 +1,173 @@
+import SwiftUI
+import AppKit
+
+/// Legacy Outlook for Mac, measured.
+///
+/// Every number below was read off a capture of the real window at 1728 × 1084 points on a
+/// Retina display, in dark appearance: region edges from colour changes along rows and columns,
+/// text sizes from cap heights, colours from the pixels themselves. Nothing here is a guess, so
+/// when a view disagrees with Outlook the view is wrong, not the number.
+enum OL {
+    // MARK: the chrome across the top: title row, tab row, ribbon, then a one point line
+
+    static let titleRow: CGFloat = 28
+    static let tabRow: CGFloat = 34
+    static let ribbon: CGFloat = 74
+    static var chromeHeight: CGFloat { titleRow + tabRow + ribbon }
+
+    static let quickIconsStart: CGFloat = 95
+    static let quickIcon: CGFloat = 14
+    static let quickPitch: CGFloat = 27
+    static let titleFont: CGFloat = 13
+    static let searchWidth: CGFloat = 208
+    static let searchHeight: CGFloat = 18
+    static let searchRightInset: CGFloat = 12
+
+    static let tabFont: CGFloat = 13.5
+    static let tabInset: CGFloat = 12
+    static let tabGap: CGFloat = 24
+    static let tabTextTop: CGFloat = 10
+    static let tabUnderlineTop: CGFloat = 29
+    static let tabUnderline: CGFloat = 3
+
+    static let ribbonInset: CGFloat = 8
+    static let ribbonIconTop: CGFloat = 4
+    static let ribbonIconBox: CGFloat = 28
+    static let ribbonIcon: CGFloat = 23
+    static let ribbonLabelTop: CGFloat = 44
+    static let ribbonLabelFont: CGFloat = 11
+    static let ribbonLabelPitch: CGFloat = 10.5
+    static let ribbonTilePad: CGFloat = 6
+    static let ribbonTileGap: CGFloat = 2
+    static let ribbonSeparatorPad: CGFloat = 12
+    static let ribbonSeparatorHeight: CGFloat = 59
+    static let ribbonMiniIcon: CGFloat = 16
+    static let ribbonMiniFont: CGFloat = 12
+    static let ribbonMiniRow: CGFloat = 30
+    static let ribbonMiniGap: CGFloat = 4
+    static let findFieldWidth: CGFloat = 101
+    static let findFieldHeight: CGFloat = 20
+
+    // MARK: the three columns
+
+    static let sidebarWidth: CGFloat = 270
+    static let listWidth: CGFloat = 340
+    static let divider: CGFloat = 1
+
+    // MARK: sidebar rows
+
+    static let sidebarRowTop: CGFloat = 30
+    static let sidebarRowFolder: CGFloat = 24
+    static let sidebarTopFont: CGFloat = 14
+    static let sidebarFolderFont: CGFloat = 13
+    static let sidebarCountFont: CGFloat = 12
+    static let sidebarChevronX: CGFloat = 5
+    static let sidebarTopTextX: CGFloat = 23.5
+    static let sidebarLevelChevronX: CGFloat = 18
+    static let sidebarLevelIconX: CGFloat = 37
+    static let sidebarLevelTextX: CGFloat = 61
+    static let sidebarIndent: CGFloat = 16
+    static let sidebarIcon: CGFloat = 16
+    static let sidebarCountRight: CGFloat = 16.5
+
+    // MARK: message list
+
+    static let listHeader: CGFloat = 43
+    static let listHeaderFont: CGFloat = 13.5
+    static let listHeaderRightInset: CGFloat = 10
+    static let listRow: CGFloat = 70
+    static let listTextX: CGFloat = 42.5
+    static let listNameFont: CGFloat = 15
+    static let listLineFont: CGFloat = 13.5
+    static let listNameTop: CGFloat = 8
+    static let listLinePitch: CGFloat = 19
+    static let listRightInset: CGFloat = 26.5
+    static let listIconRight: CGFloat = 20
+    static let listIcon: CGFloat = 16
+    static let listSeparatorX: CGFloat = 14
+    static let listChevronX: CGFloat = 8
+
+    // MARK: reading pane
+
+    static let readingSubjectTop: CGFloat = 8
+    static let readingSubjectFont: CGFloat = 22
+    static let readingIconX: CGFloat = 25.5
+    static let readingTextX: CGFloat = 72.5
+    static let readingAvatar: CGFloat = 42
+    static let readingAvatarX: CGFloat = 28
+    static let readingAvatarTop: CGFloat = 46
+    static let readingSenderX: CGFloat = 94.5
+    static let readingSenderFont: CGFloat = 13
+    static let readingMetaFont: CGFloat = 12
+    static let readingRightInset: CGFloat = 12
+    static let readingNoticeTop: CGFloat = 108
+    static let readingNotice: CGFloat = 20
+    static let readingBodyX: CGFloat = 25
+    static let readingQuoteBarX: CGFloat = 33
+
+    // MARK: the bottom: module rail under the sidebar, status bar across the window
+
+    static let rail: CGFloat = 36
+    static let railIcon: CGFloat = 18
+    static let railFirstCenter: CGFloat = 28
+    static let railPitch: CGFloat = 54
+    static let status: CGFloat = 27
+    static let statusFont: CGFloat = 12
+    static let statusLeftX: CGFloat = 25
+    static let statusRightInset: CGFloat = 25.5
+}
+
+/// Outlook's colours, dark ones measured, light ones the same surfaces in Outlook's light look.
+enum OLColor {
+    static func dynamic(light: Int, dark: Int) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(hex: isDark ? dark : light)
+        })
+    }
+
+    static let chrome = dynamic(light: 0xF6F6F6, dark: 0x1B1B1B)
+    static let chromeLine = dynamic(light: 0xC4C4C4, dark: 0x000000)
+    static let sidebar = dynamic(light: 0xE8E8E8, dark: 0x323232)
+    static let sidebarSelected = dynamic(light: 0xD0D0D0, dark: 0x464647)
+    static let list = dynamic(light: 0xFFFFFF, dark: 0x1E1E1E)
+    static let listSelected = dynamic(light: 0xDCDCDC, dark: 0x454646)
+    static let reading = dynamic(light: 0xFFFFFF, dark: 0x1E1E1E)
+    static let notice = dynamic(light: 0xEFEFEF, dark: 0x323232)
+    static let status = dynamic(light: 0xEDEDED, dark: 0x282828)
+    static let divider = dynamic(light: 0xC4C4C4, dark: 0x545454)
+    static let text = dynamic(light: 0x1E1E1E, dark: 0xE6E6E6)
+    static let textMuted = dynamic(light: 0x5E5E5E, dark: 0xB4B4B4)
+    static let textDim = dynamic(light: 0x7A7A7A, dark: 0x8E8E8E)
+    static let title = dynamic(light: 0x3C3C3C, dark: 0xD7D7D7)
+    static let tab = dynamic(light: 0x6E6E6E, dark: 0x919292)
+    static let tabSelected = dynamic(light: 0x1E1E1E, dark: 0xE6E6E6)
+    static let tabUnderline = dynamic(light: 0x1E1E1E, dark: 0xDCDCDC)
+    static let ribbonIcon = dynamic(light: 0x5A5A5A, dark: 0x8B8A8B)
+    static let ribbonLabel = dynamic(light: 0x505050, dark: 0xA7A6A6)
+    static let ribbonSeparator = dynamic(light: 0xD0D0D0, dark: 0x525252)
+    static let field = dynamic(light: 0xFFFFFF, dark: 0x484848)
+    static let fieldText = dynamic(light: 0x7A7A7A, dark: 0xA0A0A0)
+    static let ribbonField = dynamic(light: 0xFFFFFF, dark: 0x222222)
+    static let unread = dynamic(light: 0x0F6CBD, dark: 0x629FF8)
+    static let inbox = dynamic(light: 0x1E7AD0, dark: 0x52A3E0)
+    static let icon = dynamic(light: 0x4A4A4A, dark: 0xE1E1E1)
+    static let buttonBorder = dynamic(light: 0xB0B0B0, dark: 0x707070)
+    static let quoteBar = dynamic(light: 0x8A8A8A, dark: 0xCCCCCC)
+    static let hover = Color.primary.opacity(0.08)
+
+    // Ribbon icon accents, the colours Outlook draws into its otherwise grey glyphs.
+    static let replyPurple = dynamic(light: 0x8E44AD, dark: 0xB56AD8)
+    static let forwardBlue = dynamic(light: 0x2F6FBF, dark: 0x4A90D9)
+    static let archiveGreen = dynamic(light: 0x2E8B4A, dark: 0x3DA35D)
+    static let junkRed = dynamic(light: 0xC0392B, dark: 0xD9534F)
+    static let flagRed = dynamic(light: 0xC0392B, dark: 0xD64541)
+    static let categoryOrange = dynamic(light: 0xC77A1F, dark: 0xD68B2E)
+    static let sendGreen = archiveGreen
+}
+
+extension NSColor {
+    convenience init(hex: Int) {
+        self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+}

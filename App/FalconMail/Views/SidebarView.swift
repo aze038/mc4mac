@@ -1,14 +1,15 @@
 import SwiftUI
 import FalconCore
 
+/// Outlook's folder pane: flat rows on a grey ground, thirty points for accounts and sections,
+/// twenty-four for folders, each level sixteen points further in, the chosen folder a full-width
+/// lighter band, unread counts in blue at the right.
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
     @State private var showAddAccount = false
+    @State private var smartExpanded = false
+    @State private var localExpanded = false
     @AppStorage(Pref.hideLocalFolders) private var hideLocalFolders = false
-
-    private var selectionBinding: Binding<SidebarSelection?> {
-        Binding(get: { model.selection }, set: { model.select($0) })
-    }
 
     private var pendingOutbox: Int {
         model.outboxItems.filter { $0.status == .queued || $0.status == .failed }.count
@@ -16,142 +17,127 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            List(selection: selectionBinding) {
-                allAccountsSection
-                ForEach(model.accounts) { account in
-                    AccountFolderSection(account: account,
-                                         folders: model.folders[account.id] ?? [],
-                                         offline: model.online[account.id] == false,
-                                         expanded: Binding(get: { model.isAccountExpanded(account.id) },
-                                                           set: { model.setAccountExpanded(account.id, $0) }))
-                }
-                SmartFoldersSection(pendingOutbox: pendingOutbox)
-                if !hideLocalFolders {
-                    LocalFoldersSection(records: model.archiveRecords)
-                }
-                Section {
-                    Button { showAddAccount = true } label: {
-                        Label(model.accounts.isEmpty ? "Add your email account" : "Add account…", systemImage: "plus.circle")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                }
+            ScrollView {
+                LazyVStack(spacing: 0) { rows }
             }
-            .listStyle(.sidebar)
-            Divider()
+            .scrollIndicators(.automatic)
+            Rectangle().fill(OLColor.divider).frame(height: 1)
             ModuleRail()
         }
+        .background(OLColor.sidebar)
         .sheet(isPresented: $showAddAccount) { AddAccountSheet().environment(model) }
         .onReceive(NotificationCenter.default.publisher(for: .falconAddAccount)) { _ in showAddAccount = true }
     }
 
-    private var allAccountsSection: some View {
-        DisclosureGroup(isExpanded: Binding(get: { model.allAccountsExpanded }, set: { model.allAccountsExpanded = $0 })) {
-            Label("All Inboxes", systemImage: "tray.2")
-                .tag(SidebarSelection.unified)
-                .badge(model.unifiedUnreadCount)
-        } label: {
-            Text("All Accounts").font(.system(size: 13, weight: .medium))
+    @ViewBuilder private var rows: some View {
+        SidebarTopRow(title: "All Accounts",
+                      expanded: Binding(get: { model.allAccountsExpanded }, set: { model.allAccountsExpanded = $0 }))
+        if model.allAccountsExpanded {
+            SidebarFolderRow(level: 1, title: "All Inboxes", symbol: "tray.2", tint: OLColor.inbox,
+                             count: model.unifiedUnreadCount, selected: model.selection == .unified) { model.select(.unified) }
         }
-    }
-}
-
-struct SmartFoldersSection: View {
-    @Environment(AppModel.self) private var model
-    let pendingOutbox: Int
-    @State private var expanded = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            Label("Outbox", systemImage: "paperplane")
-                .tag(SidebarSelection.outbox)
-                .badge(pendingOutbox)
-            Label("Unread", systemImage: "envelope.badge")
-                .tag(SidebarSelection.smart(.unread))
-                .badge(model.unifiedUnreadCount)
-            Label("Flagged", systemImage: "flag")
-                .tag(SidebarSelection.smart(.flagged))
-            Label("With Attachments", systemImage: "paperclip")
-                .tag(SidebarSelection.smart(.attachments))
-        } label: {
-            Text("Smart Folders").font(.system(size: 13, weight: .medium))
+        ForEach(model.accounts) { account in
+            accountRows(account)
         }
-    }
-}
-
-struct LocalFoldersSection: View {
-    let records: [ArchiveRecord]
-    @State private var expanded = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            if records.isEmpty {
-                Text("No local archives yet").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(records) { record in
-                    Label(record.name, systemImage: record.isEncrypted ? "lock.doc" : "archivebox")
-                        .tag(SidebarSelection.archive(record.id))
-                        .badge(record.messageCount)
+        SidebarTopRow(title: "Smart Folders", expanded: $smartExpanded)
+        if smartExpanded {
+            SidebarFolderRow(level: 1, title: "Outbox", symbol: "paperplane", count: pendingOutbox,
+                             selected: model.selection == .outbox) { model.select(.outbox) }
+            SidebarFolderRow(level: 1, title: "Unread", symbol: "envelope.badge", count: model.unifiedUnreadCount,
+                             selected: model.selection == .smart(.unread)) { model.select(.smart(.unread)) }
+            SidebarFolderRow(level: 1, title: "Flagged", symbol: "flag", count: 0,
+                             selected: model.selection == .smart(.flagged)) { model.select(.smart(.flagged)) }
+            SidebarFolderRow(level: 1, title: "With Attachments", symbol: "paperclip", count: 0,
+                             selected: model.selection == .smart(.attachments)) { model.select(.smart(.attachments)) }
+        }
+        if !hideLocalFolders {
+            SidebarTopRow(title: "On my Computer", expanded: $localExpanded)
+            if localExpanded {
+                if model.archiveRecords.isEmpty {
+                    SidebarFolderRow(level: 1, title: "No local archives yet", symbol: "archivebox", textColor: OLColor.textDim,
+                                     count: 0, selected: false) {}
+                } else {
+                    ForEach(model.archiveRecords) { record in
+                        SidebarFolderRow(level: 1, title: record.name, symbol: record.isEncrypted ? "lock.doc" : "archivebox",
+                                         count: record.messageCount, selected: model.selection == .archive(record.id)) {
+                            model.select(.archive(record.id))
+                        }
+                    }
                 }
             }
-        } label: {
-            Text("On my Computer").font(.system(size: 13, weight: .medium))
         }
-    }
-}
-
-struct AccountFolderSection: View {
-    @Environment(AppModel.self) private var model
-    let account: AccountInfo
-    let folders: [FolderInfo]
-    let offline: Bool
-    @Binding var expanded: Bool
-
-    private var hiddenUnread: Int {
-        folders.filter { $0.role == .inbox }.reduce(0) { $0 + $1.unreadCount }
+        SidebarFolderRow(level: 1, title: model.accounts.isEmpty ? "Add your email account" : "Add account…", symbol: "plus.circle",
+                         tint: OLColor.unread, textColor: OLColor.unread, count: 0, selected: false) { showAddAccount = true }
+            .padding(.top, 6)
     }
 
-    private var inbox: FolderInfo? { folders.first { $0.role == .inbox && $0.isSelectable } }
-
-    private var rest: [FolderInfo] {
-        folders.filter { $0.isSelectable && $0.role != .inbox }
-    }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            if let inbox {
-                FolderRow(folder: inbox).tag(SidebarSelection.folder(inbox.id))
+    @ViewBuilder private func accountRows(_ account: AccountInfo) -> some View {
+        let folders = model.folders[account.id] ?? []
+        let expanded = model.isAccountExpanded(account.id)
+        let hiddenUnread = folders.filter { $0.role == .inbox }.reduce(0) { $0 + $1.unreadCount }
+        SidebarTopRow(title: account.email,
+                      expanded: Binding(get: { model.isAccountExpanded(account.id) }, set: { model.setAccountExpanded(account.id, $0) })) {
+            if !account.isEnabled {
+                Image(systemName: "pause.circle").foregroundStyle(OLColor.textDim).help("Paused in Settings → Accounts")
+            } else if model.online[account.id] == false {
+                Image(systemName: "wifi.slash").foregroundStyle(Color.orange)
             }
-            ForEach(rest) { folder in
-                FolderRow(folder: folder).tag(SidebarSelection.folder(folder.id))
+            if !expanded, hiddenUnread > 0 {
+                Text("\(hiddenUnread)").font(.system(size: OL.sidebarCountFont)).foregroundStyle(OLColor.unread)
             }
-        } label: {
-            HStack(spacing: 5) {
-                Text(account.email).lineLimit(1).truncationMode(.middle)
-                    .font(.system(size: 13, weight: .medium))
-                Spacer(minLength: 4)
-                if !account.isEnabled {
-                    Image(systemName: "pause.circle").foregroundStyle(.secondary).help("Paused in Settings → Accounts")
-                } else if offline {
-                    Image(systemName: "wifi.slash").foregroundStyle(.orange)
+        }
+        .contextMenu {
+            Button("New Folder…") { model.createFolderPrompt(for: account) }
+            Button("Sync This Account") { model.syncNow() }
+        }
+        if expanded {
+            // Outlook shows a container such as [Gmail] as a folder with its children under it,
+            // even when the container itself holds no mail.
+            let ordered = SidebarView.treeOrder(folders)
+            ForEach(ordered) { folder in
+                SidebarFolderRow(level: 1 + folder.depth, title: folder.name, symbol: SidebarView.icon(for: folder),
+                                 tint: folder.role == .inbox ? OLColor.inbox : OLColor.icon,
+                                 count: folder.unreadCount, selected: model.selection == .folder(folder.id),
+                                 disclosure: SidebarView.hasChildren(folder, in: folders) ? .open : .none) {
+                    if folder.isSelectable { model.select(.folder(folder.id)) }
                 }
-                if !expanded, hiddenUnread > 0 {
-                    Text("\(hiddenUnread)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-            }
-            .contextMenu {
-                Button("New Folder…") { model.createFolderPrompt(for: account) }
-                Button("Sync This Account") { model.syncNow() }
+                    .contextMenu {
+                        Button("Mark All as Read") { model.markAllRead(in: folder) }
+                            .disabled(folder.unreadCount == 0)
+                        if folder.role == .trash || folder.role == .junk {
+                            Button("Delete All", role: .destructive) { model.purgeEverything(in: folder) }
+                        }
+                    }
             }
         }
     }
-}
 
-struct FolderRow: View {
-    @Environment(AppModel.self) private var model
-    let folder: FolderInfo
+    /// The inbox first, then the account's own order, with every container placed just before
+    /// the first of its children so the tree reads top down as Outlook draws it.
+    static func treeOrder(_ folders: [FolderInfo]) -> [FolderInfo] {
+        let shown = folders.filter { $0.isSelectable || hasChildren($0, in: folders) }
+        let queue = shown.filter { $0.role == .inbox } + shown.filter { $0.role != .inbox }
+        var result: [FolderInfo] = []
+        var emitted = Set<UUID>()
+        for folder in queue where !emitted.contains(folder.id) {
+            let ancestors = shown.filter { $0.id != folder.id && !emitted.contains($0.id) && folder.path.hasPrefix($0.path + ($0.delimiter.isEmpty ? "/" : $0.delimiter)) }
+                .sorted { $0.depth < $1.depth }
+            for ancestor in ancestors {
+                result.append(ancestor)
+                emitted.insert(ancestor.id)
+            }
+            result.append(folder)
+            emitted.insert(folder.id)
+        }
+        return result
+    }
 
-    private var icon: String {
+    static func hasChildren(_ folder: FolderInfo, in folders: [FolderInfo]) -> Bool {
+        let prefix = folder.path + (folder.delimiter.isEmpty ? "/" : folder.delimiter)
+        return folders.contains { $0.id != folder.id && $0.path.hasPrefix(prefix) }
+    }
+
+    static func icon(for folder: FolderInfo) -> String {
         switch folder.role {
         case .inbox: return "tray"
         case .sent: return "paperplane"
@@ -159,30 +145,96 @@ struct FolderRow: View {
         case .trash: return "trash"
         case .junk: return "xmark.bin"
         case .archive, .all: return "archivebox"
-        case .flagged: return "star"
-        case .important: return "exclamationmark.circle"
-        case .other: return "folder"
+        case .flagged, .important, .other: return "folder"
         }
     }
+}
 
-    private var tint: Color {
-        folder.role == .inbox ? Color.accentColor : Color.secondary
+/// "All Accounts", an account, "Smart Folders", "On my Computer": thirty points tall, a thin
+/// chevron at five points, the name at twenty-three and a half, fourteen point text.
+struct SidebarTopRow<Trailing: View>: View {
+    let title: String
+    @Binding var expanded: Bool
+    @ViewBuilder var trailing: () -> Trailing
+
+    init(title: String, expanded: Binding<Bool>, @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }) {
+        self.title = title
+        _expanded = expanded
+        self.trailing = trailing
     }
 
     var body: some View {
-        Label {
-            Text(folder.name).lineLimit(1)
-        } icon: {
-            Image(systemName: icon).foregroundStyle(tint)
+        HStack(spacing: 0) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(OLColor.icon)
+                .frame(width: 12, height: 12)
+                .padding(.leading, OL.sidebarChevronX - 2)
+            Text(title)
+                .font(.system(size: OL.sidebarTopFont))
+                .foregroundStyle(OLColor.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.leading, OL.sidebarTopTextX - OL.sidebarChevronX - 10)
+            Spacer(minLength: 4)
+            trailing()
+                .padding(.trailing, OL.sidebarCountRight)
         }
-        .padding(.leading, CGFloat(folder.depth) * 12)
-        .badge(folder.unreadCount)
-        .contextMenu {
-            Button("Mark All as Read") { model.markAllRead(in: folder) }
-                .disabled(folder.unreadCount == 0)
-            if folder.role == .trash || folder.role == .junk {
-                Button("Delete All", role: .destructive) { model.purgeEverything(in: folder) }
+        .frame(height: OL.sidebarRowTop)
+        .contentShape(Rectangle())
+        .onTapGesture { expanded.toggle() }
+    }
+}
+
+enum SidebarDisclosure { case none, open, closed }
+
+/// A folder: twenty-four points tall, icon at thirty-seven and text at sixty-one for the first
+/// level, sixteen further in per level, the count in blue at the right.
+struct SidebarFolderRow: View {
+    let level: Int
+    let title: String
+    let symbol: String
+    var tint: Color = OLColor.icon
+    var textColor: Color = OLColor.text
+    let count: Int
+    let selected: Bool
+    var disclosure: SidebarDisclosure = .none
+    let action: () -> Void
+
+    private var indent: CGFloat { CGFloat(max(level, 1) - 1) * OL.sidebarIndent }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if disclosure != .none {
+                Image(systemName: disclosure == .open ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(OLColor.icon)
+                    .frame(width: 10, height: 10)
+                    .padding(.leading, OL.sidebarLevelChevronX + indent)
+                    .padding(.trailing, OL.sidebarLevelIconX - OL.sidebarLevelChevronX - 10)
+            } else {
+                Color.clear.frame(width: OL.sidebarLevelIconX + indent, height: 1)
+            }
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(tint)
+                .frame(width: OL.sidebarIcon, height: OL.sidebarIcon)
+            Text(title)
+                .font(.system(size: OL.sidebarFolderFont))
+                .foregroundStyle(textColor)
+                .lineLimit(1)
+                .padding(.leading, OL.sidebarLevelTextX - OL.sidebarLevelIconX - OL.sidebarIcon)
+            Spacer(minLength: 4)
+            if count > 0 {
+                Text("\(count)")
+                    .font(.system(size: OL.sidebarCountFont))
+                    .foregroundStyle(OLColor.unread)
+                    .padding(.trailing, OL.sidebarCountRight)
             }
         }
+        .frame(height: OL.sidebarRowFolder)
+        .background(selected ? OLColor.sidebarSelected : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture { action() }
     }
 }
