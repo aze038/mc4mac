@@ -42,15 +42,7 @@ public actor ContactStore {
     }
 
     public func suggest(_ prefix: String, limit: Int = 8) -> [ContactInfo] {
-        let q = prefix.lowercased().trimmed
-        guard !q.isEmpty else { return [] }
-        var seen = Set<String>()
-        return all()
-            .filter { $0.email.lowercased().contains(q) || $0.name.lowercased().contains(q) }
-            .sorted { ($0.useCount, $0.lastUsed ?? .distantPast) > ($1.useCount, $1.lastUsed ?? .distantPast) }
-            .filter { seen.insert($0.email.lowercased()).inserted }
-            .prefix(limit)
-            .map { $0 }
+        Array(RecipientText.suggestions(from: all(), for: prefix).prefix(limit))
     }
 }
 

@@ -13,26 +13,37 @@ struct RecipientSuggestions: NSViewRepresentable {
     static let listInset: CGFloat = 3
 
     let contacts: [ContactInfo]
-    let accept: (ContactInfo) -> Void
+    /// What the field holds; its last fragment is what the rows would replace.
+    let text: String
+    /// Hands over the field's text with a row in place of the fragment; the list is already shut.
+    let accept: (String) -> Void
     let dismiss: () -> Void
 
     func makeNSView(context: Context) -> AnchorView { AnchorView() }
 
     func updateNSView(_ view: AnchorView, context: Context) {
+        view.text = text
         view.accept = accept
         view.dismiss = dismiss
-        view.show(contacts)
+        view.show(contacts, for: RecipientText.lastFragment(of: text))
     }
 
     static func dismantleNSView(_ view: AnchorView, coordinator: ()) {
-        view.show([])
+        view.show([], for: "")
     }
 
     final class AnchorView: NSView {
-        var accept: (ContactInfo) -> Void = { _ in }
+        var text = ""
+        var accept: (String) -> Void = { _ in }
         var dismiss: () -> Void = {}
         private var contacts: [ContactInfo] = []
-        private var highlighted = 0
+        private var fragment = ""
+        /// The row Return and Tab take. None while the fragment is a whole address that the top
+        /// row does not have, so the list never looks as if it will replace what was typed.
+        private var highlighted: Int?
+        /// Set once the arrow keys move the highlight: a row picked that way is the user's choice,
+        /// even over a whole address they typed. Hovering is not a choice.
+        private var chosen = false
         private var panel: SuggestionPanel?
         private var keyMonitor: Any?
         private var windowObservers: [NSObjectProtocol] = []
@@ -50,11 +61,13 @@ struct RecipientSuggestions: NSViewRepresentable {
             reposition()
         }
 
-        func show(_ list: [ContactInfo]) {
-            guard list != contacts else { return }
+        func show(_ list: [ContactInfo], for typed: String) {
+            guard list != contacts || typed != fragment else { return }
             contacts = list
-            highlighted = 0
-            if list.isEmpty { close() } else { open() }
+            fragment = typed
+            chosen = false
+            highlighted = list.first.flatMap { RecipientText.mayComplete(typed, with: $0.email) ? 0 : nil }
+            if list.isEmpty { hide() } else { open() }
         }
 
         private func open() {
@@ -72,7 +85,7 @@ struct RecipientSuggestions: NSViewRepresentable {
             watch(window)
         }
 
-        private func close() {
+        private func hide() {
             if let panel {
                 panel.parent?.removeChildWindow(panel)
                 panel.orderOut(nil)
@@ -83,9 +96,47 @@ struct RecipientSuggestions: NSViewRepresentable {
             windowObservers = []
         }
 
+        /// Empties and hides the list there and then rather than on SwiftUI's next update, so a
+        /// key already queued behind the one that closed it finds nothing left to act on.
+        private func shut() {
+            contacts = []
+            highlighted = nil
+            chosen = false
+            hide()
+        }
+
+        /// Puts the contact in place of the fragment. The field editor is given the new text at
+        /// once with the caret at its end, as typing would leave it, so keys queued behind this
+        /// one follow the recipient instead of landing on the text it replaced.
+        private func take(_ contact: ContactInfo) {
+            let editor = fieldEditor
+            let completed = RecipientText.completing(editor?.string ?? text,
+                                                     with: EmailAddress(name: contact.name, address: contact.email))
+            shut()
+            if let editor {
+                let whole = NSRange(location: 0, length: (editor.string as NSString).length)
+                if editor.shouldChangeText(in: whole, replacementString: completed) {
+                    editor.replaceCharacters(in: whole, with: completed)
+                    editor.didChangeText()
+                }
+                editor.setSelectedRange(NSRange(location: (completed as NSString).length, length: 0))
+            }
+            accept(completed)
+        }
+
+        /// The field editor, while it is editing the field this list hangs from rather than
+        /// another one in the same window.
+        private var fieldEditor: NSTextView? {
+            guard let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor,
+                  let field = editor.delegate as? NSView else { return nil }
+            let box = convert(bounds, to: nil)
+            let frame = field.convert(field.bounds, to: nil)
+            return box.contains(NSPoint(x: frame.midX, y: frame.midY)) ? editor : nil
+        }
+
         private func render() {
             panel?.list.rootView = SuggestionList(contacts: contacts, highlighted: highlighted,
-                                                  accept: { [weak self] in self?.accept($0) },
+                                                  accept: { [weak self] in self?.take($0) },
                                                   highlight: { [weak self] in self?.highlight($0) })
         }
 
@@ -121,7 +172,10 @@ struct RecipientSuggestions: NSViewRepresentable {
             windowObservers = [
                 // Focus leaving the window closes the list, as focus leaving the field does.
                 centre.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.dismiss() }
+                    MainActor.assumeIsolated {
+                        self?.shut()
+                        self?.dismiss()
+                    }
                 },
                 centre.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
                     MainActor.assumeIsolated { self?.reposition() }
@@ -130,14 +184,27 @@ struct RecipientSuggestions: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent) -> Bool {
-            guard !contacts.isEmpty, event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]) else { return false }
+            guard !contacts.isEmpty, event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]),
+                  let editor = fieldEditor else { return false }
             // An input method composing a character owns Return and Escape until it is done.
-            if let editor = window?.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
+            if editor.hasMarkedText() { return false }
             switch event.keyCode {
-            case KeyRouter.Code.downArrow: highlight(min(highlighted + 1, contacts.count - 1))
-            case KeyRouter.Code.upArrow: highlight(max(highlighted - 1, 0))
-            case KeyRouter.Code.returnKey, KeyRouter.Code.keypadEnter, KeyRouter.Code.tab: accept(contacts[highlighted])
-            case KeyRouter.Code.escape: dismiss()
+            case KeyRouter.Code.downArrow:
+                chosen = true
+                highlight(highlighted.map { min($0 + 1, contacts.count - 1) } ?? 0)
+            case KeyRouter.Code.upArrow:
+                chosen = true
+                highlight(highlighted.map { max($0 - 1, 0) } ?? 0)
+            case KeyRouter.Code.returnKey, KeyRouter.Code.keypadEnter, KeyRouter.Code.tab:
+                // A whole address typed or pasted stays as it is unless the arrows picked another
+                // row; the key goes on to the field instead, so Tab moves to the next one.
+                guard let row = highlighted,
+                      chosen || RecipientText.mayComplete(RecipientText.lastFragment(of: editor.string), with: contacts[row].email)
+                else { return false }
+                take(contacts[row])
+            case KeyRouter.Code.escape:
+                shut()
+                dismiss()
             default: return false
             }
             return true
@@ -152,7 +219,7 @@ struct RecipientSuggestions: NSViewRepresentable {
 
 /// A child window that never becomes key, so the field it hangs from keeps the caret.
 private final class SuggestionPanel: NSPanel {
-    let list = FirstClickHostingView(rootView: SuggestionList(contacts: [], highlighted: 0, accept: { _ in }, highlight: { _ in }))
+    let list = FirstClickHostingView(rootView: SuggestionList(contacts: [], highlighted: nil, accept: { _ in }, highlight: { _ in }))
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -184,7 +251,7 @@ private struct SuggestionList: View {
     static let minimumWidth: CGFloat = 280
 
     let contacts: [ContactInfo]
-    let highlighted: Int
+    let highlighted: Int?
     let accept: (ContactInfo) -> Void
     let highlight: (Int) -> Void
 

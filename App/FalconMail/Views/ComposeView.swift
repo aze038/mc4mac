@@ -483,7 +483,12 @@ struct RecipientField: View {
                 .focused($focused)
                 .background {
                     // Stretched over the header field's box, so the list hangs from the box's corner.
-                    RecipientSuggestions(contacts: suggestions, accept: accept, dismiss: { suggestions = [] })
+                    RecipientSuggestions(contacts: suggestions, text: text,
+                                         accept: { completed in
+                                             suggestions = []
+                                             text = completed
+                                         },
+                                         dismiss: { suggestions = [] })
                         .padding(.horizontal, -OL.composeTextInset)
                         .frame(height: OL.composeField)
                 }
@@ -500,21 +505,6 @@ struct RecipientField: View {
             suggestions = []
             return
         }
-        suggestions = Array(model.contactList.suggest(fragment).prefix(RecipientSuggestions.maxRows))
-    }
-
-    private func accept(_ contact: ContactInfo) {
-        suggestions = []
-        text = RecipientText.completing(text, with: EmailAddress(name: contact.name, address: contact.email))
-    }
-}
-
-extension Array where Element == ContactInfo {
-    func suggest(_ prefix: String) -> [ContactInfo] {
-        let q = prefix.lowercased()
-        var seen = Set<String>()
-        return filter { $0.email.lowercased().contains(q) || $0.name.lowercased().contains(q) }
-            .sorted { ($0.useCount, $0.lastUsed ?? .distantPast) > ($1.useCount, $1.lastUsed ?? .distantPast) }
-            .filter { seen.insert($0.email.lowercased()).inserted }
+        suggestions = Array(RecipientText.suggestions(from: model.contactList, for: fragment).prefix(RecipientSuggestions.maxRows))
     }
 }

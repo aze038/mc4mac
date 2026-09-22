@@ -279,6 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func offerMoveToApplications() {
+        #if DEBUG
+        guard !RecipientDemo.isRequested else { return }
+        #endif
         let current = Bundle.main.bundleURL
         guard !UpdateInstaller.isInApplicationsFolder(current) || UpdateInstaller.isTranslocated(current) else { return }
         guard !UserDefaults.standard.bool(forKey: "declinedMoveToApplications") else { return }

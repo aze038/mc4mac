@@ -16,6 +16,53 @@ public enum RecipientText {
         return kept + (kept.isEmpty ? "" : " ") + address.rfc5322 + ", "
     }
 
+    /// The contacts `fragment` may stand for, best first: the one whose address it already is,
+    /// then those whose address, name or a word of the name starts with it, then those that
+    /// merely contain it, the most used first within each. One row per address.
+    public static func suggestions(from contacts: [ContactInfo], for fragment: String) -> [ContactInfo] {
+        let query = fragment.trimmed.lowercased()
+        guard !query.isEmpty else { return [] }
+        let typed = completeAddress(in: fragment)?.lowercased() ?? query
+        func tier(_ contact: ContactInfo) -> Int? {
+            let email = contact.email.lowercased()
+            let name = contact.name.lowercased()
+            if email == typed { return 0 }
+            if email.hasPrefix(query) || name.hasPrefix(query)
+                || name.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains(where: { $0.hasPrefix(query) }) { return 1 }
+            if email.contains(query) || name.contains(query) { return 2 }
+            return nil
+        }
+        var seen = Set<String>()
+        return contacts.compactMap { contact in tier(contact).map { (contact, $0) } }
+            .sorted { a, b in
+                if a.1 != b.1 { return a.1 < b.1 }
+                return (a.0.useCount, a.0.lastUsed ?? .distantPast) > (b.0.useCount, b.0.lastUsed ?? .distantPast)
+            }
+            .map(\.0)
+            .filter { seen.insert($0.email.lowercased()).inserted }
+    }
+
+    /// The address `fragment` already spells out in full, bare or in angle brackets after a name;
+    /// nil while it is still being typed. Whole means a local part, one at sign and a dotted
+    /// domain whose last label has at least two characters, as every top-level domain has.
+    public static func completeAddress(in fragment: String) -> String? {
+        guard let address = AddressParser.parseOne(fragment.trimmed)?.address,
+              !address.contains(where: { $0.isWhitespace || "<>()[],;:\"\\".contains($0) }) else { return nil }
+        let halves = address.split(separator: "@", omittingEmptySubsequences: false)
+        guard halves.count == 2, !halves[0].isEmpty else { return nil }
+        let labels = halves[1].split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2, labels.allSatisfy({ !$0.isEmpty }), let last = labels.last, last.count >= 2 else { return nil }
+        return address
+    }
+
+    /// Whether completing `fragment` from the keyboard may put `address` in its place. A fragment
+    /// that is already a whole address only ever completes to that same address, so a typed or
+    /// pasted dan@acme.com is never swapped for jordan@acme.com, which merely contains it.
+    public static func mayComplete(_ fragment: String, with address: String) -> Bool {
+        guard let typed = completeAddress(in: fragment) else { return true }
+        return typed.caseInsensitiveCompare(address.trimmed) == .orderedSame
+    }
+
     private static func fragmentStart(in text: String) -> String.Index {
         var start = text.startIndex
         var inQuotes = false

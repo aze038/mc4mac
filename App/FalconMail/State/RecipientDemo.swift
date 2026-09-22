@@ -22,6 +22,12 @@ import FalconCore
 enum RecipientDemo {
     private static var window: NSWindow?
 
+    /// Any demo argument at all, whether or not the demo then runs: such a launch is a build out
+    /// of DerivedData that must never offer to move itself over the installed app.
+    nonisolated static var isRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-FalconMailDemo") }
+    }
+
     static func startIfRequested() {
         let arguments = ProcessInfo.processInfo.arguments
         guard arguments.contains("-FalconMailDemoCompose") else { return }
