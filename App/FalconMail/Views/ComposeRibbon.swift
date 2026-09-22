@@ -16,12 +16,16 @@ struct ComposeRibbon: View {
     var onSend: () -> Void
     var onAttachFile: () -> Void
     var onAttachFromDrive: () -> Void
-    var onInsertSignature: () -> Void
+    var signatures: [SignatureChoice]
+    var onInsertSignature: (SignatureChoice) -> Void
     var onEditSignatures: () -> Void
+    var onInsertTableDialog: () -> Void
     var onCycleBackground: () -> Void
 
     @AppStorage(Pref.composeHTML) private var usesHTML = true
     @AppStorage(Pref.checkSpelling) private var checkSpelling = true
+    @State private var tableTile: NSView?
+    @State private var tableOpen = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -36,6 +40,13 @@ struct ComposeRibbon: View {
         // title row above it.
         .background(OLColor.chrome, ignoresSafeAreaEdges: [])
         .background(ChromeBackground())
+        #if DEBUG
+        .task {
+            guard let size = ComposeRibbonDemo.tablePicker else { return }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            openTablePicker(hovering: size)
+        }
+        #endif
     }
 
     /// Outlook's Message ribbon: Send · Paste with cut/copy/format · the two-row format block
@@ -44,19 +55,24 @@ struct ComposeRibbon: View {
     private var messageTab: some View {
         RibbonBody {
             RibbonTile(title: "Send", symbol: "paperplane", enabled: canSend, action: onSend)
+                .padding(.horizontal, OL.composeSendPad)
             RibbonSeparator()
             RibbonSplitTile(title: "Paste", symbol: "doc.on.clipboard", action: { formatter.pasteMatchingStyle() }) {
                 Button("Paste and Match FalconMail") { formatter.pasteMatchingStyle() }
                 Button("Paste Keeping Source Formatting") { formatter.pasteKeepingSource() }
                 Button("Paste as Plain Text") { formatter.pastePlain() }
             }
-            VStack(spacing: 2) {
-                FmtButton("scissors", "Cut", size: 16) { formatter.cut() }
-                FmtButton("doc.on.doc", "Copy", size: 16) { formatter.copy() }
-                FmtButton("paintbrush", "Copy formatting", size: 16) { formatter.copyFormatting() }
+            .padding(.leading, OL.composePasteLead)
+            RibbonSmallColumn {
+                RibbonSmallButton(symbol: "scissors", title: "Cut", size: 12.8, turn: .degrees(-90),
+                                  enabled: formatter.editorHasFocus && formatter.hasSelection) { formatter.cut() }
+                RibbonSmallButton(symbol: "doc.on.doc", title: "Copy", size: 13.3,
+                                  enabled: formatter.editorHasFocus && formatter.hasSelection) { formatter.copy() }
+                RibbonSmallButton(symbol: "paintbrush", title: "Format Painter", size: 13, turn: .degrees(180),
+                                  enabled: formatter.editorHasFocus || formatter.isPaintingFormat,
+                                  isOn: formatter.isPaintingFormat) { formatter.toggleFormatPainter() }
             }
-            .padding(.top, OL.ribbonIconTop + 2)
-            .frame(height: OL.ribbon, alignment: .top)
+            .padding(.horizontal, OL.composeClipboardPad)
             RibbonSeparator()
             formatBlock
             RibbonSeparator()
@@ -64,22 +80,31 @@ struct ComposeRibbon: View {
             RibbonSeparator()
             RibbonTile(title: "Attach\nFile", symbol: "paperclip", action: onAttachFile)
             RibbonSeparator()
-            RibbonSplitTile(title: "Table", symbol: "tablecells", action: { formatter.insertTable() }) {
-                Button("Insert 3 × 3") { formatter.insertTable(rows: 3, columns: 3) }
-                Button("Insert 4 × 4") { formatter.insertTable(rows: 4, columns: 4) }
-                Button("Insert 2 × 5") { formatter.insertTable(rows: 2, columns: 5) }
-            }
+            RibbonDropdownTile(title: "Table", symbol: "tablecells", isOpen: tableOpen) { openTablePicker() }
+                .background(ScreenAnchor { tableTile = $0 })
             RibbonSeparator()
-            RibbonMiniColumn {
-                RibbonMiniItem(title: "Pictures", symbol: "photo") { formatter.insertPicture() }
-                RibbonMiniItem(title: "Signature", symbol: "signature") { onInsertSignature() }
-                RibbonMiniItem(title: "Link", symbol: "link") { formatter.insertLink() }
+            RibbonSmallColumn {
+                RibbonSmallItem(title: "Pictures", symbol: "photo", size: 13.5) { formatter.insertPicture() }
+                RibbonSmallMenu(title: "Signature", symbol: "signature", size: 12) {
+                    SignatureMenuItems(choices: signatures, insert: onInsertSignature, edit: onEditSignatures)
+                }
+                RibbonSmallItem(title: "Link", symbol: "link", size: 13, turn: .degrees(45)) { formatter.insertLink() }
             }
         }
     }
 
+    private func openTablePicker(hovering size: TableSize? = nil) {
+        guard let tableTile else { return }
+        tableOpen = true
+        TableGridPanel.show(below: tableTile, hovering: size,
+                            insert: { formatter.insertTable(rows: $0.rows, columns: $0.columns) },
+                            insertCustom: onInsertTableDialog,
+                            closed: { tableOpen = false })
+    }
+
     /// Two rows of twenty-two point controls, the upper at y 71, the lower at y 101 of the
-    /// window, spaced as Outlook spaces them.
+    /// window, spaced as Outlook spaces them: the upper row's separators fall at x 375, 416, 507
+    /// and 574, and the block ends where the line before Switch Background stands at 617.
     private var formatBlock: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 0) {
@@ -92,9 +117,9 @@ struct ComposeRibbon: View {
                 .padding(.leading, 12)
                 FmtButton("textformat.size.larger", "Grow text") { formatter.stepFontSize(2) }.padding(.leading, 4)
                 FmtButton("textformat.size.smaller", "Shrink text") { formatter.stepFontSize(-2) }.padding(.leading, 4)
-                FmtSeparator()
+                FmtSeparator().padding(.leading, 1)
                 FmtButton("eraser", "Clear formatting") { formatter.clearFormatting() }
-                FmtSeparator()
+                FmtSeparator().padding(.leading, 2)
                 FmtMenuButton("list.bullet", "Bulleted list", action: { formatter.applyList(.disc) }) {
                     Button("Bullets") { formatter.applyList(.disc) }
                 }
@@ -102,11 +127,11 @@ struct ComposeRibbon: View {
                     Button("Numbers") { formatter.applyList(.decimal) }
                 }
                 .padding(.leading, 4)
-                FmtSeparator()
-                FmtButton("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }
+                FmtSeparator().padding(.leading, 2)
+                FmtButton("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }.padding(.leading, 1.5)
                 FmtButton("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }.padding(.leading, 4)
-                FmtSeparator()
-                FmtButton("paragraphsign", "Show paragraph marks") { formatter.cycleLineSpacing() }
+                FmtSeparator().padding(.leading, 0.5)
+                FmtButton("paragraphsign", "Show paragraph marks") { formatter.cycleLineSpacing() }.padding(.leading, 1)
             }
             HStack(spacing: 0) {
                 HStack(spacing: 4) {
@@ -132,6 +157,7 @@ struct ComposeRibbon: View {
             }
         }
         .padding(.top, OL.ribbonIconTop + 5)
+        .padding(.trailing, 2)
         .frame(height: OL.ribbon, alignment: .top)
     }
 
@@ -202,27 +228,140 @@ struct ComposeRibbon: View {
     }
 }
 
+/// Outlook's small-icon columns: rows of twenty-two points from the top of the tiles, so the
+/// glyphs centre at y 77, 99 and 121 of the window and the last stops seven points above the
+/// ribbon's line.
+struct RibbonSmallColumn<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) { content() }
+            .padding(.top, OL.ribbonIconTop)
+            .frame(height: OL.ribbon, alignment: .top)
+    }
+}
+
+private struct SmallGlyph: View {
+    let symbol: String
+    let size: CGFloat
+    var turn: Angle = .zero
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size, weight: .light))
+            .rotationEffect(turn)
+            .foregroundStyle(OLColor.ribbonIcon)
+            .frame(width: OL.ribbonSmallIcon, height: OL.ribbonSmallIcon)
+    }
+}
+
+/// Cut, Copy and Format Painter beside Paste: a glyph alone in its row, grey, dimmed to a
+/// third when there is nothing for it to act on, lit while it is on.
+struct RibbonSmallButton: View {
+    let symbol: String
+    let title: String
+    let size: CGFloat
+    var turn: Angle = .zero
+    var enabled = true
+    var isOn = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            SmallGlyph(symbol: symbol, size: size, turn: turn)
+                .opacity(enabled ? 1 : OL.ribbonGlyphDimmed)
+                .frame(width: OL.ribbonSmallRow, height: OL.ribbonSmallRow)
+                .background(isOn ? Color.primary.opacity(0.16) : (hovering && enabled ? OLColor.hover : Color.clear),
+                            in: RoundedRectangle(cornerRadius: 3))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(RibbonButtonStyle())
+        .disabled(!enabled)
+        .onHover { hovering = $0 }
+        .help(title)
+    }
+}
+
+/// Pictures and Link at the end of the ribbon: glyph and caption in one row.
+struct RibbonSmallItem: View {
+    let title: String
+    let symbol: String
+    let size: CGFloat
+    var turn: Angle = .zero
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            SmallRowFace(title: title, symbol: symbol, size: size, turn: turn, hovering: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(title)
+    }
+}
+
+/// Signature: the same row, opening a menu.
+struct RibbonSmallMenu<Content: View>: View {
+    let title: String
+    let symbol: String
+    let size: CGFloat
+    @ViewBuilder var menu: () -> Content
+    @State private var hovering = false
+
+    var body: some View {
+        Menu { menu() } label: {
+            SmallRowFace(title: title, symbol: symbol, size: size, hovering: hovering)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help(title)
+    }
+}
+
+/// Outlook sets these captions in the tiles' own 10.5 points, smaller than the Home ribbon's rows.
+private struct SmallRowFace: View {
+    let title: String
+    let symbol: String
+    let size: CGFloat
+    var turn: Angle = .zero
+    let hovering: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            SmallGlyph(symbol: symbol, size: size, turn: turn)
+            Text(title).font(.system(size: OL.ribbonLabelFont)).foregroundStyle(OLColor.ribbonLabel).lineLimit(1)
+        }
+        .padding(.horizontal, 4)
+        .frame(height: OL.ribbonSmallRow)
+        .background(hovering ? OLColor.hover : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+        .contentShape(Rectangle())
+    }
+}
+
 /// A twenty-two point format control in Outlook's grey.
 struct FmtButton: View {
     let symbol: String
     let title: String
-    var size: CGFloat = 13
     let action: () -> Void
     @State private var hovering = false
 
-    init(_ symbol: String, _ title: String, size: CGFloat = 13, action: @escaping () -> Void) {
+    init(_ symbol: String, _ title: String, action: @escaping () -> Void) {
         self.symbol = symbol
         self.title = title
-        self.size = size
         self.action = action
     }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: size, weight: .regular))
+                .font(.system(size: 13, weight: .regular))
                 .foregroundStyle(OLColor.icon)
-                .frame(width: size > 14 ? 18 : 22, height: 22)
+                .frame(width: 22, height: 22)
                 .background(hovering ? OLColor.hover : Color.clear, in: RoundedRectangle(cornerRadius: 3))
                 .contentShape(RoundedRectangle(cornerRadius: 3))
         }

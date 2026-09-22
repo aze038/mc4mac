@@ -20,6 +20,9 @@ struct FalconMailApp: App {
                 .task {
                     await model.bootstrap()
                     for id in model.windowsToRestore { openWindow(value: id) }
+                    #if DEBUG
+                    if ComposeRibbonDemo.isRequested { openWindow(value: ComposeRibbonDemo.draft(in: model)) }
+                    #endif
                 }
                 .onAppear {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }

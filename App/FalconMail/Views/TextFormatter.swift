@@ -1,10 +1,17 @@
 import SwiftUI
 import AppKit
+import FalconCore
 
 @MainActor
 @Observable
 final class TextFormatter {
-    var editor: NSTextView?
+    private(set) var editor: NSTextView?
+    /// What the ribbon's small icons can act on: Cut and Copy need a selection in the body,
+    /// Format Painter needs the body to have the keyboard.
+    private(set) var editorHasFocus = false
+    private(set) var hasSelection = false
+    /// Format Painter is armed: the next selection made with the mouse takes the copied format.
+    private(set) var isPaintingFormat = false
     var fontName = "System"
     var fontSize: CGFloat = 14
     var textColour = Color.primary
@@ -31,6 +38,26 @@ final class TextFormatter {
 
     private var composeView: ComposeTextView? { editor as? ComposeTextView }
 
+    func attach(_ view: NSTextView) {
+        editor = view
+        if let compose = view as? ComposeTextView {
+            compose.onFocusChange = { [weak self] focused in self?.editorHasFocus = focused }
+            compose.onSelectionChange = { [weak self] in self?.selectionChanged() }
+            compose.onMouseSelection = { [weak self] in self?.paintFormat() }
+        }
+        selectionChanged()
+    }
+
+    /// Also catches the body taking the keyboard before it was attached: a window gives its
+    /// first responder the keyboard without asking it again.
+    private func selectionChanged() {
+        guard let editor else { return }
+        let selected = editor.selectedRange().length > 0
+        if selected != hasSelection { hasSelection = selected }
+        let focused = editor.window?.firstResponder === editor
+        if focused != editorHasFocus { editorHasFocus = focused }
+    }
+
     // MARK: - clipboard
 
     func cut() { editor?.cut(nil) }
@@ -39,22 +66,41 @@ final class TextFormatter {
     func pasteKeepingSource() { composeView?.pasteKeepingSourceFormatting() }
     func pastePlain() { composeView?.pastePlainText() }
 
-    func copyFormatting() {
+    /// Format Painter: takes the character formatting at the selection (or at the caret) and
+    /// gives it to the next text selected with the mouse. Pressing it again puts it down.
+    func toggleFormatPainter() {
+        guard !isPaintingFormat else {
+            isPaintingFormat = false
+            return
+        }
         guard let editor, let storage = editor.textStorage else { return }
-        let range = effectiveRange()
-        guard range.length > 0 else { return }
-        storedFormat = storage.attributes(at: range.location, effectiveRange: nil)
+        let range = editor.selectedRange()
+        let source = range.length > 0 ? storage.attributes(at: range.location, effectiveRange: nil) : editor.typingAttributes
+        storedFormat = source.filter { TextFormatter.paintedKeys.contains($0.key) }
+        isPaintingFormat = true
     }
 
-    func applyFormatting() {
-        guard let stored = storedFormat, let editor, let storage = editor.textStorage else { return }
-        let range = effectiveRange()
+    /// Only the look of the characters travels: paragraph styles would turn text into table
+    /// cells or list items, and links or pictures must never be dropped from what they cover.
+    private static let paintedKeys: Set<NSAttributedString.Key> = [
+        .font, .foregroundColor, .backgroundColor, .underlineStyle, .strikethroughStyle, .baselineOffset,
+    ]
+
+    private func paintFormat() {
+        guard isPaintingFormat, let editor, let storage = editor.textStorage else { return }
+        let range = editor.selectedRange()
         guard range.length > 0 else { return }
-        storage.setAttributes(stored, range: range)
+        isPaintingFormat = false
+        guard editor.shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        for key in TextFormatter.paintedKeys { storage.removeAttribute(key, range: range) }
+        storage.addAttributes(storedFormat, range: range)
+        storage.endEditing()
         editor.didChangeText()
+        editor.undoManager?.setActionName("Format Painter")
     }
 
-    private var storedFormat: [NSAttributedString.Key: Any]?
+    private var storedFormat: [NSAttributedString.Key: Any] = [:]
 
     // MARK: - font
 
@@ -108,7 +154,10 @@ final class TextFormatter {
 
     func setTextColour(_ colour: Color) {
         textColour = colour
-        apply(.foregroundColor, NSColor(colour))
+        // Automatic is the system's label colour, which survives the body's round trip through
+        // RTF as itself: SwiftUI's primary would be written down as a fixed near-black and turn
+        // invisible when the draft is next opened in dark appearance.
+        apply(.foregroundColor, colour == .primary ? NSColor.labelColor : NSColor(colour))
     }
 
     func setHighlight(_ colour: Color) {
@@ -176,28 +225,58 @@ final class TextFormatter {
 
     // MARK: - insert
 
-    func insertTable(rows: Int = 3, columns: Int = 3) {
-        guard let editor, let storage = editor.textStorage else { return }
-        let table = NSTextTable()
-        table.numberOfColumns = columns
-        table.layoutAlgorithm = .automaticLayoutAlgorithm
-        table.collapsesBorders = true
+    /// Inserts Outlook's Table Grid (see ComposedTable) across the body's width, its lines in
+    /// the text's own colour and its text in the formatting at the caret. Nothing selected is
+    /// replaced: the table goes in after the selection, on its own paragraph, and the caret
+    /// lands in its first cell.
+    func insertTable(rows: Int, columns: Int) {
+        guard let editor, let storage = editor.textStorage, rows > 0, columns > 0 else { return }
+        let location = NSMaxRange(editor.selectedRange())
+        var attributes = editor.typingAttributes
+        attributes[.link] = nil
+        attributes[.attachment] = nil
+        attributes[.font] = attributes[.font] ?? RichText.defaultFont
+        attributes[.foregroundColor] = attributes[.foregroundColor] ?? NSColor.labelColor
+        let container = editor.textContainer
+        let width = max(120, (container?.size.width ?? 0) - 2 * (container?.lineFragmentPadding ?? 0) - ComposedTable.lineWidth)
+
         let body = NSMutableAttributedString()
-        for row in 0..<rows {
-            for column in 0..<columns {
-                let block = NSTextTableBlock(table: table, startingRow: row, rowSpan: 1, startingColumn: column, columnSpan: 1)
-                block.setBorderColor(.separatorColor)
-                block.setWidth(1, type: .absoluteValueType, for: .border)
-                block.setWidth(4, type: .absoluteValueType, for: .padding)
-                let style = NSMutableParagraphStyle()
-                style.textBlocks = [block]
-                body.append(NSAttributedString(string: " \n", attributes: [.paragraphStyle: style, .font: RichText.defaultFont]))
-            }
+        if !RichText.startsParagraph(at: location, in: storage.string) {
+            body.append(NSAttributedString(string: "\n", attributes: attributes))
         }
-        let range = editor.selectedRange()
+        let tableStart = body.length
+        body.append(ComposedTable.grid(rows: rows, columns: columns, width: width, lines: RichText.tableLines, attributes: attributes))
+        // A table at the very end would leave nowhere to type below it.
+        if location == storage.length {
+            body.append(NSAttributedString(string: "\n", attributes: attributes))
+        }
+        let range = NSRange(location: location, length: 0)
+        editor.breakUndoCoalescing()
         guard editor.shouldChangeText(in: range, replacementString: body.string) else { return }
         storage.replaceCharacters(in: range, with: body)
         editor.didChangeText()
+        editor.undoManager?.setActionName("Insert Table")
+        editor.setSelectedRange(NSRange(location: location + tableStart, length: 0))
+        editor.window?.makeFirstResponder(editor)
+    }
+
+    /// Puts a signature in after the caret, in the formatting found there, as one step Undo
+    /// takes back. Selected text stays.
+    func insertSignature(_ block: String) {
+        guard let editor, let storage = editor.textStorage, !block.isEmpty else { return }
+        let location = NSMaxRange(editor.selectedRange())
+        let text = (RichText.startsParagraph(at: location, in: storage.string) ? "" : "\n") + block
+        var attributes = editor.typingAttributes
+        attributes[.link] = nil
+        attributes[.attachment] = nil
+        let range = NSRange(location: location, length: 0)
+        editor.breakUndoCoalescing()
+        guard editor.shouldChangeText(in: range, replacementString: text) else { return }
+        let inserted = NSAttributedString(string: text, attributes: attributes)
+        storage.replaceCharacters(in: range, with: inserted)
+        editor.didChangeText()
+        editor.undoManager?.setActionName("Insert Signature")
+        editor.setSelectedRange(NSRange(location: location + inserted.length, length: 0))
     }
 
     func insertLink() {

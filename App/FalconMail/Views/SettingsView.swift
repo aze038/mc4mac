@@ -101,9 +101,19 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     static let other: [SettingsPane] = [.calendar, .contacts, .privacy, .updates]
 }
 
+/// Lets another window open Settings at a pane, the way Outlook's Signatures… opens its
+/// preferences at Signatures.
+@MainActor
+@Observable
+final class SettingsRouter {
+    static let shared = SettingsRouter()
+    var requested: SettingsPane?
+}
+
 struct SettingsView: View {
     @State private var pane: SettingsPane?
     @State private var query = ""
+    private let router = SettingsRouter.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -120,6 +130,15 @@ struct SettingsView: View {
         }
         .frame(width: 760, height: 620)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { showRequestedPane() }
+        .onChange(of: router.requested) { showRequestedPane() }
+    }
+
+    private func showRequestedPane() {
+        guard let requested = router.requested else { return }
+        pane = requested
+        query = ""
+        router.requested = nil
     }
 
     private var header: some View {

@@ -9,6 +9,7 @@ struct ComposeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     let draftID: UUID
     var embedded = false
     var onClose: (() -> Void)? = nil
@@ -22,6 +23,7 @@ struct ComposeView: View {
     @State private var editSessions: [UUID: AttachmentEditSession] = [:]
     @State private var showAttachmentWarning = false
     @State private var showDrivePicker = false
+    @State private var showTableDialog = false
     @FocusState private var bodyFocused: Bool
     @AppStorage(AttachmentWarning.enabledKey) private var warnAboutAttachments = true
     @AppStorage(AttachmentWarning.keywordsKey) private var attachmentKeywords = AttachmentWarning.defaultKeywords
@@ -73,13 +75,17 @@ struct ComposeView: View {
     }
 
     private var form: some View {
-        composer.alert("Did you forget an attachment?", isPresented: $showAttachmentWarning) {
-            Button("Add Attachment") { attach() }.keyboardShortcut(.defaultAction)
-            Button("Send Anyway") { sendPending() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This message mentions an attachment but none is attached.")
-        }
+        composer
+            .sheet(isPresented: $showTableDialog) {
+                InsertTableSheet { formatter.insertTable(rows: $0.rows, columns: $0.columns) }
+            }
+            .alert("Did you forget an attachment?", isPresented: $showAttachmentWarning) {
+                Button("Add Attachment") { attach() }.keyboardShortcut(.defaultAction)
+                Button("Send Anyway") { sendPending() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This message mentions an attachment but none is attached.")
+            }
     }
 
     private var composer: some View {
@@ -100,12 +106,15 @@ struct ComposeView: View {
             }
             RichTextEditor(rtf: binding(\.bodyRTF), plain: binding(\.body)) { view in
                 Task { @MainActor in
-                    formatter.editor = view
+                    formatter.attach(view)
                     view.isContinuousSpellCheckingEnabled = Preferences.bool(Pref.checkSpelling, default: true)
                     view.isGrammarCheckingEnabled = Preferences.bool(Pref.checkGrammar, default: true)
                     view.isAutomaticQuoteSubstitutionEnabled = Preferences.bool(Pref.smartQuotes, default: true)
                     view.isAutomaticDashSubstitutionEnabled = Preferences.bool(Pref.smartQuotes, default: true)
                     view.isAutomaticLinkDetectionEnabled = Preferences.bool(Pref.smartLinks, default: true)
+                    #if DEBUG
+                    ComposeRibbonDemo.prepare(view, formatter: formatter, editSignatures: { editSignatures() })
+                    #endif
                 }
             }
         }
@@ -145,8 +154,10 @@ struct ComposeView: View {
                       onSend: { send() },
                       onAttachFile: { attach() },
                       onAttachFromDrive: { attachFromDrive() },
-                      onInsertSignature: { insertSignature() },
-                      onEditSignatures: { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) },
+                      signatures: signatureChoices,
+                      onInsertSignature: { formatter.insertSignature($0.block) },
+                      onEditSignatures: { editSignatures() },
+                      onInsertTableDialog: { showTableDialog = true },
                       onCycleBackground: { model.cycleAppearance() })
     }
 
@@ -155,18 +166,30 @@ struct ComposeView: View {
             InlineAction(title: "Send", symbol: "paperplane", prominent: true, enabled: !(draft?.to.isEmpty ?? true)) { send() }
             InlineAction(title: "Discard", symbol: "trash") { discard() }
             InlineAction(title: "Attach", symbol: "paperclip") { attach() }
-            InlineAction(title: "Signature", symbol: "signature") { insertSignature() }
+            Menu {
+                SignatureMenuItems(choices: signatureChoices, insert: { formatter.insertSignature($0.block) }, edit: { editSignatures() })
+            } label: {
+                // InlineAction's face; a button of its own inside the label would take the click.
+                HStack(spacing: 6) {
+                    Image(systemName: "signature").font(.system(size: 14, weight: .light))
+                    Text("Signature").font(.system(size: 13))
+                }
+                .foregroundStyle(Color.primary.opacity(0.85))
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
             Menu {
                 Button("Schedule Send…") { showSchedule = true }
                 Button("Attach from Google Drive…") { attachFromDrive() }
-                Button("Insert Table") { formatter.insertTable() }
+                Button("Insert Table…") { showTableDialog = true }
                 Button("Insert Link…") { formatter.insertLink() }
                 Divider()
                 Toggle("Show Cc", isOn: $showCc)
                 Toggle("Show Bcc", isOn: $showBcc)
                 Divider()
                 Button("Check Spelling") { formatter.checkSpelling() }
-                Button("Edit Signatures…") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+                Button("Edit Signatures…") { editSignatures() }
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 14))
             }
@@ -294,12 +317,14 @@ struct ComposeView: View {
         .padding(16).frame(width: 320)
     }
 
-    private func insertSignature() {
-        guard let account = model.accounts.first(where: { $0.id == draft?.accountID }) ?? model.accounts.first else { return }
-        let text = ComposeDraft.signatureBlock(account)
-        guard !text.isEmpty, let editor = formatter.editor else { return }
-        editor.insertText(text, replacementRange: editor.selectedRange())
-        editor.didChangeText()
+    private var signatureChoices: [SignatureChoice] {
+        SignatureChoice.choices(from: model.accounts, preferring: draft?.accountID)
+    }
+
+    /// Signatures…: Settings, opened at the pane where signatures are written.
+    private func editSignatures() {
+        SettingsRouter.shared.requested = .signatures
+        openSettings()
     }
 
     private func load() {

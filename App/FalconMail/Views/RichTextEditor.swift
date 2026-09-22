@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import FalconCore
 
 struct RichTextEditor: NSViewRepresentable {
     @Binding var rtf: Data?
@@ -84,6 +85,16 @@ struct RichTextEditor: NSViewRepresentable {
 enum RichText {
     static let defaultFont = NSFont.systemFont(ofSize: 14)
 
+    /// Table lines take the text's own colour, so they read in both appearances; what is sent
+    /// turns them black (see ComposedHTML).
+    static let tableLines = NSColor.labelColor
+
+    static func startsParagraph(at location: Int, in text: String) -> Bool {
+        let string = text as NSString
+        guard location > 0, location <= string.length else { return true }
+        return string.paragraphRange(for: NSRange(location: location, length: 0)).location == location
+    }
+
     static func attributed(fromPlain text: String) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: defaultFont, .foregroundColor: NSColor.labelColor])
     }
@@ -98,14 +109,7 @@ enum RichText {
 
     /// Converts the composed text to HTML suitable for an email body.
     static func html(fromRTF data: Data) -> String? {
-        guard let attributed = attributed(fromRTF: data) else { return nil }
-        let options: [NSAttributedString.DocumentAttributeKey: Any] = [
-            .documentType: NSAttributedString.DocumentType.html,
-            .characterEncoding: String.Encoding.utf8.rawValue,
-            .excludedElements: ["doctype", "XML", "meta", "style", "title", "head"]
-        ]
-        guard let htmlData = try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: options) else { return nil }
-        return String(decoding: htmlData, as: UTF8.self)
+        attributed(fromRTF: data).flatMap(ComposedHTML.html(from:))
     }
 
     static func trimmedRTF(_ data: Data, keepingPrefixOfLength length: Int) -> Data? {
@@ -123,6 +127,35 @@ enum RichText {
 /// A text view whose plain Paste adopts FalconMail's formatting the way Outlook and Word do:
 /// structure such as tables, lists and links survives, while fonts and colours become FalconMail's.
 final class ComposeTextView: NSTextView {
+    /// Keep the ribbon's small icons in step: whether the body has the keyboard, what is
+    /// selected, and when a selection made with the mouse is finished (for Format Painter).
+    var onFocusChange: ((Bool) -> Void)?
+    var onSelectionChange: (() -> Void)?
+    var onMouseSelection: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocusChange?(true) }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onFocusChange?(false) }
+        return resigned
+    }
+
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        onSelectionChange?()
+    }
+
+    /// NSTextView tracks a drag inside mouseDown, so the selection is complete when it returns.
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        onMouseSelection?()
+    }
+
     override func paste(_ sender: Any?) {
         pasteMatchingFalconMailStyle()
     }

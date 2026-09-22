@@ -4,6 +4,12 @@ enum RibbonMetrics {
     static let disabledOpacity: CGFloat = 0.45
 }
 
+/// Draws a ribbon control exactly as its face says. The system's own dimming of a disabled
+/// button would come on top of the tile's, leaving it darker than Outlook's.
+struct RibbonButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { configuration.label }
+}
+
 /// An Outlook ribbon glyph: a light-weight symbol in Outlook's grey, in a 28 point box, tinted
 /// only where Outlook colours its own icon.
 struct RibbonGlyph: View {
@@ -47,6 +53,8 @@ private struct TileFace: View {
     var enabled: Bool
     var chevron = false
 
+    /// A disabled tile keeps a third of its glyph and half of its caption, as Outlook's Send does
+    /// before there is anyone to send to.
     var body: some View {
         ZStack(alignment: .top) {
             HStack(spacing: 4) {
@@ -58,13 +66,14 @@ private struct TileFace: View {
                         .frame(width: 6, height: OL.ribbonIconBox)
                 }
             }
+            .opacity(enabled ? 1 : OL.ribbonGlyphDimmed)
             .padding(.top, OL.ribbonIconTop)
             RibbonCaption(title: title)
+                .opacity(enabled ? 1 : OL.ribbonCaptionDimmed)
                 .padding(.top, OL.ribbonLabelTop)
         }
         .padding(.horizontal, OL.ribbonTilePad)
         .frame(height: OL.ribbon, alignment: .top)
-        .opacity(enabled ? 1 : RibbonMetrics.disabledOpacity)
     }
 }
 
@@ -96,7 +105,7 @@ struct RibbonTile: View {
             TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled)
                 .modifier(TileBackground(hovering: hovering && enabled))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RibbonButtonStyle())
         .disabled(!enabled)
         .onHover { hovering = $0 }
         .help(title.replacingOccurrences(of: "\n", with: " "))
@@ -119,7 +128,7 @@ struct RibbonSplitTile<Content: View>: View {
             TileFace(title: title, symbol: symbol, tint: tint, enabled: enabled, chevron: true)
                 .modifier(TileBackground(hovering: hovering && enabled))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RibbonButtonStyle())
         .disabled(!enabled || action == nil)
         .overlay(alignment: .top) {
             HStack(spacing: 4) {
@@ -140,6 +149,26 @@ struct RibbonSplitTile<Content: View>: View {
     }
 }
 
+/// A tile that drops a panel of its own rather than a menu, as Outlook's Table does: the face
+/// and its chevron both open it, and the tile stays lit while it is open.
+struct RibbonDropdownTile: View {
+    let title: String
+    let symbol: String
+    var isOpen = false
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            TileFace(title: title, symbol: symbol, enabled: true, chevron: true)
+                .modifier(TileBackground(hovering: hovering || isOpen))
+        }
+        .buttonStyle(RibbonButtonStyle())
+        .onHover { hovering = $0 }
+        .help(title.replacingOccurrences(of: "\n", with: " "))
+    }
+}
+
 /// A tile that is entirely a menu.
 struct RibbonMenuTile<Content: View>: View {
     let title: String
@@ -155,7 +184,7 @@ struct RibbonMenuTile<Content: View>: View {
                 .modifier(TileBackground(hovering: hovering && enabled))
         }
         .menuStyle(.button)
-        .buttonStyle(.plain)
+        .buttonStyle(RibbonButtonStyle())
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(!enabled)
