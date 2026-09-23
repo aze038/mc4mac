@@ -11,6 +11,12 @@ struct FalconMailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 
+    init() {
+        #if DEBUG
+        ComposeSnapshot.runIfRequested()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup("FalconMail", id: FalconMailApp.mailboxWindowID) {
             MainWindow()
@@ -20,6 +26,9 @@ struct FalconMailApp: App {
                 .task {
                     await model.bootstrap()
                     for id in model.windowsToRestore { openWindow(value: id) }
+                    #if DEBUG
+                    if ComposeRibbonDemo.isRequested { openWindow(value: ComposeRibbonDemo.draft(in: model)) }
+                    #endif
                 }
                 .onAppear {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }

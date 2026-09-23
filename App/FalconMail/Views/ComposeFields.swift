@@ -66,17 +66,50 @@ struct InlineAction: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).font(.system(size: 14, weight: .light))
-                Text(title).font(.system(size: 13))
-            }
-            .foregroundStyle(prominent && enabled ? Color.accentColor : Color.primary.opacity(enabled ? 0.85 : 0.35))
-            .padding(.horizontal, 6).padding(.vertical, 3)
-            .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
-            .contentShape(RoundedRectangle(cornerRadius: 5))
+            InlineActionFace(title: title, symbol: symbol, prominent: prominent, enabled: enabled, hovering: hovering)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// The inline action row's face, shared by its buttons and its menus (Signature) so all of
+/// them light up under the pointer alike.
+struct InlineActionFace: View {
+    let title: String
+    let symbol: String
+    var prominent = false
+    var enabled = true
+    let hovering: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 14, weight: .light))
+            Text(title).font(.system(size: 13))
+        }
+        .foregroundStyle(prominent && enabled ? Color.accentColor : Color.primary.opacity(enabled ? 0.85 : 0.35))
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
+        .contentShape(RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+/// An action in the inline row that opens a menu rather than acting at once.
+struct InlineMenuAction<Content: View>: View {
+    let title: String
+    let symbol: String
+    @ViewBuilder var menu: () -> Content
+    @State private var hovering = false
+
+    var body: some View {
+        Menu { menu() } label: {
+            InlineActionFace(title: title, symbol: symbol, hovering: hovering)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
         .onHover { hovering = $0 }
     }
 }
@@ -110,18 +143,18 @@ struct InlineFormatBar: View {
                 .labelsHidden().frame(width: 34).help("Text colour")
 
             Divider().frame(height: 16)
-            FmtButton("bold", "Bold") { formatter.toggleBold() }
-            FmtButton("italic", "Italic") { formatter.toggleItalic() }
-            FmtButton("underline", "Underline") { formatter.toggleUnderline() }
-            FmtButton("strikethrough", "Strikethrough") { formatter.toggleStrikethrough() }
+            button("bold", "Bold") { formatter.toggleBold() }
+            button("italic", "Italic") { formatter.toggleItalic() }
+            button("underline", "Underline") { formatter.toggleUnderline() }
+            button("strikethrough", "Strikethrough") { formatter.toggleStrikethrough() }
             ColorPicker("", selection: Binding(get: { formatter.highlight }, set: { formatter.setHighlight($0) }), supportsOpacity: false)
                 .labelsHidden().frame(width: 34).help("Highlight")
-            FmtButton("textformat.superscript", "Superscript") { formatter.setBaseline(6) }
-            FmtButton("textformat.subscript", "Subscript") { formatter.setBaseline(-4) }
+            button("textformat.superscript", "Superscript") { formatter.setBaseline(6) }
+            button("textformat.subscript", "Subscript") { formatter.setBaseline(-4) }
 
             Divider().frame(height: 16)
-            FmtButton("list.bullet", "Bulleted list") { formatter.applyList(.disc) }
-            FmtButton("list.number", "Numbered list") { formatter.applyList(.decimal) }
+            button("list.bullet", "Bulleted list") { formatter.applyList(.disc) }
+            button("list.number", "Numbered list") { formatter.applyList(.decimal) }
             Menu {
                 Button("Align Left") { formatter.align(.left) }
                 Button("Centre") { formatter.align(.center) }
@@ -131,12 +164,12 @@ struct InlineFormatBar: View {
                 Image(systemName: "text.alignleft").font(.system(size: 12))
             }
             .menuStyle(.borderlessButton).fixedSize().help("Alignment")
-            FmtButton("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }
-            FmtButton("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }
+            button("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }
+            button("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }
 
             Divider().frame(height: 16)
-            FmtButton("photo", "Insert picture") { formatter.insertPicture() }
-            FmtButton("link", "Insert link") { formatter.insertLink() }
+            button("photo", "Insert picture") { formatter.insertPicture() }
+            button("link", "Insert link") { formatter.insertLink() }
             Menu {
                 Button("Insert 3 × 3") { formatter.insertTable(rows: 3, columns: 3) }
                 Button("Insert 4 × 4") { formatter.insertTable(rows: 4, columns: 4) }
@@ -147,8 +180,8 @@ struct InlineFormatBar: View {
             .menuStyle(.borderlessButton).fixedSize().help("Insert table")
 
             Divider().frame(height: 16)
-            FmtButton("textformat.abc.dottedunderline", "Check spelling") { formatter.checkSpelling() }
-            FmtButton("eraser", "Clear formatting") { formatter.clearFormatting() }
+            button("textformat.abc.dottedunderline", "Check spelling") { formatter.checkSpelling() }
+            button("eraser", "Clear formatting") { formatter.clearFormatting() }
             Menu {
                 Button("Paste and Match FalconMail") { formatter.pasteMatchingStyle() }
                 Button("Paste Keeping Source Formatting") { formatter.pasteKeepingSource() }
@@ -157,9 +190,15 @@ struct InlineFormatBar: View {
                 Image(systemName: "doc.on.clipboard").font(.system(size: 12))
             }
             .menuStyle(.borderlessButton).fixedSize().help("Paste options")
-            FmtButton("arrow.uturn.backward", "Undo") { formatter.editor?.undoManager?.undo() }
-            FmtButton("arrow.uturn.forward", "Redo") { formatter.editor?.undoManager?.redo() }
+            button("arrow.uturn.backward", "Undo") { formatter.editor?.undoManager?.undo() }
+            button("arrow.uturn.forward", "Redo") { formatter.editor?.undoManager?.redo() }
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    /// The ribbon's format controls in the bright grey of this bar's own menus; Outlook's dimmer
+    /// ribbon grey belongs to the ribbon.
+    private func button(_ symbol: String, _ title: String, action: @escaping () -> Void) -> FmtButton {
+        FmtButton(symbol, title, ink: OLColor.icon, action: action)
     }
 }

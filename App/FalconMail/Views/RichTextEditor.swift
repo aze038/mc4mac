@@ -59,14 +59,22 @@ struct RichTextEditor: NSViewRepresentable {
         func apply(to text: NSTextView, rtf: Data?, plain: String) {
             if let rtf, rtf != lastApplied {
                 if let attributed = RichText.attributed(fromRTF: rtf) {
-                    text.textStorage?.setAttributedString(attributed)
+                    load(attributed, into: text)
                     lastApplied = rtf
                     return
                 }
             }
             if rtf == nil, text.string != plain {
-                text.textStorage?.setAttributedString(RichText.attributed(fromPlain: plain))
+                load(RichText.attributed(fromPlain: plain), into: text)
             }
+        }
+
+        /// A draft opens with the caret at the start of the user's own text, as Outlook's does.
+        /// Left where AppKit puts it, at the very end, it would sit after a reply's quoted
+        /// original, and whatever the ribbon inserted would land there.
+        private func load(_ body: NSAttributedString, into text: NSTextView) {
+            text.textStorage?.setAttributedString(body)
+            text.setSelectedRange(NSRange(location: 0, length: 0))
         }
 
         func textDidChange(_ notification: Notification) {
@@ -84,6 +92,10 @@ struct RichTextEditor: NSViewRepresentable {
 enum RichText {
     static let defaultFont = NSFont.systemFont(ofSize: 14)
 
+    /// Table lines take the text's own colour, so they read in both appearances; what is sent
+    /// turns them black (see ComposedHTML).
+    static let tableLines = NSColor.labelColor
+
     static func attributed(fromPlain text: String) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: defaultFont, .foregroundColor: NSColor.labelColor])
     }
@@ -96,23 +108,6 @@ enum RichText {
         storage.rtf(from: NSRange(location: 0, length: storage.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
     }
 
-    /// Converts the composed text to HTML suitable for an email body.
-    static func html(fromRTF data: Data) -> String? {
-        guard let attributed = attributed(fromRTF: data) else { return nil }
-        let options: [NSAttributedString.DocumentAttributeKey: Any] = [
-            .documentType: NSAttributedString.DocumentType.html,
-            .characterEncoding: String.Encoding.utf8.rawValue,
-            .excludedElements: ["doctype", "XML", "meta", "style", "title", "head"]
-        ]
-        guard let htmlData = try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: options) else { return nil }
-        return String(decoding: htmlData, as: UTF8.self)
-    }
-
-    static func trimmedRTF(_ data: Data, keepingPrefixOfLength length: Int) -> Data? {
-        guard let attributed = attributed(fromRTF: data), length > 0, length <= attributed.length else { return nil }
-        return rtf(from: attributed.attributedSubstring(from: NSRange(location: 0, length: length)))
-    }
-
     static func isEmpty(_ data: Data?) -> Bool {
         guard let data, let attributed = attributed(fromRTF: data) else { return true }
         return attributed.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -123,6 +118,35 @@ enum RichText {
 /// A text view whose plain Paste adopts FalconMail's formatting the way Outlook and Word do:
 /// structure such as tables, lists and links survives, while fonts and colours become FalconMail's.
 final class ComposeTextView: NSTextView {
+    /// Keep the ribbon's small icons in step: whether the body has the keyboard, what is
+    /// selected, and when a selection made with the mouse is finished (for Format Painter).
+    var onFocusChange: ((Bool) -> Void)?
+    var onSelectionChange: (() -> Void)?
+    var onMouseSelection: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onFocusChange?(true) }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onFocusChange?(false) }
+        return resigned
+    }
+
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        onSelectionChange?()
+    }
+
+    /// NSTextView tracks a drag inside mouseDown, so the selection is complete when it returns.
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        onMouseSelection?()
+    }
+
     override func paste(_ sender: Any?) {
         pasteMatchingFalconMailStyle()
     }

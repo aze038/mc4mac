@@ -33,6 +33,9 @@ enum OL {
     static let ribbonInset: CGFloat = 8
     static let ribbonIconTop: CGFloat = 4
     static let ribbonIconBox: CGFloat = 28
+    // A tile's glyph and chevron start five points below the separators and the small rows: in
+    // Outlook's Home and Message ribbons alike both centre 85 points down the window.
+    static let ribbonTileGlyphTop: CGFloat = 9
     static let ribbonIcon: CGFloat = 23
     static let ribbonLabelTop: CGFloat = 44
     static let ribbonLabelFont: CGFloat = 10.5
@@ -47,6 +50,22 @@ enum OL {
     static let ribbonMiniGap: CGFloat = 4
     static let findFieldWidth: CGFloat = 101
     static let findFieldHeight: CGFloat = 20
+
+    // A control with nothing to act on: its glyph at a third, its caption at a half (Send,
+    // Cut and Copy of an empty compose window).
+    static let ribbonGlyphDimmed: CGFloat = 0.35
+    static let ribbonCaptionDimmed: CGFloat = 0.52
+    // The compose ribbon's small-icon columns (Cut, Copy, Format Painter beside Paste; Pictures,
+    // Signature, Link at the end): sixteen point glyphs one to a twenty-two point row, centred at
+    // y 77, 99 and 121 of the window.
+    static let ribbonSmallIcon: CGFloat = 16
+    static let ribbonSmallRow: CGFloat = 22
+    // Outlook gives the first groups a little more room than the generic tile spacing: Send's
+    // line stands at 56, Paste's glyph starts sixteen points past it, Cut, Copy and Format
+    // Painter sit at x 120–136 and the next line at 149.
+    static let composeSendPad: CGFloat = 1.5
+    static let composePasteLead: CGFloat = 3
+    static let composeClipboardPad: CGFloat = 1
 
     // MARK: the three columns
 
