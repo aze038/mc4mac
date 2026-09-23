@@ -33,6 +33,9 @@ enum OL {
     static let ribbonInset: CGFloat = 8
     static let ribbonIconTop: CGFloat = 4
     static let ribbonIconBox: CGFloat = 28
+    // A tile's glyph and chevron start five points below the separators and the small rows: in
+    // Outlook's Home and Message ribbons alike both centre 85 points down the window.
+    static let ribbonTileGlyphTop: CGFloat = 9
     static let ribbonIcon: CGFloat = 23
     static let ribbonLabelTop: CGFloat = 44
     static let ribbonLabelFont: CGFloat = 10.5

@@ -8,6 +8,33 @@ import AppKit
 /// colour carries no colour, so the reader's default applies, and table lines in a colour that
 /// follows the appearance become Table Grid's solid black. Colours chosen by hand are kept.
 public enum ComposedHTML {
+    /// The HTML part of a message from the composer: its rich text when it has any, else its
+    /// plain text. A reply or forward whose body still ends with the quoted original sends the
+    /// original's own HTML in place of that plain copy.
+    public static func document(rtf: Data?, plain: String, historyPlain: String, historyHTML: String) -> String {
+        let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
+        if let rtf, let rich = try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                                        documentAttributes: nil) {
+            // The original is found at the end of the rich text itself and cut off there. A length
+            // taken from the plain body would not fit: counted in characters it misses the second
+            // UTF-16 unit of every emoji, counted in UTF-16 units it keeps the carriage returns and
+            // pictures that RTF leaves out, and either way the difference comes off the end of the
+            // user's own text, usually the signature.
+            if !historyHTML.isEmpty, let start = ComposedBody.historyStart(in: rich.string, history: historyPlain),
+               let own = start == 0 ? "" : html(from: rich.attributedSubstring(from: NSRange(location: 0, length: start))) {
+                return "<html><body style=\"\(style)\">\(own)\(historyHTML)</body></html>"
+            }
+            if let whole = html(from: rich) {
+                return "<html><body style=\"\(style)\">\(whole)</body></html>"
+            }
+        }
+        if !historyHTML.isEmpty, !historyPlain.isEmpty, plain.hasSuffix(historyPlain) {
+            let own = String(plain.dropLast(historyPlain.count))
+            return "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(own))</div>\(historyHTML)</body></html>"
+        }
+        return "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(plain))</body></html>"
+    }
+
     public static func html(from text: NSAttributedString) -> String? {
         let prepared = forSending(text)
         let options: [NSAttributedString.DocumentAttributeKey: Any] = [

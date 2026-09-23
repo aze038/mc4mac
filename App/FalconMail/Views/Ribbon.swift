@@ -46,19 +46,18 @@ struct RibbonCaption: View {
 
 /// The face of every tile: the icon row at the top, the caption 44 points down, both centred,
 /// the tile as wide as the wider of the two plus Outlook's six points each side.
-private struct TileFace: View {
+private struct TileFace<Glyph: View>: View {
     let title: String
-    let symbol: String
-    var tint: Color?
     var enabled: Bool
     var chevron = false
+    let glyph: Glyph
 
     /// A disabled tile keeps a third of its glyph and half of its caption, as Outlook's Send does
     /// before there is anyone to send to.
     var body: some View {
         ZStack(alignment: .top) {
             HStack(spacing: 4) {
-                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil)
+                glyph
                 if chevron {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .semibold))
@@ -67,13 +66,19 @@ private struct TileFace: View {
                 }
             }
             .opacity(enabled ? 1 : OL.ribbonGlyphDimmed)
-            .padding(.top, OL.ribbonIconTop)
+            .padding(.top, OL.ribbonTileGlyphTop)
             RibbonCaption(title: title)
                 .opacity(enabled ? 1 : OL.ribbonCaptionDimmed)
                 .padding(.top, OL.ribbonLabelTop)
         }
         .padding(.horizontal, OL.ribbonTilePad)
         .frame(height: OL.ribbon, alignment: .top)
+    }
+}
+
+extension TileFace where Glyph == RibbonGlyph {
+    init(title: String, symbol: String, tint: Color? = nil, enabled: Bool, chevron: Bool = false) {
+        self.init(title: title, enabled: enabled, chevron: chevron, glyph: RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil))
     }
 }
 
@@ -142,7 +147,7 @@ struct RibbonSplitTile<Content: View>: View {
                 .fixedSize()
                 .disabled(!enabled)
             }
-            .padding(.top, OL.ribbonIconTop)
+            .padding(.top, OL.ribbonTileGlyphTop)
         }
         .onHover { hovering = $0 }
         .help(title.replacingOccurrences(of: "\n", with: " "))
@@ -150,17 +155,18 @@ struct RibbonSplitTile<Content: View>: View {
 }
 
 /// A tile that drops a panel of its own rather than a menu, as Outlook's Table does: the face
-/// and its chevron both open it, and the tile stays lit while it is open.
-struct RibbonDropdownTile: View {
+/// and its chevron both open it, and the tile stays lit while it is open. Its glyph is drawn by
+/// the caller, as Table's is.
+struct RibbonDropdownTile<Glyph: View>: View {
     let title: String
-    let symbol: String
     var isOpen = false
+    let glyph: Glyph
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            TileFace(title: title, symbol: symbol, enabled: true, chevron: true)
+            TileFace(title: title, enabled: true, chevron: true, glyph: glyph)
                 .modifier(TileBackground(hovering: hovering || isOpen))
         }
         .buttonStyle(RibbonButtonStyle())

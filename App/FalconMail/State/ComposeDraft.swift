@@ -165,34 +165,10 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         guard !requireRecipients || !toList.isEmpty || !AddressParser.parse(cc).isEmpty || !AddressParser.parse(bcc).isEmpty else {
             throw FalconError.invalidInput("Add at least one recipient.")
         }
-        let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
-        let priority = importance
-        var html: String
-        if let rtf = bodyRTF, let rich = RichText.html(fromRTF: rtf) {
-            if !historyHTML.isEmpty, !historyPlain.isEmpty, body.hasSuffix(historyPlain) {
-                let ownPlain = String(body.dropLast(historyPlain.count))
-                if let ownRTF = RichText.trimmedRTF(rtf, keepingPrefixOfLength: ownPlain.count),
-                   let ownHTML = RichText.html(fromRTF: ownRTF) {
-                    html = "<html><body style=\"\(style)\">\(ownHTML)\(historyHTML)</body></html>"
-                    return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                                           cc: ccList, bcc: bccList, subject: subject, textBody: body,
-                                           htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: priority)
-                }
-            }
-            html = "<html><body style=\"\(style)\">\(rich)</body></html>"
-            return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                                   cc: ccList, bcc: bccList, subject: subject, textBody: body,
-                                   htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: priority)
-        }
-        if !historyPlain.isEmpty, body.hasSuffix(historyPlain), !historyHTML.isEmpty {
-            let own = String(body.dropLast(historyPlain.count))
-            html = "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(own))</div>\(historyHTML)</body></html>"
-        } else {
-            html = "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(body))</body></html>"
-        }
+        let html = ComposedHTML.document(rtf: bodyRTF, plain: body, historyPlain: historyPlain, historyHTML: historyHTML)
         return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
                                cc: ccList, bcc: bccList, subject: subject, textBody: body,
-                               htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: priority)
+                               htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: importance)
     }
 }
 

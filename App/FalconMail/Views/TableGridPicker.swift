@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import FalconCore
 
 struct TableSize: Equatable {
     var columns: Int
@@ -22,6 +23,11 @@ enum TableGrid {
     static let line = OLColor.dynamic(light: 0xC0C0C0, dark: 0x5A5A5A)
     static let litFill = OLColor.dynamic(light: 0xDCEAF7, dark: 0x1B3A5C)
     static let litLine = OLColor.unread
+    /// The rule above Insert Table…, translucent as a menu's own: the menu material takes on
+    /// whatever is behind the panel, and a solid grey vanishes into it wherever the two meet.
+    static let separator = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(white: 1, alpha: 0.2) : NSColor(white: 0, alpha: 0.15)
+    })
 }
 
 /// The size the grid is showing, shared by the pointer and the arrow keys.
@@ -59,7 +65,7 @@ struct TableGridPicker: View {
             grid
                 .padding(.horizontal, TableGrid.inset)
             Rectangle()
-                .fill(OLColor.ribbonSeparator)
+                .fill(TableGrid.separator)
                 .frame(height: 1)
                 .padding(.horizontal, TableGrid.inset)
                 .padding(.vertical, 6)
@@ -161,9 +167,12 @@ final class TableGridPanel: NSPanel {
         ground.addSubview(host)
         panel.contentView = ground
 
-        // Hang two points below the tile's lit area, which stops six points above its foot.
+        // Hang two points below the tile's lit area, which stops six points above its foot, and
+        // stay on the screen as a menu does: a compose window near its edge, or wider than the
+        // room the ribbon has, would otherwise leave part of the grid off it.
         let tile = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
-        panel.setFrame(NSRect(x: tile.minX, y: tile.minY + 4 - fitting.height, width: fitting.width, height: fitting.height), display: false)
+        let screen = parent.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? parent.frame
+        panel.setFrame(PopupPlacement.frame(size: fitting, below: tile, overlap: 4, on: screen), display: false)
         parent.addChildWindow(panel, ordered: .above)
         panel.makeKeyAndOrderFront(nil)
         // A click anywhere else closes the picker, as it would a menu; a click on the Table

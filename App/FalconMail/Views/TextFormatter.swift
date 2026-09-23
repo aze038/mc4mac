@@ -6,12 +6,18 @@ import FalconCore
 @Observable
 final class TextFormatter {
     private(set) var editor: NSTextView?
-    /// What the ribbon's small icons can act on: Cut and Copy need a selection in the body,
-    /// Format Painter needs the body to have the keyboard.
+    /// The quoted original a reply or forward ends with, which insertions stay in front of (see
+    /// ComposedBody).
+    var history = ""
+    /// What the ribbon's small icons can act on: Cut and Copy need a selection in the body that
+    /// has the keyboard.
     private(set) var editorHasFocus = false
     private(set) var hasSelection = false
     /// Format Painter is armed: the next selection made with the mouse takes the copied format.
     private(set) var isPaintingFormat = false
+    /// Format Painter takes the formatting at the caret, which a body has even before it is
+    /// clicked, so it is lit whenever there is a body, as in a fresh Outlook message.
+    var canPaintFormat: Bool { editor != nil }
     var fontName = "System"
     var fontSize: CGFloat = 14
     var textColour = Color.primary
@@ -225,58 +231,15 @@ final class TextFormatter {
 
     // MARK: - insert
 
-    /// Inserts Outlook's Table Grid (see ComposedTable) across the body's width, its lines in
-    /// the text's own colour and its text in the formatting at the caret. Nothing selected is
-    /// replaced: the table goes in after the selection, on its own paragraph, and the caret
-    /// lands in its first cell.
     func insertTable(rows: Int, columns: Int) {
-        guard let editor, let storage = editor.textStorage, rows > 0, columns > 0 else { return }
-        let location = NSMaxRange(editor.selectedRange())
-        var attributes = editor.typingAttributes
-        attributes[.link] = nil
-        attributes[.attachment] = nil
-        attributes[.font] = attributes[.font] ?? RichText.defaultFont
-        attributes[.foregroundColor] = attributes[.foregroundColor] ?? NSColor.labelColor
-        let container = editor.textContainer
-        let width = max(120, (container?.size.width ?? 0) - 2 * (container?.lineFragmentPadding ?? 0) - ComposedTable.lineWidth)
-
-        let body = NSMutableAttributedString()
-        if !RichText.startsParagraph(at: location, in: storage.string) {
-            body.append(NSAttributedString(string: "\n", attributes: attributes))
-        }
-        let tableStart = body.length
-        body.append(ComposedTable.grid(rows: rows, columns: columns, width: width, lines: RichText.tableLines, attributes: attributes))
-        // A table at the very end would leave nowhere to type below it.
-        if location == storage.length {
-            body.append(NSAttributedString(string: "\n", attributes: attributes))
-        }
-        let range = NSRange(location: location, length: 0)
-        editor.breakUndoCoalescing()
-        guard editor.shouldChangeText(in: range, replacementString: body.string) else { return }
-        storage.replaceCharacters(in: range, with: body)
-        editor.didChangeText()
-        editor.undoManager?.setActionName("Insert Table")
-        editor.setSelectedRange(NSRange(location: location + tableStart, length: 0))
-        editor.window?.makeFirstResponder(editor)
+        guard let editor else { return }
+        ComposedBody.insertTable(rows: rows, columns: columns, into: editor, before: history,
+                                 font: RichText.defaultFont, lines: RichText.tableLines)
     }
 
-    /// Puts a signature in after the caret, in the formatting found there, as one step Undo
-    /// takes back. Selected text stays.
     func insertSignature(_ block: String) {
-        guard let editor, let storage = editor.textStorage, !block.isEmpty else { return }
-        let location = NSMaxRange(editor.selectedRange())
-        let text = (RichText.startsParagraph(at: location, in: storage.string) ? "" : "\n") + block
-        var attributes = editor.typingAttributes
-        attributes[.link] = nil
-        attributes[.attachment] = nil
-        let range = NSRange(location: location, length: 0)
-        editor.breakUndoCoalescing()
-        guard editor.shouldChangeText(in: range, replacementString: text) else { return }
-        let inserted = NSAttributedString(string: text, attributes: attributes)
-        storage.replaceCharacters(in: range, with: inserted)
-        editor.didChangeText()
-        editor.undoManager?.setActionName("Insert Signature")
-        editor.setSelectedRange(NSRange(location: location + inserted.length, length: 0))
+        guard let editor else { return }
+        ComposedBody.insertSignature(block, into: editor, before: history)
     }
 
     func insertLink() {

@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import FalconCore
 
 struct RichTextEditor: NSViewRepresentable {
     @Binding var rtf: Data?
@@ -60,14 +59,22 @@ struct RichTextEditor: NSViewRepresentable {
         func apply(to text: NSTextView, rtf: Data?, plain: String) {
             if let rtf, rtf != lastApplied {
                 if let attributed = RichText.attributed(fromRTF: rtf) {
-                    text.textStorage?.setAttributedString(attributed)
+                    load(attributed, into: text)
                     lastApplied = rtf
                     return
                 }
             }
             if rtf == nil, text.string != plain {
-                text.textStorage?.setAttributedString(RichText.attributed(fromPlain: plain))
+                load(RichText.attributed(fromPlain: plain), into: text)
             }
+        }
+
+        /// A draft opens with the caret at the start of the user's own text, as Outlook's does.
+        /// Left where AppKit puts it, at the very end, it would sit after a reply's quoted
+        /// original, and whatever the ribbon inserted would land there.
+        private func load(_ body: NSAttributedString, into text: NSTextView) {
+            text.textStorage?.setAttributedString(body)
+            text.setSelectedRange(NSRange(location: 0, length: 0))
         }
 
         func textDidChange(_ notification: Notification) {
@@ -89,12 +96,6 @@ enum RichText {
     /// turns them black (see ComposedHTML).
     static let tableLines = NSColor.labelColor
 
-    static func startsParagraph(at location: Int, in text: String) -> Bool {
-        let string = text as NSString
-        guard location > 0, location <= string.length else { return true }
-        return string.paragraphRange(for: NSRange(location: location, length: 0)).location == location
-    }
-
     static func attributed(fromPlain text: String) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: defaultFont, .foregroundColor: NSColor.labelColor])
     }
@@ -105,16 +106,6 @@ enum RichText {
 
     static func rtf(from storage: NSAttributedString) -> Data? {
         storage.rtf(from: NSRange(location: 0, length: storage.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
-    }
-
-    /// Converts the composed text to HTML suitable for an email body.
-    static func html(fromRTF data: Data) -> String? {
-        attributed(fromRTF: data).flatMap(ComposedHTML.html(from:))
-    }
-
-    static func trimmedRTF(_ data: Data, keepingPrefixOfLength length: Int) -> Data? {
-        guard let attributed = attributed(fromRTF: data), length > 0, length <= attributed.length else { return nil }
-        return rtf(from: attributed.attributedSubstring(from: NSRange(location: 0, length: length)))
     }
 
     static func isEmpty(_ data: Data?) -> Bool {

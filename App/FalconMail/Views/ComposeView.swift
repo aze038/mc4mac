@@ -166,19 +166,9 @@ struct ComposeView: View {
             InlineAction(title: "Send", symbol: "paperplane", prominent: true, enabled: !(draft?.to.isEmpty ?? true)) { send() }
             InlineAction(title: "Discard", symbol: "trash") { discard() }
             InlineAction(title: "Attach", symbol: "paperclip") { attach() }
-            Menu {
+            InlineMenuAction(title: "Signature", symbol: "signature") {
                 SignatureMenuItems(choices: signatureChoices, insert: { formatter.insertSignature($0.block) }, edit: { editSignatures() })
-            } label: {
-                // InlineAction's face; a button of its own inside the label would take the click.
-                HStack(spacing: 6) {
-                    Image(systemName: "signature").font(.system(size: 14, weight: .light))
-                    Text("Signature").font(.system(size: 13))
-                }
-                .foregroundStyle(Color.primary.opacity(0.85))
-                .padding(.horizontal, 6).padding(.vertical, 3)
-                .contentShape(RoundedRectangle(cornerRadius: 5))
             }
-            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
             Menu {
                 Button("Schedule Send…") { showSchedule = true }
                 Button("Attach from Google Drive…") { attachFromDrive() }
@@ -330,6 +320,7 @@ struct ComposeView: View {
     private func load() {
         let stored = model.drafts[draftID]
         draft = stored
+        formatter.history = stored?.historyPlain ?? ""
         // A window restored for a draft that no longer exists has nothing to show.
         if stored == nil, !embedded { dismiss() }
         if let date = stored?.scheduledAt, date > Date() { scheduleDate = date }

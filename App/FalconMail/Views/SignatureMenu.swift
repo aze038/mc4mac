@@ -1,8 +1,9 @@
 import SwiftUI
 import FalconCore
 
-/// A signature the Signature menu offers. Each account keeps one, which Settings calls "Main";
-/// with several signed accounts the menu adds the address so they can be told apart.
+/// A signature the Signature menu offers. Each account keeps one, which Settings calls "Main".
+/// Only the draft's own account's is plain "Main"; another account's carries its address, so
+/// it is not taken for the draft's own when that account has none.
 struct SignatureChoice: Identifiable {
     let id: UUID
     let name: String
@@ -14,7 +15,7 @@ struct SignatureChoice: Identifiable {
         let ordered = signed.filter { $0.id == accountID } + signed.filter { $0.id != accountID }
         return ordered.map { account in
             SignatureChoice(id: account.id,
-                            name: ordered.count == 1 ? "Main" : "Main (\(account.email))",
+                            name: account.id == accountID ? "Main" : "Main (\(account.email))",
                             block: ComposeDraft.signatureBlock(account))
         }
     }

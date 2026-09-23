@@ -11,6 +11,12 @@ struct FalconMailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 
+    init() {
+        #if DEBUG
+        ComposeSnapshot.runIfRequested()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup("FalconMail", id: FalconMailApp.mailboxWindowID) {
             MainWindow()

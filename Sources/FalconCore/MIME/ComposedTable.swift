@@ -10,6 +10,19 @@ import AppKit
 public enum ComposedTable {
     public static let lineWidth: CGFloat = 1
     public static let cellPadding: CGFloat = 5.4
+    /// Outlook's page: a table it inserts spans the six and a half inches, 468 points, between a
+    /// letter page's margins, however wide the window. The composer's points go out as CSS
+    /// pixels, so without this cap a table would be sent as wide as the sender's window.
+    public static let pageWidth: CGFloat = 468
+    /// The least text a cell keeps when a table is squeezed into a narrow cell of another.
+    static let leastCellText: CGFloat = 8
+
+    /// How wide a table of `columns` is made in `room` points of text: the room less a line for
+    /// the table's own border, no wider than Outlook's page, and never so narrow that a cell has
+    /// no room for text.
+    public static func width(room: CGFloat, columns: Int) -> CGFloat {
+        max(min(room, pageWidth) - lineWidth, CGFloat(max(columns, 1)) * (2 * cellPadding + lineWidth + leastCellText))
+    }
 
     /// Every cell is an empty paragraph in `attributes`; a paragraph style there is kept, and
     /// its blocks enclose the table, so a table inserted inside a cell nests in it.
