@@ -466,57 +466,45 @@ struct ComposeAttachmentChip: View {
     }
 }
 
+/// A To, Cc or Bcc field. Completions float in their own window under the field's box, so the
+/// field and the rows below it stay exactly where they are while the list is open.
 struct RecipientField: View {
     @Environment(AppModel.self) private var model
     let label: String
     @Binding var text: String
     @State private var suggestions: [ContactInfo] = []
+    @FocusState private var focused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                if !label.isEmpty { Text(label).frame(width: 60, alignment: .trailing).foregroundStyle(.secondary) }
-                TextField("", text: $text)
-                    .textFieldStyle(.plain)
-                    .onChange(of: text) { _, new in
-                        let last = new.split(separator: ",").last.map { String($0).trimmed } ?? ""
-                        suggestions = last.count >= 2 ? model.contactList.suggest(last) : []
-                    }
-            }
-            if !suggestions.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(suggestions.prefix(6)) { c in
-                        Button {
-                            var parts = text.split(separator: ",").map { String($0).trimmed }.filter { !$0.isEmpty }
-                            if !parts.isEmpty { parts.removeLast() }
-                            parts.append(EmailAddress(name: c.name, address: c.email).rfc5322)
-                            text = parts.joined(separator: ", ") + ", "
-                            suggestions = []
-                        } label: {
-                            HStack {
-                                Text(c.name.isEmpty ? c.email : c.name)
-                                if !c.name.isEmpty { Text(c.email).foregroundStyle(.secondary) }
-                                Spacer()
-                            }
-                            .padding(.vertical, 3).padding(.horizontal, 8)
-                        }
-                        .buttonStyle(.plain)
-                    }
+        HStack {
+            if !label.isEmpty { Text(label).frame(width: 60, alignment: .trailing).foregroundStyle(.secondary) }
+            TextField("", text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .background {
+                    // Stretched over the header field's box, so the list hangs from the box's corner.
+                    RecipientSuggestions(contacts: suggestions, text: text,
+                                         accept: { completed in
+                                             suggestions = []
+                                             text = completed
+                                         },
+                                         dismiss: { suggestions = [] })
+                        .padding(.horizontal, -OL.composeTextInset)
+                        .frame(height: OL.composeField)
                 }
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                .padding(.leading, label.isEmpty ? 0 : 66)
-            }
+                .onChange(of: text) { _, new in suggest(for: new) }
+                .onChange(of: focused) { _, isFocused in
+                    if !isFocused { suggestions = [] }
+                }
         }
     }
-}
 
-extension Array where Element == ContactInfo {
-    func suggest(_ prefix: String) -> [ContactInfo] {
-        let q = prefix.lowercased()
-        var seen = Set<String>()
-        return filter { $0.email.lowercased().contains(q) || $0.name.lowercased().contains(q) }
-            .sorted { ($0.useCount, $0.lastUsed ?? .distantPast) > ($1.useCount, $1.lastUsed ?? .distantPast) }
-            .filter { seen.insert($0.email.lowercased()).inserted }
+    private func suggest(for text: String) {
+        let fragment = RecipientText.lastFragment(of: text)
+        guard focused, fragment.count >= 2 else {
+            suggestions = []
+            return
+        }
+        suggestions = Array(RecipientText.suggestions(from: model.contactList, for: fragment).prefix(RecipientSuggestions.maxRows))
     }
 }

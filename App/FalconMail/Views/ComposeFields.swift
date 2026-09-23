@@ -18,7 +18,7 @@ struct ComposeFieldRow<Content: View, Trailing: View>: View {
             content()
                 .font(.system(size: OL.composeLabelFont))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 6)
+                .padding(.horizontal, OL.composeTextInset)
                 .frame(height: OL.composeField)
                 .background(OLColor.reading, in: RoundedRectangle(cornerRadius: 2))
                 .overlay(RoundedRectangle(cornerRadius: 2).stroke(OLColor.fieldBorder, lineWidth: 1))
@@ -27,6 +27,11 @@ struct ComposeFieldRow<Content: View, Trailing: View>: View {
         }
         .frame(height: OL.composeRowPitch, alignment: .top)
     }
+}
+
+extension OL {
+    /// How far a header field's text sits inside its box.
+    static let composeTextInset: CGFloat = 6
 }
 
 extension ComposeFieldRow where Trailing == EmptyView {

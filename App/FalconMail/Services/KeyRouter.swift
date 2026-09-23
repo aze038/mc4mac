@@ -12,6 +12,8 @@ final class KeyRouter {
         static let escape: UInt16 = 53
         static let keypadEnter: UInt16 = 76
         static let forwardDelete: UInt16 = 117
+        static let downArrow: UInt16 = 125
+        static let upArrow: UInt16 = 126
         static let one: UInt16 = 18
         static let two: UInt16 = 19
         static let three: UInt16 = 20
