@@ -15,7 +15,20 @@ public enum ComposedBody {
     /// as it was quoted and then as the same trip through RTF gives it back.
     public static func historyStart(in text: String, history: String) -> Int? {
         guard !history.isEmpty else { return nil }
-        return start(of: history, endingThe: text) ?? start(of: throughRTF(history), endingThe: text)
+        let travelled = throughRTF(history)
+        return start(of: history, endingThe: text) ?? start(of: travelled, endingThe: text)
+            ?? equivalentStart(of: history, endingThe: text) ?? equivalentStart(of: travelled, endingThe: text)
+    }
+
+    /// The same, comparing canonically equivalent text as equal. RTF composes decomposed letters
+    /// only within one run of formatting, so kana with a separate voicing mark or Hangul written
+    /// as jamo, common in file names made on a Mac, can come back composed in one place and not
+    /// in another. Equivalent strings have the same number of characters, so the history's
+    /// length in characters, counted back from the end, finds where it begins.
+    private static func equivalentStart(of tail: String, endingThe text: String) -> Int? {
+        guard !tail.isEmpty, text.hasSuffix(tail),
+              let index = text.index(text.endIndex, offsetBy: -tail.count, limitedBy: text.startIndex) else { return nil }
+        return text.utf16.distance(from: text.utf16.startIndex, to: index.samePosition(in: text.utf16) ?? index)
     }
 
     /// Plain text as it reads once written to RTF and read back, the trip the composer's body

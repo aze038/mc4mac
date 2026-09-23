@@ -41,7 +41,7 @@ public enum ComposedTable {
         // Absolute widths: a percentage does not survive the draft's trip through RTF, which
         // writes fiftieths of a per cent and reads them back as twentieths.
         table.setContentWidth(width, type: .absoluteValueType)
-        let cellWidth = (width / CGFloat(columns) - 2 * cellPadding - lineWidth).rounded(.down)
+        let cellWidth = max(0, (width / CGFloat(columns) - 2 * cellPadding - lineWidth).rounded(.down))
         let cells = NSMutableAttributedString()
         for row in 0..<rows {
             for column in 0..<columns {

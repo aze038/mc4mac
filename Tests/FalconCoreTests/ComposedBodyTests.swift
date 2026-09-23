@@ -252,6 +252,23 @@ final class ComposedBodyTests: XCTestCase {
         return found
     }
 
+    /// Kana with a separate voicing mark and Hangul written as jamo, as file names made on a Mac
+    /// are, may come back composed after the draft's trip through RTF and an edit: the original is
+    /// still recognised, sent as its own HTML, and kept free of insertions.
+    func testAnOriginalWithDecomposedKanaOrHangulIsStillFoundWhenItComesBackComposed() throws {
+        let decomposed = "\n________________________________\nFrom: Sam Sender <sam@example.com>\nSubject: \u{30C6}\u{3099}\u{30FC}\u{30BF}.pdf \u{1112}\u{1161}\u{11AB}\n\nSee the file.\n"
+        let composed = decomposed.precomposedStringWithCanonicalMapping
+        XCTAssertNotEqual(Array(decomposed.utf16), Array(composed.utf16))
+        let body = editor("Thanks, will do.\n\n" + signature + composed)
+        let html = try sent(body, history: decomposed)
+        XCTAssertEqual(occurrences(of: historyHTML, in: html), 1, html)
+        XCTAssertTrue(html.contains("Example Ltd"), html)
+        XCTAssertFalse(html.contains("See the file"), "the original went out flattened: \(html)")
+        let storage = try XCTUnwrap(body.textStorage)
+        let point = ComposedBody.insertionPoint(for: storage.length - 3, in: storage.string, history: decomposed)
+        XCTAssertEqual(point, (storage.string as NSString).length - (composed as NSString).length)
+    }
+
     func testATableIsNoWiderThanOutlooksPage() throws {
         let editor = editor("Figures:\n", width: 1400)
         editor.setSelectedRange(NSRange(location: 9, length: 0))
