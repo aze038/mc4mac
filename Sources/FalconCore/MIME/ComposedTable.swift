@@ -14,14 +14,19 @@ public enum ComposedTable {
     /// letter page's margins, however wide the window. The composer's points go out as CSS
     /// pixels, so without this cap a table would be sent as wide as the sender's window.
     public static let pageWidth: CGFloat = 468
-    /// The least text a cell keeps when a table is squeezed into a narrow cell of another.
+    /// The least text a cell keeps when a table is squeezed, into a narrow cell of another or
+    /// by many columns.
     static let leastCellText: CGFloat = 8
 
-    /// How wide a table of `columns` is made in `room` points of text: the room less a line for
-    /// the table's own border, no wider than Outlook's page, and never so narrow that a cell has
-    /// no room for text.
-    public static func width(room: CGFloat, columns: Int) -> CGFloat {
-        max(min(room, pageWidth) - lineWidth, CGFloat(max(columns, 1)) * (2 * cellPadding + lineWidth + leastCellText))
+    /// How wide a table of `columns` is made in `room` points of text, in a body `body` points
+    /// wide: the room less a line for the table's own border, no wider than Outlook's page.
+    /// Columns that would leave a cell no room for text there take what they need instead, but
+    /// never more than the body, past which the table could not be seen whole and would go out
+    /// wider than the message.
+    public static func width(room: CGFloat, body: CGFloat, columns: Int) -> CGFloat {
+        let fitted = min(room, pageWidth) - lineWidth
+        let needed = CGFloat(max(columns, 1)) * (2 * cellPadding + lineWidth + leastCellText)
+        return min(max(fitted, needed), body - lineWidth)
     }
 
     /// Every cell is an empty paragraph in `attributes`; a paragraph style there is kept, and

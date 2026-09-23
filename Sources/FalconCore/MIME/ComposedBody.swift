@@ -7,10 +7,31 @@ import AppKit
 public enum ComposedBody {
     /// Where the history begins, in the UTF-16 units a text view counts in, while the text still
     /// ends with it.
+    ///
+    /// A body that has been through RTF, as a draft reopened from its store and the rich text
+    /// that is sent both have, no longer holds the history exactly as it was quoted: RTF drops
+    /// bidi embeddings, NULs and object characters, composes accented letters and turns
+    /// paragraph separators and carriage returns into line feeds. So the history is looked for
+    /// as it was quoted and then as the same trip through RTF gives it back.
     public static func historyStart(in text: String, history: String) -> Int? {
         guard !history.isEmpty else { return nil }
-        let units = text.utf16, tail = history.utf16
-        guard units.count >= tail.count, units.suffix(tail.count).elementsEqual(tail) else { return nil }
+        return start(of: history, endingThe: text) ?? start(of: throughRTF(history), endingThe: text)
+    }
+
+    /// Plain text as it reads once written to RTF and read back, the trip the composer's body
+    /// makes to its draft store and to what is sent.
+    static func throughRTF(_ plain: String) -> String {
+        let text = NSAttributedString(string: plain)
+        guard let data = text.rtf(from: NSRange(location: 0, length: text.length),
+                                  documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]),
+              let read = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                                 documentAttributes: nil) else { return plain }
+        return read.string
+    }
+
+    private static func start(of tail: String, endingThe text: String) -> Int? {
+        let units = text.utf16, tail = tail.utf16
+        guard !tail.isEmpty, units.count >= tail.count, units.suffix(tail.count).elementsEqual(tail) else { return nil }
         return units.count - tail.count
     }
 
@@ -57,7 +78,9 @@ public enum ComposedBody {
         attributes[.font] = attributes[.font] ?? font
         attributes[.foregroundColor] = attributes[.foregroundColor] ?? NSColor.labelColor
         let blocks = (attributes[.paragraphStyle] as? NSParagraphStyle)?.textBlocks ?? []
-        let width = ComposedTable.width(room: room(at: location, inside: blocks, of: editor), columns: columns)
+        let bodyWidth = textWidth(of: editor)
+        let room = cellWidth(at: location, inside: blocks, of: editor) ?? bodyWidth
+        let width = ComposedTable.width(room: room, body: bodyWidth, columns: columns)
 
         let body = NSMutableAttributedString()
         if !startsParagraph(at: location, in: storage.string) {
@@ -93,19 +116,24 @@ public enum ComposedBody {
         return attributes
     }
 
-    /// The width of the text a table at `location` would sit in: the innermost table cell there
-    /// as it is laid out, so a table inserted in a cell stays inside it, or else the body's.
+    /// The width of the body's text.
     @MainActor
-    private static func room(at location: Int, inside blocks: [NSTextBlock], of editor: NSTextView) -> CGFloat {
+    private static func textWidth(of editor: NSTextView) -> CGFloat {
         let container = editor.textContainer
-        let body = (container?.size.width ?? 0) - 2 * (container?.lineFragmentPadding ?? 0)
+        return (container?.size.width ?? 0) - 2 * (container?.lineFragmentPadding ?? 0)
+    }
+
+    /// The width of the text in the innermost table cell at `location`, as it is laid out, so a
+    /// table inserted in a cell stays inside it; nil outside a table.
+    @MainActor
+    private static func cellWidth(at location: Int, inside blocks: [NSTextBlock], of editor: NSTextView) -> CGFloat? {
         guard let cell = blocks.last(where: { $0 is NSTextTableBlock }), let storage = editor.textStorage,
-              let layout = editor.layoutManager, storage.length > 0 else { return body }
+              let layout = editor.layoutManager, storage.length > 0 else { return nil }
         let range = storage.range(of: cell, at: min(location, storage.length - 1))
-        guard range.location != NSNotFound, range.length > 0 else { return body }
+        guard range.location != NSNotFound, range.length > 0 else { return nil }
         let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         layout.ensureLayout(forGlyphRange: glyphs)
         let laid = layout.layoutRect(for: cell, glyphRange: glyphs).width
-        return laid > 0 ? laid : body
+        return laid > 0 ? laid : nil
     }
 }

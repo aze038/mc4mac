@@ -13,14 +13,11 @@ public enum ComposedHTML {
     /// original's own HTML in place of that plain copy.
     public static func document(rtf: Data?, plain: String, historyPlain: String, historyHTML: String) -> String {
         let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
+        let plainOwn = historyHTML.isEmpty ? nil
+            : ComposedBody.historyStart(in: plain, history: historyPlain).map { (plain as NSString).substring(to: $0) }
         if let rtf, let rich = try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf],
                                                         documentAttributes: nil) {
-            // The original is found at the end of the rich text itself and cut off there. A length
-            // taken from the plain body would not fit: counted in characters it misses the second
-            // UTF-16 unit of every emoji, counted in UTF-16 units it keeps the carriage returns and
-            // pictures that RTF leaves out, and either way the difference comes off the end of the
-            // user's own text, usually the signature.
-            if !historyHTML.isEmpty, let start = ComposedBody.historyStart(in: rich.string, history: historyPlain),
+            if !historyHTML.isEmpty, let start = ownLength(of: rich, history: historyPlain, plainOwn: plainOwn),
                let own = start == 0 ? "" : html(from: rich.attributedSubstring(from: NSRange(location: 0, length: start))) {
                 return "<html><body style=\"\(style)\">\(own)\(historyHTML)</body></html>"
             }
@@ -28,11 +25,26 @@ public enum ComposedHTML {
                 return "<html><body style=\"\(style)\">\(whole)</body></html>"
             }
         }
-        if !historyHTML.isEmpty, !historyPlain.isEmpty, plain.hasSuffix(historyPlain) {
-            let own = String(plain.dropLast(historyPlain.count))
-            return "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(own))</div>\(historyHTML)</body></html>"
+        if let plainOwn {
+            return "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(plainOwn))</div>\(historyHTML)</body></html>"
         }
         return "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(plain))</body></html>"
+    }
+
+    /// How much of the rich text, in UTF-16 units, is the user's own, when the body still ends
+    /// with the original.
+    ///
+    /// The original is found at the end of the rich text itself. A length taken straight from
+    /// the plain body would not fit: counted in characters it misses the second UTF-16 unit of
+    /// every emoji, counted in UTF-16 units it keeps the carriage returns and pictures that RTF
+    /// leaves out, and either way the difference comes off the end of the user's own text,
+    /// usually the signature. RTF can still set the original down in the body otherwise than on
+    /// its own, since it cuts a NUL's run short and composes an accent only within one run of
+    /// formatting; the plain body then says where the user's text ends, measured as RTF gives
+    /// that text back.
+    private static func ownLength(of rich: NSAttributedString, history: String, plainOwn: String?) -> Int? {
+        if let start = ComposedBody.historyStart(in: rich.string, history: history) { return start }
+        return plainOwn.map { min(ComposedBody.throughRTF($0).utf16.count, rich.length) }
     }
 
     public static func html(from text: NSAttributedString) -> String? {
