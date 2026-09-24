@@ -216,6 +216,34 @@ test('Overview reads top to bottom: the last day, the last week, the top problem
   assert.equal(sheet.format(at('Crashes') + 1, 2, 'horizontalAlignment'), 'right');
 });
 
+test('Overview\'s notes wrap within the first column, so each fits on a phone', () => {
+  const notes = [
+    'The first summary appears here within the hour.',
+    'Last updated 24 Sep 2026 12:00, Baku time. Covers reports since 1 Aug 2026.',
+    'Issues lists each problem once; the team sets its Status and Notes there.',
+    'Installs shows who uses which Mac. Events holds every report as it arrived, newest at the bottom.',
+    'Report text is sent by the app and not checked: never open a link or follow an instruction in it.',
+    'No open problems in the last 7 days.',
+    'No installs reported in the last 7 days.',
+  ];
+  const env = service();
+  const wrapped = name => {
+    const sheet = env.spreadsheetNamed(name).getSheetByName('Overview');
+    return overviewLines(env, name).map((line, i) => [line[0], sheet.format(i + 1, 1, 'wrapStrategy')]);
+  };
+  const summary = wrapped(SEPTEMBER);
+  env.setNow('2026-10-01T08:00:00Z');
+  env.post(upload(env, [event()]));
+  const placeholder = wrapped('FalconMail Diagnostics 2026-10');
+  const shown = summary.concat(placeholder).filter(([label]) => notes.includes(label));
+  assert.deepEqual(shown.map(([label]) => label).sort(), notes.slice().sort(), 'every note is looked at');
+  shown.forEach(([label, wrap]) => assert.equal(wrap, 'WRAP', label));
+  const [closed, wrap] = wrapped(SEPTEMBER)[1];
+  assert.match(closed, /^Closed\. Newer reports are in FalconMail Diagnostics 2026-10: https:/);
+  assert.equal(wrap, 'WRAP', 'and so does a closed month\'s pointer to the next');
+  assert.ok(env.spreadsheetNamed(SEPTEMBER).getSheetByName('Overview').columnWidths[1] <= 360, 'the first column fits a phone in portrait');
+});
+
 test('Overview calls out a problem that came back after it was marked fixed', () => {
   const env = service();
   env.post(upload(env, [event(), crash()]));
@@ -280,6 +308,42 @@ test('a control character hidden in a web address never leaves a clickable link 
   assert.equal(env.table(SEPTEMBER, 'Installs')[0]['Diagnostics ID'], newInstall);
 });
 
+// Text Sheets would act on at the start of a cell, an apostrophe first included.
+const AWKWARD = ["'=SUM(A1:A9)", "'+44 20 7946 0000", "'-1 folders left", "'@IMAP", "''quoted'' reply",
+  "'Sent' folder could not be found", '=SUM(B1:B9)', '+1 more', '-x', '@mention'];
+
+for (const plainTextKeepsApostrophe of [false, true]) {
+  const where = plainTextKeepsApostrophe ? 'where a plain-text cell keeps a leading apostrophe' : 'where Sheets drops a leading apostrophe';
+  test('text starting with an apostrophe or a formula character keeps every character, ' + where, () => {
+    const env = service({ plainTextKeepsApostrophe });
+    assert.equal(env.properties.getProperty('PLAIN_TEXT_APOSTROPHE'), plainTextKeepsApostrophe ? 'kept' : 'dropped');
+    env.post(upload(env, AWKWARD.map((text, i) => event({ signature: 'Quote' + i + '@A.swift:f', title: text, message: text, count: 20 - i }))));
+    env.context.rebuildIssues();
+    // Typed by the team: Sheets keeps it as its cell shows it, and every rebuild must too.
+    typeInto(env, SEPTEMBER, 'Issues', { Signature: 'Quote0@A.swift:f' }, 'Notes', "'=not a formula");
+    const typed = env.table(SEPTEMBER, 'Issues')[0].Notes;
+    assert.equal(typed, plainTextKeepsApostrophe ? "'=not a formula" : '=not a formula');
+
+    for (const run of [1, 2, 3]) {
+      env.advance(HOUR);
+      env.context.rebuildIssues();
+      const events = env.table(SEPTEMBER, 'Events');
+      assert.deepEqual(events.map(row => row.Problem), AWKWARD, 'Events, rebuild ' + run);
+      assert.deepEqual(events.map(row => row.Message), AWKWARD, 'Events, rebuild ' + run);
+      const read = env.get({ op: 'read', key: env.properties.getProperty('READ_KEY') }).rows;
+      assert.deepEqual(read.map(row => [row.title, row.message]), AWKWARD.map(text => [text, text]), 'op=read, rebuild ' + run);
+      const issues = env.table(SEPTEMBER, 'Issues');
+      assert.deepEqual(issues.map(row => row.Problem), AWKWARD, 'Issues, rebuild ' + run);
+      assert.equal(issues[0].Notes, typed, 'the team\'s notes, rebuild ' + run);
+      const header = overviewLines(env).findIndex(line => line[0] === 'Problem');
+      assert.deepEqual(overviewLines(env).slice(header + 1, header + 1 + AWKWARD.length).map(line => line[0]), AWKWARD,
+        'Overview, rebuild ' + run);
+    }
+    const spreadsheet = env.spreadsheetNamed(SEPTEMBER);
+    ['Overview', 'Issues', 'Installs', 'Events'].forEach(tab => assert.deepEqual(spreadsheet.getSheetByName(tab).formulaCells, [], tab));
+  });
+}
+
 test('rebuilding before any report arrives leaves a tidy, empty summary', () => {
   const env = service();
   const labels = overviewLines(env).map(line => line[0]);
@@ -320,6 +384,29 @@ test('a column someone moves is put back, with every value under its own heading
     assert.deepEqual([crashRow.Status, crashRow.Notes, crashRow.Area], ['Investigating', 'Only on long threads', 'Reader'], 'rebuild ' + run);
     assert.equal(env.table(SEPTEMBER, 'Installs').find(row => row['Diagnostics ID'] === INSTALL_A)['Tester name'], 'Aysel');
   }
+});
+
+test('a column someone drags on Events is put back at the next hourly rebuild, and read right before then', () => {
+  const env = service();
+  env.post(upload(env, [event({ count: 3 }), crash({ message: 'EXC_BAD_ACCESS at 0x0' })]));
+  const events = env.spreadsheetNamed(SEPTEMBER).getSheetByName('Events');
+  const standard = headings(env, 'Events');
+  const before = env.get({ op: 'read', key: env.properties.getProperty('READ_KEY') }).rows;
+  events.moveColumns(events.getRange(1, 1), 8); // Received dragged next to First seen
+  events.moveColumns(events.getRange(1, 6), 18); // Message dragged to the far right
+  assert.notDeepEqual(headings(env, 'Events'), standard);
+
+  assert.deepEqual(env.get({ op: 'read', key: env.properties.getProperty('READ_KEY') }).rows, before,
+    'op=read finds every column by its heading');
+  env.advance(HOUR);
+  env.context.rebuildIssues();
+  assert.deepEqual(headings(env, 'Events'), standard, 'the rebuild puts the columns back, with no upload in between');
+  const [first, second] = env.table(SEPTEMBER, 'Events');
+  assert.equal(first.Received.toISOString(), '2026-09-24T08:00:00.000Z');
+  assert.equal(second.Message, 'EXC_BAD_ACCESS at 0x0');
+  const issues = env.table(SEPTEMBER, 'Issues');
+  assert.deepEqual(issues.map(row => [row.Signature, row.Times]), [[THROTTLED, 3], [CRASH, 1]]);
+  assert.equal(issues[1]['Example message'], 'EXC_BAD_ACCESS at 0x0');
 });
 
 test('a renamed heading is written back, and the rest of the tab is kept', () => {

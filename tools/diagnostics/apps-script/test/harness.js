@@ -4,6 +4,9 @@
 // uses. The stand-ins behave like the real ones where Code.gs depends on it: Sheets refuses
 // ranges outside the sheet and cells over 50,000 characters and treats a leading apostrophe as
 // "text", the cache has Apps Script's size limits, and nothing touches the network.
+//
+// With `plainTextKeepsApostrophe`, a plain-text cell instead keeps everything as typed, a leading
+// apostrophe included, and runs no formula: Code.gs must read back what it wrote either way.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -15,8 +18,9 @@ const SHEETS_MIME = 'application/vnd.google-apps.spreadsheet';
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 class Environment {
-  constructor({ email = 'kamal@freightmasters.llc', now = '2026-09-24T08:00:00Z' } = {}) {
+  constructor({ email = 'kamal@freightmasters.llc', now = '2026-09-24T08:00:00Z', plainTextKeepsApostrophe = false } = {}) {
     this.email = email;
+    this.plainTextKeepsApostrophe = plainTextKeepsApostrophe;
     this.logs = [];
     this.errors = [];
     this.triggers = [];
@@ -389,6 +393,7 @@ class FakeRange {
   }
 
   setValue(value) { return this.setValues([[value]]); }
+  getValue() { return this.sheet.value(this.row, this.column); }
 
   clearContent() {
     for (let r = 0; r < this.rows; r++) {
@@ -404,7 +409,9 @@ class FakeRange {
     }
     if (typeof value === 'string') {
       if (value.length > 50000) throw new Error('Your input contains more than the maximum of 50000 characters in a single cell.');
-      if (value.startsWith("'")) stored = value.slice(1);
+      const literal = this.sheet.spreadsheet.env.plainTextKeepsApostrophe && this.sheet.format(row, column, 'numberFormat') === '@';
+      if (literal) stored = value;
+      else if (value.startsWith("'")) stored = value.slice(1);
       else if (/^[=+\-@]/.test(value)) this.sheet.formulaCells.push({ row, column, value });
     }
     while (this.sheet.data.length < row) this.sheet.data.push([]);

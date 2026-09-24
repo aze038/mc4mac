@@ -662,7 +662,7 @@ function eventRow_(event, upload, receivedAt) {
     eventId: event.id,
     context: event.context,
   };
-  return EVENTS_COLUMNS.map(column => cellValue_(record[column.key]));
+  return EVENTS_COLUMNS.map(column => (record[column.key] === null || record[column.key] === undefined ? '' : record[column.key]));
 }
 
 function rowChars_(row) {
@@ -703,7 +703,8 @@ function readEvents_(params) {
 function readSheetPage_(sheet, since, limit, page) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  const times = sheet.getRange(2, 1, lastRow - 1, 1).getValues().map(row => timeOf_(row[0]));
+  const positions = columnPositions_(sheet, EVENTS_COLUMNS);
+  const times = sheet.getRange(2, positions[0] + 1, lastRow - 1, 1).getValues().map(row => timeOf_(row[0]));
   const after = page.full ? page.lastMs - 1 : since;
   const order = [];
   times.forEach((at, index) => { if (at > after) order.push(index); });
@@ -719,14 +720,14 @@ function readSheetPage_(sheet, since, limit, page) {
   if (chosen.length) {
     const first = chosen.reduce((low, index) => Math.min(low, index), Infinity);
     const last = chosen.reduce((high, index) => Math.max(high, index), -Infinity);
-    const values = sheet.getRange(first + 2, 1, last - first + 1, EVENTS_COLUMNS.length).getValues();
+    const values = sheet.getRange(first + 2, 1, last - first + 1, readWidth_(sheet, positions)).getValues();
     for (const index of chosen) {
       const at = times[index];
       if (page.full && at !== page.lastMs) {
         page.more = true;
         return;
       }
-      const row = readRecord_(values[index - first], EVENTS_COLUMNS);
+      const row = readRecord_(values[index - first], EVENTS_COLUMNS, positions);
       page.rows.push(row);
       page.chars += JSON.stringify(row).length;
       page.lastMs = at;
@@ -751,11 +752,12 @@ function readIssues_() {
   };
 }
 
-function readRecord_(values, columns) {
+// A row as the contract's fields, each read from where `positions` says its column is.
+function readRecord_(values, columns, positions) {
   const out = {};
   columns.forEach((column, i) => {
-    let value = values[i];
-    if (column.type === 'kind') value = kindOfLabel_(unescapeText_(value));
+    let value = values[positions ? positions[i] : i];
+    if (column.type === 'kind') value = kindOfLabel_(cellText_(value));
     out[column.key] = jsonValue_(value, column);
   });
   return out;
@@ -767,8 +769,8 @@ function jsonValue_(value, column) {
     return isNaN(at) ? null : new Date(at).toISOString();
   }
   if (column.type === 'number') return Number(value) || 0;
-  if (column.json) return unescapeText_(value) || 'null';
-  return unescapeText_(value);
+  if (column.json) return cellText_(value) || 'null';
+  return cellText_(value);
 }
 
 // ============================================================================================
@@ -819,6 +821,7 @@ function createSpreadsheet_(props, month, part, previousId) {
     sheet.setTabColor(table.colour);
     styleTable_(sheet, table.columns);
   });
+  plainTextKeepsApostrophe_(spreadsheet.getSheetByName(EVENTS_TAB), EVENTS_COLUMNS, true);
   writeOverviewPlaceholder_(overview);
 
   const file = DriveApp.getFileById(spreadsheet.getId());
@@ -956,6 +959,7 @@ function rebuildIssues() {
   const window = [previousMonthKey_(thisMonth), thisMonth];
   const inWindow = knownSpreadsheets_().filter(entry => window.indexOf(entry.month) >= 0);
   const read = inWindow.slice(-MAX_SUMMARY_SPREADSHEETS);
+  restoreEventsLayout_(read);
   const events = readWindowEvents_(read);
 
   // The team's Status, Notes and tester names come from this spreadsheet, or from the one
@@ -986,19 +990,37 @@ function rebuildIssues() {
   props.setProperty('SUMMARY_UPDATED_AT', now.toISOString());
 }
 
+// A column someone has dragged elsewhere on Events is put back every hour, not only at the next
+// upload, which a quiet month's tab may never get. Uploads append under the lock, so the columns
+// move only while it is held; when an upload has it, this waits for the next hour.
+function restoreEventsLayout_(entries) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) return;
+  try {
+    entries.forEach(entry => {
+      const spreadsheet = openSpreadsheet_(entry.id);
+      const sheet = spreadsheet && spreadsheet.getSheetByName(EVENTS_TAB);
+      if (sheet) ensureLayout_(sheet, EVENTS_COLUMNS);
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // Reads the window's events once each: a resent batch that slipped past the cache is counted once.
 function readWindowEvents_(entries) {
   const events = [];
   const ids = new Set();
   // Everything but Context, the largest column and not needed for the summaries.
-  const columns = EVENTS_COLUMNS.slice(0, -1);
+  const columns = EVENTS_COLUMNS.filter(column => column.key !== 'context');
   entries.forEach(entry => {
     const spreadsheet = openSpreadsheet_(entry.id);
     const sheet = spreadsheet && spreadsheet.getSheetByName(EVENTS_TAB);
     const lastRow = sheet ? sheet.getLastRow() : 0;
     if (lastRow < 2) return;
-    sheet.getRange(2, 1, lastRow - 1, columns.length).getValues().forEach(values => {
-      const event = readRecord_(values, columns);
+    const positions = columnPositions_(sheet, columns);
+    sheet.getRange(2, 1, lastRow - 1, readWidth_(sheet, positions)).getValues().forEach(values => {
+      const event = readRecord_(values, columns, positions);
       if (!event.eventId || ids.has(event.eventId)) return;
       ids.add(event.eventId);
       const received = Date.parse(event.receivedAt);
@@ -1358,7 +1380,7 @@ function writeLines_(sheet, lines) {
   sheet.setRowHeights(1, sheet.getMaxRows(), 21);
 
   const values = lines.map(line => {
-    const cells = line.cells.map(cellValue_);
+    const cells = line.cells.map(cell => cellValue_(cell, false));
     while (cells.length < width) cells.push('');
     return cells;
   });
@@ -1375,7 +1397,9 @@ function writeLines_(sheet, lines) {
       range.setFontSize(11).setFontWeight('bold').setFontColor(COLOURS.title);
       sheet.getRange(row, 1).setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
     } else if (line.style === 'muted') {
+      // A note runs longer than its column; wrapped there, it stays on a phone's screen.
       range.setFontColor(COLOURS.muted);
+      sheet.getRange(row, 1).setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
     } else if (line.style === 'section') {
       range.setFontSize(12).setFontWeight('bold').setBackground(COLOURS.section).setFontColor(COLOURS.title);
       sheet.setRowHeight(row, 28);
@@ -1538,7 +1562,9 @@ function appendRows_(sheet, columns, rows) {
   ensureLayout_(sheet, columns);
   const first = sheet.getLastRow() + 1;
   ensureRows_(sheet, columns, first + rows.length - 1);
-  sheet.getRange(first, 1, rows.length, columns.length).setValues(rows);
+  const literal = plainTextKeepsApostrophe_(sheet, columns);
+  const values = rows.map(row => row.map((value, i) => cellValue_(value, literal && isPlainText_(columns[i]))));
+  sheet.getRange(first, 1, rows.length, columns.length).setValues(values);
 }
 
 function writeTable_(sheet, columns, records) {
@@ -1548,11 +1574,53 @@ function writeTable_(sheet, columns, records) {
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, width).clearContent();
   if (!records.length) return;
+  const literal = plainTextKeepsApostrophe_(sheet, columns);
   const values = records.map(record => columns.map(column => {
     const value = column.type === 'kind' ? kindLabel_(record[column.key]) : record[column.key];
-    return cellValue_(value);
+    return cellValue_(value, literal && isPlainText_(column));
   }));
   sheet.getRange(2, 1, values.length, width).setValues(values);
+}
+
+// Table columns other than dates and numbers are formatted as plain text.
+function isPlainText_(column) {
+  return column.type !== 'date' && column.type !== 'number';
+}
+
+// Whether Sheets keeps a leading apostrophe as part of the text in a plain-text cell, or takes it
+// as its mark for text and drops it, as it does in any other cell. Rather than rely on either, the
+// script asks once, in the bottom row of a table as the table is made, and keeps the answer in the
+// script properties; text is then written so that it reads back exactly as it was sent. A bottom
+// row already in use is never written to, and the usual answer, dropped, is taken for now.
+function plainTextKeepsApostrophe_(sheet, columns, fresh) {
+  const props = PropertiesService.getScriptProperties();
+  const known = props.getProperty('PLAIN_TEXT_APOSTROPHE');
+  if (!fresh && (known === 'kept' || known === 'dropped')) return known === 'kept';
+  const column = columns.findIndex(isPlainText_) + 1;
+  const cell = column ? sheet.getRange(sheet.getMaxRows(), column) : null;
+  if (!cell || cell.getValue() !== '') return known === 'kept';
+  cell.setValue("'probe");
+  const kept = cell.getValue() === "'probe";
+  cell.clearContent();
+  props.setProperty('PLAIN_TEXT_APOSTROPHE', kept ? 'kept' : 'dropped');
+  return kept;
+}
+
+// Where each column's heading is on a tab, counted from 0, so its rows are read right even when a
+// column has been moved since an upload or the hourly rebuild last put it back. A heading that
+// cannot be found is read where it belongs.
+function columnPositions_(sheet, columns) {
+  const width = Math.min(Math.max(sheet.getLastColumn(), columns.length), sheet.getMaxColumns());
+  const headers = sheet.getRange(1, 1, 1, width).getValues()[0].map(header => String(header).trim());
+  return columns.map((column, i) => {
+    const at = headers.indexOf(column.header);
+    return at >= 0 ? at : i;
+  });
+}
+
+// How many columns to read to reach every one of `positions`, within the tab.
+function readWidth_(sheet, positions) {
+  return Math.min(Math.max.apply(null, positions) + 1, sheet.getMaxColumns());
 }
 
 // Reads a tab by its header names, so a column the team has moved is still found before
@@ -1568,10 +1636,10 @@ function readTable_(sheet, columns) {
     const record = {};
     columns.forEach((column, i) => {
       const value = positions[i] >= 0 ? row[positions[i]] : '';
-      if (column.type === 'kind') record[column.key] = kindOfLabel_(unescapeText_(value));
+      if (column.type === 'kind') record[column.key] = kindOfLabel_(cellText_(value));
       else if (column.type === 'number') record[column.key] = Number(value) || 0;
       else if (column.type === 'date') record[column.key] = isDate_(value) ? value : '';
-      else record[column.key] = unescapeText_(value);
+      else record[column.key] = cellText_(value);
     });
     return record;
   });
@@ -1610,22 +1678,23 @@ function severity_(kind) {
 }
 
 // Text written to a cell: kept under the cell limit, and never read by Sheets as a formula. A
-// leading apostrophe is Sheets' own mark for text, so text starting with one is escaped too, or
-// Sheets would swallow it.
-function cellValue_(value) {
+// leading apostrophe is Sheets' own mark for text, which it drops, so text that starts with a
+// character Sheets would act on, an apostrophe included, gets one more. Where Sheets keeps every
+// character as typed (`literal`, a plain-text cell that keeps a leading apostrophe) it runs no
+// formula either, and the text goes as it is. Either way it reads back exactly as sent.
+function cellValue_(value, literal) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'number' || isDate_(value)) return value;
   const text = truncate_(String(value), MAX_CELL_CHARS);
-  return /^[=+\-@\t\r']/.test(text) ? "'" + text : text;
+  return !literal && /^[=+\-@\t\r']/.test(text) ? "'" + text : text;
 }
 
-// Sheets drops the leading apostrophe that cellValue_ adds; this also covers a cell where it
-// was kept, which only ever comes before a character cellValue_ escapes.
-function unescapeText_(value) {
+// A cell's text as sent: what cellValue_ wrote reads back as it was, so only dates need turning
+// into text.
+function cellText_(value) {
   if (value === null || value === undefined) return '';
   if (isDate_(value)) return value.toISOString();
-  const text = String(value);
-  return /^'[=+\-@\t\r']/.test(text) ? text.slice(1) : text;
+  return String(value);
 }
 
 function truncate_(text, max) {

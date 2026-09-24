@@ -19,7 +19,8 @@ Each month has a spreadsheet named `FalconMail Diagnostics 2026-09` in the Drive
 1. **Overview**: the day in a sentence at the top, then the last 24 hours, the last 7 days day by
    day, the ten most frequent open problems of the last 7 days (with when each was first and last
    seen), any problem that came back after it was marked fixed, and the versions in use. Labels
-   and titles sit in a narrow first column with their figures beside them, so it reads on a phone.
+   and titles sit in a narrow first column with their figures beside them, and the notes wrap
+   within it, so it reads on a phone.
 2. **Issues**: one row per problem, the plain-language title first. The team fills in **Status**
    (New, Investigating, Fixed in *version*, Won't fix) and **Notes**; both are kept when the tab
    is rebuilt every hour, and carried into next month's spreadsheet. A problem counts as fixed
@@ -35,10 +36,12 @@ Dates are Baku time. Crashes are red, hangs and CPU or disk-write problems orang
 warnings yellow. Health and launch reports only show that an install is alive: they feed Installs
 and never count as problems.
 
-The heading rows warn before anyone changes them. A column moved anyway is put back, with its
-data, at the next hourly rebuild; to make room, hide columns instead. When a month ends, the old
-spreadsheet's Issues and Installs tabs turn red and warn anyone typing there, as Status, Notes and
-tester names are read from the newest spreadsheet.
+The heading rows warn before anyone changes them. A column moved anyway is put back with its data:
+on Issues and Installs at the next hourly rebuild, and on Events at the next upload or hourly
+rebuild, whichever comes first. Until then every column is still read by its heading. To make room,
+hide columns instead. When a month ends, the old spreadsheet's Issues and Installs tabs turn red
+and warn anyone typing there, as Status, Notes and tester names are read from the newest
+spreadsheet.
 
 With the default `SHARE_PERMISSION` of `VIEW`, only the owner can type Status, Notes and tester
 names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMMENT`) and run
@@ -62,7 +65,10 @@ names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMM
   - at most 10,000 occurrences folded into one event.
 - **Text safety**: report text is untrusted, and the Overview says so.
   - Text that starts with `=`, `+`, `-`, `@`, `'`, a tab or a carriage return is stored as plain
-    text, never as a formula, and comes back exactly as sent.
+    text, never as a formula, and comes back exactly as sent, an apostrophe followed by any of
+    them included. Whether Sheets keeps a leading apostrophe in a plain-text cell is checked once,
+    in a new spreadsheet's Events tab, and the answer kept as the script property
+    `PLAIN_TEXT_APOSTROPHE`.
   - Control characters are removed first (tabs and line breaks in messages stay), so nothing in
     a report can act on the owner's terminal or hide a web address from the next step.
   - Web addresses, mail links and e-mail addresses are stored readable but not clickable, as
