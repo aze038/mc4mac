@@ -46,6 +46,11 @@ public enum DiagnosticsSignature {
 
     static func code(for error: any Error) -> String? {
         if error is CancellationError { return "cancelled" }
+        if let failure = error as? MailServiceError { return code(forFailure: failure) }
+        if let refusal = error as? GoogleAPIError { return code(forRefusal: refusal) }
+        // Setting an account up, a refused sign-in is a wrong name or password.
+        if let probe = error as? AccountProbeFailure { return probe.failure.kind == .needsSignIn ? "wrongPassword" : code(forFailure: probe.failure) }
+        if isMailEngineError(error) { return code(forFailure: MailServiceError.classify(error, email: "", isGoogle: false)) }
         if let f = error as? FalconError {
             switch f {
             case .notAuthenticated: return "notSignedIn"
@@ -66,6 +71,57 @@ public enum DiagnosticsSignature {
         case NSCocoaErrorDomain: return cocoaCode(ns.code)
         case NSPOSIXErrorDomain: return posixCode(Int32(ns.code))
         default: return classify(error.localizedDescription)
+        }
+    }
+
+    /// The mail engine's own failures, typed from the server's status, response code and SMTP
+    /// code: their kind decides the code, whatever words the server used.
+    static func code(forFailure failure: MailServiceError) -> String {
+        switch failure.kind {
+        case .throttled: return "throttled"
+        case .overBudget: return "dailyLimit"
+        case .overUploadBudget: return "uploadLimit"
+        case .tooManyConnections: return "tooManyConnections"
+        case .webSignInRequired: return "webSignIn"
+        case .connectionDropped: return "connectionClosed"
+        case .needsSignIn: return "notSignedIn"
+        case .messageGone: return "messageGone"
+        case .folderGone: return "noMailbox"
+        case .mailboxRenumbered: return "mailboxRebuilt"
+        case .expungeRefused: return "expungeRefused"
+        case .temporary: return "temporary"
+        case .sendingLimit: return "sendingLimit"
+        case .recipientRefused: return "recipientRejected"
+        case .folderListUnreadable: return "folderListUnreadable"
+        case .refused: return "serverRefused"
+        // Something on this Mac, described by macOS or FalconMail rather than by a server.
+        case .local: return classify(failure.detail) ?? "local"
+        }
+    }
+
+    /// A Google API's refusal, from its HTTP status and reason code.
+    static func code(forRefusal refusal: GoogleAPIError) -> String {
+        switch refusal.kind {
+        case .rateLimited: return "throttled"
+        case .quotaExhausted: return "apiQuota"
+        case .apiDisabled: return "apiDisabled"
+        case .insufficientPermissions: return "noScope"
+        case .needsSignIn: return "notSignedIn"
+        case .clientRejected: return "clientRejected"
+        case .notFound: return "messageGone"
+        case .temporary: return "temporary"
+        case .offline: return "offline"
+        case .other: return refusal.httpStatus > 0 ? httpCode(refusal.httpStatus) : "serverRefused"
+        }
+    }
+
+    static func isMailEngineError(_ error: any Error) -> Bool {
+        switch error {
+        case is IMAPServerError, is IMAPBye, is IMAPMailboxRenumbered, is IMAPMessageMissing, is IMAPNotSent,
+             is IMAPAppendUnconfirmed, is IMAPExpungeRefused, is StreamStalled, is SMTPServerError:
+            return true
+        default:
+            return false
         }
     }
 
@@ -255,7 +311,21 @@ public enum DiagnosticsTitle {
 
     private static let specials: [String: String] = [
         "imap.throttled": "The mail server paused the connection: too many requests",
+        "imap.tooManyConnections": "The mail server refused a connection: other apps were using all it allows",
+        "imap.dailyLimit": "Downloads paused: today's safe download limit was reached",
+        "imap.uploadLimit": "Uploads paused: today's safe upload limit was reached",
+        "imap.webSignIn": "The mail server wants the account signed in to in a web browser first",
         "sync.dailyLimit": "Offline copies paused: today's safe download limit was reached",
+        "sync.folderListUnreadable": "Syncing stopped: the folder list kept on this Mac could not be read",
+        "store.setAside": "A file FalconMail keeps could not be read, so it was set aside and kept",
+        "store.stillSetAside": "A file FalconMail set aside earlier still waits to be looked at",
+        "store.unreadable": "A file FalconMail keeps could not be read",
+        "store.journalLinesSkipped": "Some lines of a folder's saved list could not be read and were skipped",
+        "outbox.interrupted": "A message was being sent when FalconMail stopped, so it is held in the Outbox",
+        "smtp.sendingLimit": "Sending a message failed: the daily sending limit was reached, so it is held in the Outbox",
+        "archive.expungeRefused": "Archived mail was kept on the server: another message there was marked for deletion",
+        "archive.mailboxRebuilt": "Archived mail was kept on the server: the folder was rebuilt while it was archived",
+        "oauth.unknownClient": "Google sign-in must be renewed: it was made by a FalconMail this one cannot renew",
         "smtp.auth": "Sending a message failed: the server refused the password",
         "smtp.notSignedIn": "Sending a message failed: the account needs to sign in again",
         "imap.auth": "Checking for new mail failed: the server refused the password",
@@ -284,6 +354,12 @@ public enum DiagnosticsTitle {
         case "store", "storage": return "Saving mail on this Mac"
         case "net": return "Connecting to the server"
         case "drive": return "Using Google Drive"
+        case "open": return "Opening a message"
+        case "search": return "Searching on the server"
+        case "outbox": return "Keeping the Outbox"
+        case "folders": return "Creating a folder"
+        case "older": return "Loading older messages"
+        case "save": return "Saving a message on the server"
         default: return "A task in FalconMail"
         }
     }
@@ -333,6 +409,25 @@ public enum DiagnosticsTitle {
         "clientError": "the server rejected the request",
         "storage": "saving on this Mac failed",
         "invalidInput": "a setting or value was not accepted",
+        "uploadLimit": "today's safe upload limit was reached",
+        "tooManyConnections": "other apps were using all the connections the server allows",
+        "webSignIn": "the server wants the account signed in to in a web browser first",
+        "expungeRefused": "another message in the folder was marked for deletion",
+        "temporary": "the server had a temporary problem",
+        "sendingLimit": "the daily sending limit was reached",
+        "folderListUnreadable": "the folder list kept on this Mac could not be read",
+        "serverRefused": "the server refused the request",
+        "local": "something on this Mac went wrong",
+        "apiQuota": "today's Gmail allowance was used up",
+        "apiDisabled": "the Gmail API is switched off for FalconMail",
+        "noScope": "FalconMail was not given permission to use Gmail",
+        "clientRejected": "Google did not accept FalconMail's sign-in",
+        "setAside": "a file could not be read, so it was set aside",
+        "stillSetAside": "a file set aside earlier still waits to be looked at",
+        "unreadable": "a file could not be read",
+        "interrupted": "FalconMail stopped while it was under way",
+        "journalLinesSkipped": "some saved lines could not be read",
+        "unknownClient": "the sign-in was made by a FalconMail this one cannot renew",
     ]
 
     /// The plain sentence for a crash of this code, which `CrashIdentity` adds its details to.

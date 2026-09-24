@@ -86,6 +86,67 @@ public struct DiagnosticsRedactor: Sendable {
         redact(value, crashReport: false)
     }
 
+    /// `text` redacted as any other, after every one of `names` has been taken out wherever it
+    /// stands as a word, in any case, and in the modified UTF-7 a server writes a folder's name
+    /// in: they are the folder and file names the line was written about, so even a short one
+    /// such as HR, which the rules for the account's own folder names leave alone outside a
+    /// server's words, goes. A standard folder such as INBOX keeps its name.
+    public func redact(_ text: String, naming names: [String]) -> String {
+        redact(takingOut(names, from: text))
+    }
+
+    public func redact(_ value: JSONValue, naming names: [String]) -> JSONValue {
+        guard !names.isEmpty else { return redact(value) }
+        switch value {
+        case .string(let s): return .string(redact(s, naming: names))
+        case .array(let a): return .array(a.map { redact($0, naming: names) })
+        case .object(let o):
+            var out: [String: JSONValue] = [:]
+            for (k, v) in o { out[k] = redact(v, naming: names) }
+            return redact(.object(out))
+        default: return value
+        }
+    }
+
+    private func takingOut(_ names: [String], from text: String) -> String {
+        var forms: [(form: String, name: String)] = []
+        for name in Set(names) where !name.trimmingCharacters(in: .whitespaces).isEmpty && !DiagnosticsRedactor.isStandardMailbox(name) {
+            forms.append((name, name))
+            let wire = ModifiedUTF7.encode(name)
+            if wire != name { forms.append((wire, name)) }
+        }
+        var s = text
+        for (form, name) in forms.sorted(by: { $0.form.count > $1.form.count }) {
+            // A reference already made, such as <label:…>, is left whole.
+            let ns = s as NSString
+            var out = ""
+            var cursor = 0
+            for m in Rx.anyPlaceholder.matches(in: s, range: NSRange(location: 0, length: ns.length)) {
+                out += replacing(form, with: label(name), in: ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)))
+                out += ns.substring(with: m.range)
+                cursor = NSMaxRange(m.range)
+            }
+            s = out + replacing(form, with: label(name), in: ns.substring(from: cursor))
+        }
+        return s
+    }
+
+    /// `text` with `form` replaced wherever it stands as a word, in any case.
+    private func replacing(_ form: String, with replacement: String, in text: String) -> String {
+        var out = ""
+        var rest = text[...]
+        while let r = rest.range(of: form, options: .caseInsensitive) {
+            let before = r.lowerBound > rest.startIndex ? rest[rest.index(before: r.lowerBound)] : nil
+            let after = r.upperBound < rest.endIndex ? rest[r.upperBound] : nil
+            let bounded = !(before?.isLetter ?? false) && !(before?.isNumber ?? false)
+                && !(after?.isLetter ?? false) && !(after?.isNumber ?? false)
+            out += rest[rest.startIndex..<r.lowerBound]
+            out += bounded ? replacement : String(rest[r])
+            rest = rest[r.upperBound...]
+        }
+        return out + rest
+    }
+
     /// A crash report's text, redacted as any other except that an exception's name and reason
     /// stay between their single quotes, as the runtime writes them:
     /// `uncaught exception 'NSInternalInconsistencyException', reason: 'Invalid parameter not
@@ -579,6 +640,7 @@ private enum Rx {
     static let ipv6Candidate = rx(#"(?<![0-9A-Za-z:.])[0-9A-Fa-f:]{2,39}(?![0-9A-Za-z:])"#)
 
     static let placeholder = rx(#"^<[a-z0-9]+(?::[0-9a-f]{8})?>$"#)
+    static let anyPlaceholder = rx(#"<[a-z0-9]+(?::[0-9a-f]{8})?>"#)
     static let codeCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789_.:/-")
 
     static func isPlaceholder(_ s: String) -> Bool {

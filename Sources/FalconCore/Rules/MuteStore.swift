@@ -100,7 +100,7 @@ public actor MuteStore {
         do {
             try AtomicFile.writeJSON(muted, to: url)
         } catch {
-            Log.info("store", "could not save the muted conversations: \(error.localizedDescription)")
+            Log.error("Store", "could not save the muted conversations: \(error.localizedDescription)", error: error, logAs: "store")
         }
     }
 }

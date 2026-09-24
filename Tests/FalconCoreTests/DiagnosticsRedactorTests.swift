@@ -386,4 +386,37 @@ final class DiagnosticsRedactorTests: XCTestCase {
             XCTAssertFalse(DiagnosticsRedactor.isStandardMailbox(name), name)
         }
     }
+
+    // MARK: Names a record says its line holds
+
+    /// The engine hands over the folder a line is about, so it goes wherever it stands, however
+    /// short, in any case and in the modified UTF-7 a server writes it in, even when the app has
+    /// not yet listed the account's folders for the redactor.
+    func testNamesTheLineIsAboutGoWhereverTheyStand() {
+        let names = ["HR", "Clients/ACME Contracts", "ACME Contracts", "Проекты", "2024"]
+        let line = "owner@example.com: opening a message in HR failed: messageGone; hr is gone from Clients/ACME Contracts, "
+            + "Mailbox \(ModifiedUTF7.encode("Проекты")) and Проекты missing, folder 2024 read-only, CHRIS and HRM stay"
+        let out = redactor.redact(line, naming: names)
+        for gone in ["HR ", "hr ", "ACME", "Clients", "Проекты", ModifiedUTF7.encode("Проекты"), " 2024", "owner@"] {
+            XCTAssertFalse(out.contains(gone), "“\(gone)” survived in: \(out)")
+        }
+        XCTAssertTrue(out.contains("CHRIS and HRM stay"), "only whole words go: \(out)")
+        XCTAssertTrue(out.contains("<label:\(redactor.ref("label:HR"))>"), out)
+        XCTAssertTrue(out.contains("<label:\(redactor.ref("label:Проекты"))>"), "the wire form is the same folder: \(out)")
+    }
+
+    func testNamingKeepsStandardFoldersAndEveryReferenceWhole() {
+        let out = redactor.redact("INBOX and [Gmail]/Sent Mail stay; label <label:0a1b2c3d> and <addr:0a1b2c3d> too",
+                                  naming: ["INBOX", "[Gmail]/Sent Mail", "label", "addr", "0a1b2c3d"])
+        XCTAssertTrue(out.hasPrefix("INBOX and [Gmail]/Sent Mail stay; "), out)
+        XCTAssertTrue(out.hasSuffix("<label:0a1b2c3d> and <addr:0a1b2c3d> too"), out)
+        XCTAssertEqual(redactor.redact(out, naming: ["label", "addr"]), out, "naming again changes nothing")
+    }
+
+    func testNamesAreTakenOutOfTheContextToo() {
+        let context: JSONValue = .object(["health": .string("online"), "where": .string("HR, then Clients/ACME")])
+        let out = redactor.redact(context, naming: ["HR", "Clients/ACME"])
+        XCTAssertEqual(out["health"], .string("online"))
+        XCTAssertEqual(out["where"], .string("<label:\(redactor.ref("label:HR"))>, then <label:\(redactor.ref("label:Clients/ACME"))>"))
+    }
 }

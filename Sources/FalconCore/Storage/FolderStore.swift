@@ -73,7 +73,12 @@ public actor FolderStore {
                 if let op = try? decoder.decode(FolderJournalOp.self, from: line) { apply(op) ; journalOps += 1 } else { skipped += 1 }
             }
             // A line cut short by a crash is expected; more than one says something else is wrong.
-            if skipped > 0 { Log.info("store", "\(name): skipped \(skipped) unreadable journal lines") }
+            if skipped > 1 {
+                Log.warning("Store", "\(name): skipped \(skipped) unreadable journal lines", code: "journalLinesSkipped", names: [name],
+                            logAs: "store")
+            } else if skipped > 0 {
+                Log.info("store", "\(name): skipped \(skipped) unreadable journal lines")
+            }
         }
         for m in messages.values where !m.messageID.isEmpty { byMessageID[m.messageID] = m.uid }
         if let data = AtomicFile.read(termsURL), let stored = try? PropertyListDecoder().decode([String: [UInt32]].self, from: data) {

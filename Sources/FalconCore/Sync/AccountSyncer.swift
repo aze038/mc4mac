@@ -297,7 +297,7 @@ public actor AccountSyncer {
             if let problem = await store.folderListProblem(account.id) {
                 // Syncing would write a new folder list and orphan every folder stored under the old one.
                 let failure = MailServiceError(kind: .folderListUnreadable, account: account, detail: problem.detail, name: problem.fileName)
-                Log.info("sync", "\(account.email): not syncing, \(problem.detail)")
+                Log.failure("Sync", failure, "\(account.email): not syncing, \(problem.detail)", account: account, logAs: "sync")
                 setHealth(.blocked(reason: failure.sentence))
                 events.yield(.error(accountID: account.id, message: failure.sentence))
                 return
@@ -309,7 +309,8 @@ public actor AccountSyncer {
             if !meter.allows(.download, for: account.id) {
                 let until = pauseIMAP(for: .overBudget)
                 let failure = MailServiceError(kind: .overBudget, account: account, retryAfter: until)
-                Log.info("sync", "\(account.email): \(meter.used(.download, by: account.id) / 1_000_000) MB downloaded in the last 24 hours; pausing")
+                Log.failure("IMAP", failure, "\(account.email): \(meter.used(.download, by: account.id) / 1_000_000) MB downloaded in the last 24 hours; pausing",
+                            account: account, logAs: "sync")
                 events.yield(.error(accountID: account.id, message: failure.sentence))
                 continue
             }
@@ -347,12 +348,8 @@ public actor AccountSyncer {
                     continue
                 }
                 let failure = MailServiceError.classify(error, account: account)
-                Log.info("sync", "\(account.email): \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: account.email))")
-                if failure.isTransient {
-                    Log.warning("IMAP", "\(account.email): \(failure.sentence)", error: failure, account: account)
-                } else {
-                    Log.error("IMAP", "\(account.email): \(failure.sentence)", error: failure, account: account)
-                }
+                Log.failure("IMAP", failure, "\(account.email): \(failure.kind.rawValue): \(failure.detail)", account: account,
+                            details: ["health": health?.diagnosticsName ?? "none"], logAs: "sync", keeping: account.email)
                 guard handle(failure) else { return }
             }
         }
@@ -724,11 +721,17 @@ public actor AccountSyncer {
     /// the limit passes, and those open are left alone. A message or folder the server no longer
     /// has, or a folder renumbered, gets that folder brought up to date so the list stops
     /// offering it.
-    private func failed(_ doing: String, _ error: Error, folder: FolderInfo?) async -> Error {
+    ///
+    /// Each failure also reaches diagnostics under `area`, placed by the function that met it,
+    /// with the folder's names for the redactor to take out of the line.
+    private func failed(_ area: String, _ doing: String, _ error: Error, folder: FolderInfo?,
+                        function: String = #function) async -> Error {
         if error is CancellationError { return error }
         var failure = MailServiceError.classify(error, account: account)
         failure.isOneOff = true
-        Log.info("sync", Log.redacted("\(account.email): \(doing) failed: \(failure.kind.rawValue): \(failure.detail)", keeping: account.email))
+        Log.failure(area, failure, "\(account.email): \(doing) failed: \(failure.kind.rawValue): \(failure.detail)",
+                    account: account, names: folder.map { [$0.path, $0.name] } ?? [],
+                    details: ["health": health?.diagnosticsName ?? "none"], logAs: "sync", keeping: account.email, function: function)
         switch failure.kind {
         case .tooManyConnections:
             // Only the server's own word starts the wait; the refusal given during one must
@@ -1385,8 +1388,8 @@ public actor AccountSyncer {
                 if !budgetNoticeGiven {
                     budgetNoticeGiven = true
                     let used = meter.used(.background, by: account.id) / 1_000_000
-                    Log.info("sync", "\(account.email): \(used) MB of offline copies in the last 24 hours, pausing them")
-                    Log.warning("Sync", "\(account.email): \(used) MB of offline copies in the last 24 hours, pausing them", account: account)
+                    Log.failure("Sync", MailServiceError(kind: .overBudget, account: account),
+                                "\(account.email): \(used) MB of offline copies in the last 24 hours, pausing them", account: account, logAs: "sync")
                     events.yield(.progress(accountID: account.id, text: "\(account.email) has downloaded \(used) MB for offline reading in the last day; new mail still arrives and messages open on demand"))
                 }
                 break
@@ -1462,8 +1465,7 @@ public actor AccountSyncer {
                     case .stopProcessing: break
                     }
                 } catch {
-                    let failure = await failed("rule", error, folder: nil)
-                    Log.error("Rules", "A rule could not run: \(failure.localizedDescription)", error: failure, account: account)
+                    let failure = await failed("Rules", "rule", error, folder: nil)
                     events.yield(.problem(accountID: account.id, message: "A rule could not run. \(failure.localizedDescription)"))
                     if let known = failure as? MailServiceError, AccountSyncer.stopsRules(known.kind) {
                         stopped = true
@@ -1517,8 +1519,7 @@ public actor AccountSyncer {
             try await archiveOnServer(uids: uids, client: client)
             try await fs.remove(uids: uids)
         } catch {
-            let failure = await failed("filing a muted conversation", error, folder: folder)
-            Log.error("Mute", "Could not file a muted conversation: \(failure.localizedDescription)", error: failure, account: account)
+            let failure = await failed("Mute", "filing a muted conversation", error, folder: folder)
             events.yield(.problem(accountID: account.id, message: "Could not file a muted conversation. \(failure.localizedDescription)"))
             return messages
         }
@@ -1591,7 +1592,7 @@ public actor AccountSyncer {
         // that still matches then was listed under that numbering, and the server is asked
         // under it too, so neither a stale row nor a renumbering in between opens another message.
         guard await !stillCurrent([message], in: folder, fs: fs).isEmpty else {
-            throw await failed("opening a message in \(folder.path)", gone(), folder: folder)
+            throw await failed("Open", "opening a message in \(folder.path)", gone(), folder: folder)
         }
         if let cached = await fs.body(uid: message.uid) { return cached }
         let raw: Data
@@ -1603,7 +1604,7 @@ public actor AccountSyncer {
             let uid = message.uid
             raw = try await withMailbox(folder.path, uidValidity: folder.uidValidity) { try await $0.fetchMessage(uid: uid) }
         } catch {
-            throw await failed("opening a message in \(folder.path)", error, folder: folder)
+            throw await failed("Open", "opening a message in \(folder.path)", error, folder: folder)
         }
         let parsed = MIMEParser.parse(raw)
         try await fs.storeBody(uid: message.uid, raw: raw, snippet: parsed.snippet, hasAttachments: !parsed.attachments.isEmpty, searchText: parsed.bestText)
@@ -1785,9 +1786,8 @@ public actor AccountSyncer {
         } catch {
             await release(action.pending)
             await pendingActions.remove(action.pending.id)
-            let failure = await failed("\(action.record.kind.rawValue) of \(action.pending.uids.count)", error,
+            let failure = await failed("Actions", "\(action.record.kind.rawValue) of \(action.pending.uids.count)", error,
                                        folder: await store.folder(action.pending.folderID))
-            Log.error("Actions", "\(action.record.failurePrefix): \(failure.localizedDescription)", error: failure, account: account)
             guard !action.record.isAutomatic else { return }
             let restored = await restore(action.record, queuedAs: action.pending)
             events.yield(.actionFailed(accountID: account.id,
@@ -1872,10 +1872,8 @@ public actor AccountSyncer {
                 try await run(pending)
                 await pendingActions.remove(pending.id)
             } catch {
-                let failure = await failed("replaying \(pending.verb.rawValue) of \(pending.uids.count)", error,
+                let failure = await failed("Actions", "replaying \(pending.verb.rawValue) of \(pending.uids.count)", error,
                                            folder: await store.folder(pending.folderID))
-                Log.error("Actions", "Could not finish an action from the last session: \(failure.localizedDescription)",
-                          error: failure, account: account)
                 events.yield(.actionFailed(accountID: account.id,
                                            message: "Could not finish an action from the last session. \(failure.localizedDescription)"))
             }
@@ -1904,8 +1902,7 @@ public actor AccountSyncer {
             try await store.refreshCounts(folderID: folder.id)
             await store.notifyMessagesChanged(folderID: folder.id)
         } catch {
-            let failure = await failed("restoring rows of a stale action", error, folder: folder)
-            Log.error("Actions", "Could not restore messages of an expired action: \(failure.localizedDescription)", error: failure, account: account)
+            let failure = await failed("Actions", "restoring rows of a stale action", error, folder: folder)
             events.yield(.problem(accountID: account.id, message: failure.localizedDescription))
         }
     }
@@ -1950,7 +1947,7 @@ public actor AccountSyncer {
         do {
             try await upload(raw, to: folder, flags: flags, date: date)
         } catch {
-            throw await failed("saving a message to \(folder.path)", error, folder: folder)
+            throw await failed("Save", "saving a message to \(folder.path)", error, folder: folder)
         }
         syncSoon(afterSavingTo: folder.id)
     }
@@ -1983,7 +1980,7 @@ public actor AccountSyncer {
                 try await upload(message.raw, to: folder, flags: message.flags, date: message.date, waitsForConnection: true)
                 break
             } catch {
-                let failure = await failed("importing a message into \(folder.path)", error, folder: folder)
+                let failure = await failed("Import", "importing a message into \(folder.path)", error, folder: folder)
                 attempts += 1
                 guard attempts < 3, !(error is IMAPAppendUnconfirmed), (failure as? MailServiceError)?.isTransient ?? false else { throw failure }
                 if pauseRemaining() == nil, connectionLimitRemaining() == nil {
@@ -2041,7 +2038,7 @@ public actor AccountSyncer {
                 start += batchSize
             }
         } catch {
-            throw await failed("loading older messages in \(folder.path)", error, folder: folder)
+            throw await failed("Older", "loading older messages in \(folder.path)", error, folder: folder)
         }
         // Only the cursor it moved, on the record as it is now: a sync may have moved on.
         if let first = window.first {
@@ -2090,7 +2087,7 @@ public actor AccountSyncer {
             try refuseWhilePaused()
             return try await connector(account, meter.tap(for: account.id, background: true))
         } catch {
-            throw await failed("connecting for an archive", error, folder: nil)
+            throw await failed("Archive", "connecting for an archive", error, folder: nil)
         }
     }
 
@@ -2100,7 +2097,7 @@ public actor AccountSyncer {
     public nonisolated func archiveSource() -> ArchiveSource {
         ArchiveSource(connect: { try await self.openArchiveSourceClient() },
                       allowance: { try await self.waitForAllowance(.background, bytes: $0) },
-                      failed: { await self.failed("archiving", $0, folder: nil) })
+                      failed: { await self.failed("Archive", "archiving", $0, folder: nil) })
     }
 
     public func createMailbox(named name: String) async throws {
@@ -2111,7 +2108,7 @@ public actor AccountSyncer {
             }
             _ = try await store.reconcileFolders(accountID: account.id, listed: listed)
         } catch {
-            throw await failed("creating a folder", error, folder: nil)
+            throw await failed("Folders", "creating a folder", error, folder: nil)
         }
         await requestSync()
     }

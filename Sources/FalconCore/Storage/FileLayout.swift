@@ -89,7 +89,8 @@ public enum AtomicFile {
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
             return .missing
         } catch {
-            Log.info("store", "could not read \(what) at \(url.lastPathComponent): \(error.localizedDescription)")
+            Log.error("Store", "could not read \(what) at \(url.lastPathComponent): \(error.localizedDescription)", error: error,
+                      code: "unreadable", logAs: "store")
             StoredFileNotices.add(what)
             return .unreadable(detail: error.localizedDescription)
         }
@@ -98,11 +99,13 @@ public enum AtomicFile {
         } catch {
             let detail = String(describing: error)
             guard let aside = setAside(url) else {
-                Log.info("store", "could not decode \(what) at \(url.lastPathComponent), and could not move it aside: \(detail)")
+                Log.error("Store", "could not decode \(what) at \(url.lastPathComponent), and could not move it aside: \(detail)",
+                          error: error, code: "unreadable", logAs: "store")
                 StoredFileNotices.add(what)
                 return .unreadable(detail: detail)
             }
-            Log.info("store", "could not decode \(what); kept it as \(aside.lastPathComponent): \(detail)")
+            Log.error("Store", "could not decode \(what); kept it as \(aside.lastPathComponent): \(detail)", error: error,
+                      code: "setAside", logAs: "store")
             StoredFileNotices.add(what)
             return .setAside(aside, detail: detail)
         }

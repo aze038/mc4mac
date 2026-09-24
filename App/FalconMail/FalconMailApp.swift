@@ -7,7 +7,7 @@ import FalconCore
 struct FalconMailApp: App {
     static let mailboxWindowID = "mailbox"
 
-    @State private var model = AppModel()
+    @State private var model: AppModel
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
 
@@ -15,6 +15,10 @@ struct FalconMailApp: App {
         #if DEBUG
         ComposeSnapshot.runIfRequested()
         #endif
+        // Before the model, so that what it finds as it loads, such as a message held in the
+        // Outbox or a file set aside, reaches diagnostics.
+        DiagnosticsService.shared.start()
+        _model = State(initialValue: AppModel())
     }
 
     var body: some Scene {
@@ -264,7 +268,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var queuedActions: [QueuedNotificationAction] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        MainActor.assumeIsolated { DiagnosticsService.shared.start() }
         UNUserNotificationCenter.current().delegate = self
         WindowTray.installMinimizeHook()
         WindowTray.installCloseHook()

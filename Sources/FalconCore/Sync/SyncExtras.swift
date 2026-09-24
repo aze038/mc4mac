@@ -63,7 +63,7 @@ struct SyncExtrasFile {
         do {
             try AtomicFile.writeJSON(next, to: url)
         } catch {
-            Log.info("store", "could not save \(url.lastPathComponent): \(error.localizedDescription)")
+            Log.error("Store", "could not save \(url.lastPathComponent): \(error.localizedDescription)", error: error, logAs: "store")
         }
     }
 

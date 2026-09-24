@@ -165,8 +165,8 @@ struct ArchiveSheet: View {
                 running = false
             } catch {
                 let failure = MailServiceError.classify(error, account: account)
-                Log.info("archive", "\(account.email): archive failed: \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: account.email))")
-                Log.error("Archive", "Archiving to the cloud failed: \(failure.sentence)", error: failure, account: account)
+                Log.failure("Archive", failure, "\(account.email): archive failed: \(failure.kind.rawValue): \(failure.detail)",
+                            level: .error, account: account, logAs: "archive", keeping: account.email)
                 status = "Failed: \(failure.sentence)"
                 running = false
             }

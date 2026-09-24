@@ -235,7 +235,8 @@ public actor TokenStore {
         guard let issuer = token.clientID, issuer != current.clientID else { return current }
         if let known = knownClientConfigs().first(where: { $0.clientID == issuer }) { return known }
         if clientMissing.insert(accountID).inserted {
-            Log.info("auth", "account \(accountID.uuidString): its sign-in came from an OAuth client this build does not have; it must sign in again")
+            Log.warning("OAuth", "account \(accountID.uuidString): its sign-in came from an OAuth client this build does not have; it must sign in again",
+                        code: "unknownClient", logAs: "auth")
         }
         throw FalconError.notAuthenticated
     }

@@ -154,10 +154,13 @@ extension AppModel {
         let email = accountName(page.accountID)
         let first = run.status.pagesReceived == 0
         run.status.record(page, email: email)
+        let account = accounts.first { $0.id == page.accountID }
         if let error = page.fallback {
-            Log.info("search", "\(email) searched on this Mac: \(error.kind.rawValue) \(error.httpStatus) \(error.reason ?? "-") \(error.detail)")
+            Log.warning("Search", "\(email) searched on this Mac: \(error.kind.rawValue) \(error.httpStatus) \(error.reason ?? "-") \(error.detail)",
+                        error: error, account: account, logAs: "search")
         } else if let error = page.paused {
-            Log.info("search", "\(email) paused by Gmail after \(page.messages.count) rows: \(error.kind.rawValue) \(error.httpStatus) \(error.reason ?? "-") \(error.detail)")
+            Log.warning("Search", "\(email) paused by Gmail after \(page.messages.count) rows: \(error.kind.rawValue) \(error.httpStatus) \(error.reason ?? "-") \(error.detail)",
+                        error: error, account: account, logAs: "search")
         }
         if first {
             forgetServerRows()
@@ -305,7 +308,8 @@ extension AppModel {
 
     private func reportServerError(_ error: Error, accountID: UUID, doing action: String) {
         let apiError = error as? GoogleAPIError ?? GoogleAPIError(kind: .other, detail: String(describing: error))
-        Log.info("search", "\(accountName(accountID)) could not \(action) a message found on the server: \(apiError.kind.rawValue) \(apiError.httpStatus) \(apiError.reason ?? "-")")
+        Log.warning("Open", "\(accountName(accountID)) could not \(action) a message found on the server: \(apiError.kind.rawValue) \(apiError.httpStatus) \(apiError.reason ?? "-")",
+                    error: apiError, account: accounts.first { $0.id == accountID }, logAs: "search")
         errorMessage = apiError.localizedDescription
     }
 

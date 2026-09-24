@@ -88,7 +88,8 @@ public actor PendingActionStore {
         do {
             try AtomicFile.writeJSON(operations, to: url)
         } catch {
-            Log.info("store", "could not save the actions waiting to reach the server: \(error.localizedDescription)")
+            Log.error("Store", "could not save the actions waiting to reach the server: \(error.localizedDescription)", error: error,
+                      logAs: "store")
         }
     }
 }

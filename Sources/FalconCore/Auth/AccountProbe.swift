@@ -39,6 +39,15 @@ public struct CustomServerSettings: Sendable, Hashable {
     }
 }
 
+/// A server setting that did not work, in the words shown while an account is set up, with
+/// the failure's kind kept for diagnostics.
+public struct AccountProbeFailure: Error, LocalizedError, Sendable {
+    public var failure: MailServiceError
+    public var message: String
+
+    public var errorDescription: String? { message }
+}
+
 public enum AccountProbe {
     public static func test(_ s: CustomServerSettings) async throws {
         let imap = IMAPClient(host: s.imapHost, port: s.imapPort)
@@ -47,7 +56,7 @@ public enum AccountProbe {
             try await imap.login(user: s.username, password: s.password)
             await imap.logout()
         } catch {
-            throw FalconError.invalidInput("Incoming mail (IMAP \(s.imapHost):\(s.imapPort)): \(probeSentence(error, settings: s))")
+            throw failure(error, settings: s, "Incoming mail (IMAP \(s.imapHost):\(s.imapPort))")
         }
         let smtp = SMTPClient(host: s.smtpHost, port: s.smtpPort)
         do {
@@ -55,8 +64,13 @@ public enum AccountProbe {
             try await smtp.authenticatePlain(user: s.username, password: s.password)
             await smtp.quit()
         } catch {
-            throw FalconError.invalidInput("Outgoing mail (SMTP \(s.smtpHost):\(s.smtpPort)): \(probeSentence(error, settings: s))")
+            throw failure(error, settings: s, "Outgoing mail (SMTP \(s.smtpHost):\(s.smtpPort))")
         }
+    }
+
+    private static func failure(_ error: Error, settings s: CustomServerSettings, _ side: String) -> AccountProbeFailure {
+        AccountProbeFailure(failure: MailServiceError.classify(error, email: s.username, isGoogle: false),
+                            message: "\(side): \(probeSentence(error, settings: s))")
     }
 
     /// Setting up an account, a refused sign-in is a wrong name or password rather than one to

@@ -85,7 +85,8 @@ public actor Outbox {
                     // delivered. Sending it again by itself could send it twice.
                     item = item.interrupted
                     item.sendBegan = nil
-                    Log.info("send", "\(item.sender): Outbox item \(item.id) was being sent when FalconMail stopped; held")
+                    Log.warning("Outbox", "\(item.sender): Outbox item \(item.id) was being sent when FalconMail stopped; held",
+                                code: "interrupted", logAs: "send")
                     try? Outbox.write(item, in: directory)
                 }
                 loaded[item.id] = item
@@ -187,7 +188,8 @@ public actor Outbox {
                 // held, never "queued", or it would go out a second time.
                 try persist(item)
             } catch {
-                Log.info("send", "\(item.sender): not sending Outbox item \(item.id), its state could not be saved: \(error.localizedDescription)")
+                Log.error("Outbox", "\(item.sender): not sending Outbox item \(item.id), its state could not be saved: \(error.localizedDescription)",
+                          error: error, logAs: "send")
                 item.status = .failed
                 item.error = "FalconMail could not save the Outbox, so it did not send this."
                 items[item.id] = item
@@ -203,28 +205,31 @@ public actor Outbox {
             } catch {
                 let attempts = (item.attempts ?? 0) + 1
                 let failure = MailServiceError.classify(error, email: item.sender, isGoogle: false)
-                Log.info("send", "\(item.sender): attempt \(attempts) of Outbox item \(item.id) failed: \(failure.kind.rawValue): "
-                         + Log.redacted(failure.detail, keeping: item.sender))
+                let heldBack = failure.kind == .sendingLimit
+                let retrying = !heldBack && failure.isTransient && attempts < 30
+                // Tried again by itself, a warning; held or given up on, an error the owner sees.
+                Log.failure("SMTP", failure, "\(item.sender): attempt \(attempts) of Outbox item \(item.id) failed: \(failure.kind.rawValue): "
+                            + failure.detail, level: retrying ? .warning : .error,
+                            details: ["attempt": "\(attempts)", "outcome": heldBack ? "held" : retrying ? "retrying" : "failed"],
+                            logAs: "send", keeping: item.sender)
                 item.attempts = attempts
                 item.error = failure.sentence
-                if failure.kind == .sendingLimit {
-                    Log.error("SMTP", "Sending failed, the message is held in the Outbox: \(failure.sentence)", error: failure)
+                if heldBack {
                     item.status = .failed
                     item.heldBack = true
-                } else if failure.isTransient && attempts < 30 {
-                    Log.warning("SMTP", "Sending failed on attempt \(attempts), trying again: \(failure.sentence)", error: failure)
+                } else if retrying {
                     item.status = .queued
                     item.sendAt = Date().addingTimeInterval(min(600, 15 * pow(2, Double(min(attempts, 6)))))
                     item.undoUntil = Date()
                 } else {
-                    Log.error("SMTP", "Sending failed after \(attempts) attempts: \(failure.sentence)", error: failure)
                     item.status = .failed
                 }
             }
             do {
                 try persist(item)
             } catch {
-                Log.info("send", "\(item.sender): could not save Outbox item \(item.id) after sending: \(error.localizedDescription)")
+                Log.error("Outbox", "\(item.sender): could not save Outbox item \(item.id) after sending: \(error.localizedDescription)",
+                          error: error, logAs: "send")
             }
             items[item.id] = item
             notify()

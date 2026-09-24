@@ -308,9 +308,18 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         }
     }
 
+    /// Everything of the record that is sent goes through the redactor first: the message,
+    /// with the folder and file names the record says it holds, and the context. The signature
+    /// and title are made only from the area, the code and the place in the code, and the code
+    /// from a typed error where there is one, so no server's words can reach either.
     private func makeEvent(_ entry: LogRecord) -> DiagnosticsEvent {
-        let message = redactor.redact(entry.message)
-        let code = DiagnosticsSignature.code(for: entry.error, message: message)
+        var names = entry.names
+        // The folder or address a failure names; a folder list set aside is FalconMail's own file.
+        if let failure = entry.error as? MailServiceError, let name = failure.name, failure.kind != .folderListUnreadable {
+            names.append(name)
+        }
+        let message = redactor.redact(entry.message, naming: names)
+        let code = entry.code.map(DiagnosticsSignature.word) ?? DiagnosticsSignature.code(for: entry.error, message: message)
         let kind: DiagnosticsKind = entry.level == .error ? .error : .warning
         var context: [String: JSONValue] = ["level": .string(entry.level.rawValue),
                                             "source": .string("\(DiagnosticsSignature.fileName(entry.file)):\(entry.line)")]
@@ -320,9 +329,16 @@ public final class DiagnosticsCenter: @unchecked Sendable {
             context["errorDomain"] = .string(ns.domain)
             context["errorCode"] = .int(Int64(ns.code))
         }
+        if let failure = entry.error as? MailServiceError {
+            context["failure"] = .string(failure.kind.rawValue)
+        } else if let refusal = entry.error as? GoogleAPIError {
+            context["failure"] = .string(refusal.kind.rawValue)
+            if refusal.httpStatus > 0 { context["httpStatus"] = .int(Int64(refusal.httpStatus)) }
+        }
+        for (key, value) in entry.details where context[key] == nil { context[key] = .string(value) }
         return DiagnosticsEvent(kind: kind, signature: DiagnosticsSignature.make(area: entry.area, code: code, file: entry.file, function: entry.function),
                                 title: DiagnosticsTitle.make(kind: kind, area: entry.area, code: code), area: entry.area,
-                                firstAt: entry.date, message: message, context: redactor.redact(.object(context)),
+                                firstAt: entry.date, message: message, context: redactor.redact(.object(context), naming: names),
                                 account: entry.account.map { DiagnosticsAccount($0, redactor: redactor) })
     }
 

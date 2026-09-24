@@ -252,7 +252,7 @@ public final class TrafficMeter: @unchecked Sendable {
                 if countWritable { try AtomicFile.writeJSON(counts, to: countURL) }
                 dirty = false
             } catch {
-                Log.info("store", "could not save the download count: \(error.localizedDescription)")
+                Log.warning("Store", "could not save the download count: \(error.localizedDescription)", error: error, logAs: "store")
             }
         }
     }

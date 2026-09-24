@@ -57,7 +57,8 @@ public actor MailStore {
             // One set aside at an earlier launch still holds the ids that every account's
             // stored mail is filed under.
             if let aside = AtomicFile.setAsideCopies(of: layout.accountsFile).last {
-                Log.info("store", "no account list, and \(aside.lastPathComponent) is still set aside; accounts are not added or removed")
+                Log.warning("Store", "no account list, and \(aside.lastPathComponent) is still set aside; accounts are not added or removed",
+                            code: "stillSetAside", logAs: "store")
                 StoredFileNotices.add(what)
                 accountListProblem = aside.lastPathComponent
             }
@@ -76,7 +77,8 @@ public actor MailStore {
                 if let aside = AtomicFile.setAsideCopies(of: file).last {
                     // A new list would give every folder a new id, orphaning the ones stored
                     // under the list that was set aside, just as at the launch that set it aside.
-                    Log.info("store", "\(a.email): no folder list, and \(aside.lastPathComponent) is still set aside; not syncing")
+                    Log.warning("Store", "\(a.email): no folder list, and \(aside.lastPathComponent) is still set aside; not syncing",
+                                account: a, code: "stillSetAside", logAs: "store")
                     StoredFileNotices.add("the folder list for \(a.email)")
                     folderListProblems[a.id] = FolderListProblem(detail: "an earlier folder list is still set aside", fileName: aside.lastPathComponent)
                 }

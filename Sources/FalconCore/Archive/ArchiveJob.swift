@@ -140,10 +140,14 @@ public enum ArchiveJob {
                     try await link.step { c in try await c.withMailbox(path, uidValidity: validity) { try await $0.expunge(uids: uids) } }
                 } catch let refusal as IMAPExpungeRefused {
                     kept.append(item.path)
-                    Log.info("archive", "\(account.email): kept \(item.path) on the server, \(refusal.others.count) other messages there are marked deleted and it has no UIDPLUS")
-                } catch is IMAPMailboxRenumbered {
+                    Log.failure("Archive", MailServiceError.classify(refusal, account: account),
+                                "\(account.email): kept \(item.path) on the server, \(refusal.others.count) other messages there are marked deleted and it has no UIDPLUS",
+                                level: .warning, account: account, names: [item.path], logAs: "archive")
+                } catch let renumbered as IMAPMailboxRenumbered {
                     kept.append(item.path)
-                    Log.info("archive", "\(account.email): kept \(item.path) on the server, it was renumbered during the archive")
+                    Log.failure("Archive", MailServiceError.classify(renumbered, account: account),
+                                "\(account.email): kept \(item.path) on the server, it was renumbered during the archive",
+                                account: account, names: [item.path], logAs: "archive")
                 }
             }
         }
