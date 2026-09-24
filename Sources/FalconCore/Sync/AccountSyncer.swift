@@ -146,6 +146,10 @@ public actor AccountSyncer {
     /// Folders with more new mail than one pass takes: when the next pass may take more, and
     /// the messages still to fetch.
     private var catchUps: [UUID: (notBefore: Date, unfetched: [UInt32])] = [:]
+    /// Inbox mail a pass stored as news and has not yet announced, by folder. A pass cut short
+    /// before its announcement leaves it to the next pass, which runs mutes, rules and the
+    /// announcement on it once, as the cut pass would have.
+    private var unannounced: [UUID: Set<UInt32>] = [:]
     /// Folders whose full passes have found the server reporting none of the messages listed,
     /// and since when.
     private var reportedEmpty: [UUID: Date] = [:]
@@ -890,7 +894,8 @@ public actor AccountSyncer {
 
     /// Brings one folder up to date and returns how many messages arrived in it, when it is an
     /// inbox: its news, muted or filed by a rule included, since they arrived all the same, and
-    /// nothing a folder listed from scratch brings.
+    /// nothing a folder listed from scratch brings. News a pass cut short stored before it could
+    /// announce it counts as arriving in the pass that announces it.
     @discardableResult
     public func syncFolder(_ input: FolderInfo, client: IMAPClient, pass: FolderPass = .full) async throws -> Int {
         let status = try await client.select(input.path)
@@ -906,6 +911,7 @@ public actor AccountSyncer {
                 // rows now carry those UIDs; the actions behind them are cancelled when they run.
                 suppressedUIDs[folder.id] = nil
                 catchUps[folder.id] = nil
+                unannounced[folder.id] = nil
                 folder.lastSyncedUID = 0
                 folder.oldestSyncedUID = 0
             }
@@ -928,15 +934,26 @@ public actor AccountSyncer {
         let newAbove = extras.folder(folder).newAbove
         let listedBefore = folder.lastSyncedUID > 0 || newAbove != nil
         let isNews = { (m: MessageSummary) in newAbove.map { m.uid > $0 } ?? true }
+        let announces = folder.role == .inbox && listedBefore
+        if !announces { unannounced[folder.id] = nil }
 
         var arrived = NewMail(unfetched: [])
         if status.exists > 0 {
-            arrived = try await fetchNewMessages(&folder, client: client, fs: fs)
+            arrived = try await fetchNewMessages(&folder, client: client, fs: fs, noting: announces ? isNews : nil)
         } else {
             catchUps[folder.id] = nil
         }
-        var newMessages = arrived.messages
-        let arrivals = folder.role == .inbox && listedBefore ? newMessages.filter(isNews).count : 0
+        // News a pass cut short stored and never announced, still here, is this pass's news too:
+        // mutes, rules and the announcement run on it now, as they would have then. No rule ran
+        // on it before, since nothing can cut a pass between its rules and its announcement, and
+        // mail a mute had already filed is no longer here.
+        let noted = announces ? unannounced[folder.id] ?? [] : []
+        var carried: [MessageSummary] = []
+        for uid in noted.subtracting(arrived.messages.map(\.uid)).sorted() {
+            if let m = await fs.message(uid: uid) { carried.append(m) }
+        }
+        var newMessages = carried + arrived.messages
+        let arrivals = announces ? newMessages.filter(isNews).count : 0
         passArrivals += arrivals
 
         // Old mail arriving now, as an import brings, is left as it is: rules and mutes act only
@@ -994,8 +1011,13 @@ public actor AccountSyncer {
         let announced = survivors.filter {
             $0.date > Date().addingTimeInterval(-pacing.notifyWindow) && !own.contains($0.from.address.lowercased())
         }
-        if folder.role == .inbox, listedBefore, !announced.isEmpty {
-            events.yield(.newMessages(accountID: account.id, folderID: folder.id, messages: announced))
+        if announces {
+            // Told of now or passed over for good: no later pass takes them up again.
+            unannounced[folder.id]?.subtract(noted)
+            if unannounced[folder.id]?.isEmpty == true { unannounced[folder.id] = nil }
+            if !announced.isEmpty {
+                events.yield(.newMessages(accountID: account.id, folderID: folder.id, messages: announced))
+            }
         }
         return arrivals
     }
@@ -1067,7 +1089,10 @@ public actor AccountSyncer {
     /// A pass the owner asked for with Send & Receive, while an inbox's catch-up is held back,
     /// takes what arrived there since the newest message stored, and leaves the backlog below
     /// it and the cursor as they are for the catch-up's next pass.
-    private func fetchNewMessages(_ folder: inout FolderInfo, client: IMAPClient, fs: FolderStore) async throws -> NewMail {
+    ///
+    /// Each message stored that `news` takes for news is noted as not yet announced.
+    private func fetchNewMessages(_ folder: inout FolderInfo, client: IMAPClient, fs: FolderStore,
+                                  noting news: ((MessageSummary) -> Bool)? = nil) async throws -> NewMail {
         var have = await fs.uids()
         let after = folder.lastSyncedUID
         // What the one search of a pass during a hold listed, and the backlog still on the
@@ -1146,6 +1171,11 @@ public actor AccountSyncer {
             summaries.removeAll { isSuppressed(folderID: folderID, uid: $0.uid) }
             for i in summaries.indices { summaries[i].hasBody = await fs.hasBody(uid: summaries[i].uid) }
             try await fs.upsert(summaries)
+            if let news {
+                // Noted as soon as stored, so that a pass cut from here on leaves them to the next.
+                let noted = summaries.filter(news).map(\.uid)
+                if !noted.isEmpty { unannounced[folderID, default: []].formUnion(noted) }
+            }
             have.formUnion(summaries.map(\.uid))
             result.messages.append(contentsOf: summaries)
             advanceCursor()

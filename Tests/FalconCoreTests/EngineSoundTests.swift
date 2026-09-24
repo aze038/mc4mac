@@ -575,6 +575,33 @@ final class EngineSoundTests: XCTestCase {
         XCTAssertEqual(listener.sounds, [.newMessage], "and No new messages never follows the new message sound")
     }
 
+    func testMailACutPassStoredIsAnnouncedByThePassThatAnswersTheCheck() async throws {
+        let (h, clock) = try await started()
+        let listener = Listener(start: clock)
+        let logins = h.server.loginCount
+        // Stored without a word to the idling connection. A whole pass brings it, and its
+        // connection drops at the command after the headers, before the pass announces it.
+        h.server.add(fresh("news"), to: "INBOX")
+        h.server.resetCounters()
+        h.server.stallNext("UID FETCH", seconds: 0.3)
+        h.server.cutAfter("UID FETCH", count: 1)
+        await h.syncer.requestSync()
+        // Send & Receive while the headers are on their way: the pass after answers it.
+        await assertEventually { h.server.commands.contains { $0.contains("HEADER.FIELDS") } }
+        listener.check([h.account.id])
+        await h.syncer.requestSync(check: true)
+        await assertEventually(within: 5) { await self.checkedCount(h) == 1 }
+        await h.settled()
+
+        XCTAssertGreaterThan(h.server.loginCount, logins, "the pass was cut and the engine connected again")
+        let announced = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(announced, ["<news@example.com>"], "the pass after the cut announced it")
+        let found = await h.events.all.compactMap { if case .checked(_, let found) = $0 { return found }; return nil }
+        XCTAssertEqual(found, [true], "and its answer counts it")
+        listener.hear(await h.events.timed)
+        XCTAssertEqual(listener.sounds, [.newMessage], "so No new messages never follows the new message sound")
+    }
+
     func testACheckDuringACatchUpFetchesWhatArrivedSinceAndSaysMailCame() async throws {
         var pacing = self.pacing
         pacing.catchUpWindow = 5

@@ -319,6 +319,82 @@ final class CatchUpTests: XCTestCase {
         XCTAssertLessThan(cursor, held[0], "the cursor stays below the backlog, so the pass after the hold lists it again")
     }
 
+    // MARK: - Mail a cut pass stored
+
+    func testMailStoredByAPassCutBeforeItsAnnouncementIsAnnouncedByTheNextOnce() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.add(FakeIMAPServer.message("before"), to: "INBOX")
+        var pacing = SyncPacing()
+        pacing.fullSyncInterval = 3600
+        pacing.idleRefresh = 3600
+        pacing.minimumReconnectInterval = 0.05
+        let h = try await started(server, pacing: pacing)
+        try await h.rules.save([RuleDefinition(name: "Flag Ana's", conditions: [RuleCondition(field: .subject, op: .contains, value: "theirs")],
+                                               actions: [RuleAction(kind: .flag)])])
+        await h.syncer.start()
+        await assertEventually { await self.finishedCount(h) == 1 && server.idlingCount == 1 }
+        // Stored without a word to the idling connection: news, an old message, and one the
+        // owner sent.
+        let theirs = server.add(FakeIMAPServer.message("theirs", date: Date()), to: "INBOX")
+        server.add(FakeIMAPServer.message("old", date: Date().addingTimeInterval(-3 * 24 * 3600)), to: "INBOX")
+        server.add(FakeIMAPServer.message("mine", from: "Owner <owner@example.com>", date: Date()), to: "INBOX")
+        server.resetCounters()
+        // A whole pass stores them and loses its connection at its next command, before it
+        // announces them.
+        server.cutAfter("UID FETCH", count: 1)
+        let logins = server.loginCount
+        await h.syncer.requestSync()
+        await assertEventually { await self.finishedCount(h) >= 2 && server.loginCount > logins && server.idlingCount == 1 }
+        await h.settled()
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored.count, 4)
+        var told = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(told, ["<theirs@example.com>"], "the pass after announces what is news, and neither old mail nor the owner's own")
+        let flagged = try await h.message(uid: theirs, in: "INBOX")
+        XCTAssertTrue(flagged.isFlagged, "the rule the cut pass never got to has run")
+
+        await passRuns(h)
+        told = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(told, ["<theirs@example.com>"], "once")
+        let stores = server.commands.filter { $0.contains("UID STORE") }
+        XCTAssertEqual(stores.count, 1, "the rule ran once: \(stores)")
+    }
+
+    func testMailInAMutedConversationStoredByAPassCutBeforeItsMutesRanIsFiledByTheNextUnannounced() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.add(FakeIMAPServer.message("before"), to: "INBOX")
+        var pacing = SyncPacing()
+        pacing.fullSyncInterval = 3600
+        pacing.idleRefresh = 3600
+        pacing.minimumReconnectInterval = 0.05
+        let h = try await started(server, pacing: pacing)
+        // The owner muted the conversation that a message about to arrive belongs to.
+        await MuteStore(layout: h.layout).mute(MutedThread(accountID: h.account.id, threadKey: "<muted-root@example.com>",
+                                                           messageIDs: ["<muted-root@example.com>", "<muted@example.com>"],
+                                                           normalizedSubject: "lunch", subject: "Lunch"))
+        await h.syncer.start()
+        await assertEventually { await self.finishedCount(h) == 1 && server.idlingCount == 1 }
+        // A hundred and fifty old messages, then the muted conversation's latest and one that is
+        // news, all stored without a word to the idling connection.
+        server.addMany(150, to: "INBOX") { FakeIMAPServer.message("old-\($0)") }
+        let muted = server.add(FakeIMAPServer.message("muted", date: Date()), to: "INBOX")
+        server.add(FakeIMAPServer.message("news", date: Date()), to: "INBOX")
+        // The pass stores the newest hundred and loses its connection fetching the rest, before
+        // its mutes, rules or announcement.
+        server.cutAfter("UID FETCH", count: 1)
+        let logins = server.loginCount
+        await h.syncer.requestSync()
+        await assertEventually { await self.finishedCount(h) >= 2 && server.loginCount > logins && server.idlingCount == 1 }
+        await h.settled()
+
+        let told = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(told, ["<news@example.com>"], "the muted conversation's message is not announced")
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored.count, 152, "everything but the muted message is here")
+        XCTAssertFalse(stored.contains(muted))
+        XCTAssertFalse(server.messages(in: "INBOX").contains { $0.uid == muted }, "it was filed away, as the cut pass would have")
+    }
+
     /// A message from an old mailbox, with no Date header or one in `date`'s words.
     private func undated(_ tag: String, date: String? = nil) -> Data {
         Data(("From: ana@example.com\r\nTo: owner@example.com\r\nSubject: Message \(tag)\r\n" + (date.map { "Date: \($0)\r\n" } ?? "")
