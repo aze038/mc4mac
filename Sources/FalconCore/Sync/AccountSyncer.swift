@@ -39,6 +39,9 @@ public struct SyncPacing: Sendable {
     /// the next, longer step.
     public var throttlePauses: [TimeInterval] = [30, 60, 120, 240].map { $0 * 60 }
     public var throttleMemory: TimeInterval = 24 * 60 * 60
+    /// How long no new connection is opened after the server refused one because other
+    /// programs hold all it allows, a time picked at random from this range.
+    public var connectionLimitWait: ClosedRange<TimeInterval> = 300...600
     /// A server that wants the owner in a web browser is asked again after this, or sooner when
     /// the owner asks for mail or the Mac wakes.
     public var blockedRetry: TimeInterval = 60 * 60
@@ -98,10 +101,13 @@ public actor AccountSyncer {
     /// Folders to bring up to date on their own, without a whole pass over the account.
     private var requestedFolders: [UUID] = []
     private var health: AccountHealth?
-    /// Set when the server asked FalconMail to slow down or refused another connection, on
-    /// whichever connection it said so, or when the day's download is used up: until then
-    /// nothing more is asked of it and no connection is opened.
+    /// Set when the server asked FalconMail to slow down, on whichever connection it said so,
+    /// or when the day's download is used up: until then nothing more is asked of it and no
+    /// connection is opened.
     private var imapPause: (kind: MailServiceError.Kind, until: Date)?
+    /// Set when the server refused a new connection because other programs hold all it
+    /// allows: until then no connection is opened, while those already open go on working.
+    private var connectionLimit: Date?
     private var downSince: Date?
     private var isStopped = false
     /// Attempts to connect that failed since the account last synced.
@@ -212,9 +218,10 @@ public actor AccountSyncer {
 
     /// Closes the account's connections and opens them again, as after the Mac wakes or the
     /// network changes, when they may be dead without knowing it. Not during a pause Gmail
-    /// asked for, and never sooner than the least time between attempts.
+    /// asked for, nor while the server allows no new connection, which would leave the account
+    /// with none; and never sooner than the least time between attempts.
     public func reconnect(reason: String) async {
-        guard loopTask != nil, pauseRemaining() == nil else { return }
+        guard loopTask != nil, pauseRemaining() == nil, connectionLimitRemaining() == nil else { return }
         Log.info("sync", "\(account.email): reconnecting, \(reason)")
         failures = 0
         wakeEarly()
@@ -274,6 +281,10 @@ public actor AccountSyncer {
                 events.yield(.error(accountID: account.id, message: failure.sentence))
                 continue
             }
+            if syncClient == nil, let left = connectionLimitRemaining() {
+                await rest(left, wakesEarly: false)
+                continue
+            }
             if syncClient == nil, let at = nextConnect, at > Date() {
                 await rest(at.timeIntervalSinceNow, wakesEarly: true)
                 continue
@@ -316,8 +327,13 @@ public actor AccountSyncer {
         let now = Date()
         var shown = failure
         switch failure.kind {
-        case .throttled, .tooManyConnections:
-            shown.retryAfter = pauseIMAP(for: failure.kind)
+        case .throttled:
+            shown.retryAfter = pauseIMAP(for: .throttled)
+        case .tooManyConnections:
+            // Only this connection was refused: the op connection, if open, goes on.
+            let until = limitConnections()
+            shown.retryAfter = until
+            setHealth(.imapPaused(until: until))
         case .needsSignIn:
             setHealth(.needsSignIn)
             events.yield(.error(accountID: account.id, message: failure.sentence))
@@ -378,10 +394,11 @@ public actor AccountSyncer {
         nap = nil
     }
 
-    /// Stops asking the server for anything until the returned time. Gmail's throttle and its
-    /// connection limit are the account's, not one connection's, and every command meanwhile
-    /// only prolongs them. A second refusal while paused, from a command already on its way,
-    /// neither lengthens the pause nor counts as another throttle.
+    /// Stops asking the server for anything until the returned time, for a throttle or a day's
+    /// download used up. Gmail's throttle is the account's, not one connection's, and every
+    /// command meanwhile only prolongs it. A second refusal while paused, from a command already
+    /// on its way, neither lengthens the pause nor counts as another throttle. A refused
+    /// connection is not a pause: see `limitConnections`.
     @discardableResult
     private func pauseIMAP(for kind: MailServiceError.Kind) -> Date {
         let now = Date()
@@ -402,10 +419,8 @@ public actor AccountSyncer {
                 $0.lastThrottleAt = now
             }
             Log.info("sync", "\(account.email): throttled, pausing IMAP for \(Int(pacing.throttlePauses[level] / 60)) minutes")
-        case .overBudget:
-            until = meter.whenAllows(.download, for: account.id)
         default:
-            until = now.addingTimeInterval(TimeInterval.random(in: 300...600))
+            until = meter.whenAllows(.download, for: account.id)
         }
         imapPause = (kind, until)
         extras.update {
@@ -416,11 +431,60 @@ public actor AccountSyncer {
         return until
     }
 
-    /// A pause still running from before a relaunch is kept, and said again.
+    /// Opens no new connection until the returned time, 5 to 10 minutes from now as a rule,
+    /// since the server refused one because other programs hold every connection it allows. The
+    /// connections open meanwhile go on as before: nothing they send adds to the count. A second
+    /// refusal meanwhile, from an attempt already on its way, changes nothing.
+    @discardableResult
+    private func limitConnections() -> Date {
+        if connectionLimitRemaining() != nil, let until = connectionLimit { return until }
+        let until = Date().addingTimeInterval(TimeInterval.random(in: pacing.connectionLimitWait))
+        connectionLimit = until
+        Log.info("sync", "\(account.email): the server allows no more connections; opening none until \(ISO8601DateFormatter.archive.string(from: until))")
+        // Kept for a relaunch too, unless a pause is, which lasts longer and stops more.
+        if pauseRemaining() == nil {
+            extras.update {
+                $0.imapPausedUntil = until
+                $0.imapPauseReason = MailServiceError.Kind.tooManyConnections.rawValue
+            }
+        }
+        return until
+    }
+
+    /// How long no new connection may be opened yet, nil when one may.
+    private func connectionLimitRemaining() -> TimeInterval? {
+        guard let until = connectionLimit else { return nil }
+        let left = until.timeIntervalSinceNow
+        guard left > 0 else {
+            connectionLimit = nil
+            return nil
+        }
+        return left
+    }
+
+    /// Returns when a new connection may be opened. Work for the reader is refused at once
+    /// instead, with the time it may be tried again; a long job, an archive or an import, waits.
+    private func mayOpenConnection(waits: Bool) async throws {
+        while let left = connectionLimitRemaining(), let until = connectionLimit {
+            guard waits else {
+                throw MailServiceError(kind: .tooManyConnections, account: account,
+                                       detail: "no new connection until \(ISO8601DateFormatter.archive.string(from: until))",
+                                       retryAfter: until, isOneOff: true)
+            }
+            try await Task.sleep(nanoseconds: UInt64(min(left, pacing.budgetRecheck) * 1_000_000_000))
+        }
+    }
+
+    /// A pause still running from before a relaunch is kept, and said again, as is a wait for
+    /// the connection limit.
     private func resumeStoredPause() {
-        guard imapPause == nil, let until = extras.value.imapPausedUntil, until > Date() else { return }
+        guard imapPause == nil, connectionLimit == nil, let until = extras.value.imapPausedUntil, until > Date() else { return }
         let kind = extras.value.imapPauseReason.flatMap(MailServiceError.Kind.init(rawValue:)) ?? .throttled
-        imapPause = (kind, until)
+        if kind == .tooManyConnections {
+            connectionLimit = until
+        } else {
+            imapPause = (kind, until)
+        }
         setHealth(.imapPaused(until: until))
         events.yield(.error(accountID: account.id, message: MailServiceError(kind: kind, account: account, retryAfter: until).sentence))
     }
@@ -437,7 +501,8 @@ public actor AccountSyncer {
     }
 
     /// Work for the reader is refused at once during a pause, rather than sent to a server that
-    /// asked for quiet, and so is any once the day's download is used up.
+    /// asked for quiet, and so is any once the day's download is used up. The connection limit
+    /// refuses only work that needs a new connection, in `connectedOpClient`.
     private func refuseWhilePaused() throws {
         if pauseRemaining() != nil, let pause = imapPause {
             throw MailServiceError(kind: pause.kind, account: account, detail: "paused until \(ISO8601DateFormatter.archive.string(from: pause.until))",
@@ -452,7 +517,8 @@ public actor AccountSyncer {
     /// Waits until `bytes` more fit in the account's `budget`, and out any pause, telling the
     /// owner why. For long jobs, an archive or an import, which carry on where they stopped
     /// rather than fail. True when it had to wait: a connection left quiet meanwhile may have
-    /// been closed.
+    /// been closed. The connection limit holds up only the opening of a new connection, so a
+    /// job with one open is not kept waiting for it.
     @discardableResult
     public func waitForAllowance(_ budget: TrafficBudget, bytes: Int) async throws -> Bool {
         var told = false
@@ -494,10 +560,16 @@ public actor AccountSyncer {
     }
 
     /// The op connection, and whether it had been used before. A new one is opened only once
-    /// however many callers ask at the same moment.
-    private func connectedOpClient() async throws -> (client: IMAPClient, reused: Bool) {
+    /// however many callers ask at the same moment, and not while the server allows no more:
+    /// then work for the reader is refused at once and a long job (`waits`) waits.
+    private func connectedOpClient(waits: Bool = false) async throws -> (client: IMAPClient, reused: Bool) {
         if let c = opClient, await c.isConnected { return (c, true) }
         if let pending = opConnecting { return (try await pending.value, false) }
+        if connectionLimitRemaining() != nil {
+            try await mayOpenConnection(waits: waits)
+            // Another caller may have opened one while this one waited.
+            return try await connectedOpClient(waits: waits)
+        }
         let account = account
         let connector = connector
         let tap = meter.tap(for: account.id)
@@ -527,10 +599,10 @@ public actor AccountSyncer {
     /// `repeatable`; work that must not happen twice, such as an APPEND that went out, is not,
     /// and nor is anything after a throttle or any other refusal that a new connection would
     /// only repeat.
-    private func withOpConnection<T: Sendable>(repeatable: Bool = true,
+    private func withOpConnection<T: Sendable>(repeatable: Bool = true, waitsForConnection: Bool = false,
                                                _ work: @Sendable (IMAPClient) async throws -> T) async throws -> T {
         try refuseWhilePaused()
-        let (client, reused) = try await connectedOpClient()
+        let (client, reused) = try await connectedOpClient(waits: waitsForConnection)
         do {
             return try await client.exclusively(work)
         } catch {
@@ -540,7 +612,7 @@ public actor AccountSyncer {
             let unsent = error is IMAPNotSent
             guard unsent || (reused && repeatable), lost.kind == .connectionDropped, !Task.isCancelled else { throw error }
             Log.info("sync", "\(account.email): op connection lost (\(Log.redacted(lost.detail, keeping: account.email))), reconnecting")
-            let fresh = try await connectedOpClient().client
+            let fresh = try await connectedOpClient(waits: waitsForConnection).client
             do {
                 return try await fresh.exclusively(work)
             } catch {
@@ -606,23 +678,38 @@ public actor AccountSyncer {
     }
 
     /// The failure of one thing the owner asked for, as they should see it, logged with the
-    /// server's own words. Nothing retries it, so its sentence promises no retry. A throttle or
-    /// a refused connection pauses the account as it would on the sync connection, so that
-    /// what the owner does next waits instead of asking the server again. A message or folder
-    /// the server no longer has, or a folder renumbered, gets that folder brought up to date so
-    /// the list stops offering it.
+    /// server's own words. Nothing retries it, so its sentence promises no retry. A throttle
+    /// pauses the account as it would on the sync connection, so that what the owner does next
+    /// waits instead of asking the server again. After a refused connection none is opened until
+    /// the limit passes, and those open are left alone. A message or folder the server no longer
+    /// has, or a folder renumbered, gets that folder brought up to date so the list stops
+    /// offering it.
     private func failed(_ doing: String, _ error: Error, folder: FolderInfo?) async -> Error {
         if error is CancellationError { return error }
         var failure = MailServiceError.classify(error, account: account)
         failure.isOneOff = true
         Log.info("sync", Log.redacted("\(account.email): \(doing) failed: \(failure.kind.rawValue): \(failure.detail)", keeping: account.email))
         switch failure.kind {
-        case .throttled, .tooManyConnections:
+        case .tooManyConnections:
+            // Only the server's own word starts the wait; the refusal given during one must
+            // not make it longer.
+            guard !(error is MailServiceError) else { break }
+            let starting = connectionLimitRemaining() == nil
+            let until = limitConnections()
+            failure.retryAfter = until
+            // With the sync connection up the account still syncs, and its status stays as it
+            // is; without it, the loop waits for the limit too, as the status says.
+            guard starting, syncClient == nil else { break }
+            setHealth(.imapPaused(until: until))
+            var status = failure
+            status.isOneOff = false
+            events.yield(.error(accountID: account.id, message: status.sentence))
+        case .throttled:
             // Only the server's own word starts a pause; the refusal given during one must
             // not make it longer.
             guard !(error is MailServiceError) else { break }
             let starting = pauseRemaining() == nil
-            let until = pauseIMAP(for: failure.kind)
+            let until = pauseIMAP(for: .throttled)
             failure.retryAfter = until
             guard starting else { break }
             var status = failure
@@ -1678,33 +1765,35 @@ public actor AccountSyncer {
     /// One APPEND on the op connection. It is never repeated once the message has gone out,
     /// since one that did reach the server would be stored twice; one that failed before the
     /// server asked for the message is tried once more on a fresh connection.
-    private func upload(_ raw: Data, to folder: FolderInfo, flags: MessageFlags, date: Date?) async throws {
+    private func upload(_ raw: Data, to folder: FolderInfo, flags: MessageFlags, date: Date?,
+                        waitsForConnection: Bool = false) async throws {
         guard meter.allows(.upload, adding: raw.count, for: account.id) else {
             throw MailServiceError(kind: .overUploadBudget, account: account, detail: "upload allowance used",
                                    retryAfter: meter.whenAllows(.upload, adding: raw.count, for: account.id))
         }
-        _ = try await withOpConnection(repeatable: false) { client in
+        _ = try await withOpConnection(repeatable: false, waitsForConnection: waitsForConnection) { client in
             try await client.append(mailbox: folder.path, message: raw, flags: flags.imapFlags, date: date)
         }
     }
 
     /// Uploads one imported message into `folder`. When the account's upload allowance is used
-    /// up, or Gmail asked for quiet, it waits and then goes on, so that an import of thousands
-    /// pauses rather than failing part of the way through. A message the server certainly did
-    /// not store, because the connection dropped before it went or Gmail turned it away, is
-    /// tried again once the pause that began is over, or a little later.
+    /// up, Gmail asked for quiet, or a connection is needed while the server allows no more, it
+    /// waits and then goes on, so that an import of thousands pauses rather than failing part of
+    /// the way through. A message the server certainly did not store, because the connection
+    /// dropped before it went or Gmail turned it away, is tried again once the pause or the
+    /// connection limit that began is over, or a little later.
     public func importMessage(_ message: ImportedMessage, into folder: FolderInfo) async throws {
         var attempts = 0
         while true {
             try await waitForAllowance(.upload, bytes: message.raw.count)
             do {
-                try await upload(message.raw, to: folder, flags: message.flags, date: message.date)
+                try await upload(message.raw, to: folder, flags: message.flags, date: message.date, waitsForConnection: true)
                 break
             } catch {
                 let failure = await failed("importing a message into \(folder.path)", error, folder: folder)
                 attempts += 1
                 guard attempts < 3, !(error is IMAPAppendUnconfirmed), (failure as? MailServiceError)?.isTransient ?? false else { throw failure }
-                if pauseRemaining() == nil {
+                if pauseRemaining() == nil, connectionLimitRemaining() == nil {
                     try await Task.sleep(nanoseconds: UInt64(pacing.minimumReconnectInterval * 1_000_000_000))
                 }
             }
@@ -1800,9 +1889,11 @@ public actor AccountSyncer {
     }
 
     /// A connection of its own for an archive job, which runs for a long time and would
-    /// otherwise hold up every message the reader opens.
+    /// otherwise hold up every message the reader opens. While the server allows no more
+    /// connections it waits, as the job does for its allowance.
     public func openArchiveSourceClient() async throws -> IMAPClient {
         do {
+            try await mayOpenConnection(waits: true)
             try refuseWhilePaused()
             return try await connector(account, meter.tap(for: account.id, background: true))
         } catch {

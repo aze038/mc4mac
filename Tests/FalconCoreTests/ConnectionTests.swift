@@ -203,6 +203,176 @@ final class ConnectionTests: XCTestCase {
         XCTAssertEqual(server.loginCount, during, "no reconnect during a pause Gmail asked for")
     }
 
+    // MARK: The connection limit
+
+    private let tooMany = "Too many simultaneous connections. (Failure)"
+
+    /// A sync loop idling, an op connection opened by one message and INBOX holding `count`
+    /// messages in all, all listed.
+    private func withBothConnections(_ pacing: SyncPacing, count: Int = 4) async throws -> EngineHarness {
+        let h = try await started(pacing) { server in
+            for n in 2...count { server.add(FakeIMAPServer.message("m\(n)"), to: "INBOX") }
+        }
+        try await h.syncOnce()
+        await h.syncer.setUndoWindow(0)
+        await h.syncer.start()
+        await assertEventually { h.server.idlingCount == 1 }
+        let first = try await h.syncer.body(for: try await h.message(uid: 1, in: "INBOX"))
+        XCTAssertEqual(first, FakeIMAPServer.message("first"))
+        return h
+    }
+
+    /// The sync connection is dropped and, asking again, told the account has too many.
+    private func refuseTheSyncConnection(_ h: EngineHarness) async {
+        h.server.greetWithBye(tooMany)
+        h.server.sendToIdling("* BYE Session expired", close: true)
+        await assertEventually { await h.events.healths.contains { if case .imapPaused = $0 { return true }; return false } }
+        await assertEventually { await h.events.errors.contains { $0.hasPrefix("Other apps are using owner@example.com's connections. Retrying in ") } }
+    }
+
+    func testAConnectionLimitMetByTheSyncConnectionLeavesTheOpConnectionWorking() async throws {
+        var pacing = quick
+        pacing.connectionLimitWait = 1.5...1.5
+        let h = try await withBothConnections(pacing)
+        let server = h.server
+        let limited = Date()
+        await refuseTheSyncConnection(h)
+        let logins = server.loginCount
+
+        // The op connection is still open, and the server still answers on it.
+        let second = try await h.syncer.body(for: try await h.message(uid: 2, in: "INBOX"))
+        XCTAssertEqual(second, FakeIMAPServer.message("m2"), "a message opens on the connection already open")
+        _ = try await h.syncer.archive([try await h.message(uid: 3, in: "INBOX")])
+        await assertEventually { server.messages(in: "[Gmail]/All Mail").count == 1 }
+        XCTAssertEqual(server.messages(in: "[Gmail]/All Mail").first?.data, FakeIMAPServer.message("m3"), "and an action is carried out")
+        _ = try await h.syncer.setFlag(.flagged, on: [try await h.message(uid: 4, in: "INBOX")], enabled: true)
+        await assertEventually { server.messages(in: "INBOX").contains { $0.uid == 4 && $0.flags.contains("\\Flagged") } }
+        await h.settled()
+        let failures = await h.events.actionFailures
+        XCTAssertTrue(failures.isEmpty, "\(failures)")
+        // A wake closes nothing it could not open again.
+        await h.syncer.reconnect(reason: "the Mac woke")
+        let fourth = try await h.syncer.body(for: try await h.message(uid: 4, in: "INBOX"))
+        XCTAssertEqual(fourth, FakeIMAPServer.message("m4"))
+        XCTAssertEqual(server.loginCount, logins, "no new connection meanwhile")
+
+        // The sync connection is opened again only once the limit has passed.
+        await assertEventually(within: 4) { server.idlingCount == 1 }
+        let signIn = try XCTUnwrap(server.exchanges.last { $0.line.contains(" LOGIN ") || $0.line.contains("AUTHENTICATE") })
+        XCTAssertGreaterThanOrEqual(signIn.at.timeIntervalSince(limited), 1.4, "not before the limit passed")
+        await h.settled()
+        let health = await h.events.healths.last
+        XCTAssertEqual(health, .online)
+    }
+
+    func testAConnectionLimitMetOpeningTheOpConnectionLeavesTheSyncConnectionAlone() async throws {
+        var pacing = quick
+        pacing.connectionLimitWait = 1.0...1.0
+        let h = try await started(pacing)
+        let server = h.server
+        try await h.syncOnce()
+        await h.syncer.start()
+        await assertEventually { server.idlingCount == 1 }
+        let message = try await h.message(uid: 1, in: "INBOX")
+        let logins = server.loginCount
+
+        server.greetWithBye(tooMany)
+        do {
+            _ = try await h.syncer.body(for: message)
+            XCTFail("the server refused the connection")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .tooManyConnections)
+            XCTAssertTrue(failure.sentence.hasPrefix("Other apps are using owner@example.com's connections. Try again after "), failure.sentence)
+        }
+        await h.settled()
+        let health = await h.events.healths.last
+        XCTAssertEqual(health, .online, "the account still syncs, so its status does not change")
+        let errors = await h.events.errors
+        XCTAssertTrue(errors.isEmpty, "nothing is retried for the owner, so nothing says so: \(errors)")
+
+        // New mail still arrives over the sync connection, which was never closed.
+        server.deliver(FakeIMAPServer.message("news"), to: "INBOX")
+        await assertEventually { ((try? await h.uids(in: "INBOX")) ?? []).count == 2 }
+        XCTAssertEqual(server.loginCount, logins)
+
+        // Another open during the limit is refused without asking the server.
+        server.resetCounters()
+        let connections = server.peakConnections
+        do {
+            _ = try await h.syncer.body(for: message)
+            XCTFail("no new connection yet")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .tooManyConnections)
+        }
+        XCTAssertEqual(server.peakConnections, connections, "no connection was attempted")
+        XCTAssertFalse(server.commands.contains { $0.contains("UID FETCH") })
+
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        let body = try await h.syncer.body(for: message)
+        XCTAssertEqual(body, FakeIMAPServer.message("first"), "once the limit has passed a connection is opened again")
+    }
+
+    func testAThrottleMetDuringAConnectionLimitIsAThrottle() async throws {
+        var pacing = quick
+        pacing.connectionLimitWait = 60...60
+        let h = try await withBothConnections(pacing)
+        let server = h.server
+        await refuseTheSyncConnection(h)
+
+        server.refuseNext("UID FETCH", code: "THROTTLED", text: "Account exceeded command or bandwidth limits. (Failure)")
+        do {
+            _ = try await h.syncer.body(for: try await h.message(uid: 2, in: "INBOX"))
+            XCTFail("throttled")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .throttled, "the server's own word, not the connection limit")
+            let until = try XCTUnwrap(failure.retryAfter)
+            XCTAssertEqual(until.timeIntervalSinceNow, SyncPacing.standard.throttlePauses[0], accuracy: 5, "a throttle's cool-down, not the limit's")
+        }
+        let stored = try XCTUnwrap(AtomicFile.readJSON(SyncExtras.self, from: h.layout.syncExtrasFile(h.account.id)))
+        XCTAssertEqual(stored.imapPauseLevel, 0, "it counts towards the next, longer cool-down")
+        XCTAssertNotNil(stored.lastThrottleAt)
+        XCTAssertEqual(stored.imapPauseReason, MailServiceError.Kind.throttled.rawValue, "and it is the pause a relaunch keeps")
+
+        server.resetCounters()
+        do {
+            _ = try await h.syncer.body(for: try await h.message(uid: 3, in: "INBOX"))
+            XCTFail("paused")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .throttled)
+        }
+        XCTAssertTrue(server.commands.isEmpty, "nothing is asked of the server during the pause: \(server.commands)")
+    }
+
+    func testAThrottleMetOnTheOpConnectionLeavesTheSyncLoopsReconnectPacingAlone() async throws {
+        var pacing = quick
+        pacing.throttlePauses = [0.6, 1.2, 2.4, 4.8]
+        pacing.minimumReconnectInterval = 0.05
+        pacing.maximumReconnectInterval = 10
+        let h = try await withBothConnections(pacing)
+        let server = h.server
+        server.refuseNext("UID FETCH", code: "THROTTLED", text: "Account exceeded command or bandwidth limits. (Failure)")
+        server.resetCounters()
+        do {
+            _ = try await h.syncer.body(for: try await h.message(uid: 2, in: "INBOX"))
+            XCTFail("throttled")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .throttled)
+        }
+        await h.settled()
+        let pauses = await h.events.pauses
+        let until = try XCTUnwrap(pauses.last)
+        // The sync connection went quiet for the pause, and not as a failure of its own: it is
+        // opened again as soon as the pause is over, not after a longer step of its backoff.
+        let signingIn = { server.exchanges.filter { $0.line.contains(" LOGIN ") || $0.line.contains("AUTHENTICATE") } }
+        await assertEventually(within: 3) { server.idlingCount == 1 && !signingIn().isEmpty }
+        let again = try XCTUnwrap(signingIn().first)
+        XCTAssertGreaterThanOrEqual(again.at.timeIntervalSince(until), -0.05)
+        XCTAssertLessThan(again.at.timeIntervalSince(until), 0.5, "no reconnect backoff on top of the pause")
+        await h.settled()
+        let health = await h.events.healths.last
+        XCTAssertEqual(health, .online)
+    }
+
     func testAGoogleSendSyncsOnlySentAndTwice() async throws {
         var pacing = quick
         pacing.sentSyncDelays = [0.2, 0.6]

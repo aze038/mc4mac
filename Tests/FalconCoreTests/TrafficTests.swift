@@ -382,6 +382,50 @@ final class TrafficTests: XCTestCase {
         XCTAssertEqual(pauses.count, 1, "the account paused, as for a throttle on any connection")
     }
 
+    func testAnImportThatMeetsTheConnectionLimitWaitsForItAndLosesNothing() async throws {
+        var pacing = SyncPacing()
+        pacing.budgetRecheck = 0.05
+        pacing.minimumReconnectInterval = 0.05
+        pacing.connectionLimitWait = 0.8...0.8
+        let (h, folder, messages) = try await importing(pacing: pacing)
+        let server = h.server
+        let logins = server.loginCount
+        // The op connection is not open yet, and the server has none to spare.
+        server.greetWithBye("Too many simultaneous connections. (Failure)")
+        let refused = Date()
+        let syncer = h.syncer
+        try await within(15) { for m in messages { try await syncer.importMessage(m, into: folder) } }
+        let ids = importedIDs(server)
+        XCTAssertEqual(ids.count, 8, "every message went in once a connection could be opened")
+        XCTAssertEqual(Set(ids).count, 8)
+        let signIn = try XCTUnwrap(server.exchanges.last { $0.line.contains("AUTHENTICATE") || $0.line.contains(" LOGIN ") })
+        XCTAssertGreaterThanOrEqual(signIn.at.timeIntervalSince(refused), 0.75, "no connection was opened before the limit passed")
+        XCTAssertEqual(server.loginCount, logins + 1, "one connection, for them all")
+    }
+
+    func testAnArchiveJobThatMeetsTheConnectionLimitWaitsForItAndCarriesOn() async throws {
+        let server = try EngineHarness.gmailServer()
+        let longAgo = Date(timeIntervalSince1970: 1_600_000_000)
+        for n in 1...10 { server.add(FakeIMAPServer.message("old-\(n)"), to: "INBOX", date: longAgo) }
+        var pacing = SyncPacing()
+        pacing.budgetRecheck = 0.05
+        pacing.connectionLimitWait = 0.8...0.8
+        let h = try await EngineHarness(server: server, root: root, pacing: pacing)
+        harness = h
+        let (request, storage) = try archiveRequest(h)
+        server.greetWithBye("Too many simultaneous connections. (Failure)")
+        let refused = Date()
+        let source = h.syncer.archiveSource()
+        let account = h.account
+        let outcome = try await within(15) {
+            try await ArchiveJob.run(request: request, account: account, source: source, storage: storage) { _ in }
+        }
+        XCTAssertEqual(outcome.manifest.messageCount, 10, "the job carries on once a connection can be opened")
+        let signIn = try XCTUnwrap(server.exchanges.first { $0.line.contains("AUTHENTICATE") || $0.line.contains(" LOGIN ") })
+        XCTAssertGreaterThanOrEqual(signIn.at.timeIntervalSince(refused), 0.75, "and not before the limit passed")
+        XCTAssertEqual(server.loginCount, 1)
+    }
+
     func testAnAppendWhoseAnswerNeverCameIsNotSentAgain() async throws {
         var pacing = SyncPacing()
         pacing.minimumReconnectInterval = 0.05
