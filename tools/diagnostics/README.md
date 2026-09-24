@@ -84,13 +84,21 @@ names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMM
     `https[:]//example[.]com` and `help@example[.]com`, in every field and in every string of
     the context. A signature keeps its `@`, which there comes before a file name.
   - In the title and message, a domain written without `https://` or `www.` is made unclickable
-    too, as `example[.]com/path`, and so is one in a title that falls back to the signature: any
-    name whose last part is a real top-level domain, from the ICANN section of the Public Suffix
-    List (the list is at the end of `Code.gs`), or an internationalised one (`xn--…`). A file
-    name such as `AccountSyncer.swift`, `libsqlite3.dylib` or `Mail.db` is left as it is, and so
-    is a name that goes on after a dot, such as `Message.id.getter`; a file whose extension is
-    also a country's domain, such as `setup.py`, shows as `setup[.]py`, and a function named
-    like a domain, such as `NSApplication.run`, as `NSApplication[.]run`.
+    too, as `example[.]com/path` or `evil[.]co[.]za`, and so is one in a title that falls back to
+    the signature: any name whose last part is two letters, as every country's domain is, or a
+    generic top-level domain from the ICANN section of the Public Suffix List (the list is at the
+    end of `Code.gs`), or an internationalised one (`xn--…`). A file whose extension is no
+    domain, such as `AccountSyncer.swift`, `libsqlite3.dylib`, or `Mail.db` and `index.js` (two
+    of the few two-letter extensions no country has, listed in `Code.gs`), is left as it is, and
+    so is a name that goes on after a dot, such as `Message.id.getter`; a file whose extension is
+    also a country's domain, such as `setup.py`, shows as `setup[.]py`.
+  - The place in a crash's or hang's title, where it happened, is code, so it stays whole:
+    `NSApplication.run` in *…, called from NSApplication.run)*. That is the name after `in` or
+    `called from` in the brackets that end the title, when it is shaped like a function: its first
+    part has a capital letter or an underscore, and it holds only letters, digits and
+    underscores. Anywhere else, and in any other kind of problem, `NSApplication.run` shows as
+    `NSApplication[.]run`.
+  - A title that shows nothing, empty or only invisible characters, is stored as the signature.
 - **Trimming**: titles to 120 characters, messages to 2,000, context to 16 KB, and every cell under
   Sheets' 50,000-character limit. Context too large to keep whole is stored as
   `{"truncated":true,"size":n,"start":"..."}`, so it is always JSON. Only `provider`, `kind`,

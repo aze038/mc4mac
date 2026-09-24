@@ -550,11 +550,11 @@ private enum Rx {
         #"“[^”\r\n]{0,500}”"#, #"„[^“”\r\n]{0,500}[“”]"#, #"”[^”\r\n]{0,500}”"#, #"«[^»\r\n]{0,500}»"#, #"»[^«\r\n]{0,500}«"#,
         #"‹[^›\r\n]{0,500}›"#, #"›[^‹\r\n]{0,500}‹"#, #"「[^」\r\n]{0,500}」"#, #"『[^』\r\n]{0,500}』"#,
         // Hebrew also writes gershayim inside a word, as in דו״ח and בע״מ, so the mark opens a
-        // quotation only where no letter stands before it, or only one or two of the letters
+        // quotation only where no letter stands before it, or only up to four of the letters
         // Hebrew joins to the front of a word (ו and, ה the, ב in, כ as, ל to, מ from, ש that), as
-        // in ב״…״; and it closes one only where no letter follows: ״דו״ח שנתי.pdf״ and
-        // ב״Kamal Secret.pdf״ go whole.
-        #"(?:(?<![\p{L}\p{N}])|(?<=(?:^|[^\p{L}\p{N}])[והבכלמש]{1,2}))״[^\r\n]{0,500}?״(?![\p{L}\p{N}])"#,
+        // in ב״…״, ומה״…״ or וכשה״…״; and it closes one only where no letter follows: ״דו״ח
+        // שנתי.pdf״ and ב״Kamal Secret.pdf״ go whole.
+        #"(?:(?<![\p{L}\p{N}])|(?<=(?:^|[^\p{L}\p{N}])[והבכלמש]{1,4}))״[^\r\n]{0,500}?״(?![\p{L}\p{N}])"#,
         // ‘…’ and ‚…‘ end with the mark an apostrophe also uses, so a closing one is one that
         // no letter follows: ‘Ana’s notes.txt’ goes whole and couldn’t stays.
         #"(?<![\p{L}\p{N}])[‘‚][^\r\n]{0,500}?[‘’](?![\p{L}\p{N}])"#,

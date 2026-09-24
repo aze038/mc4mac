@@ -557,13 +557,15 @@ function cleanEvent_(event) {
   // A signature is Area.code@File.swift:function, which must not be read as an address.
   const signature = oneLine_(event.signature, MAX_SIGNATURE_CHARS, { keepAddresses: true });
   if (!id || !KIND_PATTERN.test(kind) || !signature) return null;
+  // What people read first, so a bare domain in it is made unclickable too, but not the place a
+  // crash or hang happened. A title that shows nothing, empty or only invisible characters, is
+  // taken as none, and the signature stands in for it.
+  const title = oneLine_(event.title, MAX_TITLE_CHARS, { bareDomains: true, crashPlace: kind === 'crash' || kind === 'hang' });
   return {
     id: id,
     kind: kind,
     signature: signature,
-    // What people read first, so a bare domain in it is made unclickable too.
-    title: oneLine_(event.title, MAX_TITLE_CHARS, { bareDomains: true })
-      || oneLine_(event.signature, MAX_TITLE_CHARS, { keepAddresses: true, bareDomains: true }),
+    title: shows_(title) ? title : oneLine_(event.signature, MAX_TITLE_CHARS, { keepAddresses: true, bareDomains: true }),
     area: oneLine_(event.area, 60),
     count: Math.min(Math.max(Math.floor(Number(event.count)) || 1, 1), MAX_COUNT),
     firstAt: parseTime_(event.firstAt),
@@ -624,7 +626,8 @@ function isJson_(text) {
 // so one here was typed by whoever holds the key, and its domain is defanged as well.
 // `options.keepAddresses` leaves an @ alone, as a signature needs; `options.bareDomains` also
 // defangs a domain written without https:// or www., as in example.com/path, which the title and
-// message need.
+// message need; and `options.crashPlace`, for a crash's or hang's title, leaves the place it
+// happened alone (see CRASH_PLACE).
 function defang_(value, options) {
   if (typeof value !== 'string') return value;
   const keepAddresses = Boolean(options && options.keepAddresses);
@@ -637,23 +640,47 @@ function defang_(value, options) {
     text = text.replace(/([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g, (address, local, domain) => local + '@' + host(domain));
   }
   if (options && options.bareDomains) {
-    text = text.replace(BARE_DOMAIN, (match, before, name, ending) => isDomainEnding_(ending) ? before + host(name) : match);
+    const place = options.crashPlace && text.length <= MAX_TITLE_CHARS ? CRASH_PLACE.exec(text) : null;
+    const placeFrom = place ? place.index + place[0].length - place[1].length : -1;
+    const placeTo = place ? place.index + place[0].length : -1;
+    text = text.replace(BARE_DOMAIN, (match, before, name, ending, at) => {
+      const inPlace = at + before.length >= placeFrom && at + match.length <= placeTo;
+      return isDomainEnding_(ending) && !inPlace ? before + host(name) : match;
+    });
   }
   return text;
 }
 
+// Whether a name's last part is a top-level domain: any two letters, as every country's domain
+// is, even one the Public Suffix List names only below itself (co.za, *.mm) or not at all (bq),
+// but for a file extension no country has; one of GENERIC_DOMAINS; or an internationalised one.
 function isDomainEnding_(ending) {
-  return TOP_LEVEL_DOMAINS.has(ending.toLowerCase()) || /^xn--/i.test(ending);
+  const name = ending.toLowerCase();
+  if (name.length === 2) return !NO_COUNTRY_EXTENSIONS.has(name);
+  return GENERIC_DOMAINS.has(name) || /^xn--/.test(name);
 }
 
-// A domain written without https:// or www., example.com, evil.rocks or mail.example.co.uk/path,
-// which Sheets may link all the same: names joined by dots whose last one is a real top-level
-// domain (TOP_LEVEL_DOMAINS, or an internationalised one, xn--…). A file's extension, such as
-// .swift, .dylib, .pdf or .db, is none, so AccountSyncer.swift and Mail.db stay as they are; a
-// file whose extension is also a country's, such as setup.py, is shown as setup[.]py. A name
-// that goes on after a dot is not a domain, so a property such as Message.id.getter stays whole,
-// and neither is part of a longer word: a letter or digit may not come just before it.
+// Two-letter file extensions no country has as its domain: Mail.db, index.js, main.ts, main.go,
+// app.rb, Main.kt, Form.cs, util.hh, init.el, archive.gz, archive.xz, model.pb.
+const NO_COUNTRY_EXTENSIONS = new Set(['db', 'js', 'ts', 'go', 'rb', 'kt', 'cs', 'hh', 'el', 'gz', 'xz', 'pb']);
+
+// A domain written without https:// or www., example.com, evil.rocks or mail.example.co.za/path,
+// which Sheets may link all the same: names joined by dots whose last one is a top-level domain
+// (see isDomainEnding_). A file's extension, such as .swift, .dylib, .pdf or .db, is none, so
+// AccountSyncer.swift and Mail.db stay as they are; a file whose extension is also a country's,
+// such as setup.py, is shown as setup[.]py. A name that goes on after a dot is not a domain, so a
+// property such as Message.id.getter stays whole, and neither is part of a longer word: a letter
+// or digit may not come just before it.
 const BARE_DOMAIN = /(^|[^A-Za-z0-9])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59}))(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9])/gi;
+
+// The place in a crash's or hang's title, as the app writes it: in the brackets that end the
+// title, after "in " or "called from ", as in "(NSRangeException, in MessageList.select)" or
+// "(runaway recursion, called from NSApplication.run, EXC_BAD_ACCESS/SIGBUS)". It is a function,
+// a type's name and its members, so it stays whole, but only when it is shaped like one: its
+// first name has a capital letter or an underscore, and nothing but letters, digits and
+// underscores. A domain someone writes there in small letters, "in evil.com", is still defanged.
+// The app's titles fit in MAX_TITLE_CHARS, so a longer one, which is cut anyway, is not searched.
+const CRASH_PLACE = /\((?:[^()]*, )?(?:in|called from) ((?=[A-Za-z0-9]*[A-Z_])[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)(?=(?:, [^()]*)?\)$)/;
 
 // Keeps only the four fields the contract defines, so nothing else about an account is stored.
 function accountText_(account) {
@@ -1736,6 +1763,7 @@ const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F
 // variation selectors.
 const INVISIBLE = '[\\p{Cf}\\u034F\\u115F\\u1160\\u17B4\\u17B5\\u180B-\\u180F\\u3164\\uFE00-\\uFE0F\\uFFA0\\u{E0100}-\\u{E01EF}]';
 const HAS_INVISIBLE = new RegExp(INVISIBLE, 'u');
+const INVISIBLES = new RegExp(INVISIBLE, 'gu');
 const IS_INVISIBLE = new RegExp('^' + INVISIBLE + '$', 'u');
 
 // The left-to-right and right-to-left overrides, which show the characters after them in an order
@@ -1794,6 +1822,11 @@ function addressSpans_(text) {
   find(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g);
   find(BARE_DOMAIN, 2);
   return spans;
+}
+
+// Whether text shows anything: not when it is empty or holds only spaces and invisible characters.
+function shows_(text) {
+  return text.replace(INVISIBLES, '').trim() !== '';
 }
 
 // Report text on one line, as every field of an upload but the message and context is stored:
@@ -1886,96 +1919,91 @@ function localMidnight_(year, month, day) {
   return utc - minutes * 60000;
 }
 
-// Every top-level domain ICANN delegates that is written in Latin letters, for BARE_DOMAIN: the
-// ICANN section of the Public Suffix List (publicsuffix.org) as of 21 December 2019. Few have been
-// added since, and an address written with https:// or www., or ending in an internationalised
-// domain (xn--…), is defanged whatever its ending.
-const TOP_LEVEL_DOMAINS = new Set([
-  'aaa aarp abarth abb abbott abbvie abc able abogado abudhabi ac academy accenture accountant',
-  'accountants aco actor ad adac ads adult ae aeg aero aetna af afamilycompany afl africa ag',
-  'agakhan agency ai aig aigo airbus airforce airtel akdn al alfaromeo alibaba alipay allfinanz',
-  'allstate ally alsace alstom am amazon americanexpress americanfamily amex amfam amica amsterdam',
-  'analytics android anquan anz ao aol apartments app apple aq aquarelle ar arab aramco archi army',
-  'arpa art arte as asda asia associates at athleta attorney au auction audi audible audio auspost',
-  'author auto autos avianca aw aws ax axa az azure ba baby baidu banamex bananarepublic band bank',
-  'bar barcelona barclaycard barclays barefoot bargains baseball basketball bauhaus bayern bb bbc',
-  'bbt bbva bcg bcn be beats beauty beer bentley berlin best bestbuy bet bf bg bh bharti bi bible',
-  'bid bike bing bingo bio biz bj black blackfriday blockbuster blog bloomberg blue bm bms bmw bn',
-  'bnpparibas bo boats boehringer bofa bom bond boo book booking bosch bostik boston bot boutique',
-  'box br bradesco bridgestone broadway broker brother brussels bs bt budapest bugatti build',
-  'builders business buy buzz bv bw by bz bzh ca cab cafe cal call calvinklein cam camera camp',
-  'cancerresearch canon capetown capital capitalone car caravan cards care career careers cars casa',
-  'case caseih cash casino cat catering catholic cba cbn cbre cbs cc cd ceb center ceo cern cf cfa',
-  'cfd cg ch chanel channel charity chase chat cheap chintai christmas chrome church ci cipriani',
-  'circle cisco citadel citi citic city cityeats cl claims cleaning click clinic clinique clothing',
-  'cloud club clubmed cm cn co coach codes coffee college cologne com comcast commbank community',
-  'company compare computer comsec condos construction consulting contact contractors cooking',
-  'cookingchannel cool coop corsica country coupon coupons courses cpa cr credit creditcard',
-  'creditunion cricket crown crs cruise cruises csc cu cuisinella cv cw cx cy cymru cyou cz dabur',
-  'dad dance data date dating datsun day dclk dds de deal dealer deals degree delivery dell',
-  'deloitte delta democrat dental dentist desi design dev dhl diamonds diet digital direct',
-  'directory discount discover dish diy dj dk dm dnp do docs doctor dog domains dot download drive',
-  'dtv dubai duck dunlop dupont durban dvag dvr dz earth eat ec eco edeka edu education ee eg email',
-  'emerck energy engineer engineering enterprises epson equipment ericsson erni es esq estate',
-  'esurance et etisalat eu eurovision eus events exchange expert exposed express extraspace fage',
-  'fail fairwinds faith family fan fans farm farmers fashion fast fedex feedback ferrari ferrero fi',
-  'fiat fidelity fido film final finance financial fire firestone firmdale fish fishing fit fitness',
-  'flickr flights flir florist flowers fly fm fo foo food foodnetwork football ford forex forsale',
-  'forum foundation fox fr free fresenius frl frogans frontdoor frontier ftr fujitsu fujixerox fun',
-  'fund furniture futbol fyi ga gal gallery gallo gallup game games gap garden gay gb gbiz gd gdn',
-  'ge gea gent genting george gf gg ggee gh gi gift gifts gives giving gl glade glass gle global',
-  'globo gm gmail gmbh gmo gmx gn godaddy gold goldpoint golf goo goodyear goog google gop got gov',
-  'gp gq gr grainger graphics gratis green gripe grocery group gs gt gu guardian gucci guge guide',
-  'guitars guru gw gy hair hamburg hangout haus hbo hdfc hdfcbank health healthcare help helsinki',
-  'here hermes hgtv hiphop hisamitsu hitachi hiv hk hkt hm hn hockey holdings holiday homedepot',
-  'homegoods homes homesense honda horse hospital host hosting hot hoteles hotels hotmail house how',
-  'hr hsbc ht hu hughes hyatt hyundai ibm icbc ice icu id ie ieee ifm ikano il im imamat imdb immo',
-  'immobilien in inc industries infiniti info ing ink institute insurance insure int intel',
-  'international intuit investments io ipiranga iq ir irish is ismaili ist istanbul it itau itv',
-  'iveco jaguar java jcb jcp je jeep jetzt jewelry jio jll jmp jnj jo jobs joburg jot joy jp',
-  'jpmorgan jprs juegos juniper kaufen kddi ke kerryhotels kerrylogistics kerryproperties kfh kg ki',
-  'kia kim kinder kindle kitchen kiwi km kn koeln komatsu kosher kp kpmg kpn kr krd kred kuokgroup',
-  'kw ky kyoto kz la lacaixa lamborghini lamer lancaster lancia land landrover lanxess lasalle lat',
-  'latino latrobe law lawyer lb lc lds lease leclerc lefrak legal lego lexus lgbt li liaison lidl',
-  'life lifeinsurance lifestyle lighting like lilly limited limo lincoln linde link lipsy live',
-  'living lixil lk llc llp loan loans locker locus loft lol london lotte lotto love lpl',
-  'lplfinancial lr ls lt ltd ltda lu lundbeck lupin luxe luxury lv ly ma macys madrid maif maison',
-  'makeup man management mango map market marketing markets marriott marshalls maserati mattel mba',
-  'mc mckinsey md me med media meet melbourne meme memorial men menu merckmsd metlife mg mh miami',
-  'microsoft mil mini mint mit mitsubishi mk ml mlb mls mma mn mo mobi mobile moda moe moi mom',
-  'monash money monster mormon mortgage moscow moto motorcycles mov movie movistar mp mq mr ms msd',
-  'mt mtn mtr mu museum mutual mv mw mx my mz na nab nadex nagoya name nationwide natura navy nba',
-  'nc ne nec net netbank netflix network neustar new newholland news next nextdirect nexus nf nfl',
-  'ng ngo nhk ni nico nike nikon ninja nissan nissay nl no nokia northwesternmutual norton now',
-  'nowruz nowtv nr nra nrw ntt nu nyc nz obi observer off office okinawa olayan olayangroup oldnavy',
-  'ollo om omega one ong onion onl online onyourside ooo open oracle orange org organic origins',
-  'osaka otsuka ott ovh pa page panasonic paris pars partners parts party passagens pay pccw pe pet',
-  'pf pfizer ph pharmacy phd philips phone photo photography photos physio pics pictet pictures pid',
-  'pin ping pink pioneer pizza pk pl place play playstation plumbing plus pm pn pnc pohl poker',
-  'politie porn post pr pramerica praxi press prime pro prod productions prof progressive promo',
-  'properties property protection pru prudential ps pt pub pw pwc py qa qpon quebec quest qvc',
-  'racing radio raid re read realestate realtor realty recipes red redstone redumbrella rehab reise',
-  'reisen reit reliance ren rent rentals repair report republican rest restaurant review reviews',
-  'rexroth rich richardli ricoh rightathome ril rio rip rmit ro rocher rocks rodeo rogers room rs',
-  'rsvp ru rugby ruhr run rw rwe ryukyu sa saarland safe safety sakura sale salon samsclub samsung',
-  'sandvik sandvikcoromant sanofi sap sarl sas save saxo sb sbi sbs sc sca scb schaeffler schmidt',
-  'scholarships school schule schwarz science scjohnson scor scot sd se search seat secure security',
-  'seek select sener services ses seven sew sex sexy sfr sg sh shangrila sharp shaw shell shia',
-  'shiksha shoes shop shopping shouji show showtime shriram si silk sina singles site sj sk ski',
-  'skin sky skype sl sling sm smart smile sn sncf so soccer social softbank software sohu solar',
-  'solutions song sony soy spa space sport spot spreadbetting sr srl ss st stada staples star',
-  'statebank statefarm stc stcgroup stockholm storage store stream studio study style su sucks',
-  'supplies supply support surf surgery suzuki sv swatch swiftcover swiss sx sy sydney symantec',
-  'systems sz tab taipei talk taobao target tatamotors tatar tattoo tax taxi tc tci td tdk team',
-  'tech technology tel telefonica temasek tennis teva tf tg th thd theater theatre tiaa tickets',
-  'tienda tiffany tips tires tirol tj tjmaxx tjx tk tkmaxx tl tm tmall tn to today tokyo tools top',
-  'toray toshiba total tours town toyota toys tr trade trading training travel travelchannel',
-  'travelers travelersinsurance trust trv tt tube tui tunes tushu tv tvs tw tz ua ubank ubs ug uk',
-  'unicom university uno uol ups us uy uz va vacations vana vanguard vc ve vegas ventures verisign',
-  'versicherung vet vg vi viajes video vig viking villas vin vip virgin visa vision vistaprint viva',
-  'vivo vlaanderen vn vodka volkswagen volvo vote voting voto voyage vu vuelos wales walmart walter',
-  'wang wanggou watch watches weather weatherchannel webcam weber website wed wedding weibo weir wf',
-  'whoswho wien wiki williamhill win windows wine winners wme wolterskluwer woodside work works',
-  'world wow ws wtc wtf xbox xerox xfinity xihuan xin xxx xyz yachts yahoo yamaxun yandex yodobashi',
-  'yoga yokohama you youtube yt yun zappos zara zero zip zm zone zuerich zw',
+// Every generic top-level domain, for BARE_DOMAIN: those of three letters or more in the ICANN
+// section of the Public Suffix List (publicsuffix.org) of December 2019 or of 6 March 2026, the few
+// retired between them included. Every two-letter ending is a country's (see isDomainEnding_), and
+// an address written with https:// or www., or ending in an internationalised domain (xn--…), is
+// defanged whatever its ending.
+const GENERIC_DOMAINS = new Set([
+  'aaa aarp abarth abb abbott abbvie abc able abogado abudhabi academy accenture accountant',
+  'accountants aco actor adac ads adult aeg aero aetna afamilycompany afl africa agakhan agency',
+  'aig aigo airbus airforce airtel akdn alfaromeo alibaba alipay allfinanz allstate ally alsace',
+  'alstom amazon americanexpress americanfamily amex amfam amica amsterdam analytics android',
+  'anquan anz aol apartments app apple aquarelle arab aramco archi army arpa art arte asda asia',
+  'associates athleta attorney auction audi audible audio auspost author auto autos avianca aws',
+  'axa azure baby baidu banamex bananarepublic band bank bar barcelona barclaycard barclays',
+  'barefoot bargains baseball basketball bauhaus bayern bbc bbt bbva bcg bcn beats beauty beer',
+  'bentley berlin best bestbuy bet bharti bible bid bike bing bingo bio biz black blackfriday',
+  'blockbuster blog bloomberg blue bms bmw bnpparibas boats boehringer bofa bom bond boo book',
+  'booking bosch bostik boston bot boutique box bradesco bridgestone broadway broker brother',
+  'brussels budapest bugatti build builders business buy buzz bzh cab cafe cal call calvinklein',
+  'cam camera camp cancerresearch canon capetown capital capitalone car caravan cards care career',
+  'careers cars casa case caseih cash casino cat catering catholic cba cbn cbre cbs ceb center ceo',
+  'cern cfa cfd chanel channel charity chase chat cheap chintai christmas chrome church cipriani',
+  'circle cisco citadel citi citic city cityeats claims cleaning click clinic clinique clothing',
+  'cloud club clubmed coach codes coffee college cologne com comcast commbank community company',
+  'compare computer comsec condos construction consulting contact contractors cooking',
+  'cookingchannel cool coop corsica country coupon coupons courses cpa credit creditcard',
+  'creditunion cricket crown crs cruise cruises csc cuisinella cymru cyou dabur dad dance data',
+  'date dating datsun day dclk dds deal dealer deals degree delivery dell deloitte delta democrat',
+  'dental dentist desi design dev dhl diamonds diet digital direct directory discount discover',
+  'dish diy dnp docs doctor dog domains dot download drive dtv dubai duck dunlop dupont durban',
+  'dvag dvr earth eat eco edeka edu education email emerck energy engineer engineering enterprises',
+  'epson equipment ericsson erni esq estate esurance etisalat eurovision eus events exchange',
+  'expert exposed express extraspace fage fail fairwinds faith family fan fans farm farmers',
+  'fashion fast fedex feedback ferrari ferrero fiat fidelity fido film final finance financial',
+  'fire firestone firmdale fish fishing fit fitness flickr flights flir florist flowers fly foo',
+  'food foodnetwork football ford forex forsale forum foundation fox free fresenius frl frogans',
+  'frontdoor frontier ftr fujitsu fujixerox fun fund furniture futbol fyi gal gallery gallo gallup',
+  'game games gap garden gay gbiz gdn gea gent genting george ggee gift gifts gives giving glade',
+  'glass gle global globo gmail gmbh gmo gmx godaddy gold goldpoint golf goo goodyear goog google',
+  'gop got gov grainger graphics gratis green gripe grocery group guardian gucci guge guide',
+  'guitars guru hair hamburg hangout haus hbo hdfc hdfcbank health healthcare help helsinki here',
+  'hermes hgtv hiphop hisamitsu hitachi hiv hkt hockey holdings holiday homedepot homegoods homes',
+  'homesense honda horse hospital host hosting hot hotel hoteles hotels hotmail house how hsbc',
+  'hughes hyatt hyundai ibm icbc ice icu ieee ifm ikano imamat imdb immo immobilien inc industries',
+  'infiniti info ing ink institute insurance insure int intel international intuit investments',
+  'ipiranga irish ismaili ist istanbul itau itv iveco jaguar java jcb jcp jeep jetzt jewelry jio',
+  'jll jmp jnj jobs joburg jot joy jpmorgan jprs juegos juniper kaufen kddi kerryhotels',
+  'kerrylogistics kerryproperties kfh kia kids kim kinder kindle kitchen kiwi koeln komatsu kosher',
+  'kpmg kpn krd kred kuokgroup kyoto lacaixa lamborghini lamer lancaster lancia land landrover',
+  'lanxess lasalle lat latino latrobe law lawyer lds lease leclerc lefrak legal lego lexus lgbt',
+  'liaison lidl life lifeinsurance lifestyle lighting like lilly limited limo lincoln linde link',
+  'lipsy live living lixil llc llp loan loans locker locus loft lol london lotte lotto love lpl',
+  'lplfinancial ltd ltda lundbeck lupin luxe luxury macys madrid maif maison makeup man management',
+  'mango map market marketing markets marriott marshalls maserati mattel mba mckinsey med media',
+  'meet melbourne meme memorial men menu merck merckmsd metlife miami microsoft mil mini mint mit',
+  'mitsubishi mlb mls mma mobi mobile moda moe moi mom monash money monster mormon mortgage moscow',
+  'moto motorcycles mov movie movistar msd mtn mtr museum music mutual nab nadex nagoya name',
+  'nationwide natura navy nba nec net netbank netflix network neustar new newholland news next',
+  'nextdirect nexus nfl ngo nhk nico nike nikon ninja nissan nissay nokia northwesternmutual',
+  'norton now nowruz nowtv nra nrw ntt nyc obi observer off office okinawa olayan olayangroup',
+  'oldnavy ollo omega one ong onion onl online onyourside ooo open oracle orange org organic',
+  'origins osaka otsuka ott ovh page panasonic paris pars partners parts party passagens pay pccw',
+  'pet pfizer pharmacy phd philips phone photo photography photos physio pics pictet pictures pid',
+  'pin ping pink pioneer pizza place play playstation plumbing plus pnc pohl poker politie porn',
+  'post pramerica praxi press prime pro prod productions prof progressive promo properties',
+  'property protection pru prudential pub pwc qpon quebec quest qvc racing radio raid read',
+  'realestate realtor realty recipes red redstone redumbrella rehab reise reisen reit reliance ren',
+  'rent rentals repair report republican rest restaurant review reviews rexroth rich richardli',
+  'ricoh rightathome ril rio rip rmit rocher rocks rodeo rogers room rsvp rugby ruhr run rwe',
+  'ryukyu saarland safe safety sakura sale salon samsclub samsung sandvik sandvikcoromant sanofi',
+  'sap sarl sas save saxo sbi sbs sca scb schaeffler schmidt scholarships school schule schwarz',
+  'science scjohnson scor scot search seat secure security seek select sener services ses seven',
+  'sew sex sexy sfr shangrila sharp shaw shell shia shiksha shoes shop shopping shouji show',
+  'showtime shriram silk sina singles site ski skin sky skype sling smart smile sncf soccer social',
+  'softbank software sohu solar solutions song sony soy spa space sport spot spreadbetting srl',
+  'stada staples star statebank statefarm stc stcgroup stockholm storage store stream studio study',
+  'style sucks supplies supply support surf surgery suzuki swatch swiftcover swiss sydney symantec',
+  'systems tab taipei talk taobao target tatamotors tatar tattoo tax taxi tci tdk team tech',
+  'technology tel telefonica temasek tennis teva thd theater theatre tiaa tickets tienda tiffany',
+  'tips tires tirol tjmaxx tjx tkmaxx tmall today tokyo tools top toray toshiba total tours town',
+  'toyota toys trade trading training travel travelchannel travelers travelersinsurance trust trv',
+  'tube tui tunes tushu tvs ubank ubs unicom university uno uol ups vacations vana vanguard vegas',
+  'ventures verisign versicherung vet viajes video vig viking villas vin vip virgin visa vision',
+  'vistaprint viva vivo vlaanderen vodka volkswagen volvo vote voting voto voyage vuelos wales',
+  'walmart walter wang wanggou watch watches weather weatherchannel webcam weber website wed',
+  'wedding weibo weir whoswho wien wiki williamhill win windows wine winners wme wolterskluwer',
+  'woodside work works world wow wtc wtf xbox xerox xfinity xihuan xin xxx xyz yachts yahoo',
+  'yamaxun yandex yodobashi yoga yokohama you youtube yun zappos zara zero zip zone zuerich',
 ].join(' ').split(' '));

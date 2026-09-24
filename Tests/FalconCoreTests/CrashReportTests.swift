@@ -315,6 +315,45 @@ final class CrashReportTests: XCTestCase {
         XCTAssertNotEqual(other.title, overflow.title)
     }
 
+    /// A title still too long once the reason's words were gone was cut wherever 120 characters
+    /// ended, in the place or the signal: `called from CFRUNLOOP_IS_CALLING_OUT_TO_A_BLO…`,
+    /// `EXC_BAD_A…`. Now the sentence gives way to `FalconMail crashed` and the exception type and
+    /// signal it stood for, then whole details beside the place go, the longest first, and the
+    /// place and the signal are never cut.
+    func testALongTitleNeverCutsThePlaceOrTheSignal() {
+        let recursion = (0..<250).map { CrashIdentity.Frame(binary: "FalconMail", symbol: nil, own: true, address: "\(2_000 + $0 % 2 * 40)") }
+        let runLoop = CrashIdentity.Frame(binary: "CoreFoundation", symbol: "__CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK__", own: false)
+        let overflow = CrashIdentity(kind: .crash, code: "EXC_BAD_ACCESS.SIGSEGV", exception: nil, reason: nil, frames: recursion + [runLoop])
+        XCTAssertEqual(overflow.title, "FalconMail crashed (runaway recursion, called from CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK, EXC_BAD_ACCESS/SIGSEGV)")
+        let raised = CrashIdentity(kind: .crash, code: "EXC_BAD_ACCESS.SIGBUS", exception: "NSInternalInconsistencyException",
+                                   reason: "Invalid parameter not satisfying: row >= 0", frames: recursion + [runLoop])
+        XCTAssertEqual(raised.title, "FalconMail crashed (runaway recursion, called from CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK, EXC_BAD_ACCESS/SIGBUS)")
+
+        // Every name at its 60-character limit: the place still stands whole, and nothing ends mid-word.
+        let long = String(repeating: "Abcdefghij", count: 6)
+        let ownFrame = CrashIdentity.Frame(binary: "FalconMail", symbol: nil, own: true)
+        let caller = CrashIdentity.Frame(binary: "AppKit", symbol: "-[\(long) \(long):]", own: false)
+        let named = CrashIdentity.Frame(binary: "FalconMail", symbol: "\(long).\(long)()", own: true)
+        let binary = CrashIdentity.Frame(binary: long + ".dylib", symbol: nil, own: false)
+        let codes = ["EXC_BAD_ACCESS.SIGBUS", "\(long).\(long)", "mainThread"]
+        var wrong: [String] = []
+        for kind in [DiagnosticsKind.crash, .hang] {
+            for code in codes {
+                for exception in [nil, long] {
+                    for frames in [[ownFrame, caller], recursion + [caller], [named], [binary], []] {
+                        let identity = CrashIdentity(kind: kind, code: code, exception: exception,
+                                                     reason: "Could not find the row for the index in the table view", frames: frames)
+                        let title = identity.title
+                        let whole = title.hasSuffix(")") || !title.contains(" (")
+                        let placed = identity.place.phrase(brief: 2).map(title.contains) ?? true
+                        if title.count > DiagnosticsEvent.maxTitle || !whole || !placed { wrong.append(title) }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(wrong, [], "titles too long, cut mid-word or without their place")
+    }
+
     @discardableResult
     private func write(_ name: String, _ text: String, modified: Date) throws -> URL {
         let url = reports.appendingPathComponent(name)

@@ -343,6 +343,56 @@ test('a bare domain is found by every real top-level domain, and code is not tak
     + 'Mail.db, (in ComposeModel.to.setter), (in Message.id.getter), ComposeModel.swift');
 });
 
+// Every country's domain counts, even one the Public Suffix List names only below itself (co.za,
+// *.mm) or not at all (bq), and so do generic ones added since 2019; a file whose extension no
+// country has, such as Mail.db or index.js, and a Swift file stay as they are.
+test('a bare domain under any country is found, and a file name is not taken for one', () => {
+  const env = service();
+  const countries = ['za', 'bd', 'np', 'kh', 'mm', 'jm', 'fj', 'pg', 'ye', 'ck', 'er', 'fk', 'bq'];
+  env.post(upload(env, [event({
+    title: 'Get the fix at evil.co.za/get, evil.music or evil.kids',
+    message: countries.map(code => 'evil.' + code + '/get').join(' ') + '\n'
+      + 'AccountSyncer.swift:131, CrashIdentity.swift, Mail.db, index.js, main.ts, main.go, archive.gz',
+  })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, 'Get the fix at evil[.]co[.]za/get, evil[.]music or evil[.]kids');
+  assert.equal(row.Message, countries.map(code => 'evil[.]' + code + '/get').join(' ') + '\n'
+    + 'AccountSyncer.swift:131, CrashIdentity.swift, Mail.db, index.js, main.ts, main.go, archive.gz');
+});
+
+// A crash's or hang's title ends with where it happened, a function such as NSApplication.run,
+// which is code, not a web address, so it stays whole; a domain anywhere else in the title, or
+// in the place of any other kind of problem, is still made unclickable.
+test('the place in a crash or hang title stays whole, and a domain elsewhere does not', () => {
+  const env = service();
+  const titles = [
+    ['crash', 'FalconMail crashed: it used memory it should not have (runaway recursion, called from NSApplication.run)'],
+    ['crash', 'FalconMail crashed on an internal error (NSRangeException, in MessageList.select)'],
+    ['crash', 'FalconMail crashed (in its own code, called from NSApplication.run, EXC_BAD_ACCESS/SIGBUS)'],
+    ['hang', 'FalconMail stopped responding for a while (in MessageList.select)'],
+  ];
+  env.post(upload(env, titles.map(([kind, title], i) => event({ kind: kind, signature: 'Place' + i + '@A', title: title })).concat([
+    event({ kind: 'crash', signature: 'Evil1@A', title: 'FalconMail crashed (get the fix at evil.run, in evil.com)' }),
+    event({ kind: 'crash', signature: 'Evil2@A', title: 'FalconMail crashed (in NSApplication.run) at evil.com' }),
+    event({ kind: 'error', signature: 'Evil3@A', title: 'Sending failed (in MessageList.select)' }),
+  ])));
+  const rows = env.table(SEPTEMBER, 'Events');
+  assert.deepEqual(rows.map(row => row.Problem), titles.map(([, title]) => title).concat([
+    'FalconMail crashed (get the fix at evil[.]run, in evil[.]com)',
+    'FalconMail crashed (in NSApplication[.]run) at evil[.]com',
+    'Sending failed (in MessageList[.]select)',
+  ]));
+});
+
+// Invisible characters stay where they belong to the text, so a title made of nothing else
+// showed an empty Problem; it is taken as no title, and the signature stands in for it.
+test('a title of nothing but invisible characters falls back to the signature', () => {
+  const env = service();
+  env.post(upload(env, [event({ title: '​⁠­ ‍' })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, event().signature);
+});
+
 // With no title, the signature stands in for it, and there a domain after @ is made unclickable
 // too, while the signature itself keeps its text.
 test('a title that falls back to the signature has its domains defanged', () => {

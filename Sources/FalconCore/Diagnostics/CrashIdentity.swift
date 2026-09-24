@@ -134,38 +134,62 @@ struct CrashIdentity: Equatable {
     /// same more briefly, a step at a time until it fits: "FalconMail crashed" for a crash on an
     /// internal error, whose exception says the rest, and "called from" for "in its own code,
     /// called from"; then the place's function without its type; then the reason's last words, the
-    /// cut marked "…".
+    /// cut marked "…", and then the reason altogether. If it is still too long, as a long sentence
+    /// beside a long name can make it, the sentence gives way to its first words, "FalconMail
+    /// crashed", with the exception type and signal it stood for; and then what stands beside the
+    /// place goes, a whole detail at a time, the longest first. Nothing is cut mid-word, and the
+    /// place always stays: it and the shortest sentence fit in 104 characters.
     var title: String {
         let sentence = CrashIdentity.sentence(kind: kind, code: code, exception: exception != nil)
-        let tag = CrashIdentity.usualCodes[sentence] == code ? nil : code.replacingOccurrences(of: ".", with: "/")
-        func make(lead: String, words: Int, brief: Int) -> String {
-            var shown = Array(reason.prefix(words))
-            while words < reason.count, let last = shown.last, CrashIdentity.danglingWords.contains(last.lowercased()) {
-                shown.removeLast()
+        /// The exception type and signal, unless `lead` stands for them.
+        func tag(saying lead: String) -> String? {
+            CrashIdentity.usualCodes[lead] == code ? nil : code.replacingOccurrences(of: ".", with: "/")
+        }
+        /// What tells this crash apart, in the order a title gives it, with `words` of the reason
+        /// (nil leaves the reason out) and the place said as `brief` asks.
+        func details(words: Int?, brief: Int, tag: String?) -> [(text: String, place: Bool)] {
+            var because = ""
+            if let words {
+                var shown = Array(reason.prefix(words))
+                while words < reason.count, let last = shown.last, CrashIdentity.danglingWords.contains(last.lowercased()) {
+                    shown.removeLast()
+                }
+                because = shown.joined(separator: " ")
+                if !reason.isEmpty, reasonCut || shown.count < reason.count { because += "…" }
             }
-            var because = shown.joined(separator: " ")
-            if !reason.isEmpty, reasonCut || shown.count < reason.count { because += "…" }
-            var details: [String] = []
+            var out: [(text: String, place: Bool)] = []
             if let exception {
-                details.append(because.isEmpty ? exception : "\(exception): \(because)")
+                out.append((because.isEmpty ? exception : "\(exception): \(because)", false))
             } else if !because.isEmpty {
-                details.append(because)
+                out.append((because, false))
             }
-            if recursion { details.append("runaway recursion") }
-            if let phrase = place.phrase(brief: brief) { details.append(phrase) }
-            if let tag { details.append(tag) }
-            return details.isEmpty ? lead : "\(lead) (\(details.joined(separator: ", ")))"
+            if recursion { out.append(("runaway recursion", false)) }
+            if let phrase = place.phrase(brief: brief) { out.append((phrase, true)) }
+            if let tag { out.append((tag, false)) }
+            return out
+        }
+        func make(_ lead: String, _ details: [(text: String, place: Bool)]) -> String {
+            details.isEmpty ? lead : "\(lead) (\(details.map(\.text).joined(separator: ", ")))"
         }
         let limit = DiagnosticsEvent.maxTitle
+        let usual = tag(saying: sentence)
         let lead = exception != nil ? "FalconMail crashed" : sentence
-        var tries = [(sentence, reason.count, 0), (lead, reason.count, 1), (lead, reason.count, 2)]
-        if !reason.isEmpty { tries += (0..<reason.count).reversed().map { (lead, $0, 2) } }
-        var title = ""
+        var tries: [(lead: String, words: Int?, brief: Int)] = [(sentence, reason.count, 0), (lead, reason.count, 1), (lead, reason.count, 2)]
+        tries += (0..<reason.count).reversed().map { (lead, $0, 2) }
+        tries.append((lead, nil, 2))
         for (lead, words, brief) in tries {
-            title = make(lead: lead, words: words, brief: brief)
+            let title = make(lead, details(words: words, brief: brief, tag: usual))
             if title.count <= limit { return title }
         }
-        return String(title.prefix(limit - 1)) + "…"
+        // A crash with an exception already has the shortest sentence, and the exception says the rest.
+        let shortest = exception != nil ? lead : CrashIdentity.shortSentence(sentence)
+        var rest = details(words: nil, brief: 2, tag: exception != nil ? usual : tag(saying: shortest))
+        while true {
+            let title = make(shortest, rest)
+            let beside = rest.indices.filter { !rest[$0].place }
+            guard title.count > limit, let longest = beside.max(by: { rest[$0].text.count < rest[$1].text.count }) else { return title }
+            rest.remove(at: longest)
+        }
     }
 
     /// The plain sentence a title starts with.
@@ -174,10 +198,18 @@ struct CrashIdentity: Equatable {
         return exception ? "FalconMail crashed on an internal error" : DiagnosticsTitle.crashSentence(code)
     }
 
+    /// A sentence's first words, for a title too long to say it whole: `FalconMail crashed`,
+    /// `FalconMail was stopped` or `FalconMail stopped responding`.
+    static func shortSentence(_ sentence: String) -> String {
+        for short in ["FalconMail stopped responding", "FalconMail was stopped"] where sentence.hasPrefix(short) { return short }
+        return "FalconMail crashed"
+    }
+
     /// The exception type and signal each sentence stands for, which its title leaves unsaid. Any
     /// other is added to the title, so two crashes that differ only there still read apart.
     static let usualCodes: [String: String] = [
         "FalconMail stopped responding for a while": "mainThread",
+        "FalconMail stopped responding": "mainThread",
         "FalconMail crashed on an internal error": "EXC_CRASH.SIGABRT",
         "FalconMail crashed: it used memory it should not have": "EXC_BAD_ACCESS.SIGSEGV",
         "FalconMail crashed: a safety check in its code failed": "EXC_BREAKPOINT.SIGTRAP",

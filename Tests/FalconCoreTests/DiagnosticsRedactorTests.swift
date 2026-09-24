@@ -284,6 +284,17 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertEqual(redactor.redact("שגיאה בדו״ח של בע״מ וצה״ל"), "שגיאה בדו״ח של בע״מ וצה״ל", "abbreviations are not quotations")
     }
 
+    /// Hebrew joins up to four of those letters to the front of a word: ומה״…״ (and what "…"),
+    /// שבה״…״ (that in the "…"), וכשה״…״ (and when the "…"). Only two were allowed, so a quotation
+    /// after three or four stayed whole in the report.
+    func testAHebrewQuotationWithUpToFourLettersJoinedToItsFrontGoesWhole() {
+        assertClean("שגיאה ומה״Kamal Secret.pdf״ נכשלה", lacks: ["Kamal", "Secret"], keeps: ["שגיאה ומה״…״ נכשלה"])
+        assertClean("הקובץ שבה״תיקיית Kamal Secret״ חסר", lacks: ["Kamal", "תיקיית"], keeps: ["הקובץ שבה״…״ חסר"])
+        // A gershayim inside a word, as in דו״ח, still does not end the quotation.
+        assertClean("העברה וכשה״דו״ח ACME Secret.pdf״ נכשלה", lacks: ["ACME", "Secret", "דו״ח"], keeps: ["העברה וכשה״…״ נכשלה"])
+        XCTAssertEqual(redactor.redact("שגיאה בדו״ח של בע״מ וצה״ל"), "שגיאה בדו״ח של בע״מ וצה״ל", "abbreviations are not quotations")
+    }
+
     func testSingleQuotesGoButApostrophesStay() {
         assertClean("The file ‘Invoice ACME.pdf’ couldn’t be opened.", lacks: ["Invoice", "ACME"], keeps: ["couldn’t be opened"])
         assertClean("The file ‘Ana’s notes.txt’ isn’t there", lacks: ["Ana", "notes"], keeps: ["isn’t there"])
