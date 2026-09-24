@@ -111,13 +111,18 @@ public struct MailSearchPage: Sendable {
     public var isLocal: Bool
     /// Why this account's search went to the messages kept on this Mac, on the page where it did.
     public var fallback: GoogleAPIError?
+    /// Why the page stopped short while the search stays with Gmail: Gmail asked for a pause, and
+    /// the hits not yet shown come with the next page.
+    public var paused: GoogleAPIError?
 
-    public init(accountID: UUID, messages: [MessageSummary], hasMore: Bool, isLocal: Bool, fallback: GoogleAPIError? = nil) {
+    public init(accountID: UUID, messages: [MessageSummary], hasMore: Bool, isLocal: Bool,
+                fallback: GoogleAPIError? = nil, paused: GoogleAPIError? = nil) {
         self.accountID = accountID
         self.messages = messages
         self.hasMore = hasMore
         self.isLocal = isLocal
         self.fallback = fallback
+        self.paused = paused
     }
 }
 
@@ -164,7 +169,8 @@ public actor LocalAccountSearch: MailAccountSearch {
 /// Search through the Gmail API. Hits come back as ids, newest first; only a page of them is
 /// turned into rows at a time, each either the row already stored under its Message-ID or a
 /// read-only row from its metadata. When Gmail cannot answer, the rest of the search runs over
-/// the messages kept on this Mac and the page says why.
+/// the messages kept on this Mac and the page says why. Once Gmail has shown results, a request
+/// to slow down only shortens a page: the rest waits for the next one.
 public actor GmailAccountSearch: MailAccountSearch {
     struct Target: Equatable {
         var query: String
@@ -187,6 +193,8 @@ public actor GmailAccountSearch: MailAccountSearch {
     private var seen = Set<String>()
     private var labelNames: [String: String]?
     private var local: LocalAccountSearch?
+    private var shownFromGmail = false
+    private var lastPage: Task<MailSearchPage, Never>?
 
     public init(client: GmailAPIClient, store: MailStore, scope: MailSearchScope, query: String,
                 includeSpamTrash: Bool, pageSize: Int = 25, listSize: Int = 100) {
@@ -201,8 +209,21 @@ public actor GmailAccountSearch: MailAccountSearch {
 
     private var accountID: UUID { scope.account.id }
 
+    /// Pages come one after another even when callers overlap, such as a click on Show more
+    /// while the last row scrolls in, so no hit is fetched twice or skipped.
     public func nextPage() async -> MailSearchPage {
+        let previous = lastPage
+        let page = Task { () -> MailSearchPage in
+            _ = await previous?.value
+            return await self.fetchPage()
+        }
+        lastPage = page
+        return await withTaskCancellationHandler { await page.value } onCancel: { page.cancel() }
+    }
+
+    private func fetchPage() async -> MailSearchPage {
         if let local { return await local.nextPage() }
+        var rows: [MessageSummary] = []
         do {
             let target = try await resolvedTarget()
             while pending.count < pageSize, !listed || pageToken != nil {
@@ -212,20 +233,31 @@ public actor GmailAccountSearch: MailAccountSearch {
                 pending += (list.messages ?? []).filter { seen.insert($0.id).inserted }
                 pageToken = list.nextPageToken
             }
-            let batch = Array(pending.prefix(pageSize))
-            let rows = try await rows(for: batch)
-            pending.removeFirst(batch.count)
-            return MailSearchPage(accountID: accountID, messages: rows, hasMore: !pending.isEmpty || pageToken != nil, isLocal: false)
+            let resolved = await resolve(Array(pending.prefix(pageSize)))
+            rows = resolved.rows
+            pending.removeAll { resolved.done.contains($0.id) }
+            if let failure = resolved.failure { throw failure }
+            shownFromGmail = true
+            return MailSearchPage(accountID: accountID, messages: rows, hasMore: hasMore, isLocal: false)
         } catch let error as GoogleAPIError {
+            if error.kind == .rateLimited || error.kind == .temporary, shownFromGmail || !rows.isEmpty {
+                shownFromGmail = true
+                return MailSearchPage(accountID: accountID, messages: rows, hasMore: hasMore, isLocal: false, paused: error)
+            }
             let fallback = LocalAccountSearch(store: store, scope: scope, query: query)
             local = fallback
             var page = await fallback.nextPage()
+            // Rows Gmail already gave are kept; the store's own copies of them merge by id.
+            page.messages = MailSearchResults.merge(rows, page.messages)
             page.fallback = error
             return page
         } catch {
-            return MailSearchPage(accountID: accountID, messages: [], hasMore: false, isLocal: false)
+            // Cancelled because the search was dropped; hits not yet shown stay pending.
+            return MailSearchPage(accountID: accountID, messages: rows, hasMore: hasMore, isLocal: false)
         }
     }
+
+    private var hasMore: Bool { !pending.isEmpty || pageToken != nil || !listed }
 
     /// Gmail's own words for the folder, added to what the reader typed, which goes through
     /// unchanged so every Gmail operator works.
@@ -272,49 +304,84 @@ public actor GmailAccountSearch: MailAccountSearch {
         return names
     }
 
-    private func rows(for refs: [GmailMessageRef]) async throws -> [MessageSummary] {
+    private struct Resolved {
+        var rows: [MessageSummary] = []
+        /// Hits dealt with: shown, or gone from Gmail since the list.
+        var done = Set<String>()
+        var failure: Error?
+    }
+
+    /// Rows for as many of these hits as Gmail answers for. After the first refusal no more are
+    /// asked for; those left over stay pending for the next page instead of costing the rows
+    /// already fetched.
+    private func resolve(_ refs: [GmailMessageRef]) async -> Resolved {
         let client = self.client
-        let fetched: [GmailMessage] = try await withThrowingTaskGroup(of: (Int, GmailMessage?).self) { group in
-            var results = [GmailMessage?](repeating: nil, count: refs.count)
+        var result = Resolved()
+        var fetched = [GmailMessage?](repeating: nil, count: refs.count)
+        await withTaskGroup(of: (Int, Result<GmailMessage?, Error>).self) { group in
             var next = 0
             while next < min(concurrency, refs.count) {
                 let index = next
-                group.addTask { (index, try await GmailAccountSearch.metadata(client, refs[index].id)) }
+                group.addTask { (index, await GmailAccountSearch.metadata(client, refs[index].id)) }
                 next += 1
             }
-            while let (index, message) = try await group.next() {
-                results[index] = message
-                if next < refs.count {
+            while let (index, answer) = await group.next() {
+                switch answer {
+                case .success(let message):
+                    result.done.insert(refs[index].id)
+                    fetched[index] = message
+                case .failure(let error):
+                    if result.failure == nil { result.failure = error }
+                }
+                if result.failure == nil, next < refs.count {
                     let index = next
-                    group.addTask { (index, try await GmailAccountSearch.metadata(client, refs[index].id)) }
+                    group.addTask { (index, await GmailAccountSearch.metadata(client, refs[index].id)) }
                     next += 1
                 }
             }
-            return results.compactMap { $0 }
         }
-        let ids = Set(fetched.compactMap { AddressParser.messageIDs($0.header("Message-ID")).first })
+        let messages = fetched.compactMap { $0 }
+        let ids = Set(messages.compactMap { GmailAccountSearch.usableMessageID($0.header("Message-ID")) })
         let stored = await store.storedMessages(withMessageIDs: ids, accountID: accountID)
         let folders = Dictionary(await store.folders(for: accountID).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        var out: [MessageSummary] = []
-        out.reserveCapacity(fetched.count)
-        for message in fetched {
-            if let messageID = AddressParser.messageIDs(message.header("Message-ID")).first,
-               let candidates = stored[messageID],
+        result.rows.reserveCapacity(messages.count)
+        for message in messages {
+            let hit = GmailServerRow.summary(for: message, accountID: accountID)
+            if let messageID = GmailAccountSearch.usableMessageID(message.header("Message-ID")),
+               let candidates = stored[messageID]?.filter({ GmailAccountSearch.sameMessage($0, hit) }),
                let row = await storedRow(among: candidates, labelIDs: Set(message.labelIds ?? []), folders: folders) {
-                out.append(row)
+                result.rows.append(row)
             } else {
-                out.append(GmailServerRow.summary(for: message, accountID: accountID))
+                result.rows.append(hit)
             }
         }
-        return out
+        return result
+    }
+
+    /// A Message-ID that can name one message. Broken mailers send an empty `<>` or one without
+    /// a domain, which many unrelated messages share.
+    static func usableMessageID(_ header: String?) -> String? {
+        guard let id = AddressParser.messageIDs(header).first, id.count > 4, id.contains("@") else { return nil }
+        return id
+    }
+
+    /// Some senders reuse a Message-ID, so a stored copy counts as the hit only when its subject
+    /// or its date agrees too. A row with actions on the wrong message would be worse than a
+    /// read-only one for the right message.
+    static func sameMessage(_ stored: MessageSummary, _ hit: MessageSummary) -> Bool {
+        func words(_ subject: String) -> [Substring] { subject.lowercased().split(whereSeparator: \.isWhitespace) }
+        if words(stored.subject) == words(hit.subject) { return true }
+        return abs(stored.date.timeIntervalSince(hit.date)) <= 86_400
     }
 
     /// A message deleted between the list and the fetch is left out rather than failing the page.
-    private static func metadata(_ client: GmailAPIClient, _ id: String) async throws -> GmailMessage? {
+    private static func metadata(_ client: GmailAPIClient, _ id: String) async -> Result<GmailMessage?, Error> {
         do {
-            return try await client.metadata(id: id)
+            return .success(try await client.metadata(id: id))
         } catch let error as GoogleAPIError where error.kind == .notFound {
-            return nil
+            return .success(nil)
+        } catch {
+            return .failure(error)
         }
     }
 

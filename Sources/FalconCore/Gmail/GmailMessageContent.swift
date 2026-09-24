@@ -36,6 +36,25 @@ public struct GmailOpenedMessage: Sendable {
         }
     }
 
+    /// Attachments to list under the header: all but the pictures the text shows inline. A
+    /// picture the text refers to that is too large to fetch with it is listed, so it can still
+    /// be opened and saved.
+    public var listedAttachments: [GmailAttachmentStub] {
+        let html = message.textHTML?.lowercased() ?? ""
+        let fetched = Set(message.attachments.map(\.id))
+        return attachments.filter { stub in
+            guard let cid = stub.contentID, html.contains("cid:" + cid.lowercased()) else { return true }
+            return !stub.isSmallInlineImage && !fetched.contains(stub.id)
+        }
+    }
+
+    /// Every attachment whose bytes are not in `message` yet, inline pictures included, which a
+    /// forward needs so nothing its text refers to is left behind.
+    public var unfetchedAttachments: [GmailAttachmentStub] {
+        let fetched = Set(message.attachments.map(\.id))
+        return attachments.filter { !fetched.contains($0.id) }
+    }
+
     public mutating func add(_ data: Data, for stub: GmailAttachmentStub) {
         message.attachments.append(MIMEAttachment(id: stub.id, filename: stub.filename, mimeType: stub.mimeType,
                                                   contentID: stub.contentID, isInline: stub.isInline, data: data))
@@ -43,6 +62,9 @@ public struct GmailOpenedMessage: Sendable {
 }
 
 public enum GmailMessageContent {
+    /// A body text part longer than this is not waited for; it is listed like an attachment.
+    static let longestWaitedText = 5_000_000
+
     /// The first stage of an open: the text parts from a `format=full` answer. Gmail sends a very
     /// long text part as an attachment id instead of inline; its bytes come in `fetchedText`,
     /// keyed by that id. Nothing else is fetched, so the text shows however large the
@@ -97,7 +119,13 @@ public enum GmailMessageContent {
         let isAttachment = dispositionValue == "attachment" || type.mimeType == "message/rfc822"
             || (filename != nil && !type.isText) || (!type.isText && type.mimeType != "message/delivery-status")
         let inlineData = part.body?.data.flatMap { Data(base64URL: $0) }
-        if isAttachment {
+        // Only the body's own text is worth holding the message back for. A text file Gmail kept
+        // apart, such as a CSV export sent inline, can be of any size, so it waits to be opened
+        // like an attachment, and so does a body too long to read on screen.
+        let heldBack = inlineData == nil && part.body?.attachmentId != nil
+        let isBodyText = (type.mimeType == "text/plain" || type.mimeType == "text/html") && filename == nil
+            && (part.body?.size ?? 0) <= longestWaitedText
+        if isAttachment || (heldBack && !isBodyText) {
             let name = filename ?? (type.mimeType == "message/rfc822" ? "message.eml" : MIMEParser.defaultName(for: type))
             out.stubs.append(GmailAttachmentStub(id: part.partId ?? UUID().uuidString, attachmentID: part.body?.attachmentId,
                                                  filename: name, mimeType: type.mimeType, size: part.body?.size ?? inlineData?.count ?? 0,
@@ -147,5 +175,32 @@ extension GmailAPIClient {
         if let data = stub.inlineData { return data }
         guard let attachmentID = stub.attachmentID else { throw GoogleAPIError(kind: .notFound, detail: "no attachment id") }
         return try await attachment(messageID: messageID, attachmentID: attachmentID)
+    }
+}
+
+/// Opens of one account's messages found only on the server. An open books its 20 units the
+/// moment it is sent, and moving through results with the arrow keys passes over rows nobody
+/// reads, so an open is sent only once the reader has stayed on the message for `settle`
+/// seconds. Opens of one message at the same time, from the reading pane, a tab and Reply,
+/// share one fetch.
+public actor GmailOpener {
+    private let client: GmailAPIClient
+    private let settle: TimeInterval
+    private var running: [String: Task<GmailOpenedMessage, Error>] = [:]
+
+    public init(client: GmailAPIClient, settle: TimeInterval = 0.3) {
+        self.client = client
+        self.settle = settle
+    }
+
+    public func openText(id: String) async throws -> GmailOpenedMessage {
+        if running[id] == nil {
+            try await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000))
+        }
+        let client = self.client
+        let open = running[id] ?? Task { try await client.openText(id: id) }
+        running[id] = open
+        defer { running[id] = nil }
+        return try await open.value
     }
 }

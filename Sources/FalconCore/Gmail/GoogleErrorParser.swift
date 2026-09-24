@@ -164,6 +164,15 @@ extension GoogleAPIError: LocalizedError {
         }
     }
 
+    /// One plain sentence for the search list when an account's results stopped short because
+    /// Gmail asked for a pause, and Show more fetches the rest.
+    public func pausedNotice(email: String) -> String {
+        switch kind {
+        case .rateLimited: return "Gmail is busy; Show more fetches the rest of the results for \(email) in a moment."
+        default: return "Gmail had a temporary problem; Show more fetches the rest of the results for \(email)."
+        }
+    }
+
     /// Gmail's daily quota resets at midnight Pacific time.
     public static func quotaReset(after now: Date = Date()) -> Date {
         var calendar = Calendar(identifier: .gregorian)
