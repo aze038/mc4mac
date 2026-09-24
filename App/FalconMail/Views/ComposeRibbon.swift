@@ -556,16 +556,26 @@ struct FmtPopup<Content: View>: View {
     var inset: CGFloat = 7
     var fill = OLColor.ribbonField
     var edge: Color?
+    var textInk = OLColor.text
+    /// The signature editor's boxes end in Outlook's heavier chevron, `chevronInset` from the
+    /// box's right edge, where the compose ribbon's take the system's.
+    var chevron: HeavyChevron?
+    var chevronInset: CGFloat?
     @ViewBuilder var menu: () -> Content
 
     var body: some View {
         Menu { menu() } label: {
             HStack(spacing: 4) {
-                Text(text).font(.system(size: textSize)).foregroundStyle(OLColor.text).lineLimit(1)
+                Text(text).font(.system(size: textSize)).foregroundStyle(textInk).lineLimit(1)
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                if let chevron {
+                    chevron
+                } else {
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                }
             }
-            .padding(.horizontal, inset)
+            .padding(.leading, inset)
+            .padding(.trailing, chevronInset ?? inset)
             .frame(width: width, height: height)
             .background(fill, in: RoundedRectangle(cornerRadius: 3))
             .overlay {
@@ -577,6 +587,25 @@ struct FmtPopup<Content: View>: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+}
+
+/// Outlook's chevron in the signature editor's ribbon: six points by four, drawn a point and a
+/// half thick, heavier than the system's.
+struct HeavyChevron: View {
+    let ink: Color
+    /// How far below its box's centre the chevron sits.
+    var drop: CGFloat = 0
+
+    var body: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0.75, y: 0.75))
+            path.addLine(to: CGPoint(x: 3, y: 3.1))
+            path.addLine(to: CGPoint(x: 5.25, y: 0.75))
+        }
+        .stroke(ink, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+        .frame(width: 6, height: 4)
+        .offset(y: drop)
     }
 }
 

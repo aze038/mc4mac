@@ -56,6 +56,11 @@ enum Classic {
     static let buttonHighlight = nsColour(light: 0xFFFFFF, dark: 0x7E7F86)
     static let smallPopUpFill = nsColour(light: 0xFFFFFF, dark: 0x60626B)
     static let smallPopUpHighlight = nsColour(light: 0xFFFFFF, dark: 0x808188)
+    /// A small pop-up's cap sits in a darker ring, heavier under it, and has a lighter top edge.
+    static let smallCapRingTop = nsColour(light: 0xC8C8C8, dark: 0x51535B)
+    static let smallCapRingBottom = nsColour(light: 0xB4B4B4, dark: 0x47484F)
+    static let smallCapShade = nsColour(light: 0xCFCFCF, dark: 0x55575F)
+    static let smallCapTop = nsColour(light: 0x5AA2FF, dark: 0x6A95E8)
     static let buttonText = nsColour(light: 0x262626, dark: 0xE3E3E4)
 }
 
@@ -373,24 +378,40 @@ final class ClassicPopUpCell: NSPopUpButtonCell {
         let width: CGFloat = small ? 12 : 16
         let height: CGFloat = small ? 12 : 16
         let cap = NSRect(x: body.maxX - 2 - width, y: body.midY - height / 2, width: width, height: height)
+        let direction: CGFloat = flipped ? 1 : -1
+        let radius: CGFloat = small ? 3 : 4
         if active, isEnabled {
+            let shape = NSBezierPath(roundedRect: cap, xRadius: radius, yRadius: radius)
+            if small {
+                let ring = cap.insetBy(dx: -0.5, dy: -0.5)
+                Classic.smallCapShade.setFill()
+                NSBezierPath(roundedRect: ring.offsetBy(dx: 0, dy: direction * 0.5), xRadius: radius + 0.5, yRadius: radius + 0.5).fill()
+                NSGradient(starting: Classic.smallCapRingTop, ending: Classic.smallCapRingBottom)?
+                    .draw(in: NSBezierPath(roundedRect: ring, xRadius: radius + 0.5, yRadius: radius + 0.5), angle: flipped ? 90 : -90)
+            }
             let gradient = NSGradient(starting: Classic.onTop, ending: Classic.onBottom)
-            gradient?.draw(in: NSBezierPath(roundedRect: cap, xRadius: small ? 3 : 4, yRadius: small ? 3 : 4), angle: flipped ? 90 : -90)
+            gradient?.draw(in: shape, angle: flipped ? 90 : -90)
+            if small {
+                NSGraphicsContext.saveGraphicsState()
+                shape.addClip()
+                Classic.smallCapTop.setFill()
+                NSRect(x: cap.minX, y: flipped ? cap.minY : cap.maxY - 0.5, width: cap.width, height: 0.5).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
             Classic.mark.setStroke()
         } else {
             Classic.buttonText.withAlphaComponent(isEnabled ? 1 : 0.5).setStroke()
         }
-        let reach: CGFloat = small ? 2.5 : 3
-        let near: CGFloat = small ? 1.6 : 1.8
-        let far: CGFloat = small ? 4.2 : 5
-        let direction: CGFloat = flipped ? 1 : -1
+        let reach: CGFloat = small ? 1.5 : 3
+        let near: CGFloat = small ? 1.3 : 1.8
+        let far: CGFloat = small ? 3.25 : 5
         let arrows = NSBezierPath()
         for sign in [-1.0, 1.0] as [CGFloat] {
             arrows.move(to: NSPoint(x: cap.midX - reach, y: cap.midY + sign * direction * near))
             arrows.line(to: NSPoint(x: cap.midX, y: cap.midY + sign * direction * far))
             arrows.line(to: NSPoint(x: cap.midX + reach, y: cap.midY + sign * direction * near))
         }
-        arrows.lineWidth = small ? 1.3 : 1.5
+        arrows.lineWidth = small ? 1.2 : 1.5
         arrows.lineCapStyle = .round
         arrows.lineJoinStyle = .round
         arrows.stroke()
@@ -427,9 +448,9 @@ struct ClassicPlayButton: View {
                                                                      Classic.colour(light: 0xF0F0F0, dark: 0x454751)]),
                                                    startPoint: CGPoint(x: 0, y: 1), endPoint: CGPoint(x: 0, y: size.height - 1)))
                 var chevron = Path()
-                chevron.move(to: CGPoint(x: 11, y: 5.5))
-                chevron.addLine(to: CGPoint(x: 14.5, y: 9))
-                chevron.addLine(to: CGPoint(x: 11, y: 12.5))
+                chevron.move(to: CGPoint(x: 9.5, y: 4.5))
+                chevron.addLine(to: CGPoint(x: 14, y: 9))
+                chevron.addLine(to: CGPoint(x: 9.5, y: 13.5))
                 context.stroke(chevron, with: .color(Classic.colour(light: 0x3C3C3C, dark: 0xE2E2E4)),
                                style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
             }

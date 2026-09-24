@@ -519,13 +519,14 @@ final class AppModel {
                     self.play(self.soundGate.checkFinished(id, foundNewMail: found, at: Date()))
                 case .error(let id, let message):
                     self.syncingAccounts.remove(id)
-                    self.play(self.soundGate.syncFailed(id))
+                    self.play(self.soundGate.syncFailed(id, uptime: ProcessInfo.processInfo.systemUptime))
                     if message == FalconError.notAuthenticated.localizedDescription {
                         self.accountsNeedingSignIn.insert(id)
                         self.statusText = "\(self.accountName(id)) needs to sign in again"
                     } else {
                         self.statusText = "\(self.accountName(id)): \(message)"
                     }
+                case .problem(let id, let message): self.statusText = "\(self.accountName(id)): \(message)"
                 case .actionFailed(_, let message): self.showActionError(message)
                 case .online(let id, let on): self.online[id] = on
                 case .newMessages(let id, let folderID, let list):

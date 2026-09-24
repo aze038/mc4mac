@@ -19,15 +19,18 @@ public enum MailSoundEvent: String, CaseIterable, Sendable, Identifiable {
 
 /// Decides whether something that happens in the app plays a sound, and which.
 ///
-/// A sync that keeps failing is retried again and again; only the first failure of an episode
-/// sounds, and the episode lasts until that account next finishes a sync. No new messages is
-/// played only for a check the reader asked for, once every account in it has finished without
-/// new mail; a check in which an account failed, or that runs past `checkTimeout`, stays quiet,
-/// and a sync the app runs by itself never plays it.
+/// Mail servers, NATs and VPNs close an idle connection every few minutes, and waking or
+/// changing network does the same; the reconnect a few seconds later finishes a pass. So a
+/// failure sounds only once it has lasted: when a sync fails again `lastingFailure` or more
+/// after the episode's first failure, with no finished pass between. It sounds once per episode,
+/// and the episode lasts until that account next finishes a sync. No new messages is played
+/// only for a check the reader asked for, once every account in it has finished without new
+/// mail; a check in which an account failed, or that runs past `checkTimeout`, stays quiet, and a
+/// sync the app runs by itself never plays it.
 public struct MailSoundGate {
     public var isEnabled: (MailSoundEvent) -> Bool
     /// Accounts in a failure episode.
-    private var failing: Set<UUID> = []
+    private var failing: [UUID: FailureEpisode] = [:]
     /// Welcome has had its one chance this launch; a mailbox window opened again is no launch.
     private var welcomed = false
     private var check: ManualCheck?
@@ -35,6 +38,15 @@ public struct MailSoundGate {
     /// Long enough for a slow mailbox; an account that has not answered by then is taken to be
     /// stuck, and a sound that late would no longer read as the answer to the reader's check.
     public static let checkTimeout: TimeInterval = 300
+
+    /// Long enough for the retries after a dropped connection (ten, then thirty seconds on) to
+    /// have failed too, short enough that a mailbox that cannot sync is heard about in a minute.
+    public static let lastingFailure: TimeInterval = 60
+
+    private struct FailureEpisode {
+        let started: TimeInterval
+        var sounded = false
+    }
 
     private struct ManualCheck {
         var waiting: Set<UUID>
@@ -57,17 +69,23 @@ public struct MailSoundGate {
 
     public func messageSent() -> MailSoundEvent? { sound(.messageSent) }
 
-    public mutating func syncFailed(_ account: UUID) -> MailSoundEvent? {
-        let first = failing.insert(account).inserted
+    /// A sync or its connection failed. `uptime` is read from a clock that stops while the Mac
+    /// sleeps, so a connection that died as the lid closed has not been failing all night.
+    public mutating func syncFailed(_ account: UUID, uptime: TimeInterval) -> MailSoundEvent? {
+        var episode = failing[account] ?? FailureEpisode(started: uptime)
+        // Marked even while the sound is off, so turning it on mid-episode replays nothing.
+        let lasted = !episode.sounded && uptime - episode.started >= Self.lastingFailure
+        if lasted { episode.sounded = true }
+        failing[account] = episode
         if var current = check, current.waiting.remove(account) != nil {
             current.failed = true
             check = current.waiting.isEmpty ? nil : current
         }
-        return first ? sound(.syncError) : nil
+        return lasted ? sound(.syncError) : nil
     }
 
     public mutating func syncSucceeded(_ account: UUID) {
-        failing.remove(account)
+        failing[account] = nil
     }
 
     /// The reader asked these accounts for new mail. Accounts that are offline are left out by

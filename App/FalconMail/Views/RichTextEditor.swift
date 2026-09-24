@@ -132,6 +132,9 @@ final class ComposeTextView: NSTextView {
     /// A signature is often designed elsewhere and pasted in whole, so its editor keeps what is
     /// pasted as it came; Paste and Match Style still takes the editor's own.
     var pastesSourceFormatting = false
+    /// Where ⌘K and the context menu's Link… go, for an editor with no ribbon button for links
+    /// (the signature editor, as Outlook's).
+    var onInsertLink: (() -> Void)?
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
@@ -245,6 +248,29 @@ final class ComposeTextView: NSTextView {
         guard range.length > 0 else { return }
         storage.addAttributes([.font: font, .foregroundColor: colour], range: range)
     }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let onInsertLink, window?.firstResponder === self,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "k" {
+            onInsertLink()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        if onInsertLink != nil, let menu {
+            let item = NSMenuItem(title: "Link…", action: #selector(insertLinkFromMenu), keyEquivalent: "k")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+        }
+        return menu
+    }
+
+    @objc private func insertLinkFromMenu() { onInsertLink?() }
 
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(pasteKeepingSourceFormatting)

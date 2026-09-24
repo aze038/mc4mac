@@ -5,7 +5,11 @@ public enum SyncEvent: Sendable {
     case progress(accountID: UUID, text: String)
     case folderSynced(folderID: UUID)
     case newMessages(accountID: UUID, folderID: UUID, messages: [MessageSummary])
+    /// A pass, or the connection it runs on, failed.
     case error(accountID: UUID, message: String)
+    /// Something inside a pass failed, a rule or filing a muted conversation, while the pass
+    /// itself went on: worth telling the reader, but no failed sync.
+    case problem(accountID: UUID, message: String)
     case actionFailed(accountID: UUID, message: String)
     case online(accountID: UUID, Bool)
     case finished(accountID: UUID)
@@ -382,7 +386,7 @@ public actor AccountSyncer {
                     case .stopProcessing: break
                     }
                 } catch {
-                    events.yield(.error(accountID: account.id, message: "Rule failed: \(error.localizedDescription)"))
+                    events.yield(.problem(accountID: account.id, message: "Rule failed: \(error.localizedDescription)"))
                 }
                 if moved { break }
             }
@@ -423,7 +427,7 @@ public actor AccountSyncer {
             try await archiveOnServer(uids: uids, client: client)
             try await fs.remove(uids: uids)
         } catch {
-            events.yield(.error(accountID: account.id, message: "Could not file a muted conversation: \(error.localizedDescription)"))
+            events.yield(.problem(accountID: account.id, message: "Could not file a muted conversation: \(error.localizedDescription)"))
             return messages
         }
         await indexer.remove(ids: muted.map { $0.id })
@@ -734,7 +738,7 @@ public actor AccountSyncer {
             try await store.refreshCounts(folderID: folder.id)
             await store.notifyMessagesChanged(folderID: folder.id)
         } catch {
-            events.yield(.error(accountID: account.id, message: error.localizedDescription))
+            events.yield(.problem(accountID: account.id, message: error.localizedDescription))
         }
     }
 

@@ -308,6 +308,35 @@ struct SettingsIcon: View {
     private static let letters = Classic.colour(light: 0x7A7A7A, dark: 0xC7C7C7)
 
     var body: some View {
+        let fit = fit
+        drawn
+            .scaleEffect(x: fit.width, y: fit.height)
+            .offset(x: fit.x, y: fit.y)
+    }
+
+    /// Stretches and nudges each stand-in into the box Outlook's icon fills, which the symbol's
+    /// own proportions miss by up to four points (measured against Outlook's grid at 2x).
+    private var fit: (width: CGFloat, height: CGFloat, x: CGFloat, y: CGFloat) {
+        switch pane {
+        case .general: (1.02, 0.94, -0.25, 0.25)
+        case .accounts: (0.98, 1.2, -0.25, -0.5)
+        case .notifications: (0.86, 0.98, -0.25, 0.75)
+        case .categories: (1, 1, 0, 0.5)
+        case .fonts: (0.98, 1.15, 1.25, -0.75)
+        case .autoCorrect: (1.05, 1.11, 0.25, 0.25)
+        case .spelling: (0.97, 1.11, -0.5, 0.25)
+        case .reading: (0.98, 0.96, -0.25, -1)
+        case .composing: (1, 0.89, 0, 0)
+        case .signatures: (0.96, 1.07, 0.5, 0.25)
+        case .rules: (0.96, 1.02, 0.5, -0.25)
+        case .junk: (0.935, 1, 1, -0.5)
+        case .calendar: (0.96, 1, 0, 0.5)
+        case .contacts: (0.96, 0.95, 0, -1)
+        case .privacy: (1.09, 0.98, -0.5, -1.25)
+        }
+    }
+
+    @ViewBuilder private var drawn: some View {
         switch pane {
         case .general:
             symbol("lightswitch.off.square.fill", 28, Self.ink, Self.paper)

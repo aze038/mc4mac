@@ -7,7 +7,8 @@ import FalconCore
 /// Table picker, the main window's Home ribbon, which shares the compose ribbon's tiles, the
 /// Settings window's icon grid, its Signatures pane with two stand-in signatures, with none and
 /// with its notice of a damaged file set aside, its Notifications and Sounds pane and every other
-/// pane, and a signature's editor window for a signature and for a new one, in both appearances
+/// pane, and a signature's editor window for a signature, for a new one and with ¶ showing the
+/// marks for what does not print, in both appearances
 /// into PNGs at twice their size in that directory, writes down beside them the words and
 /// buttons of the question asked before a signature is deleted, then quits.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
@@ -108,13 +109,26 @@ enum ComposeSnapshot {
             model.signatures = SignatureLibrary(book: book, problem: .setAside(aside))
             captureSettings(.signatures, model: model, active: true, appearance: appearance,
                             to: "\(directory)/signatures-notice-\(name).png")
-            for (id, file) in [(formal.id, "signature-editor"), (untitled.id, "signature-editor-new")] {
+            for (id, file, marks) in [(formal.id, "signature-editor", false), (untitled.id, "signature-editor-new", false),
+                                      (formal.id, "signature-editor-marks", true)] {
                 guard let window = SignatureEditorWindows.window(for: id, library: library),
                       let frame = window.contentView?.superview else { continue }
                 window.appearance = NSAppearance(named: appearance)
+                if marks {
+                    frame.layoutSubtreeIfNeeded()
+                    (textView(in: frame)?.layoutManager as? SignatureLayoutManager)?.showsMarks = true
+                }
                 capture(frame, appearance: appearance, to: "\(directory)/\(file)-\(name).png")
             }
         }
+    }
+
+    @MainActor private static func textView(in view: NSView) -> NSTextView? {
+        if let text = view as? NSTextView { return text }
+        for child in view.subviews {
+            if let text = textView(in: child) { return text }
+        }
+        return nil
     }
 
     /// A signature with what the editor can do: a bold name, a coloured line, a link and a

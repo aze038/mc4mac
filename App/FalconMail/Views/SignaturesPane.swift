@@ -169,7 +169,7 @@ enum SignatureListColours {
     static let border = Classic.colour(light: 0xBEBEBE, dark: 0x353535)
     static let header = Classic.colour(light: 0xF7F7F7, dark: 0x1F222D)
     static let headerLine = Classic.colour(light: 0xD9D9D9, dark: 0x393C47)
-    static let headerText = Classic.colour(light: 0x262626, dark: 0xEBEBEC)
+    static let headerText = Classic.colour(light: 0x262626, dark: 0xFFFFFF)
     static let stripeEven = Classic.colour(light: 0xFFFFFF, dark: 0x1E1E1E)
     static let stripeOdd = Classic.colour(light: 0xF4F5F5, dark: 0x292C37)
     static let selected = Classic.colour(light: 0xDCDCDC, dark: 0x464746)

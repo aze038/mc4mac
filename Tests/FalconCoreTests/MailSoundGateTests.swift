@@ -29,7 +29,7 @@ final class MailSoundGateTests: XCTestCase {
         XCTAssertNil(gate.launched())
         XCTAssertNil(gate.newMailArrived())
         XCTAssertNil(gate.messageSent())
-        XCTAssertNil(gate.syncFailed(alex))
+        XCTAssertEqual(retries(alex, from: 0, on: &gate), [nil, nil, nil, nil])
         gate.manualCheckStarted(accounts: [alex], at: start)
         XCTAssertNil(gate.checkFinished(alex, foundNewMail: false, at: start))
     }
@@ -49,32 +49,77 @@ final class MailSoundGateTests: XCTestCase {
         XCTAssertNil(gate.launched(), "a mailbox window opened again is no new launch")
     }
 
-    // MARK: - one sync error sound per failure episode
+    // MARK: - one sync error sound per lasting failure
 
-    func testOnlyTheFirstFailureOfAnEpisodeSounds() {
+    /// The syncer's retries after a failure: ten, thirty and seventy seconds on.
+    private func retries(_ account: UUID, from start: TimeInterval, on gate: inout MailSoundGate) -> [MailSoundEvent?] {
+        [0, 10, 30, 70].map { gate.syncFailed(account, uptime: start + $0) }
+    }
+
+    func testAFailureSoundsOnlyOnceARetryAMinuteLaterFailsToo() {
         var gate = gate()
-        XCTAssertEqual(gate.syncFailed(alex), .syncError)
-        XCTAssertNil(gate.syncFailed(alex), "a retry that fails again is the same episode")
-        XCTAssertNil(gate.syncFailed(alex))
+        XCTAssertEqual(retries(alex, from: 1000, on: &gate), [nil, nil, nil, .syncError])
+        XCTAssertNil(gate.syncFailed(alex, uptime: 1150), "a retry that fails again is the same episode")
+        XCTAssertNil(gate.syncFailed(alex, uptime: 1460))
+    }
+
+    func testAConnectionDroppedEveryFewMinutesAndRestoredAtOnceNeverSounds() {
+        var gate = gate()
+        // As the owner's accounts do all day: the idle connection closed about every 285
+        // seconds, the reconnect ten seconds later finishing a pass.
+        var played: [MailSoundEvent] = []
+        for drop in stride(from: 0.0, to: 24 * 3600, by: 285) {
+            if let sound = gate.syncFailed(alex, uptime: drop) { played.append(sound) }
+            gate.syncSucceeded(alex)
+        }
+        XCTAssertEqual(played, [])
+    }
+
+    func testARetryThatConnectsBeforeTheMinuteKeepsItQuiet() {
+        var gate = gate()
+        XCTAssertNil(gate.syncFailed(alex, uptime: 0))
+        XCTAssertNil(gate.syncFailed(alex, uptime: 10), "the network is not back yet after waking")
         gate.syncSucceeded(alex)
-        XCTAssertEqual(gate.syncFailed(alex), .syncError, "a finished sync ends the episode")
+        XCTAssertNil(gate.syncFailed(alex, uptime: 65), "a finished sync ends the episode, so this failure starts a new one")
+    }
+
+    func testAFinishedSyncEndsTheEpisode() {
+        var gate = gate()
+        XCTAssertEqual(retries(alex, from: 0, on: &gate).last, .syncError)
+        gate.syncSucceeded(alex)
+        XCTAssertEqual(retries(alex, from: 500, on: &gate), [nil, nil, nil, .syncError], "a new episode sounds once it lasts")
+    }
+
+    func testASyncThatFinishesAfterAnErrorInsideItNeverSoundsTheError() {
+        var gate = gate()
+        // A rule that fails on each message it matches, in passes that go on and finish.
+        var played: [MailSoundEvent] = []
+        for pass in 0..<3 {
+            if let sound = gate.syncFailed(alex, uptime: TimeInterval(pass) * 300) { played.append(sound) }
+            if let sound = gate.newMailArrived() { played.append(sound) }
+            gate.syncSucceeded(alex)
+        }
+        XCTAssertEqual(played, [.newMessage, .newMessage, .newMessage])
     }
 
     func testEachAccountHasItsOwnEpisode() {
         var gate = gate()
-        XCTAssertEqual(gate.syncFailed(alex), .syncError)
-        XCTAssertEqual(gate.syncFailed(office), .syncError)
+        XCTAssertNil(gate.syncFailed(alex, uptime: 0))
+        XCTAssertNil(gate.syncFailed(office, uptime: 50))
+        XCTAssertEqual(gate.syncFailed(alex, uptime: 60), .syncError)
+        XCTAssertNil(gate.syncFailed(office, uptime: 100), "office's episode began at 50")
         gate.syncSucceeded(office)
-        XCTAssertNil(gate.syncFailed(alex), "another account's recovery does not end this one's episode")
+        XCTAssertNil(gate.syncFailed(alex, uptime: 200), "another account's recovery does not end this one's episode")
+        XCTAssertNil(gate.syncFailed(office, uptime: 200))
     }
 
-    func testAFailureWhileTheSoundIsOffStillStartsTheEpisode() {
+    func testAFailureThatLastsWhileTheSoundIsOffIsNotReplayedWhenItIsTurnedOn() {
         var off: Set<MailSoundEvent> = [.syncError]
         var gate = MailSoundGate { !off.contains($0) }
-        XCTAssertNil(gate.syncFailed(alex))
+        XCTAssertEqual(retries(alex, from: 0, on: &gate), [nil, nil, nil, nil])
         off = []
         gate.isEnabled = { !off.contains($0) }
-        XCTAssertNil(gate.syncFailed(alex), "turning the sound on mid-episode does not replay the episode's start")
+        XCTAssertNil(gate.syncFailed(alex, uptime: 150), "turning the sound on mid-episode does not replay it")
     }
 
     // MARK: - No new messages only for a check the reader asked for
@@ -111,7 +156,7 @@ final class MailSoundGateTests: XCTestCase {
     func testAnAccountThatFailsDuringTheCheckKeepsItQuiet() {
         var gate = gate()
         gate.manualCheckStarted(accounts: [alex, office], at: start)
-        XCTAssertEqual(gate.syncFailed(alex), .syncError)
+        XCTAssertNil(gate.syncFailed(alex, uptime: 0))
         XCTAssertNil(gate.checkFinished(office, foundNewMail: false, at: start + 1))
         XCTAssertNil(gate.checkFinished(alex, foundNewMail: false, at: start + 2), "the failed account's own answer comes too late")
     }
@@ -119,7 +164,7 @@ final class MailSoundGateTests: XCTestCase {
     func testTheOnlyAccountFailingEndsTheCheck() {
         var gate = gate()
         gate.manualCheckStarted(accounts: [alex], at: start)
-        _ = gate.syncFailed(alex)
+        _ = gate.syncFailed(alex, uptime: 0)
         XCTAssertNil(gate.checkFinished(alex, foundNewMail: false, at: start + 1))
     }
 
