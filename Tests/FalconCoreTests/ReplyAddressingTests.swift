@@ -59,6 +59,16 @@ final class ReplyAddressingTests: XCTestCase {
         XCTAssertEqual(addresses(reply.to), ["ana@example.com"])
     }
 
+    func testReplyToNamingTheOwnerBesideSomeoneElseLeavesTheOwnerOut() {
+        let m = message(from: "ana@example.com", to: ["owner@example.com"], cc: ["cy@example.com"])
+        let replyTo = [EmailAddress(address: "Owner@example.com"), EmailAddress(address: "bo@example.com")]
+        let reply = ReplyAddressing.recipients(for: m, replyTo: replyTo, own: own, all: false)
+        XCTAssertEqual(addresses(reply.to), ["bo@example.com"])
+        let all = ReplyAddressing.recipients(for: m, replyTo: replyTo, own: own, all: true)
+        XCTAssertEqual(addresses(all.to), ["bo@example.com"])
+        XCTAssertEqual(addresses(all.cc), ["cy@example.com"])
+    }
+
     func testMessageSentFromAnAliasIsTheOwners() {
         let m = message(from: "sales@example.com", to: ["ana@example.com"], cc: ["owner@example.com", "bo@example.com"])
         let all = ReplyAddressing.recipients(for: m, replyTo: [], own: own, all: true)

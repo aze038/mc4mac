@@ -29,7 +29,8 @@ public enum ReplyAddressing {
             // Nobody left means it was a note to self, and so is the reply.
             if to.isEmpty { to = targets }
         } else {
-            to = unique(targets)
+            // A Reply-To naming the owner beside someone else still leaves the owner out.
+            to = unique(targets.filter { !isOwn($0) })
             if all { cc = (message.to + message.cc).filter { !isOwn($0) } }
         }
         let taken = Set(to.map { $0.address.lowercased() })
