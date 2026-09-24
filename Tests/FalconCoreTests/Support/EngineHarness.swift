@@ -12,7 +12,7 @@ final class EngineHarness: @unchecked Sendable {
     let layout: FileLayout
     let store: MailStore
     let pending: PendingActionStore
-    let meter: BandwidthMeter
+    let meter: TrafficMeter
     let rules: RuleStore
     let account: AccountInfo
     let syncer: AccountSyncer
@@ -30,7 +30,9 @@ final class EngineHarness: @unchecked Sendable {
         return server
     }
 
-    init(server: FakeIMAPServer, email: String = "owner@example.com", root existing: URL? = nil) async throws {
+    init(server: FakeIMAPServer, email: String = "owner@example.com", root existing: URL? = nil, pacing: SyncPacing = .standard,
+         deadlines: IMAPDeadlines = .standard, limits: TrafficLimits = .standard,
+         clock: @escaping @Sendable () -> Date = { Date() }) async throws {
         self.server = server
         root = existing ?? FileManager.default.temporaryDirectory.appendingPathComponent("falcon-engine-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -46,16 +48,17 @@ final class EngineHarness: @unchecked Sendable {
             try await store.saveAccount(account)
         }
         pending = PendingActionStore(layout: layout)
-        meter = BandwidthMeter(layout: layout)
+        meter = TrafficMeter(layout: layout, limits: limits, now: clock)
         rules = RuleStore(layout: layout)
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream()
         let port = server.port
         syncer = AccountSyncer(account: account, store: store,
                                tokens: TokenStore(keychain: KeychainStore(service: "com.falconmail.tests.unused"), clientConfigProvider: { nil }),
                                rules: rules, mutes: MuteStore(layout: layout), indexer: nil,
-                               pendingActions: pending, events: continuation, meter: meter,
-                               connector: { account in
-                                   let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: account.email)
+                               pendingActions: pending, events: continuation, meter: meter, pacing: pacing,
+                               connector: { account, traffic in
+                                   let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: account.email, traffic: traffic,
+                                                      deadlines: deadlines)
                                    try await c.connect()
                                    try await c.login(user: account.email, password: "not-a-password")
                                    return c
@@ -68,7 +71,7 @@ final class EngineHarness: @unchecked Sendable {
     /// Lists the folders and syncs each once on a connection of its own, as a pass of the sync
     /// loop would, without starting the loop.
     func syncOnce() async throws {
-        let c = try await server.client(label: account.email)
+        let c = try await server.client(label: account.email, traffic: meter.tap(for: account.id))
         let folders = try await store.reconcileFolders(accountID: account.id, listed: try await c.listFolders())
         for f in folders where f.isSelectable && f.role != .all { try await syncer.syncFolder(f, client: c) }
         await c.logout()
@@ -116,6 +119,18 @@ actor EventLog {
 
     var healths: [AccountHealth] {
         all.compactMap { if case .health(_, let h) = $0 { return h }; return nil }
+    }
+
+    var announced: [MessageSummary] {
+        all.flatMap { event -> [MessageSummary] in if case .newMessages(_, _, let list) = event { return list }; return [] }
+    }
+
+    var progress: [String] {
+        all.compactMap { if case .progress(_, let text) = $0 { return text }; return nil }
+    }
+
+    var pauses: [Date] {
+        healths.compactMap { if case .imapPaused(let until) = $0 { return until }; return nil }
     }
 }
 
@@ -169,6 +184,39 @@ final class Once: @unchecked Sendable {
             guard !done else { return false }
             done = true
             return true
+        }
+    }
+}
+
+/// A clock a test moves by hand, so that a day of allowance can pass in a moment.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(_ start: Date = Date()) {
+        current = start
+    }
+
+    var now: Date { lock.withLock { current } }
+
+    func set(_ date: Date) {
+        lock.withLock { current = date }
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.withLock { current = current.addingTimeInterval(seconds) }
+    }
+
+    var reading: @Sendable () -> Date { { [self] in now } }
+}
+
+extension FakeIMAPServer {
+    /// Every UID the header fetches of `exchanges` asked for, in order, repeats included.
+    static func headerFetchUIDs(_ exchanges: [FakeIMAPServer.Exchange]) -> [UInt32] {
+        exchanges.filter { $0.line.contains("HEADER.FIELDS") }.flatMap { exchange -> [UInt32] in
+            let words = exchange.line.split(separator: " ")
+            guard words.count > 3 else { return [] }
+            return IMAPResponseParser.expandSet(String(words[3]))
         }
     }
 }

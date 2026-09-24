@@ -69,36 +69,4 @@ final class IMAPTests: XCTestCase {
         XCTAssertEqual(kind(FalconError.network("connection closed by peer")), .connectionDropped)
         XCTAssertEqual(kind(FalconError.notAuthenticated), .needsSignIn)
     }
-
-    func testBandwidthMeterStopsRunawayDownloads() async {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let meter = BandwidthMeter(layout: FileLayout(root: dir))
-        let account = UUID()
-        let other = UUID()
-        let budget = 1_000_000
-
-        var allowed = await meter.allows(500_000, for: account, budget: budget)
-        XCTAssertTrue(allowed)
-        await meter.record(600_000, for: account)
-        var spent = await meter.spentToday(account)
-        XCTAssertEqual(spent, 600_000)
-        allowed = await meter.allows(400_000, for: account, budget: budget)
-        XCTAssertTrue(allowed)
-        allowed = await meter.allows(400_001, for: account, budget: budget)
-        XCTAssertFalse(allowed)
-
-        // One account's usage must never throttle another.
-        spent = await meter.spentToday(other)
-        XCTAssertEqual(spent, 0)
-        allowed = await meter.allows(budget, for: other, budget: budget)
-        XCTAssertTrue(allowed)
-
-        // The count has to survive a relaunch, or restarting would undo the protection.
-        await meter.persist()
-        let reopened = BandwidthMeter(layout: FileLayout(root: dir))
-        spent = await reopened.spentToday(account)
-        XCTAssertEqual(spent, 600_000)
-    }
 }

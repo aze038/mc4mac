@@ -206,7 +206,7 @@ final class AppModel {
 
     func refreshBandwidth() async {
         var out: [UUID: Int] = [:]
-        for account in accounts { out[account.id] = await BandwidthMeter.shared.spentToday(account.id) }
+        for account in accounts { out[account.id] = TrafficMeter.shared.used(.download, by: account.id) }
         downloadedToday = out
     }
 
@@ -392,6 +392,7 @@ final class AppModel {
     @ObservationIgnored private var knownSentIDs = Set<UUID>()
     @ObservationIgnored private var bodyCache: [String: MIMEMessage] = [:]
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
+    @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
     @ObservationIgnored private var sessionSaveTask: Task<Void, Never>?
     @ObservationIgnored private var pendingDraftSaves: [UUID: Task<Void, Never>] = [:]
@@ -465,6 +466,7 @@ final class AppModel {
         contactList = await contacts.all()
         await notifications.requestPermission()
         listen()
+        watchForWake()
         await coordinator.startAll()
         await reloadMessages()
         if let s = restoredState {
@@ -588,13 +590,23 @@ final class AppModel {
         })
     }
 
+    /// Connections that slept with the Mac may be dead without knowing it, so every account
+    /// opens fresh ones when it wakes.
+    private func watchForWake() {
+        guard wakeObserver == nil else { return }
+        let coordinator = coordinator
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                                                                         queue: .main) { _ in
+            Task { await coordinator.reconnectAll(reason: "the Mac woke") }
+        }
+    }
+
     func accountName(_ id: UUID) -> String { accounts.first { $0.id == id }?.email ?? "account" }
 
+    /// The engine announces only mail dated within the last day and not from the account itself.
     private func announce(_ list: [MessageSummary], accountID: UUID, folderID: UUID) {
         guard !migrationInProgress, let account = accounts.first(where: { $0.id == accountID }), let folder = folder(folderID) else { return }
-        let recent = list.filter { $0.date > Date().addingTimeInterval(-48 * 3600) }
-        guard !recent.isEmpty else { return }
-        notifications.notify(newMessages: recent, account: account, folder: folder, policy: notificationPolicy)
+        notifications.notify(newMessages: list, account: account, folder: folder, policy: notificationPolicy)
     }
 
     func setNotifyMode(_ mode: NotifyMode, for accountID: UUID) {
@@ -1780,20 +1792,20 @@ final class AppModel {
         archiveRecords = await archives.all()
     }
 
+    /// Uploads the files' messages, pausing whenever the account's daily upload allowance is
+    /// spent or Gmail asks for quiet, and syncing the folder for them now and then rather than
+    /// after every message.
     func importFiles(_ urls: [URL], into folder: FolderInfo) {
         Task {
             guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }
             var count = 0
             for url in urls {
                 do {
-                    if url.pathExtension.lowercased() == "mbox" {
-                        for m in MboxReader.messages(in: try Data(contentsOf: url)) {
-                            try await syncer.append(raw: m.raw, to: folder, flags: m.flags, date: m.date)
-                            count += 1
-                        }
-                    } else {
-                        let m = try EMLImport.message(at: url)
-                        try await syncer.append(raw: m.raw, to: folder, flags: m.flags, date: m.date)
+                    let messages = url.pathExtension.lowercased() == "mbox"
+                        ? MboxReader.messages(in: try Data(contentsOf: url))
+                        : [try EMLImport.message(at: url)]
+                    for m in messages {
+                        try await syncer.importMessage(m, into: folder)
                         count += 1
                     }
                 } catch {

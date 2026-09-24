@@ -120,18 +120,18 @@ final class ServerErrorTests: XCTestCase {
         try await h.syncOnce()
         await h.syncer.start()
         await assertEventually { h.server.idlingCount == 1 }
-        let inbox = try await h.folder("INBOX")
         let sent = try await h.folder("[Gmail]/Sent Mail")
+        let trash = try await h.folder("[Gmail]/Trash")
         h.server.resetCounters()
-        // The first stall holds the INBOX sync the first request starts, the second the SELECT
-        // the loop sends before idling again; the second request arrives during that one.
+        // The first stall holds the Sent sync the first request starts, the second the SELECT
+        // of INBOX the loop sends before idling again; the second request arrives during that one.
         h.server.stallNext("SELECT", seconds: 0.4)
         h.server.stallNext("SELECT", seconds: 0.6)
-        await h.syncer.requestSync(folderID: inbox.id)
-        await assertEventually { h.server.commands.filter { $0.contains("SELECT \"INBOX\"") }.count == 2 }
         await h.syncer.requestSync(folderID: sent.id)
-        await assertEventually("Sent is synced without waiting for IDLE to time out", within: 4) {
-            h.server.commands.contains { $0.contains("SELECT \"[Gmail]/Sent Mail\"") }
+        await assertEventually { h.server.commands.contains { $0.contains("SELECT \"INBOX\"") } }
+        await h.syncer.requestSync(folderID: trash.id)
+        await assertEventually("Trash is synced without waiting for IDLE to time out", within: 4) {
+            h.server.commands.contains { $0.contains("SELECT \"[Gmail]/Trash\"") }
         }
     }
 

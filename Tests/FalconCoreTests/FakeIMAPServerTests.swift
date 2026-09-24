@@ -73,6 +73,10 @@ final class FakeIMAPServerTests: XCTestCase {
         _ = try await client.select("INBOX")
         _ = try await client.fetchMessage(uid: 1)
         await client.logout()
+        // A reply is counted once the server's send of it completes, which can come a moment
+        // after the client has read it.
+        let server = server!
+        await assertEventually { (server.sessionCounts.first?.bytesOut ?? 0) > FakeIMAPServer.message("one").count }
         let session = try XCTUnwrap(server.sessionCounts.first)
         XCTAssertEqual(session.commands, server.commands.count)
         XCTAssertGreaterThan(session.bytesOut, FakeIMAPServer.message("one").count)

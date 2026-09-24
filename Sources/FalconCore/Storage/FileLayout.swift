@@ -31,6 +31,11 @@ public struct FileLayout: Sendable {
         accountDirectory(accountID).appendingPathComponent("folders.json")
     }
 
+    /// State kept beside folders.json that earlier builds ignore (`SyncExtras`).
+    public func syncExtrasFile(_ accountID: UUID) -> URL {
+        accountDirectory(accountID).appendingPathComponent("syncExtras.json")
+    }
+
     public func folderDirectory(accountID: UUID, folderID: UUID) -> URL {
         accountDirectory(accountID).appendingPathComponent("Folders", isDirectory: true).appendingPathComponent(folderID.uuidString, isDirectory: true)
     }

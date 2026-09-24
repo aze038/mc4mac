@@ -35,11 +35,18 @@ public struct ArchiveOutcome: Sendable {
     public var keptOnServer: [String]
 }
 
+/// Waits until the account may download `bytes` more in the background; see
+/// `AccountSyncer.waitForAllowance`.
+public typealias DownloadAllowance = @Sendable (_ bytes: Int) async throws -> Void
+
 public enum ArchiveJob {
     /// Every step runs as one unit under the UIDVALIDITY the folder had when it was listed, so
     /// a folder renumbered during a long job is never fetched from, or purged, by stale UIDs.
-    /// Only messages that went into the archive are ever removed from the server.
+    /// Only messages that went into the archive are ever removed from the server. Before each
+    /// download the job asks `allowance`, which holds it while the account's background
+    /// allowance is spent or Gmail has asked for quiet, and it carries on where it stopped.
     public static func run(request: ArchiveRequest, account: AccountInfo, client: IMAPClient, storage: ArchiveStorage,
+                           allowance: @escaping DownloadAllowance,
                            progress: @escaping @Sendable (ArchiveProgress) -> Void) async throws -> ArchiveOutcome {
         let writer = ArchiveWriter(storage: storage, parentID: request.parentID, name: request.name, account: account,
                                    options: ArchiveOptions(password: request.password))
@@ -50,6 +57,7 @@ public enum ArchiveJob {
         var plan: [(path: String, uidValidity: UInt32, uids: [UInt32])] = []
         for path in request.folderPaths {
             progress(.status("Listing \(path)"))
+            try await allowance(0)
             let listed = try await client.exclusively { c in
                 let status = try await c.select(path)
                 return (status.uidValidity, try await c.uidSearch(criteria))
@@ -65,11 +73,14 @@ public enum ArchiveJob {
             while start < item.uids.count {
                 try Task.checkCancellation()
                 let batch = Array(item.uids[start..<min(start + 50, item.uids.count)])
-                let flags = try await client.withMailbox(item.path, uidValidity: item.uidValidity) {
-                    try await $0.fetchFlags(uidRange: IMAPClient.sequenceSet(batch))
+                try await allowance(0)
+                let listed = try await client.withMailbox(item.path, uidValidity: item.uidValidity) {
+                    try await $0.fetchFlagsAndSizes(uids: batch)
                 }
-                let flagMap = Dictionary(flags.map { ($0.uid, MessageFlags(imapFlags: $0.flags)) }, uniquingKeysWith: { a, _ in a })
+                let flagMap = Dictionary(listed.map { ($0.uid, MessageFlags(imapFlags: $0.flags)) }, uniquingKeysWith: { a, _ in a })
+                let sizes = Dictionary(listed.map { ($0.uid, $0.size) }, uniquingKeysWith: { a, _ in a })
                 for uid in batch {
+                    try await allowance(sizes[uid] ?? 0)
                     let raw: Data
                     do {
                         raw = try await client.withMailbox(item.path, uidValidity: item.uidValidity) { try await $0.fetchMessage(uid: uid) }
@@ -95,6 +106,7 @@ public enum ArchiveJob {
             for item in plan {
                 guard let uids = archived[item.path], !uids.isEmpty else { continue }
                 progress(.status("Removing archived mail from \(item.path)"))
+                try await allowance(0)
                 do {
                     try await client.withMailbox(item.path, uidValidity: item.uidValidity) { try await $0.expunge(uids: uids) }
                 } catch let refusal as IMAPExpungeRefused {

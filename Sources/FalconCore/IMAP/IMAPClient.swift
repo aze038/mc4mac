@@ -7,6 +7,26 @@ public struct IMAPMessageEnvelope: Sendable {
     public var header: Data
 }
 
+/// How long a connection waits for the server before giving it up. A path that dies without a
+/// word, or a server that stops answering, would otherwise hold a command, or the whole sync
+/// loop, for ever.
+public struct IMAPDeadlines: Sendable, Equatable {
+    /// To open the connection, read the greeting and sign in.
+    public var connect: TimeInterval
+    /// Silence allowed within the reply to a command; a long reply that keeps arriving is never cut short.
+    public var response: TimeInterval
+    /// Allowed beyond an IDLE's own wait, for the server to answer the DONE that ends it.
+    public var idleGrace: TimeInterval
+
+    public init(connect: TimeInterval = 30, response: TimeInterval = 60, idleGrace: TimeInterval = 30) {
+        self.connect = connect
+        self.response = response
+        self.idleGrace = idleGrace
+    }
+
+    public static let standard = IMAPDeadlines()
+}
+
 /// The connections whose turn the current task holds, so that the commands inside one unit of
 /// work run without asking for the turn again.
 enum IMAPTurn {
@@ -24,6 +44,8 @@ public actor IMAPClient {
     public let tls: Bool
     /// Names the connection in the log: the account's own address, never anyone else's.
     public let label: String
+    public let deadlines: IMAPDeadlines
+    private let traffic: TrafficTap
     private var connection: StreamConnection?
     private var tagCounter = 0
     private var idleTag: String?
@@ -36,11 +58,14 @@ public actor IMAPClient {
     public private(set) var selectedMailbox: String?
     private var selectedStatus: IMAPMailboxStatus?
 
-    public init(host: String, port: UInt16 = 993, tls: Bool = true, label: String? = nil) {
+    public init(host: String, port: UInt16 = 993, tls: Bool = true, label: String? = nil, traffic: TrafficTap = .none,
+                deadlines: IMAPDeadlines = .standard) {
         self.host = host
         self.port = port
         self.tls = tls
         self.label = label ?? host
+        self.traffic = traffic
+        self.deadlines = deadlines
     }
 
     /// False once the connection has failed or been closed; a failed connection is never used again.
@@ -48,10 +73,10 @@ public actor IMAPClient {
 
     public func connect() async throws {
         try await locked {
-            let c = StreamConnection(host: host, port: port, tls: tls)
-            try await c.connect()
+            let c = StreamConnection(host: host, port: port, tls: tls, tap: traffic)
+            try await c.connect(deadline: deadlines.connect)
             connection = c
-            let greeting = try await readResponse()
+            let greeting = try await readResponse(deadline: deadlines.connect)
             if case .untaggedStatus(_, let code, _) = greeting, let code, code.uppercased().hasPrefix("CAPABILITY ") {
                 capabilities = code.split(separator: " ").dropFirst().map(String.init)
             }
@@ -69,13 +94,13 @@ public actor IMAPClient {
         try await locked {
             let tag = try await sendCommand("AUTHENTICATE XOAUTH2 \(b64)")
             while true {
-                switch try await readResponse() {
+                switch try await readResponse(deadline: deadlines.connect) {
                 case .continuation(let payload):
                     // Gmail explains a refusal in a challenge and gives the tagged NO, with its
                     // response code, only after an empty reply.
                     let explanation = Data(base64Encoded: payload).map { $0.utf8Lossy } ?? payload
                     try await sendLine("")
-                    _ = try await collect(tag: tag, command: "AUTHENTICATE", mailbox: nil, includeTagged: true)
+                    _ = try await collect(tag: tag, command: "AUTHENTICATE", mailbox: nil, includeTagged: true, deadline: deadlines.connect)
                     throw IMAPServerError(status: .no, code: nil, text: explanation, command: "AUTHENTICATE")
                 case .tagged(let t, let status, let code, let text) where t == tag:
                     guard status == .ok else { throw IMAPServerError(status: status, code: code, text: text, command: "AUTHENTICATE") }
@@ -96,7 +121,7 @@ public actor IMAPClient {
                 let raw = "\u{00}\(user)\u{00}\(password)"
                 let tag = try await sendCommand("AUTHENTICATE PLAIN \(Data(raw.utf8).base64EncodedString())")
                 loop: while true {
-                    switch try await readResponse() {
+                    switch try await readResponse(deadline: deadlines.connect) {
                     case .continuation:
                         try await sendLine("")
                     case .tagged(let t, let status, let code, let text) where t == tag:
@@ -107,7 +132,7 @@ public actor IMAPClient {
                     }
                 }
             } else {
-                _ = try await run("LOGIN \(quote(user)) \(quote(password))")
+                _ = try await run("LOGIN \(quote(user)) \(quote(password))", deadline: deadlines.connect)
             }
             try await refreshCapabilities()
         }
@@ -157,7 +182,10 @@ public actor IMAPClient {
             selectedMailbox = nil
             selectedStatus = nil
             var status = IMAPMailboxStatus()
-            let responses = try await run("SELECT \(quote(mailbox))", mailbox: mailbox, collectTagged: true)
+            // Asking for CONDSTORE makes the server report HIGHESTMODSEQ, which lets a sync ask
+            // only for the flags that changed since the last one.
+            let condstore = hasCapability("CONDSTORE") ? " (CONDSTORE)" : ""
+            let responses = try await run("SELECT \(quote(mailbox))\(condstore)", mailbox: mailbox, collectTagged: true)
             for r in responses {
                 switch r {
                 case .exists(let n): status.exists = n
@@ -169,6 +197,7 @@ public actor IMAPClient {
                     if key == "UIDVALIDITY", parts.count > 1 { status.uidValidity = UInt32(parts[1]) ?? 0 }
                     if key == "UIDNEXT", parts.count > 1 { status.uidNext = UInt32(parts[1]) ?? 0 }
                     if key == "UNSEEN", parts.count > 1 { status.unseen = Int(parts[1]) ?? 0 }
+                    if key == "HIGHESTMODSEQ", parts.count > 1 { status.highestModSeq = UInt64(parts[1]) }
                 case .tagged(_, _, let code?, _):
                     status.readOnly = code.uppercased().hasPrefix("READ-ONLY")
                 default: break
@@ -186,10 +215,18 @@ public actor IMAPClient {
         return [:]
     }
 
+    /// The UIDs matching `criteria`, in order. Where the server offers ESEARCH they come as a
+    /// compact set, a few bytes for a run of any length instead of several bytes each.
     public func uidSearch(_ criteria: String) async throws -> [UInt32] {
-        let responses = try await run("UID SEARCH \(criteria)", mailbox: selectedMailbox)
+        let returning = hasCapability("ESEARCH") ? "RETURN (ALL) " : ""
+        let responses = try await run("UID SEARCH \(returning)\(criteria)", mailbox: selectedMailbox)
         var out: [UInt32] = []
-        for r in responses { if case .search(let uids) = r { out.append(contentsOf: uids) } }
+        for r in responses {
+            switch r {
+            case .search(let uids), .esearch(let uids): out.append(contentsOf: uids)
+            default: break
+            }
+        }
         return out.sorted()
     }
 
@@ -221,13 +258,28 @@ public actor IMAPClient {
         return out
     }
 
-    public func fetchFlags(uidRange: String) async throws -> [(uid: UInt32, flags: [String])] {
-        let responses = try await run("UID FETCH \(uidRange) (UID FLAGS)", mailbox: selectedMailbox)
+    /// The flags of the messages in `uidRange`; with `changedSince`, on a server with CONDSTORE,
+    /// only of those whose flags changed after that mod-sequence.
+    public func fetchFlags(uidRange: String, changedSince: UInt64? = nil) async throws -> [(uid: UInt32, flags: [String])] {
+        let modifier = changedSince.map { " (CHANGEDSINCE \($0))" } ?? ""
+        let responses = try await run("UID FETCH \(uidRange) (UID FLAGS)\(modifier)", mailbox: selectedMailbox)
         var out: [(UInt32, [String])] = []
         for r in responses {
             if case .fetch(let item) = r, let uid = item.uid { out.append((uid, item.flags ?? [])) }
         }
         return out.map { (uid: $0.0, flags: $0.1) }
+    }
+
+    /// The flags and size of each of `uids`, for work that must know what a download will cost
+    /// before it makes it.
+    public func fetchFlagsAndSizes(uids: [UInt32]) async throws -> [(uid: UInt32, flags: [String], size: Int)] {
+        guard !uids.isEmpty else { return [] }
+        let responses = try await run("UID FETCH \(IMAPClient.sequenceSet(uids)) (UID FLAGS RFC822.SIZE)", mailbox: selectedMailbox)
+        var out: [(uid: UInt32, flags: [String], size: Int)] = []
+        for r in responses {
+            if case .fetch(let item) = r, let uid = item.uid { out.append((uid, item.flags ?? [], item.size ?? 0)) }
+        }
+        return out
     }
 
     public func fetchMessage(uid: UInt32, peek: Bool = true) async throws -> Data {
@@ -338,8 +390,9 @@ public actor IMAPClient {
 
     /// Waits in IDLE until the selected mailbox changes, `finishIdle` is called or `maxWait`
     /// passes. True when the server reported a change, including one it sent before agreeing
-    /// to idle.
-    public func idle(maxWait: TimeInterval) async throws -> Bool {
+    /// to idle. With `wakeOnNews` false a change is noted but the wait goes on, for a caller
+    /// that has decided not to fetch anything before `maxWait` whatever arrives.
+    public func idle(maxWait: TimeInterval, wakeOnNews: Bool = true) async throws -> Bool {
         guard hasCapability("IDLE") else {
             try await Task.sleep(nanoseconds: UInt64(min(maxWait, 60) * 1_000_000_000))
             let responses = try await run("NOOP")
@@ -371,17 +424,19 @@ public actor IMAPClient {
                 }
             }
             idleContinued = true
-            if changed || idleStopRequested { try await sendDone() }
+            if (changed && wakeOnNews) || idleStopRequested { try await sendDone() }
             let timer = Task.detached { [weak self] in
                 try await Task.sleep(nanoseconds: UInt64(maxWait * 1_000_000_000))
                 try await self?.finishIdle()
             }
             defer { timer.cancel() }
+            // Silence past the wait and its grace means the DONE went unanswered: the path is dead.
+            let silence = maxWait + deadlines.idleGrace
             while true {
-                switch try await readResponse() {
+                switch try await readResponse(deadline: silence) {
                 case .exists, .expunge, .fetch:
                     changed = true
-                    try await finishIdle()
+                    if wakeOnNews { try await finishIdle() }
                 case .tagged(let t, let status, let code, let text) where t == tag:
                     guard status == .ok else { throw IMAPServerError(status: status, code: code, text: text, command: "IDLE") }
                     return changed
@@ -428,10 +483,12 @@ public actor IMAPClient {
         return try await IMAPTurn.$held.withValue(IMAPTurn.held.union([turnID])) { try await body() }
     }
 
-    private func run(_ command: String, mailbox: String? = nil, collectTagged: Bool = false) async throws -> [IMAPResponse] {
+    private func run(_ command: String, mailbox: String? = nil, collectTagged: Bool = false,
+                     deadline: TimeInterval? = nil) async throws -> [IMAPResponse] {
         try await locked {
             let tag = try await sendCommand(command)
-            return try await collect(tag: tag, command: IMAPClient.commandName(command), mailbox: mailbox, includeTagged: collectTagged)
+            return try await collect(tag: tag, command: IMAPClient.commandName(command), mailbox: mailbox, includeTagged: collectTagged,
+                                     deadline: deadline)
         }
     }
 
@@ -460,10 +517,11 @@ public actor IMAPClient {
         }
     }
 
-    private func collect(tag: String, command: String, mailbox: String?, includeTagged: Bool) async throws -> [IMAPResponse] {
+    private func collect(tag: String, command: String, mailbox: String?, includeTagged: Bool,
+                         deadline: TimeInterval? = nil) async throws -> [IMAPResponse] {
         var out: [IMAPResponse] = []
         while true {
-            let r = try await readResponse()
+            let r = try await readResponse(deadline: deadline)
             if case .tagged(let t, let status, let code, let text) = r {
                 guard t == tag else {
                     // Another command's reply: this connection is out of step and cannot be trusted.
@@ -480,18 +538,21 @@ public actor IMAPClient {
         }
     }
 
-    /// The next response. A connection that fails or sends something unreadable is closed for
-    /// good, as is one the server says BYE on, whether or not the server closes it too.
-    private func readResponse() async throws -> IMAPResponse {
+    /// The next response, waiting through at most `deadline` seconds of silence, or the
+    /// response deadline when none is given. A connection that fails, falls silent or sends
+    /// something unreadable is closed for good, as is one the server says BYE on, whether or
+    /// not the server closes it too.
+    private func readResponse(deadline: TimeInterval? = nil) async throws -> IMAPResponse {
         guard let connection else { throw FalconError.network("not connected") }
+        let silence = deadline ?? deadlines.response
         let response: IMAPResponse
         do {
             var parts: [IMAPRawPart] = []
             while true {
-                let text = try await connection.readLine().utf8Lossy
+                let text = try await connection.readLine(deadline: silence).utf8Lossy
                 if let literalSize = IMAPClient.trailingLiteralSize(text) {
                     parts.append(.text(text))
-                    parts.append(.literal(try await connection.read(exactly: literalSize)))
+                    parts.append(.literal(try await connection.read(exactly: literalSize, deadline: silence)))
                     continue
                 }
                 parts.append(.text(text))

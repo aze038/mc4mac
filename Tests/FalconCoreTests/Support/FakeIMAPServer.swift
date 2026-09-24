@@ -9,14 +9,16 @@ import Network
 /// Gmail. It waits `latency` before every answer, sends no faster than `bytesPerSecond`, counts
 /// commands and bytes per session, and can be told to misbehave in the ways Gmail and the
 /// network do: BYE (also during IDLE, and without closing), a tagged NO with a response code, a
-/// refused sign-in, a stalled command, a black hole, a close after a silence, a renumbered
-/// mailbox, and news sent before "+ idling".
+/// refused sign-in, a stalled command, a black hole, a close after a silence, a connection cut
+/// after a given command, a renumbered mailbox, and news sent before "+ idling". Given the
+/// capabilities, it answers CONDSTORE's CHANGEDSINCE and ESEARCH as Gmail does.
 final class FakeIMAPServer: @unchecked Sendable {
     struct Message {
         var uid: UInt32
         var data: Data
         var flags: [String] = []
         var internalDate = Date()
+        var modSeq: UInt64 = 1
     }
 
     struct Mailbox {
@@ -25,8 +27,22 @@ final class FakeIMAPServer: @unchecked Sendable {
         var uidValidity: UInt32
         var uidNext: UInt32
         var messages: [Message]
+        var highestModSeq: UInt64 = 1
 
         func index(of uid: UInt32) -> Int? { messages.firstIndex { $0.uid == uid } }
+
+        /// Gives the message at `i` the next mod-sequence, as any change to it does.
+        mutating func touch(_ i: Int) {
+            highestModSeq += 1
+            messages[i].modSeq = highestModSeq
+        }
+    }
+
+    /// One command and the reply it got.
+    struct Exchange {
+        var line: String
+        var at: Date
+        var replyBytes: Int
     }
 
     struct SessionCounts {
@@ -61,6 +77,8 @@ final class FakeIMAPServer: @unchecked Sendable {
     private var holeOpen = false
     private var silenceLimit: TimeInterval?
     private var queuedForIdle: [(mailbox: String, message: Message)] = []
+    private var cutAfter: (verb: String, remaining: Int)?
+    private var exchangeLog: [Exchange] = []
 
     init(capabilities: [String] = ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE"],
          latency: TimeInterval = 0.002, bytesPerSecond: Double = 50_000_000) {
@@ -90,7 +108,15 @@ final class FakeIMAPServer: @unchecked Sendable {
             mailboxes[m].messages.append(Message(uid: uid, data: data, flags: flags))
             mailboxes[m].messages.sort { $0.uid < $1.uid }
             mailboxes[m].uidNext = max(mailboxes[m].uidNext, uid + 1)
+            if let i = mailboxes[m].index(of: uid) { mailboxes[m].touch(i) }
         }
+    }
+
+    /// Stores many messages at once, as an import through another program does, each made by
+    /// `make` from its position, and returns their UIDs.
+    @discardableResult
+    func addMany(_ count: Int, to mailbox: String, date: Date = Date(), make: (Int) -> Data) -> [UInt32] {
+        lock.withLock { (0..<count).map { insert(make($0), into: mailbox, flags: [], date: date) } }
     }
 
     private func insert(_ data: Data, into mailbox: String, flags: [String], date: Date) -> UInt32 {
@@ -98,6 +124,7 @@ final class FakeIMAPServer: @unchecked Sendable {
         let uid = mailboxes[m].uidNext
         mailboxes[m].uidNext += 1
         mailboxes[m].messages.append(Message(uid: uid, data: data, flags: flags, internalDate: date))
+        mailboxes[m].touch(mailboxes[m].messages.count - 1)
         return uid
     }
 
@@ -114,6 +141,7 @@ final class FakeIMAPServer: @unchecked Sendable {
         lock.withLock {
             guard let m = mailboxes.firstIndex(where: { $0.name == mailbox }), let i = mailboxes[m].index(of: uid) else { return }
             mailboxes[m].messages[i].flags = flags
+            mailboxes[m].touch(i)
         }
     }
 
@@ -122,6 +150,7 @@ final class FakeIMAPServer: @unchecked Sendable {
         lock.withLock {
             guard let m = mailboxes.firstIndex(where: { $0.name == mailbox }) else { return }
             mailboxes[m].messages.removeAll { $0.uid == uid }
+            mailboxes[m].highestModSeq += 1
         }
     }
 
@@ -177,9 +206,17 @@ final class FakeIMAPServer: @unchecked Sendable {
         lock.withLock { stalls.append((verb.uppercased(), seconds)) }
     }
 
-    /// From now on nothing is answered and nothing is closed, like a link that has gone dead.
-    func blackHole() {
-        lock.withLock { holeOpen = true }
+    /// From now on nothing is answered and nothing is closed, like a link that has gone dead;
+    /// until `blackHole(false)`, when commands are answered again.
+    func blackHole(_ on: Bool = true) {
+        lock.withLock { holeOpen = on }
+    }
+
+    /// The connection that sends the `count`th command whose name starts with `verb`, from now
+    /// on, is closed once it has been answered, as a connection lost part of the way through
+    /// a pass is.
+    func cutAfter(_ verb: String, count: Int) {
+        lock.withLock { cutAfter = (verb.uppercased(), count) }
     }
 
     /// A connection that hears nothing from its client for `seconds` is closed without a word,
@@ -223,6 +260,7 @@ final class FakeIMAPServer: @unchecked Sendable {
     // MARK: Counters
 
     var commands: [String] { lock.withLock { recorded } }
+    var exchanges: [Exchange] { lock.withLock { exchangeLog } }
     var peakConnections: Int { lock.withLock { peak } }
     var openConnections: Int { lock.withLock { live } }
     var loginCount: Int { lock.withLock { logins } }
@@ -233,6 +271,7 @@ final class FakeIMAPServer: @unchecked Sendable {
     func resetCounters() {
         lock.withLock {
             recorded = []
+            exchangeLog = []
             peak = live
         }
     }
@@ -266,8 +305,8 @@ final class FakeIMAPServer: @unchecked Sendable {
     }
 
     /// A signed-in client of this server, over plain TCP.
-    func client(label: String = "owner@example.com") async throws -> IMAPClient {
-        let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: label)
+    func client(label: String = "owner@example.com", traffic: TrafficTap = .none) async throws -> IMAPClient {
+        let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: label, traffic: traffic)
         try await c.connect()
         try await c.login(user: label, password: "not-a-password")
         return c
@@ -333,6 +372,26 @@ final class FakeIMAPServer: @unchecked Sendable {
         }
     }
 
+    fileprivate func noteExchange(_ line: String, at: Date, replyBytes: Int) {
+        lock.withLock { exchangeLog.append(Exchange(line: line, at: at, replyBytes: replyBytes)) }
+    }
+
+    /// True when the connection that sent `command` is to be cut now it has been answered.
+    fileprivate func cutsAfter(_ command: String) -> Bool {
+        lock.withLock {
+            guard let rule = cutAfter, command.hasPrefix(rule.verb) else { return false }
+            if rule.remaining <= 1 {
+                cutAfter = nil
+                return true
+            }
+            cutAfter = (rule.verb, rule.remaining - 1)
+            return false
+        }
+    }
+
+    fileprivate var offersCondstore: Bool { lock.withLock { capabilities.contains { $0.uppercased() == "CONDSTORE" } } }
+    fileprivate var offersESearch: Bool { lock.withLock { capabilities.contains { $0.uppercased() == "ESEARCH" } } }
+
     fileprivate func takeStall(for command: String) -> TimeInterval? {
         lock.withLock {
             guard let i = stalls.firstIndex(where: { command.hasPrefix($0.verb) }) else { return nil }
@@ -367,9 +426,9 @@ final class FakeIMAPServer: @unchecked Sendable {
         mailboxes.append(Mailbox(name: name, attributes: [], uidValidity: 1_800_000_000, uidNext: 1, messages: []))
         return true
     }
-    fileprivate func appendMessage(_ data: Data, flags: [String], to name: String) -> (UInt32, UInt32)? {
+    fileprivate func appendMessage(_ data: Data, flags: [String], date: Date, to name: String) -> (UInt32, UInt32)? {
         guard let i = mailboxIndex(name) else { return nil }
-        let uid = insert(data, into: name, flags: flags, date: Date())
+        let uid = insert(data, into: name, flags: flags, date: date)
         return (mailboxes[i].uidValidity, uid)
     }
     fileprivate func insertQueued(_ data: Data, into name: String) {
@@ -389,6 +448,7 @@ private final class Session: @unchecked Sendable {
     private var selected: String?
     private var idlingOn: String?
     private var closed = false
+    private var sent = 0
 
     init(server: FakeIMAPServer, connection: NWConnection, id: Int) {
         self.server = server
@@ -429,7 +489,11 @@ private final class Session: @unchecked Sendable {
             }
             if let seconds = server.takeStall(for: command) { Thread.sleep(forTimeInterval: seconds) }
             Thread.sleep(forTimeInterval: server.latency)
-            guard answer(line, words: words, command: command) else { return }
+            let started = Date()
+            let before = sent
+            let going = answer(line, words: words, command: command)
+            server.noteExchange(line, at: started, replyBytes: sent - before)
+            guard going, !server.cutsAfter(command) else { return }
         }
     }
 
@@ -467,7 +531,7 @@ private final class Session: @unchecked Sendable {
             }
             return write(lines.joined() + "\(tag) OK LIST completed\r\n")
         case "SELECT", "EXAMINE":
-            return select(tag: tag, name: Session.unquoted(rest))
+            return select(tag: tag, name: Session.firstArgument(rest))
         case "STATUS":
             return status(tag: tag, rest: rest)
         case "CREATE":
@@ -506,9 +570,10 @@ private final class Session: @unchecked Sendable {
             return write("\(tag) NO [NONEXISTENT] Unknown Mailbox: \(name)\r\n")
         }
         stateLock.withLock { selected = name }
+        let modSeq = server.offersCondstore ? "* OK [HIGHESTMODSEQ \(box.highestModSeq)] Highest\r\n" : ""
         return write("* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* \(box.messages.count) EXISTS\r\n* 0 RECENT\r\n"
                      + "* OK [UIDVALIDITY \(box.uidValidity)] UIDs valid\r\n* OK [UIDNEXT \(box.uidNext)] Predicted next UID\r\n"
-                     + "\(tag) OK [READ-WRITE] \(name) selected\r\n")
+                     + modSeq + "\(tag) OK [READ-WRITE] \(name) selected\r\n")
     }
 
     private func status(tag: String, rest: String) -> Bool {
@@ -521,8 +586,15 @@ private final class Session: @unchecked Sendable {
                      + "\(tag) OK STATUS completed\r\n")
     }
 
-    private func search(tag: String, criteria: String) -> Bool {
+    private func search(tag: String, criteria text: String) -> Bool {
         guard let (_, box) = currentBox() else { return write("\(tag) BAD no mailbox selected\r\n") }
+        var criteria = text
+        var extended = false
+        if criteria.uppercased().hasPrefix("RETURN ("), let close = criteria.firstIndex(of: ")") {
+            guard server.offersESearch else { return write("\(tag) BAD RETURN needs ESEARCH\r\n") }
+            extended = true
+            criteria = String(criteria[criteria.index(after: close)...]).trimmingCharacters(in: .whitespaces)
+        }
         var hits = box.messages
         var words = criteria.split(separator: " ").map(String.init)[...]
         while let word = words.popFirst() {
@@ -543,6 +615,10 @@ private final class Session: @unchecked Sendable {
                 return write("\(tag) BAD search key not served here\r\n")
             }
         }
+        if extended {
+            let all = hits.isEmpty ? "" : " ALL \(IMAPClient.sequenceSet(hits.map(\.uid)))"
+            return write("* ESEARCH (TAG \"\(tag)\") UID\(all)\r\n\(tag) OK SEARCH completed\r\n")
+        }
         return write("* SEARCH\(hits.map { " \($0.uid)" }.joined())\r\n\(tag) OK SEARCH completed\r\n")
     }
 
@@ -551,9 +627,16 @@ private final class Session: @unchecked Sendable {
         guard let space = arguments.firstIndex(of: " ") else { return write("\(tag) BAD\r\n") }
         let wanted = Session.uidSet(String(arguments[..<space]), last: box.messages.last?.uid ?? 0)
         let items = arguments[space...].uppercased()
+        var changedSince: UInt64?
+        if let modifier = items.range(of: "(CHANGEDSINCE ") {
+            guard server.offersCondstore else { return write("\(tag) BAD CHANGEDSINCE needs CONDSTORE\r\n") }
+            changedSince = UInt64(items[modifier.upperBound...].prefix { $0.isNumber })
+        }
         var out = Data()
         var seen: [UInt32] = []
-        for (index, message) in box.messages.enumerated() where wanted.contains(where: { $0.contains(message.uid) }) {
+        for index in Session.indices(of: wanted, in: box.messages) {
+            let message = box.messages[index]
+            if let changedSince, message.modSeq <= changedSince { continue }
             var parts = ["UID \(message.uid)"]
             var literal: Data?
             var flags = message.flags
@@ -564,6 +647,7 @@ private final class Session: @unchecked Sendable {
             if items.contains("FLAGS") { parts.append("FLAGS (\(flags.joined(separator: " ")))") }
             if items.contains("RFC822.SIZE") { parts.append("RFC822.SIZE \(message.data.count)") }
             if items.contains("INTERNALDATE") { parts.append("INTERNALDATE \"\(Session.internalDate(message.internalDate))\"") }
+            if changedSince != nil || items.contains("MODSEQ") { parts.append("MODSEQ (\(message.modSeq))") }
             if let fields = Session.headerFieldList(items) {
                 let head = Session.headerFields(fields, in: message.data)
                 parts.append("BODY[HEADER.FIELDS (\(fields.joined(separator: " ")))] {\(head.count)}")
@@ -576,7 +660,15 @@ private final class Session: @unchecked Sendable {
             if let literal { out += Data("\r\n".utf8) + literal }
             out += Data(")\r\n".utf8)
         }
-        if !seen.isEmpty { mutateSelected { box in for uid in seen { if let i = box.index(of: uid) { box.messages[i].flags.append("\\Seen") } } } }
+        if !seen.isEmpty {
+            mutateSelected { box in
+                for uid in seen {
+                    guard let i = box.index(of: uid) else { continue }
+                    box.messages[i].flags.append("\\Seen")
+                    box.touch(i)
+                }
+            }
+        }
         out += Data("\(tag) OK FETCH completed\r\n".utf8)
         return write(out)
     }
@@ -598,6 +690,7 @@ private final class Session: @unchecked Sendable {
                 } else {
                     current = flags
                 }
+                if current != box.messages[i].flags { box.touch(i) }
                 box.messages[i].flags = current
                 if !op.hasSuffix(".SILENT") {
                     echoed += "* \(i + 1) FETCH (UID \(box.messages[i].uid) FLAGS (\(current.joined(separator: " "))))\r\n"
@@ -620,12 +713,16 @@ private final class Session: @unchecked Sendable {
             var to: [UInt32] = []
             for (i, m) in source.messages.enumerated() where ranges.contains(where: { $0.contains(m.uid) }) {
                 target.messages.append(FakeIMAPServer.Message(uid: target.uidNext, data: m.data, flags: m.flags, internalDate: m.internalDate))
+                target.touch(target.messages.count - 1)
                 from.append(m.uid)
                 to.append(target.uidNext)
                 target.uidNext += 1
                 expunged.append(i + 1)
             }
-            if removing { source.messages.removeAll { m in from.contains(m.uid) } }
+            if removing, !from.isEmpty {
+                source.messages.removeAll { m in from.contains(m.uid) }
+                source.highestModSeq += 1
+            }
             s.setMailbox(target, at: d)
             s.setMailbox(source, at: src)
             var out = from.isEmpty ? "" : "* OK [COPYUID \(target.uidValidity) \(IMAPClient.sequenceSet(from)) \(IMAPClient.sequenceSet(to))] Done\r\n"
@@ -644,6 +741,7 @@ private final class Session: @unchecked Sendable {
                 guard m.flags.contains("\\Deleted") else { continue }
                 if let only, !only.contains(where: { $0.contains(m.uid) }) { continue }
                 box.messages.remove(at: i)
+                box.highestModSeq += 1
                 out += "* \(i + 1) EXPUNGE\r\n"
             }
         }
@@ -655,13 +753,19 @@ private final class Session: @unchecked Sendable {
               let size = Int(rest[rest.index(after: open)..<rest.index(before: rest.endIndex)].filter(\.isNumber)) else {
             return write("\(tag) BAD APPEND needs a literal\r\n")
         }
-        let name = Session.unquoted(String(rest.prefix { $0 != " " }))
+        let name = Session.firstArgument(rest)
         var flags: [String] = []
         if let l = rest.firstIndex(of: "("), let r = rest.firstIndex(of: ")"), l < r {
             flags = rest[rest.index(after: l)..<r].split(separator: " ").map(String.init)
         }
+        var date = Date()
+        let afterName = rest.hasPrefix("\"") ? rest.dropFirst().drop { $0 != "\"" }.dropFirst() : rest.drop { $0 != " " }
+        if let open = afterName.firstIndex(of: "\""), let close = afterName[afterName.index(after: open)...].firstIndex(of: "\""),
+           let parsed = Session.parseInternalDate(String(afterName[afterName.index(after: open)..<close])) {
+            date = parsed
+        }
         guard write("+ Ready for literal data\r\n"), let data = read(exactly: size), readLine() != nil else { return false }
-        guard let (validity, uid) = server.with({ $0.appendMessage(data, flags: flags, to: name) }) else {
+        guard let (validity, uid) = server.with({ $0.appendMessage(data, flags: flags, date: date, to: name) }) else {
             return write("\(tag) NO [TRYCREATE] No folder \(name) (Failure)\r\n")
         }
         return write("\(tag) OK [APPENDUID \(validity) \(uid)] APPEND completed\r\n")
@@ -757,17 +861,37 @@ private final class Session: @unchecked Sendable {
             if nextFree > now { Thread.sleep(until: nextFree) }
             nextFree = max(nextFree, now).addingTimeInterval(Double(slice.count) / server.bytesPerSecond)
             let done = DispatchSemaphore(value: 0)
-            nonisolated(unsafe) var sent = false
+            nonisolated(unsafe) var delivered = false
             connection.send(content: Data(slice), completion: .contentProcessed { error in
-                sent = error == nil
+                delivered = error == nil
                 done.signal()
             })
             done.wait()
-            guard sent else { return false }
+            guard delivered else { return false }
+            sent += slice.count
             server.count(self, bytesOut: slice.count)
             offset = slice.endIndex
         }
         return true
+    }
+
+    /// The positions of the messages whose UIDs lie in `ranges`, in order, found by halving
+    /// rather than by a walk through every message, which a mailbox of 25,000 would make slow.
+    static func indices(of ranges: [ClosedRange<UInt32>], in messages: [FakeIMAPServer.Message]) -> [Int] {
+        var out: [Int] = []
+        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            var low = 0
+            var high = messages.count
+            while low < high {
+                let mid = (low + high) / 2
+                if messages[mid].uid < range.lowerBound { low = mid + 1 } else { high = mid }
+            }
+            while low < messages.count, messages[low].uid <= range.upperBound {
+                if out.last.map({ $0 < low }) ?? true { out.append(low) }
+                low += 1
+            }
+        }
+        return out
     }
 
     static func uidSet(_ text: String, last: UInt32 = .max) -> [ClosedRange<UInt32>] {
@@ -810,6 +934,24 @@ private final class Session: @unchecked Sendable {
         f.timeZone = TimeZone(secondsFromGMT: 0)
         f.dateFormat = "dd-MMM-yyyy HH:mm:ss +0000"
         return f.string(from: date)
+    }
+
+    static func parseInternalDate(_ text: String) -> Date? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "d-MMM-yyyy HH:mm:ss Z"
+        return f.date(from: text)
+    }
+
+    /// The first argument of a command, quoted or not, without what follows it.
+    static func firstArgument(_ rest: String) -> String {
+        guard rest.hasPrefix("\"") else { return String(rest.prefix { $0 != " " }) }
+        var out = ""
+        var escaped = false
+        for ch in rest.dropFirst() {
+            if escaped { out.append(ch); escaped = false } else if ch == "\\" { escaped = true } else if ch == "\"" { break } else { out.append(ch) }
+        }
+        return out
     }
 
     static func searchDate(_ text: String) -> Date? {

@@ -6,7 +6,7 @@ import Foundation
 /// a sentence FalconMail wrote, so rewording any of them cannot change what the engine does.
 public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
     public enum Kind: String, Sendable, CaseIterable {
-        case throttled, overBudget, tooManyConnections, webSignInRequired, connectionDropped, needsSignIn
+        case throttled, overBudget, overUploadBudget, tooManyConnections, webSignInRequired, connectionDropped, needsSignIn
         case messageGone, folderGone, mailboxRenumbered, expungeRefused, temporary
         case sendingLimit, recipientRefused, folderListUnreadable, local, refused
     }
@@ -52,6 +52,8 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
             return "\(service) asked FalconMail to slow down for \(email). Mail on this Mac stays available; downloads resume \(MailServiceError.when(retryAfter))."
         case .overBudget:
             return "\(email) has used today's download allowance. Mail on this Mac and new mail stay available; older messages open again \(MailServiceError.when(retryAfter))."
+        case .overUploadBudget:
+            return "FalconMail has uploaded as much to \(email) as is safe in a day; uploads resume \(MailServiceError.when(retryAfter))."
         case .tooManyConnections:
             let minutes = max(1, Int(((retryAfter ?? Date()).timeIntervalSinceNow / 60).rounded()))
             return "Other apps are using \(email)'s connections. Retrying in \(minutes) minute\(minutes == 1 ? "" : "s")."
@@ -93,6 +95,8 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
             return "\(service) asked FalconMail to slow down for \(email). \(later ?? "Try again later.")"
         case .tooManyConnections:
             return "Other apps are using \(email)'s connections. \(later ?? "Try again in a few minutes.")"
+        case .overUploadBudget:
+            return "FalconMail has uploaded as much to \(email) as is safe in a day. \(later ?? "Try again later.")"
         case .webSignInRequired:
             return "\(isGoogle ? "Google" : "The mail server") wants you to sign in to \(email) in a web browser first."
         case .connectionDropped:
@@ -143,6 +147,8 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
             return make(.messageGone, "UID \(e.uid) not returned")
         case is IMAPNotSent:
             return make(.connectionDropped, "connection lost before the work was sent")
+        case let e as StreamStalled:
+            return make(.connectionDropped, "no reply within \(String(format: "%g", e.seconds)) s")
         case let e as IMAPExpungeRefused:
             return make(.expungeRefused, "\(e.others.count) other messages marked \\Deleted and no UIDPLUS", name: e.mailbox)
         case let e as SMTPServerError:
@@ -174,6 +180,9 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
         if said.contains("too many simultaneous connections") { return .tooManyConnections }
         if code == "WEBALERT" || said.contains("web browser") || said.contains("web login") { return .webSignInRequired }
         if code == "AUTHENTICATIONFAILED" || code == "AUTHORIZATIONFAILED" || code == "EXPIRED" { return .needsSignIn }
+        // An ALERT refusal is the server saying the owner must do something first, such as
+        // allow IMAP or sign in on the web; asking again before then only repeats it.
+        if code == "ALERT" { return said.contains("password") || said.contains("credentials") ? .needsSignIn : .webSignInRequired }
         if code == "UNAVAILABLE" || code == "INUSE" { return .temporary }
         if code == "NONEXISTENT" || code == "TRYCREATE" { return .folderGone }
         if !isBye, command == "LOGIN" || command == "AUTHENTICATE" { return .needsSignIn }
