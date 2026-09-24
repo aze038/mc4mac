@@ -10,12 +10,14 @@ final class SignatureEditorWindows: NSObject, NSWindowDelegate {
     static let size = NSSize(width: 620, height: 400)
 
     private var windows: [UUID: NSWindow] = [:]
+    private weak var library: SignatureLibrary?
 
     func open(_ id: UUID, library: SignatureLibrary) {
         if let window = windows[id] {
             window.makeKeyAndOrderFront(nil)
             return
         }
+        self.library = library
         guard let window = Self.window(for: id, library: library) else { return }
         window.delegate = self
         windows[id] = window
@@ -28,10 +30,13 @@ final class SignatureEditorWindows: NSObject, NSWindowDelegate {
         windows[id]?.close()
     }
 
+    /// What was typed last is kept as the window goes, so an editor opened again at once starts
+    /// from it.
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow,
               let id = windows.first(where: { $0.value === window })?.key else { return }
         windows[id] = nil
+        library?.saveNow()
     }
 
     /// The editor window, not yet on screen.
@@ -50,14 +55,14 @@ final class SignatureEditorWindows: NSObject, NSWindowDelegate {
 }
 
 /// The editor: the name at the top, a small formatting bar, then the signature itself. Every
-/// change is kept as it is made, the text a moment after typing stops.
+/// change is handed to the library as it is made; only a change is, so a signature opened just
+/// to be read is left exactly as it was.
 struct SignatureEditorView: View {
     let id: UUID
     let library: SignatureLibrary
     let retitle: (String) -> Void
     @State private var name: String
     @State private var formatter = TextFormatter()
-    @State private var pendingText: Task<Void, Never>?
     @State private var initialText: NSAttributedString
 
     init(id: UUID, library: SignatureLibrary, initialName: String, retitle: @escaping (String) -> Void) {
@@ -85,13 +90,9 @@ struct SignatureEditorView: View {
             .padding(.vertical, 10)
             formatBar
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
-            SignatureTextEditor(text: initialText, onChange: { scheduleTextSave() }, onReady: { formatter.attach($0) })
+            SignatureTextEditor(text: initialText, onChange: { library.setText($0, of: id) }, onReady: { formatter.attach($0) })
         }
         .background(OLColor.chrome)
-        .onDisappear {
-            saveText()
-            library.saveNow()
-        }
     }
 
     /// The compose ribbon's own controls, only those a signature needs.
@@ -124,29 +125,14 @@ struct SignatureEditorView: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
     }
-
-    private func scheduleTextSave() {
-        pendingText?.cancel()
-        pendingText = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            saveText()
-        }
-    }
-
-    private func saveText() {
-        pendingText?.cancel()
-        pendingText = nil
-        guard let storage = formatter.editor?.textStorage, library.signature(id) != nil else { return }
-        library.setText(NSAttributedString(attributedString: storage), of: id)
-    }
 }
 
 /// The signature's text: the composer's text view, so pictures and the formatting bar behave
 /// as they do in a message.
 struct SignatureTextEditor: NSViewRepresentable {
     let text: NSAttributedString
-    let onChange: () -> Void
+    /// Called with the text after each change the user makes, never for the text it opens with.
+    let onChange: (NSAttributedString) -> Void
     let onReady: (NSTextView) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
@@ -186,10 +172,13 @@ struct SignatureTextEditor: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
-        var onChange: () -> Void
+        var onChange: (NSAttributedString) -> Void
 
-        init(onChange: @escaping () -> Void) { self.onChange = onChange }
+        init(onChange: @escaping (NSAttributedString) -> Void) { self.onChange = onChange }
 
-        func textDidChange(_ notification: Notification) { onChange() }
+        func textDidChange(_ notification: Notification) {
+            guard let storage = (notification.object as? NSTextView)?.textStorage else { return }
+            onChange(NSAttributedString(attributedString: storage))
+        }
     }
 }

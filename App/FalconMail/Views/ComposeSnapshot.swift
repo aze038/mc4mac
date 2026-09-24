@@ -5,11 +5,12 @@ import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
 /// Table picker, the main window's Home ribbon, which shares the compose ribbon's tiles, the
-/// Signatures pane with two stand-in signatures and with none, and a signature's editor window,
-/// in both appearances into PNGs at twice their size in that directory, then quits. Nothing is
-/// ever put on screen or activated, so they can be measured against Outlook's while the Mac is
-/// in use. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no mail;
-/// the stand-in signatures are held in memory and never saved.
+/// Signatures pane with two stand-in signatures, with none and with its notice of a damaged
+/// file set aside, and a signature's editor window, in both appearances into PNGs at twice
+/// their size in that directory, then quits. Nothing is ever put on screen or activated, so
+/// they can be measured against Outlook's while the Mac is in use. Run it with
+/// CFFIXED_USER_HOME pointing at an empty folder, so the model reads no mail; the stand-in
+/// signatures are held in memory and never saved.
 enum ComposeSnapshot {
     private static let appearances: [(String, NSAppearance.Name)] = [("dark", .darkAqua), ("light", .aqua)]
 
@@ -50,7 +51,8 @@ enum ComposeSnapshot {
         book.setText(formalText(), of: formal.id)
         let short = book.add()
         book.rename(short.id, to: "Short")
-        book.setText(NSAttributedString(string: "Alex", attributes: RichText.bodyAttributes), of: short.id)
+        book.setText(NSAttributedString(string: "Alex", attributes: RichText.bodyAttributes), of: short.id,
+                     plainIn: RichText.bodyAttributes)
         book.setDefault(formal.id, for: accounts[0].id, .newMessages)
         book.setDefault(short.id, for: accounts[0].id, .replies)
         let library = SignatureLibrary(book: book)
@@ -62,6 +64,10 @@ enum ComposeSnapshot {
             model.signatures = SignatureLibrary(book: SignatureBook())
             render(SettingsView(pane: .signatures).environment(model), size: pane, appearance: appearance,
                    to: "\(directory)/signatures-empty-\(name).png")
+            let aside = URL(fileURLWithPath: "/signatures-unreadable-1790000000.json")
+            model.signatures = SignatureLibrary(book: book, problem: .setAside(aside))
+            render(SettingsView(pane: .signatures).environment(model), size: pane, appearance: appearance,
+                   to: "\(directory)/signatures-notice-\(name).png")
             guard let window = SignatureEditorWindows.window(for: formal.id, library: library),
                   let frame = window.contentView?.superview else { continue }
             window.appearance = NSAppearance(named: appearance)

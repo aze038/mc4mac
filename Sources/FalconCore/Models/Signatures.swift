@@ -6,8 +6,8 @@ import AppKit
 public struct Signature: Codable, Hashable, Sendable, Identifiable {
     public var id: UUID
     public var name: String
-    /// The words alone, pictures left out. A signature carried over from an account has only
-    /// this until it is first edited.
+    /// The words alone, pictures left out. A signature without formatting of its own, as one
+    /// carried over from an account is, has only this.
     public var plain: String
     /// The formatted text as flat RTFD, which unlike RTF keeps pictures.
     public var rich: Data?
@@ -29,10 +29,35 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
         return text
     }
 
-    public mutating func setText(_ text: NSAttributedString) {
-        plain = text.string.replacingOccurrences(of: Signature.pictureMark, with: "")
-        rich = text.rtfd(from: NSRange(location: 0, length: text.length),
-                         documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
+    /// Text set throughout in `base`, the formatting a plain signature is shown in, is kept as
+    /// plain text alone. It then opens messages exactly as a plain signature does, where RTF would
+    /// turn the system font into Helvetica Neue for the whole message and drop carriage returns.
+    public mutating func setText(_ text: NSAttributedString, plainIn base: [NSAttributedString.Key: Any] = [:]) {
+        guard Signature.isSetOnly(in: base, text) else {
+            plain = text.string.replacingOccurrences(of: Signature.pictureMark, with: "")
+            rich = text.rtfd(from: NSRange(location: 0, length: text.length),
+                             documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
+            return
+        }
+        plain = text.string
+        rich = nil
+    }
+
+    /// Whether every run of `text` says no more than `base` does. The plain paragraph style a
+    /// text view gives what is typed is no formatting either; a picture or a link always is.
+    private static func isSetOnly(in base: [NSAttributedString.Key: Any], _ text: NSAttributedString) -> Bool {
+        var plain = true
+        text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { own, _, stop in
+            for (key, value) in own {
+                if key == .paragraphStyle, let style = value as? NSParagraphStyle, style == NSParagraphStyle.default { continue }
+                guard let expected = base[key] as? NSObject, expected.isEqual(value) else {
+                    plain = false
+                    stop.pointee = true
+                    return
+                }
+            }
+        }
+        return plain
     }
 
     /// Nothing to put in a message: no words and no pictures, as with an account's signature of
@@ -84,16 +109,30 @@ public struct SignatureBook: Codable, Hashable, Sendable {
     public var version: Int
     public var signatures: [Signature]
     public var defaults: [SignatureDefaults]
-    /// Accounts whose own signature, from before signatures had names, has been carried over.
-    /// Each is carried over once, so a signature deleted here never comes back, while an account
-    /// added since, even by an older build, is still picked up.
-    public var adoptedAccounts: [UUID]
+    /// Each account's own signature, from before signatures had names, as it was carried over.
+    /// The same text is carried over once, so a signature deleted here never comes back, while
+    /// an account added since, or a signature an older build has set since, is still picked up.
+    public var adopted: [Adoption]
 
-    public init(signatures: [Signature] = [], defaults: [SignatureDefaults] = [], adoptedAccounts: [UUID] = []) {
+    public struct Adoption: Codable, Hashable, Sendable {
+        public var accountID: UUID
+        /// The account's own signature when it was carried over.
+        public var text: String
+        /// The signature it became, nil for a blank one.
+        public var signatureID: UUID?
+
+        public init(accountID: UUID, text: String, signatureID: UUID?) {
+            self.accountID = accountID
+            self.text = text
+            self.signatureID = signatureID
+        }
+    }
+
+    public init(signatures: [Signature] = [], defaults: [SignatureDefaults] = [], adopted: [Adoption] = []) {
         version = SignatureBook.currentVersion
         self.signatures = signatures
         self.defaults = defaults
-        self.adoptedAccounts = adoptedAccounts
+        self.adopted = adopted
     }
 
     /// By name, as the Signatures pane and the Signature menu list them, "Untitled 2" before
@@ -161,30 +200,57 @@ public struct SignatureBook: Codable, Hashable, Sendable {
         signatures[i].name = name
     }
 
-    public mutating func setText(_ text: NSAttributedString, of id: UUID) {
+    public mutating func setText(_ text: NSAttributedString, of id: UUID, plainIn base: [NSAttributedString.Key: Any] = [:]) {
         guard let i = signatures.firstIndex(where: { $0.id == id }) else { return }
-        signatures[i].setText(text)
+        signatures[i].setText(text, plainIn: base)
     }
 
     /// Carries over the one plain signature each account kept before signatures had names. An
     /// account's signature was put into every new message, reply and forward from it, so the
     /// signature made from it becomes both its defaults; an account without one gets None and
     /// no signature. Returns whether anything changed.
+    ///
+    /// An older build still sets an account's own signature, and then puts that into its
+    /// messages, so a changed one is carried over again as a signature of its own. It takes the
+    /// place of the one carried over before only where that is still the default, or there is
+    /// none; a default chosen here since is left as it is.
     @discardableResult
     public mutating func adopt(_ accounts: [AccountInfo]) -> Bool {
         var changed = false
-        for account in accounts where !adoptedAccounts.contains(account.id) {
-            adoptedAccounts.append(account.id)
+        for account in accounts {
+            let earlier = adopted.firstIndex { $0.accountID == account.id }
+            if let earlier, adopted[earlier].text.trimmed == account.signature.trimmed { continue }
             changed = true
-            guard !account.signature.trimmed.isEmpty else { continue }
-            let named = account.displayName.trimmed
-            let signature = Signature(name: uniqueName(named.isEmpty ? account.email : named, orElse: account.email),
-                                      plain: account.signature)
-            signatures.append(signature)
-            setDefault(signature.id, for: account.id, .newMessages)
-            setDefault(signature.id, for: account.id, .replies)
+            let made = carryOver(account)
+            let adoption = Adoption(accountID: account.id, text: account.signature, signatureID: made?.id)
+            guard let earlier else {
+                if let made {
+                    setDefault(made.id, for: account.id, .newMessages)
+                    setDefault(made.id, for: account.id, .replies)
+                }
+                adopted.append(adoption)
+                continue
+            }
+            for use in SignatureUse.allCases {
+                let current = defaultID(for: account.id, use)
+                if current == nil || current == adopted[earlier].signatureID, current != made?.id {
+                    setDefault(made?.id, for: account.id, use)
+                }
+            }
+            adopted[earlier] = adoption
         }
         return changed
+    }
+
+    /// The account's own signature as a signature named after the account, or nothing for a
+    /// blank one.
+    private mutating func carryOver(_ account: AccountInfo) -> Signature? {
+        guard !account.signature.trimmed.isEmpty else { return nil }
+        let named = account.displayName.trimmed
+        let signature = Signature(name: uniqueName(named.isEmpty ? account.email : named, orElse: account.email),
+                                  plain: account.signature)
+        signatures.append(signature)
+        return signature
     }
 
     /// `base` when no signature has that name, else `alternative`, else the first with a number
@@ -216,25 +282,70 @@ public struct SignatureStore: Sendable {
         self.init(file: layout.signaturesFile)
     }
 
-    /// The stored book, and whether it may be written back. A file this build cannot read is
-    /// moved aside whole and a new book begun, whose accounts' own signatures are then carried
-    /// over again, so nothing is lost. A file from a newer build is read but never written over.
-    public func open() -> (book: SignatureBook, writable: Bool) {
-        guard FileManager.default.fileExists(atPath: file.path) else { return (SignatureBook(), true) }
-        guard let book = AtomicFile.readJSON(SignatureBook.self, from: file) else {
-            setAside()
-            return (SignatureBook(), true)
+    /// Why the book did not simply come from the file, for the owner to be told.
+    public enum Problem: Equatable, Sendable {
+        /// Written by a newer build: read as far as this one can, and never written over.
+        case newer
+        /// There but not readable, as with wrong permissions: left alone and not written over.
+        case unreadable
+        /// Read but not understood: moved whole to this file, and a new book begun.
+        case setAside(URL)
+    }
+
+    public struct Opened: Sendable {
+        public var book: SignatureBook
+        public var problem: Problem?
+
+        /// A file kept for a newer build, or one that could not be read, is never written over.
+        public var writable: Bool {
+            switch problem {
+            case nil, .setAside: return true
+            case .newer, .unreadable: return false
+            }
         }
-        return (book, book.version <= SignatureBook.currentVersion)
+    }
+
+    /// The version is read before anything else, because a newer build may have changed the
+    /// rest of the file past what this one can decode.
+    private struct Header: Decodable {
+        let version: Int
+    }
+
+    /// The stored book. Only a file of this build's version or older that will not decode is
+    /// moved aside, the accounts' own signatures then carried over again into a new book, so
+    /// nothing is lost.
+    public func open() -> Opened {
+        let data: Data
+        do {
+            data = try Data(contentsOf: file)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return Opened(book: SignatureBook(), problem: nil)
+        } catch {
+            return Opened(book: SignatureBook(), problem: .unreadable)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        if let header = try? decoder.decode(Header.self, from: data), header.version > SignatureBook.currentVersion {
+            return Opened(book: (try? decoder.decode(SignatureBook.self, from: data)) ?? SignatureBook(), problem: .newer)
+        }
+        if let book = try? decoder.decode(SignatureBook.self, from: data) { return Opened(book: book, problem: nil) }
+        guard let aside = setAside() else { return Opened(book: SignatureBook(), problem: .unreadable) }
+        return Opened(book: SignatureBook(), problem: .setAside(aside))
     }
 
     public func save(_ book: SignatureBook) throws {
         try AtomicFile.writeJSON(book, to: file)
     }
 
-    private func setAside() {
+    /// Nil when the file could not be moved, which is then left as it is.
+    private func setAside() -> URL? {
         let stamp = Int(Date().timeIntervalSince1970)
         let aside = file.deletingLastPathComponent().appendingPathComponent("signatures-unreadable-\(stamp).json")
-        try? FileManager.default.moveItem(at: file, to: aside)
+        do {
+            try FileManager.default.moveItem(at: file, to: aside)
+            return aside
+        } catch {
+            return nil
+        }
     }
 }

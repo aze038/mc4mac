@@ -53,6 +53,10 @@ struct SignaturesSettings: View {
                 }
             }
             .disabled(model.accounts.isEmpty)
+            if let problem = library.problem {
+                SignaturesNotice(problem: problem)
+                    .padding(.top, SignaturesMetrics.sectionGap)
+            }
         }
         .padding(.horizontal, SignaturesMetrics.inset)
         .padding(.top, SignaturesMetrics.top)
@@ -118,6 +122,38 @@ struct SignaturesSettings: View {
         library.remove(signature.id)
         let after = library.sorted
         selection = after.isEmpty ? nil : after[min(index, after.count - 1)].id
+    }
+}
+
+/// Says when the signatures file was left alone or moved aside, so that nothing done here is
+/// lost, or turns up elsewhere, without a word.
+struct SignaturesNotice: View {
+    let problem: SignatureStore.Problem
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+            Text(message)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if case .setAside(let file) = problem {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+                    .controlSize(.small)
+            }
+        }
+        .font(.system(size: 11))
+    }
+
+    private var message: String {
+        switch problem {
+        case .newer:
+            return "These signatures were saved by a newer version of FalconMail. Changes made here last only until FalconMail quits."
+        case .unreadable:
+            return "FalconMail couldn’t read its signatures file and has left it as it is. Changes made here last only until FalconMail quits."
+        case .setAside(let file):
+            return "The signatures file couldn’t be understood, so it was kept as “\(file.lastPathComponent)” and each account’s own signature was carried over again."
+        }
     }
 }
 

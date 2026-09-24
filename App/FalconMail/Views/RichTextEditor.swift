@@ -57,16 +57,17 @@ struct RichTextEditor: NSViewRepresentable {
         init(_ parent: RichTextEditor) { self.parent = parent }
 
         func apply(to text: NSTextView, rtf: Data?, plain: String) {
-            if let rtf, rtf != lastApplied {
-                if let attributed = RichText.attributed(fromRTF: rtf) {
-                    load(attributed, into: text)
-                    lastApplied = rtf
-                    return
-                }
+            guard let rtf else {
+                // A formatted body replaced by a plain one, as when an untouched message's From
+                // goes to an account with a plain signature, is replaced on screen even where
+                // the words are the same; and should it come back, it is loaded again.
+                if lastApplied != nil || text.string != plain { load(RichText.attributed(fromPlain: plain), into: text) }
+                lastApplied = nil
+                return
             }
-            if rtf == nil, text.string != plain {
-                load(RichText.attributed(fromPlain: plain), into: text)
-            }
+            guard rtf != lastApplied, let attributed = RichText.attributed(fromRTF: rtf) else { return }
+            load(attributed, into: text)
+            lastApplied = rtf
         }
 
         /// A draft opens with the caret at the start of the user's own text, as Outlook's does.

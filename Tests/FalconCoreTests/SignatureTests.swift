@@ -56,7 +56,8 @@ final class SignatureTests: XCTestCase {
             XCTAssertNil(book.signature(for: account.id, .newMessages))
             XCTAssertNil(book.signature(for: account.id, .replies))
         }
-        XCTAssertEqual(Set(book.adoptedAccounts), [empty.id, spaces.id])
+        XCTAssertEqual(Set(book.adopted.map(\.accountID)), [empty.id, spaces.id])
+        XCTAssertTrue(book.defaults.isEmpty)
     }
 
     func testCarriedOverSignaturesGetUniqueNamesAndNoneIsNameless() {
@@ -85,6 +86,53 @@ final class SignatureTests: XCTestCase {
         let later = account("Later", "later@example.com", signature: "Later")
         XCTAssertTrue(book.adopt([kamal, later]))
         XCTAssertEqual(book.signatures.map(\.name), ["Later"])
+    }
+
+    func testASignatureAnOlderBuildGivesAnAccountWithoutOneIsCarriedOverAsItsDefaults() throws {
+        var kamal = account("Kamal Muradov", "kamal@example.com", signature: "")
+        var book = SignatureBook()
+        book.adopt([kamal])
+        XCTAssertTrue(book.signatures.isEmpty)
+
+        kamal.signature = "Kamal Muradov\nFreight Masters"
+        XCTAssertTrue(book.adopt([kamal]))
+        let carried = try XCTUnwrap(book.signature(for: kamal.id, .newMessages))
+        XCTAssertEqual(carried.plain, kamal.signature)
+        XCTAssertEqual(carried.name, "Kamal Muradov")
+        XCTAssertEqual(book.signature(for: kamal.id, .replies), carried)
+        XCTAssertFalse(book.adopt([kamal]))
+        XCTAssertEqual(book.signatures.count, 1)
+    }
+
+    func testASignatureAnOlderBuildChangesIsKeptBesideTheFirstAndReplacesItOnlyWhereItIsStillTheDefault() throws {
+        var kamal = account("Kamal Muradov", "kamal@example.com", signature: "Kamal")
+        var book = SignatureBook()
+        book.adopt([kamal])
+        let first = try XCTUnwrap(book.signature(for: kamal.id, .newMessages))
+        let chosen = book.add()
+        book.setDefault(chosen.id, for: kamal.id, .replies)
+
+        kamal.signature = "Kamal Muradov\nFreight Masters"
+        XCTAssertTrue(book.adopt([kamal]))
+        let second = try XCTUnwrap(book.signature(for: kamal.id, .newMessages))
+        XCTAssertNotEqual(second.id, first.id)
+        XCTAssertEqual(second.plain, kamal.signature)
+        XCTAssertEqual(second.name, "kamal@example.com")
+        XCTAssertEqual(book.signature(first.id)?.plain, "Kamal")
+        XCTAssertEqual(book.defaultID(for: kamal.id, .replies), chosen.id)
+
+        // Only spaces changed: nothing new.
+        kamal.signature += "\n"
+        XCTAssertFalse(book.adopt([kamal]))
+        XCTAssertEqual(book.signatures.count, 3)
+
+        // Cleared by the older build, it no longer starts messages there, nor here where it
+        // still would; the signature itself stays.
+        kamal.signature = ""
+        XCTAssertTrue(book.adopt([kamal]))
+        XCTAssertNil(book.defaultID(for: kamal.id, .newMessages))
+        XCTAssertEqual(book.defaultID(for: kamal.id, .replies), chosen.id)
+        XCTAssertNotNil(book.signature(second.id))
     }
 
     func testACarriedOverSignatureOpensMessagesExactlyAsTheAccountsDid() throws {
@@ -202,21 +250,31 @@ final class SignatureTests: XCTestCase {
         XCTAssertNotNil(attachment?.fileWrapper?.regularFileContents)
     }
 
-    func testAMissingFileIsANewBookAndAnUnreadableOneIsSetAsideWhole() throws {
+    private func asideFiles(in directory: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix("signatures-unreadable-") }
+    }
+
+    func testAMissingFileIsANewBookAndAnUndecodableOneIsSetAsideWhole() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = SignatureStore(layout: FileLayout(root: directory))
-        XCTAssertEqual(store.open().book, SignatureBook())
+        let fresh = store.open()
+        XCTAssertEqual(fresh.book, SignatureBook())
+        XCTAssertNil(fresh.problem)
+        XCTAssertTrue(fresh.writable)
 
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("not json".utf8).write(to: store.file)
-        let opened = store.open()
-        XCTAssertEqual(opened.book, SignatureBook())
-        XCTAssertTrue(opened.writable)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: store.file.path))
-        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix("signatures-unreadable-") }
-        XCTAssertEqual(aside.count, 1)
-        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(aside[0])), Data("not json".utf8))
+        for damaged in ["not json", #"{"version":1,"signatures":{"items":[]}}"#, #"{"signatures":[]}"#] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data(damaged.utf8).write(to: store.file)
+            let opened = store.open()
+            XCTAssertEqual(opened.book, SignatureBook())
+            XCTAssertTrue(opened.writable)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: store.file.path))
+            let aside = try XCTUnwrap(try asideFiles(in: directory).first)
+            XCTAssertEqual(opened.problem, .setAside(directory.appendingPathComponent(aside)))
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(aside)), Data(damaged.utf8))
+            try FileManager.default.removeItem(at: directory)
+        }
     }
 
     func testABookFromANewerBuildIsReadButNotWrittenOver() throws {
@@ -230,7 +288,44 @@ final class SignatureTests: XCTestCase {
 
         let opened = store.open()
         XCTAssertEqual(opened.book.signatures.count, 1)
+        XCTAssertEqual(opened.problem, .newer)
         XCTAssertFalse(opened.writable)
+    }
+
+    func testABookFromANewerBuildThisOneCannotDecodeIsLeftWhereItIs() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SignatureStore(layout: FileLayout(root: directory))
+        let newer = Data(#"{"version":2,"signatures":{"items":[{"name":"Formal"}]},"defaults":[],"adopted":[]}"#.utf8)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try newer.write(to: store.file)
+
+        let opened = store.open()
+        XCTAssertEqual(opened.problem, .newer)
+        XCTAssertFalse(opened.writable)
+        XCTAssertTrue(opened.book.signatures.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: store.file), newer)
+        XCTAssertTrue(try asideFiles(in: directory).isEmpty)
+    }
+
+    func testAFileThatCannotBeReadIsLeftWhereItIsAndNotWrittenOver() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = SignatureStore(layout: FileLayout(root: directory))
+        var book = SignatureBook()
+        book.rename(book.add().id, to: "Mine")
+        try store.save(book)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: store.file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: store.file.path) }
+
+        let opened = store.open()
+        XCTAssertEqual(opened.problem, .unreadable)
+        XCTAssertFalse(opened.writable)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.file.path))
+        XCTAssertTrue(try asideFiles(in: directory).isEmpty)
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: store.file.path)
+        XCTAssertEqual(store.open().book.signatures.map(\.name), ["Mine"])
     }
 
     // MARK: - rich text in the composer
@@ -265,6 +360,40 @@ final class SignatureTests: XCTestCase {
         XCTAssertTrue(isBold(storage, at: ("Thanks 📈\n-- \n" as NSString).length))
         XCTAssertFalse(isBold(storage, at: ("Thanks 📈\n" as NSString).length))
         XCTAssertEqual(editor.selectedRange().location, ("Thanks 📈\n-- \nKamal\n\n" as NSString).length)
+    }
+
+    // MARK: - text without formatting of its own
+
+    private var composer: [NSAttributedString.Key: Any] { [.font: font, .foregroundColor: NSColor.labelColor] }
+
+    @MainActor
+    func testTextTypedInTheComposersOwnFormattingStaysPlain() throws {
+        let editor = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        editor.textStorage?.setAttributedString(NSAttributedString(string: "Kamal\r\nFreight Masters", attributes: composer))
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+        editor.insertText(" Ltd, Bakı", replacementRange: editor.selectedRange())
+        var signature = Signature(name: "Kamal")
+        signature.setText(try XCTUnwrap(editor.textStorage), plainIn: composer)
+
+        XCTAssertNil(signature.rich)
+        XCTAssertEqual(signature.plain, "Kamal\r\nFreight Masters Ltd, Bakı")
+        let opened = ComposedBody.opening(lead: "\n\n", signature: signature, tail: history, attributes: composer)
+        XCTAssertNil(opened.rich)
+        XCTAssertEqual(opened.plain, "\n\n-- \n\(signature.plain)\n\n" + history)
+    }
+
+    func testFormattingOrAPictureOrALinkKeepsTheSignatureRich() throws {
+        let bolded = NSMutableAttributedString(string: "Kamal ", attributes: composer)
+        bolded.append(bold("Muradov"))
+        let linked = NSAttributedString(string: "example.com", attributes: composer.merging([.link: URL(string: "https://example.com")!]) { $1 })
+        let coloured = NSAttributedString(string: "Kamal", attributes: composer.merging([.foregroundColor: NSColor.systemBlue]) { $1 })
+        let pictured = NSMutableAttributedString(string: "Kamal", attributes: composer)
+        pictured.append(NSAttributedString(attachment: try picture()))
+        for text in [bolded, linked, coloured, pictured] {
+            var signature = Signature(name: "Rich")
+            signature.setText(text, plainIn: composer)
+            XCTAssertNotNil(signature.rich, text.string)
+        }
     }
 
     func testAPictureAloneIsASignatureButSpacesAreNot() throws {
