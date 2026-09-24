@@ -398,6 +398,42 @@ final class EngineSoundTests: XCTestCase {
         XCTAssertEqual(listener.sounds, [], "so No new messages would be wrong, and none of it is news")
     }
 
+    func testMailThatArrivesWhileSentIsSyncedOnItsOwnIsFetchedBeforeIdlingAgain() async throws {
+        let (h, clock) = try await started()
+        // Sent is brought up to date on its own, as after a send, and while it is selected a
+        // reply reaches INBOX, of which the server tells no connection.
+        h.server.stallNext("SELECT", seconds: 0.4)
+        await h.syncer.requestSync(role: .sent)
+        await assertEventually { h.server.commands.last?.contains("SELECT \"[Gmail]/Sent Mail\"") == true }
+        h.server.add(fresh("reply"), to: "INBOX")
+        await assertEventually(within: 3) { await h.events.announced.count == 1 }
+        await h.settled()
+
+        let announced = await h.events.announced
+        XCTAssertEqual(announced.map(\.messageID), ["<reply@example.com>"], "at once, not with the next whole pass an hour on")
+        let listener = Listener(start: clock)
+        listener.hear(await h.events.timed)
+        XCTAssertEqual(listener.sounds, [.newMessage])
+    }
+
+    func testMailThatArrivesWhileAPassIsOnAnotherFolderIsFetchedBeforeIdlingAgain() async throws {
+        let (h, _) = try await started()
+        // A whole pass has done INBOX and is on the next folder when the mail arrives.
+        h.server.stallNext("SELECT", seconds: 0)
+        h.server.stallNext("SELECT", seconds: 0.4)
+        await h.syncer.requestSync()
+        await assertEventually { h.server.commands.filter { $0.contains("SELECT") }.count >= 1
+            && h.server.commands.last?.contains("SELECT") == true && h.server.commands.last?.contains("INBOX") == false }
+        h.server.add(fresh("late"), to: "INBOX")
+        await assertEventually(within: 3) { await h.events.announced.count == 1 }
+        await h.settled()
+
+        let announced = await h.events.announced
+        XCTAssertEqual(announced.map(\.messageID), ["<late@example.com>"])
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored.count, 2)
+    }
+
     // MARK: - (c) No new messages with IDLE, new-mail-only passes and folders synced on their own
 
     func testACheckThatFindsNothingSaysSoWithoutWaitingOutIdle() async throws {

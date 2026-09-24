@@ -809,6 +809,8 @@ public actor AccountSyncer {
 
     private func idleLoop(_ client: IMAPClient) async throws {
         guard let inbox = await store.folder(accountID: account.id, role: .inbox) else { return }
+        // The loop is entered after a whole pass.
+        var passed = true
         while !Task.isCancelled {
             if pauseRemaining() == nil, !meter.allows(.download, for: account.id) {
                 let until = pauseIMAP(for: .overBudget)
@@ -824,12 +826,24 @@ public actor AccountSyncer {
             var changed = false
             let dueIn = pacing.fullSyncInterval - Date().timeIntervalSince(lastFullSync)
             if !wantsSync, dueIn > 0 {
-                if await client.selectedMailbox != inbox.path { _ = try await client.select(inbox.path) }
+                let quietFor = catchUps[inbox.id].map { $0.notBefore.timeIntervalSinceNow } ?? 0
+                let selected = await client.selectedMailbox
+                if passed || selected != inbox.path {
+                    // IDLE tells only of what arrives once it has begun. Mail that reached INBOX
+                    // while another folder was selected, or while a pass was busy, shows as a
+                    // UIDNEXT past the one the last pass of INBOX saw, and is fetched now
+                    // rather than at the next whole pass; during a catch-up it waits for that.
+                    let status = try await client.select(inbox.path)
+                    if quietFor <= 0, let known = await store.folder(inbox.id), known.uidValidity == status.uidValidity,
+                       known.uidNext > 0, status.uidNext > known.uidNext {
+                        changed = true
+                    }
+                }
+                passed = false
                 // A request made from here on ends the IDLE as soon as it starts, and one made
                 // during the SELECT is seen just below, so none waits for IDLE to time out.
                 await client.prepareIdle()
-                if !wantsSync, pauseRemaining() == nil {
-                    let quietFor = catchUps[inbox.id].map { $0.notBefore.timeIntervalSinceNow } ?? 0
+                if !changed, !wantsSync, pauseRemaining() == nil {
                     if quietFor > 0 {
                         // A catch-up is under way: what arrives is taken with its next pass,
                         // not one wake-up at a time.
@@ -842,6 +856,7 @@ public actor AccountSyncer {
             // Nothing is fetched during a pause; the pass after it catches up.
             guard pauseRemaining() == nil else { continue }
             if syncRequested || Date().timeIntervalSince(lastFullSync) >= pacing.fullSyncInterval {
+                passed = true
                 try await syncAll(client)
                 lastFullSync = Date()
                 if pauseRemaining() == nil { setHealth(.online) }
@@ -855,6 +870,7 @@ public actor AccountSyncer {
             // wholly up to date.
             let inboxNews = (changed || catchUpDue) && !targets.contains(inbox.id)
             guard inboxNews || !targets.isEmpty else { continue }
+            passed = true
             if inboxNews, let fresh = await store.folder(inbox.id) {
                 try await syncFolder(fresh, client: client, pass: .newOnly)
             }
