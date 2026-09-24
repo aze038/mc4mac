@@ -65,17 +65,59 @@ public enum ComposedBody {
     /// the formatting found there, as one step Undo takes back. Selected text stays.
     @MainActor
     public static func insertSignature(_ block: String, into editor: NSTextView, before history: String) {
-        guard let storage = editor.textStorage, !block.isEmpty else { return }
+        insertSignature(NSAttributedString(string: block), into: editor, before: history)
+    }
+
+    /// The same for a signature with formatting of its own, which it keeps; what it leaves
+    /// unsaid, and a table cell it lands in, come from where it goes.
+    @MainActor
+    public static func insertSignature(_ block: NSAttributedString, into editor: NSTextView, before history: String) {
+        guard let storage = editor.textStorage, block.length > 0 else { return }
         let location = insertionPoint(for: NSMaxRange(editor.selectedRange()), in: storage.string, history: history)
-        let text = (startsParagraph(at: location, in: storage.string) ? "" : "\n") + block
+        let text = NSMutableAttributedString(string: startsParagraph(at: location, in: storage.string) ? "" : "\n")
+        text.append(block)
         let range = NSRange(location: location, length: 0)
         editor.breakUndoCoalescing()
-        guard editor.shouldChangeText(in: range, replacementString: text) else { return }
-        let inserted = NSAttributedString(string: text, attributes: attributes(at: location, in: editor))
+        guard editor.shouldChangeText(in: range, replacementString: text.string) else { return }
+        let inserted = filling(text, with: attributes(at: location, in: editor))
         storage.replaceCharacters(in: range, with: inserted)
         editor.didChangeText()
         editor.undoManager?.setActionName("Insert Signature")
         editor.setSelectedRange(NSRange(location: location + inserted.length, length: 0))
+    }
+
+    /// A message's body as it opens: `lead`, the signature, then `tail`, a reply's quoted
+    /// original. A signature without formatting of its own gives plain text alone, exactly as an
+    /// account's signature always did; one with formatting also gives the rich text, the rest of
+    /// it set in `attributes`.
+    public static func opening(lead: String, signature: Signature?, tail: String,
+                               attributes: [NSAttributedString.Key: Any]) -> (plain: String, rich: NSAttributedString?) {
+        guard let signature, !signature.isBlank else { return (lead + tail, nil) }
+        guard signature.rich != nil else { return (lead + signature.block.string + tail, nil) }
+        let text = NSMutableAttributedString(string: lead)
+        text.append(signature.block)
+        text.append(NSAttributedString(string: tail))
+        let rich = filling(text, with: attributes)
+        return (rich.string, rich)
+    }
+
+    /// `text` with `base` wherever it says nothing of its own. A table cell in `base` holds every
+    /// paragraph of it, so a signature put in a cell stays in the cell.
+    public static func filling(_ text: NSAttributedString, with base: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let output = NSMutableAttributedString(attributedString: text)
+        let blocks = (base[.paragraphStyle] as? NSParagraphStyle)?.textBlocks ?? []
+        output.beginEditing()
+        output.enumerateAttributes(in: NSRange(location: 0, length: output.length)) { own, range, _ in
+            var merged = base.merging(own) { _, mine in mine }
+            if !blocks.isEmpty, let style = own[.paragraphStyle] as? NSParagraphStyle,
+               let placed = style.mutableCopy() as? NSMutableParagraphStyle {
+                placed.textBlocks = blocks
+                merged[.paragraphStyle] = placed
+            }
+            output.setAttributes(merged, range: range)
+        }
+        output.endEditing()
+        return output
     }
 
     /// Inserts Outlook's Table Grid (see ComposedTable) as wide as the room at the caret allows,

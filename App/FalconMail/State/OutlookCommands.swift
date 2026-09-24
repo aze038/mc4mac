@@ -142,7 +142,8 @@ extension AppModel {
             }
             return
         }
-        var draft = ComposeDraft.blank(account: account)
+        let signature = signature(for: account, .newMessages)
+        var draft = ComposeDraft.blank(account: account, signature: signature)
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let head = (components?.path.isEmpty == false ? components!.path : (url.absoluteString.dropFirst("mailto:".count).split(separator: "?").first.map(String.init) ?? ""))
         draft.to = head.removingPercentEncoding ?? head
@@ -152,7 +153,7 @@ extension AppModel {
             case "cc": draft.cc = value
             case "bcc": draft.bcc = value
             case "subject": draft.subject = value
-            case "body": draft.body = value + "\n\n" + ComposeDraft.signatureBlock(account)
+            case "body": draft.openNew(lead: value + "\n\n", signature: signature)
             case "to": draft.to = draft.to.isEmpty ? value : draft.to + ", " + value
             default: break
             }

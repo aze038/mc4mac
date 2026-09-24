@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import FalconCore
 
 enum ComposeTab: String, CaseIterable {
     case message, options
@@ -16,8 +17,8 @@ struct ComposeRibbon: View {
     var onSend: () -> Void
     var onAttachFile: () -> Void
     var onAttachFromDrive: () -> Void
-    var signatures: [SignatureChoice]
-    var onInsertSignature: (SignatureChoice) -> Void
+    var signatures: [Signature]
+    var onInsertSignature: (Signature) -> Void
     var onEditSignatures: () -> Void
     var onInsertTableDialog: () -> Void
     var onCycleBackground: () -> Void
@@ -86,7 +87,7 @@ struct ComposeRibbon: View {
             RibbonSmallColumn {
                 RibbonSmallItem(title: "Pictures", symbol: "photo", size: 13.5) { formatter.insertPicture() }
                 RibbonSmallMenu(title: "Signature", symbol: "signature", size: 12) {
-                    SignatureMenuItems(choices: signatures, insert: onInsertSignature, edit: onEditSignatures)
+                    SignatureMenuItems(signatures: signatures, insert: onInsertSignature, edit: onEditSignatures)
                 }
                 RibbonSmallItem(title: "Link", symbol: "link", size: 13, turn: .degrees(45)) { formatter.insertLink() }
             }

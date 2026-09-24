@@ -115,6 +115,10 @@ struct SettingsView: View {
     @State private var query = ""
     private let router = SettingsRouter.shared
 
+    init(pane: SettingsPane? = nil) {
+        _pane = State(initialValue: pane)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -334,7 +338,6 @@ struct AccountDetail: View {
     @Environment(AppModel.self) private var model
     let account: AccountInfo
     @State private var displayName = ""
-    @State private var signature = ""
     @State private var newPassword = ""
     @State private var busy = false
     @State private var message: String?
@@ -380,9 +383,6 @@ struct AccountDetail: View {
                     Button("Sign in with Google Again") { reauthorize() }.disabled(busy)
                 }
             }
-            Section("Signature") {
-                TextEditor(text: $signature).font(.body).frame(minHeight: 100)
-            }
             if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("Remove Account", role: .destructive) { model.removeAccount(account) }
@@ -391,7 +391,6 @@ struct AccountDetail: View {
                 Button("Save") {
                     var a = account
                     a.displayName = displayName
-                    a.signature = signature
                     model.saveAccount(a)
                     message = "Saved."
                 }
@@ -405,7 +404,6 @@ struct AccountDetail: View {
 
     private func load() {
         displayName = account.displayName
-        signature = account.signature
         newPassword = ""
         message = nil
     }

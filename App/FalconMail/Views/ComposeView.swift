@@ -154,8 +154,8 @@ struct ComposeView: View {
                       onSend: { send() },
                       onAttachFile: { attach() },
                       onAttachFromDrive: { attachFromDrive() },
-                      signatures: signatureChoices,
-                      onInsertSignature: { formatter.insertSignature($0.block) },
+                      signatures: model.signatures.sorted,
+                      onInsertSignature: { formatter.insertSignature($0) },
                       onEditSignatures: { editSignatures() },
                       onInsertTableDialog: { showTableDialog = true },
                       onCycleBackground: { model.cycleAppearance() })
@@ -167,7 +167,7 @@ struct ComposeView: View {
             InlineAction(title: "Discard", symbol: "trash") { discard() }
             InlineAction(title: "Attach", symbol: "paperclip") { attach() }
             InlineMenuAction(title: "Signature", symbol: "signature") {
-                SignatureMenuItems(choices: signatureChoices, insert: { formatter.insertSignature($0.block) }, edit: { editSignatures() })
+                SignatureMenuItems(signatures: model.signatures.sorted, insert: { formatter.insertSignature($0) }, edit: { editSignatures() })
             }
             Menu {
                 Button("Schedule Send…") { showSchedule = true }
@@ -203,7 +203,7 @@ struct ComposeView: View {
                 ComposeFieldRow(label: "From:") {
                     Menu {
                         ForEach(model.accounts) { a in
-                            Button(a.displayName.isEmpty ? a.email : "\(a.displayName) (\(a.email))") { draft?.accountID = a.id; commitDraft() }
+                            Button(a.displayName.isEmpty ? a.email : "\(a.displayName) (\(a.email))") { changeAccount(to: a) }
                         }
                     } label: {
                         HStack(spacing: 6) {
@@ -307,10 +307,6 @@ struct ComposeView: View {
         .padding(16).frame(width: 320)
     }
 
-    private var signatureChoices: [SignatureChoice] {
-        SignatureChoice.choices(from: model.accounts, preferring: draft?.accountID)
-    }
-
     /// Signatures…: Settings, opened at the pane where signatures are written.
     private func editSignatures() {
         SettingsRouter.shared.requested = .signatures
@@ -326,6 +322,11 @@ struct ComposeView: View {
         if let date = stored?.scheduledAt, date > Date() { scheduleDate = date }
         guard !(stored?.to.isEmpty ?? true) else { return }
         Task { @MainActor in bodyFocused = true }
+    }
+
+    private func changeAccount(to account: AccountInfo) {
+        draft?.changeAccount(to: account, signature: model.signature(for: account, .newMessages))
+        commitDraft()
     }
 
     private func clearSchedule() {
