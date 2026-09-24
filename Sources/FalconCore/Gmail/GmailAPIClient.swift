@@ -81,6 +81,9 @@ public struct GmailAPIClient: Sendable {
     /// How long a call may wait for the budget or a Retry-After before it gives up as rate-limited.
     private let maxWait: TimeInterval
     private let retries = 3
+    /// Seconds without an answer before a call counts as timed out. It is retried once, so a
+    /// search Gmail never answers falls back to this Mac within half a minute.
+    private let timeout: TimeInterval = 15
 
     public init(api: GoogleAPI, limiter: GmailQuotaLimiter = GmailQuotaLimiter(),
                 base: URL = GmailAPIClient.defaultBase, maxWait: TimeInterval = 8) {
@@ -143,7 +146,7 @@ public struct GmailAPIClient: Sendable {
             let data: Data
             let http: HTTPURLResponse
             do {
-                (data, http) = try await api.send("GET", url, timeout: 30, refreshingToken: refreshNow)
+                (data, http) = try await api.send("GET", url, timeout: timeout, refreshingToken: refreshNow)
                 refreshNow = false
             } catch is CancellationError {
                 throw CancellationError()
