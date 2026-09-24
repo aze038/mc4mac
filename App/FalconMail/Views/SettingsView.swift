@@ -161,7 +161,7 @@ struct AccountDetail: View {
                 newPassword = ""
                 message = "Password updated and verified."
             } catch {
-                Log.warning("SignIn", "Checking a new password failed: \(error.localizedDescription)", error: error, account: account)
+                Log.warning("SignIn", "Checking a new password failed: \(AccountProbe.logDescription(of: error))", error: error, account: account)
                 message = error.localizedDescription
             }
         }

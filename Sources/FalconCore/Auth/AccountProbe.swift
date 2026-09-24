@@ -43,7 +43,11 @@ public struct CustomServerSettings: Sendable, Hashable {
 /// the failure's kind kept for diagnostics.
 public struct AccountProbeFailure: Error, LocalizedError, Sendable {
     public var failure: MailServiceError
+    /// What the owner is shown, naming the account by its user name.
     public var message: String
+    /// The same sentence with the user name left out, for the log and diagnostics: a user name
+    /// that is not an address, such as kmuradov, is nothing the redactor would know to take out.
+    public var logMessage: String
 
     public var errorDescription: String? { message }
 }
@@ -68,16 +72,24 @@ public enum AccountProbe {
         }
     }
 
-    private static func failure(_ error: Error, settings s: CustomServerSettings, _ side: String) -> AccountProbeFailure {
-        AccountProbeFailure(failure: MailServiceError.classify(error, email: s.username, isGoogle: false),
-                            message: "\(side): \(probeSentence(error, settings: s))")
+    /// What to write to the log and diagnostics about a failed check of an account's settings:
+    /// a probe's sentence without the user name, or any other error's description.
+    public static func logDescription(of error: Error) -> String {
+        (error as? AccountProbeFailure)?.logMessage ?? error.localizedDescription
+    }
+
+    static func failure(_ error: Error, settings s: CustomServerSettings, _ side: String) -> AccountProbeFailure {
+        let failure = MailServiceError.classify(error, email: s.username, isGoogle: false)
+        Log.info("probe", "\(s.imapHost): \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: s.username))")
+        var unnamed = failure
+        unnamed.email = "the account"
+        return AccountProbeFailure(failure: failure, message: "\(side): \(probeSentence(failure))",
+                                   logMessage: "\(side): \(probeSentence(unnamed))")
     }
 
     /// Setting up an account, a refused sign-in is a wrong name or password rather than one to
     /// sign in again, and the server's own words help put it right.
-    static func probeSentence(_ error: Error, settings s: CustomServerSettings) -> String {
-        let failure = MailServiceError.classify(error, email: s.username, isGoogle: false)
-        Log.info("probe", "\(s.imapHost): \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: s.username))")
+    static func probeSentence(_ failure: MailServiceError) -> String {
         switch failure.kind {
         case .needsSignIn: return "the server did not accept the user name or password."
         case .connectionDropped: return "the server could not be reached."

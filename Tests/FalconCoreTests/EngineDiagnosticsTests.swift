@@ -302,6 +302,32 @@ final class EngineDiagnosticsTests: XCTestCase {
         XCTAssertFalse(event.message.contains("owner@example.com"))
     }
 
+    /// Checking a custom account's settings, the owner is told what the server said about the
+    /// account by its user name; diagnostics hear the same sentence without it, since a user name
+    /// that is not an address is nothing the redactor would know to take out.
+    func testAnAccountCheckNeverSendsTheUserName() async throws {
+        startCenter()
+        let settings = CustomServerSettings(imapHost: "mail.example.net", smtpHost: "mail.example.net", username: "kmuradov",
+                                            password: "not-a-password")
+        let refusals: [Error] = [
+            IMAPServerError(status: .no, code: "ALERT", text: "Please log in via your web browser", command: "LOGIN"),
+            IMAPBye(code: nil, text: "Too many simultaneous connections. (Failure)"),
+            IMAPServerError(status: .no, code: "THROTTLED", text: "Slow down", command: "LOGIN"),
+            IMAPServerError(status: .no, code: nil, text: "Not now", command: "SELECT"),
+        ]
+        for refusal in refusals {
+            let failure = AccountProbe.failure(refusal, settings: settings, "Incoming mail (IMAP mail.example.net:993)")
+            XCTAssertTrue(failure.localizedDescription.contains("kmuradov"), "the owner sees which account: \(failure.localizedDescription)")
+            XCTAssertFalse(AccountProbe.logDescription(of: failure).contains("kmuradov"), AccountProbe.logDescription(of: failure))
+            // As Add Account and Settings log it.
+            Log.warning("SignIn", "Adding an account on \(settings.imapHost) failed: \(AccountProbe.logDescription(of: failure))", error: failure)
+        }
+        XCTAssertEqual(events(area: "SignIn").count, refusals.count)
+        let upload = try await uploaded()
+        XCTAssertFalse(upload.contains("kmuradov"), "the user name reached the upload")
+        XCTAssertTrue(upload.contains("the account"), upload)
+    }
+
     /// Every kind of failure, in every area the engine reports under, has a title of its own that
     /// fits, and a code of its own that the server's words never change.
     func testEveryKindHasATitleAndACodeOfItsOwn() {

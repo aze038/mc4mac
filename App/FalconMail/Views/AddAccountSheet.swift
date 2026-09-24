@@ -130,7 +130,7 @@ struct AddAccountSheet: View {
                 try await model.addCustomAccount(email: email.trimmed.lowercased(), displayName: displayName, settings: settings)
                 dismiss()
             } catch {
-                Log.warning("SignIn", "Adding an account on \(settings.imapHost) failed: \(error.localizedDescription)", error: error)
+                Log.warning("SignIn", "Adding an account on \(settings.imapHost) failed: \(AccountProbe.logDescription(of: error))", error: error)
                 self.error = error.localizedDescription
             }
         }
