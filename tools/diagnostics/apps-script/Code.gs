@@ -558,8 +558,8 @@ function cleanEvent_(event) {
   const signature = oneLine_(event.signature, MAX_SIGNATURE_CHARS, { keepAddresses: true });
   if (!id || !KIND_PATTERN.test(kind) || !signature) return null;
   // What people read first, so a bare domain in it is made unclickable too, but not the place a
-  // crash or hang happened. A title that shows nothing, empty or only invisible characters, is
-  // taken as none, and the signature stands in for it.
+  // crash or hang happened. A title that shows nothing (see shows_) is taken as none, and the
+  // signature stands in for it.
   const title = oneLine_(event.title, MAX_TITLE_CHARS, { bareDomains: true, crashPlace: kind === 'crash' || kind === 'hang' });
   return {
     id: id,
@@ -676,11 +676,13 @@ const BARE_DOMAIN = /(^|[^A-Za-z0-9])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)
 // The place in a crash's or hang's title, as the app writes it: in the brackets that end the
 // title, after "in " or "called from ", as in "(NSRangeException, in MessageList.select)" or
 // "(runaway recursion, called from NSApplication.run, EXC_BAD_ACCESS/SIGBUS)". It is a function,
-// a type's name and its members, so it stays whole, but only when it is shaped like one: its
-// first name has a capital letter or an underscore, and nothing but letters, digits and
-// underscores. A domain someone writes there in small letters, "in evil.com", is still defanged.
-// The app's titles fit in MAX_TITLE_CHARS, so a longer one, which is cut anyway, is not searched.
-const CRASH_PLACE = /\((?:[^()]*, )?(?:in|called from) ((?=[A-Za-z0-9]*[A-Z_])[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)(?=(?:, [^()]*)?\)$)/;
+// a type's name and its members, so it stays whole, but only when it is shaped as the app writes
+// one: two or three names, the first with a capital letter or an underscore, and nothing but
+// letters, digits and underscores. So "in evil.com" and "in PayPal.com.evil.ru" are still
+// defanged. A made-up place shaped like a real one, such as "in Evil.com", stays whole too, as
+// nothing tells it from a function such as Array.append. The app's titles fit in
+// MAX_TITLE_CHARS, so a longer one, which is cut anyway, is not searched.
+const CRASH_PLACE = /\((?:[^()]*, )?(?:in|called from) ((?=[A-Za-z0-9]*[A-Z_])[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){1,2})(?=(?:, [^()]*)?\)$)/;
 
 // Keeps only the four fields the contract defines, so nothing else about an account is stored.
 function accountText_(account) {
@@ -1824,9 +1826,10 @@ function addressSpans_(text) {
   return spans;
 }
 
-// Whether text shows anything: not when it is empty or holds only spaces and invisible characters.
+// Whether text shows anything: not when it is empty or holds only spaces, invisible characters,
+// the blank Braille pattern (U+2800) and marks, such as an accent, with no letter under them.
 function shows_(text) {
-  return text.replace(INVISIBLES, '').trim() !== '';
+  return text.replace(INVISIBLES, '').replace(/[\p{M}\u2800]/gu, '').trim() !== '';
 }
 
 // Report text on one line, as every field of an upload but the message and context is stored:

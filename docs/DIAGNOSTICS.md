@@ -169,17 +169,23 @@ libsqlite3.dylib)*.
 A title that would pass 120 characters says the same more briefly, a step at a time until it
 fits: *FalconMail crashed* for *FalconMail crashed on an internal error*, as the exception says the
 rest, and *called from* for *in its own code, called from*; then the place's function without its
-type, `in removeRowsAtIndexes`; then the reason's last words, the cut marked "…", and then the
-reason altogether. If it is still too long, as a long sentence beside a long name can make it, the
+type, `in removeRowsAtIndexes`, though a type stays when what is left would start with a small
+letter and still have a dot, as `in Array.subscript.read` does, which the web app would otherwise
+take for a web address; then the reason's last words, the cut marked "…", and then the reason
+altogether. If it is still too long, as a long sentence beside a long name can make it, the
 sentence gives way to its first words, *FalconMail crashed*, with the exception type and signal it
 stood for, as in *FalconMail crashed (runaway recursion, called from
-CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK, EXC_BAD_ACCESS/SIGSEGV)*; and then what stands beside the
-place goes, a whole detail at a time, the longest first. Nothing is ever cut mid-word, and the
-place never goes, so the same exception raised from two places always reads as two problems:
-*FalconMail crashed (NSInternalInconsistencyException: Invalid parameter not satisfying row, in
-removeRowsAtIndexes)* and the same *… in insertRowsAtIndexes)*. Only two crashes with the same
-exception in the same place, whose reasons differ past the words so long a title has room for,
-can share a title; their signatures still tell them apart.
+CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK, EXC_BAD_ACCESS/SIGSEGV)*, and the details beside the place
+make room. The signal is kept longest, then the exception, then a runaway recursion, and the
+exception type stands before the signal only while there is room for it: *FalconMail crashed
+(runaway recursion, called from CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION,
+SIGSEGV)*. The title never cuts a word, though a name longer than 60 characters is kept to its
+first 60, as in the signature. The place never goes, so the same exception raised from two places
+always reads as two problems: *FalconMail crashed (NSInternalInconsistencyException: Invalid
+parameter not satisfying row, in removeRowsAtIndexes)* and the same *… in insertRowsAtIndexes)*.
+Two crashes in the same place share a title only when they differ in what their title had no room
+for: the last words of a long reason, or, beside a very long name, a detail such as the exception;
+their signatures still tell them apart.
 
 ### Crash stacks
 
@@ -232,7 +238,7 @@ from a misbehaving build or a replayed key. What happens past each limit:
 | Events from one install | 1,000 a day, Baku time | Refused until the next day |
 | Events from everyone | 5,000 and 10 million characters a day | Refused until the next day |
 | `count` | 10,000 | Stored as 10,000 |
-| `title` | 120 characters | Cut, ending in "…"; a title that shows nothing, empty or only invisible characters, is stored as the signature |
+| `title` | 120 characters | Cut, ending in "…"; a title that shows nothing, empty or only invisible characters, a blank Braille pattern or an accent with no letter under it, is stored as the signature |
 | `signature` | 300 characters | Cut |
 | `message` | 2,000 characters | Cut |
 | `context` | 16 KB of JSON text | Stored as `{"truncated":true,"size":n,"start":"..."}`, still JSON, which loses the stack |

@@ -393,6 +393,31 @@ test('a title of nothing but invisible characters falls back to the signature', 
   assert.equal(row.Problem, event().signature);
 });
 
+// The app writes a place as two or three names, Type.member or Type.member.accessor, so one of
+// more names is no place of the app's, and its domain is made unclickable as anywhere else.
+test('a place with more names than the app writes is defanged', () => {
+  const env = service();
+  env.post(upload(env, [
+    event({ kind: 'crash', signature: 'Place@A', title: 'FalconMail crashed (runaway recursion, called from Array.subscript.read)' }),
+    event({ kind: 'crash', signature: 'Evil1@A', title: 'FalconMail crashed (in PayPal.com.evil.ru)' }),
+    event({ kind: 'hang', signature: 'Evil2@A', title: 'FalconMail stopped responding (called from Login.example.co.za, EXC_BAD_ACCESS/SIGBUS)' }),
+  ]));
+  assert.deepEqual(env.table(SEPTEMBER, 'Events').map(row => row.Problem), [
+    'FalconMail crashed (runaway recursion, called from Array.subscript.read)',
+    'FalconMail crashed (in PayPal[.]com[.]evil[.]ru)',
+    'FalconMail stopped responding (called from Login[.]example[.]co[.]za, EXC_BAD_ACCESS/SIGBUS)',
+  ]);
+});
+
+// A title that only looks blank, a blank Braille pattern or an accent with no letter under it,
+// was stored as it was and showed an empty Problem; the signature stands in for it.
+test('a title that shows nothing but a blank pattern or a lone mark falls back to the signature', () => {
+  const env = service();
+  const titles = ['\u2800', ' \u0301 ', '\u2800\u200B\u0308\u2800'];
+  env.post(upload(env, titles.map((title, i) => event({ signature: 'Blank' + i + '@A', title: title }))));
+  assert.deepEqual(env.table(SEPTEMBER, 'Events').map(row => row.Problem), ['Blank0@A', 'Blank1@A', 'Blank2@A']);
+});
+
 // With no title, the signature stands in for it, and there a domain after @ is made unclickable
 // too, while the signature itself keeps its text.
 test('a title that falls back to the signature has its domains defanged', () => {

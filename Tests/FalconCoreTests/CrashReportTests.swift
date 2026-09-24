@@ -318,16 +318,17 @@ final class CrashReportTests: XCTestCase {
     /// A title still too long once the reason's words were gone was cut wherever 120 characters
     /// ended, in the place or the signal: `called from CFRUNLOOP_IS_CALLING_OUT_TO_A_BLO…`,
     /// `EXC_BAD_A…`. Now the sentence gives way to `FalconMail crashed` and the exception type and
-    /// signal it stood for, then whole details beside the place go, the longest first, and the
-    /// place and the signal are never cut.
+    /// signal it stood for, then the details beside the place make room, and the place and the
+    /// signal are never cut.
     func testALongTitleNeverCutsThePlaceOrTheSignal() {
         let recursion = (0..<250).map { CrashIdentity.Frame(binary: "FalconMail", symbol: nil, own: true, address: "\(2_000 + $0 % 2 * 40)") }
         let runLoop = CrashIdentity.Frame(binary: "CoreFoundation", symbol: "__CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK__", own: false)
         let overflow = CrashIdentity(kind: .crash, code: "EXC_BAD_ACCESS.SIGSEGV", exception: nil, reason: nil, frames: recursion + [runLoop])
         XCTAssertEqual(overflow.title, "FalconMail crashed (runaway recursion, called from CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK, EXC_BAD_ACCESS/SIGSEGV)")
+        // The exception says more than a runaway recursion, and the signal more than the exception type.
         let raised = CrashIdentity(kind: .crash, code: "EXC_BAD_ACCESS.SIGBUS", exception: "NSInternalInconsistencyException",
                                    reason: "Invalid parameter not satisfying: row >= 0", frames: recursion + [runLoop])
-        XCTAssertEqual(raised.title, "FalconMail crashed (runaway recursion, called from CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK, EXC_BAD_ACCESS/SIGBUS)")
+        XCTAssertEqual(raised.title, "FalconMail crashed (NSInternalInconsistencyException, called from CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK, SIGBUS)")
 
         // Every name at its 60-character limit: the place still stands whole, and nothing ends mid-word.
         let long = String(repeating: "Abcdefghij", count: 6)
@@ -346,12 +347,65 @@ final class CrashReportTests: XCTestCase {
                         let title = identity.title
                         let whole = title.hasSuffix(")") || !title.contains(" (")
                         let placed = identity.place.phrase(brief: 2).map(title.contains) ?? true
-                        if title.count > DiagnosticsEvent.maxTitle || !whole || !placed { wrong.append(title) }
+                        // A signal of usual length always has room beside the longest place.
+                        let signalled = code != "EXC_BAD_ACCESS.SIGBUS" || title.contains("SIGBUS")
+                        if title.count > DiagnosticsEvent.maxTitle || !whole || !placed || !signalled { wrong.append(title) }
                     }
                 }
             }
         }
-        XCTAssertEqual(wrong, [], "titles too long, cut mid-word or without their place")
+        XCTAssertEqual(wrong, [], "titles too long, cut mid-word, or without their place or signal")
+    }
+
+    /// The last way to shorten a title dropped the longest detail beside the place first, which
+    /// without an exception was the exception type and signal, so a stack overflow called from a
+    /// long run-loop function lost its signal while `runaway recursion` stayed, and every signal
+    /// read alike: `FalconMail crashed (runaway recursion, called from
+    /// CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION)`. The exception type now goes
+    /// first, and the signal stays.
+    func testALongTitleKeepsItsSignalBesideARunawayRecursion() {
+        let recursion = (0..<250).map { CrashIdentity.Frame(binary: "FalconMail", symbol: nil, own: true, address: "\(2_000 + $0 % 2 * 40)") }
+        let codes = ["EXC_BAD_ACCESS.SIGSEGV", "EXC_BAD_ACCESS.SIGBUS", "EXC_BREAKPOINT.SIGTRAP",
+                     "EXC_BAD_INSTRUCTION.SIGILL", "EXC_CRASH.SIGABRT", "EXC_ARITHMETIC.SIGFPE"]
+        let runLoops = ["__CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__",
+                        "__CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE_PERFORM_FUNCTION__",
+                        "__CFRUNLOOP_IS_SERVICING_THE_MAIN_DISPATCH_QUEUE__"]
+        for runLoop in runLoops {
+            let caller = CrashIdentity.Frame(binary: "CoreFoundation", symbol: runLoop, own: false)
+            let titles = codes.map { CrashIdentity(kind: .crash, code: $0, exception: nil, reason: nil, frames: recursion + [caller]).title }
+            for (code, title) in zip(codes, titles) {
+                let signal = String(code.split(separator: ".").last!)
+                XCTAssertTrue(title.contains("runaway recursion, called from ") && title.hasSuffix("\(signal))"), title)
+                XCTAssertLessThanOrEqual(title.count, DiagnosticsEvent.maxTitle, title)
+            }
+            XCTAssertEqual(Set(titles).count, codes.count, "each signal reads apart: \(titles)")
+        }
+        let caller = CrashIdentity.Frame(binary: "CoreFoundation", symbol: runLoops[0], own: false)
+        let overflow = CrashIdentity(kind: .crash, code: "EXC_BAD_ACCESS.SIGSEGV", exception: nil, reason: nil, frames: recursion + [caller])
+        XCTAssertEqual(overflow.title, "FalconMail crashed (runaway recursion, called from CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION, SIGSEGV)")
+    }
+
+    /// Shortening a place to its function without its type turned `Array.subscript.read` into
+    /// `subscript.read`, which the diagnostics web app takes for a web address and shows as
+    /// `subscript[.]read`, two characters longer than the title the app measured. A type stays
+    /// when what would be left starts with a small letter and still has a dot.
+    func testABriefPlaceNeverLeavesADottedNameStartingInASmallLetter() {
+        let recursion = (0..<250).map { CrashIdentity.Frame(binary: "FalconMail", symbol: nil, own: true, address: "\(2_000 + $0 % 2 * 40)") }
+        let subscriptRead = CrashIdentity.Frame(binary: "libswiftCore.dylib", symbol: "Swift.Array.subscript.read", own: false)
+        let overflow = CrashIdentity(kind: .crash, code: "EXC_BAD_ACCESS.SIGSEGV", exception: nil,
+                                     reason: "Could not find the row for the index in the table view", frames: recursion + [subscriptRead])
+        XCTAssertTrue(overflow.title.hasSuffix(", runaway recursion, called from Array.subscript.read)"), overflow.title)
+        XCTAssertLessThanOrEqual(overflow.title.count, DiagnosticsEvent.maxTitle)
+        XCTAssertEqual(overflow.place.phrase(brief: 2), "called from Array.subscript.read")
+
+        // A type is still left out when one name is left, or a name that starts with a type.
+        func brief(_ symbol: String) -> String? {
+            CrashIdentity(kind: .hang, code: "mainThread", exception: nil, reason: nil,
+                          frames: [CrashIdentity.Frame(binary: "FalconMail", symbol: symbol, own: true)]).place.phrase(brief: 2)
+        }
+        XCTAssertEqual(brief("-[NSApplication run]"), "in run")
+        XCTAssertEqual(brief("MessageList.Row.select()"), "in Row.select")
+        XCTAssertEqual(brief("MessageList.body.getter"), "in MessageList.body.getter")
     }
 
     @discardableResult

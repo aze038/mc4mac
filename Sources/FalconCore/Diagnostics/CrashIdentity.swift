@@ -74,12 +74,16 @@ struct CrashIdentity: Equatable {
 
         /// `in NSAssertionHandler.handleFailureInMethod`, for a title. `brief` 1 says `called from
         /// AppKit` rather than `in its own code, called from AppKit`, and 2 also leaves out a
-        /// function's type: `in handleFailureInMethod`.
+        /// function's type: `in handleFailureInMethod`. A type stays when what would be left starts
+        /// with a small letter and still has a dot, as `Array.subscript.read` does: `subscript.read`
+        /// says less, and reads like a web address, which the diagnostics web app would show as
+        /// `subscript[.]read`.
         func phrase(brief: Int = 0) -> String? {
             guard known else { return nil }
             func shown(_ name: String) -> String {
-                let parts = name.split(separator: ".")
-                return brief >= 2 && parts.count >= 2 ? parts.dropFirst().joined(separator: ".") : name
+                let rest = name.split(separator: ".").dropFirst()
+                guard brief >= 2, let first = rest.first?.first else { return name }
+                return rest.count >= 2 && first.isLowercase ? name : rest.joined(separator: ".")
             }
             if let caller {
                 let name: String
@@ -133,21 +137,27 @@ struct CrashIdentity: Equatable {
     /// are not the ones the sentence stands for. A title that would pass 120 characters says the
     /// same more briefly, a step at a time until it fits: "FalconMail crashed" for a crash on an
     /// internal error, whose exception says the rest, and "called from" for "in its own code,
-    /// called from"; then the place's function without its type; then the reason's last words, the
-    /// cut marked "…", and then the reason altogether. If it is still too long, as a long sentence
-    /// beside a long name can make it, the sentence gives way to its first words, "FalconMail
-    /// crashed", with the exception type and signal it stood for; and then what stands beside the
-    /// place goes, a whole detail at a time, the longest first. Nothing is cut mid-word, and the
-    /// place always stays: it and the shortest sentence fit in 104 characters.
+    /// called from"; then the place's function without its type, unless what is left would start
+    /// with a small letter and still have a dot (see `Place.phrase`); then the reason's last
+    /// words, the cut marked "…", and then the reason altogether. If it is still too long, as a
+    /// long sentence beside a long name can make it, the sentence gives way to its first words,
+    /// "FalconMail crashed", with the exception type and signal it stood for, and the details
+    /// beside the place make room. The signal is kept longest, then the exception, then a runaway
+    /// recursion, and the exception type stands before the signal only while there is room for
+    /// it: "FalconMail crashed (runaway recursion, called from
+    /// CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION, SIGSEGV)". The place always
+    /// stays, as it and the shortest sentence fit in 104 characters.
+    /// The title never cuts a word; only a name longer than 60 characters is kept to its first 60,
+    /// as it is in the signature (see `DiagnosticsSignature.word`).
     var title: String {
         let sentence = CrashIdentity.sentence(kind: kind, code: code, exception: exception != nil)
-        /// The exception type and signal, unless `lead` stands for them.
+        /// The exception type and signal, `EXC_BAD_ACCESS/SIGBUS`, unless `lead` stands for them.
         func tag(saying lead: String) -> String? {
             CrashIdentity.usualCodes[lead] == code ? nil : code.replacingOccurrences(of: ".", with: "/")
         }
         /// What tells this crash apart, in the order a title gives it, with `words` of the reason
         /// (nil leaves the reason out) and the place said as `brief` asks.
-        func details(words: Int?, brief: Int, tag: String?) -> [(text: String, place: Bool)] {
+        func details(words: Int?, brief: Int, tag: String?) -> [String] {
             var because = ""
             if let words {
                 var shown = Array(reason.prefix(words))
@@ -157,19 +167,19 @@ struct CrashIdentity: Equatable {
                 because = shown.joined(separator: " ")
                 if !reason.isEmpty, reasonCut || shown.count < reason.count { because += "…" }
             }
-            var out: [(text: String, place: Bool)] = []
+            var out: [String] = []
             if let exception {
-                out.append((because.isEmpty ? exception : "\(exception): \(because)", false))
+                out.append(because.isEmpty ? exception : "\(exception): \(because)")
             } else if !because.isEmpty {
-                out.append((because, false))
+                out.append(because)
             }
-            if recursion { out.append(("runaway recursion", false)) }
-            if let phrase = place.phrase(brief: brief) { out.append((phrase, true)) }
-            if let tag { out.append((tag, false)) }
+            if recursion { out.append("runaway recursion") }
+            if let phrase = place.phrase(brief: brief) { out.append(phrase) }
+            if let tag { out.append(tag) }
             return out
         }
-        func make(_ lead: String, _ details: [(text: String, place: Bool)]) -> String {
-            details.isEmpty ? lead : "\(lead) (\(details.map(\.text).joined(separator: ", ")))"
+        func make(_ lead: String, _ details: [String]) -> String {
+            details.isEmpty ? lead : "\(lead) (\(details.joined(separator: ", ")))"
         }
         let limit = DiagnosticsEvent.maxTitle
         let usual = tag(saying: sentence)
@@ -181,15 +191,31 @@ struct CrashIdentity: Equatable {
             let title = make(lead, details(words: words, brief: brief, tag: usual))
             if title.count <= limit { return title }
         }
-        // A crash with an exception already has the shortest sentence, and the exception says the rest.
-        let shortest = exception != nil ? lead : CrashIdentity.shortSentence(sentence)
-        var rest = details(words: nil, brief: 2, tag: exception != nil ? usual : tag(saying: shortest))
-        while true {
-            let title = make(shortest, rest)
-            let beside = rest.indices.filter { !rest[$0].place }
-            guard title.count > limit, let longest = beside.max(by: { rest[$0].text.count < rest[$1].text.count }) else { return title }
-            rest.remove(at: longest)
+        // Still too long: the shortest sentence, the place, and as much beside it as fits, the
+        // most telling first. Each way of saying it is tried in turn, from keeping everything to
+        // keeping the place alone, which always fits.
+        let shortest = CrashIdentity.shortSentence(sentence)
+        let phrase = place.phrase(brief: 2)
+        for keepsSignal in [true, false] {
+            for shownException in exception.map({ [$0, nil] }) ?? [nil] {
+                // Without its exception, a crash's title no longer says it was an internal error,
+                // so its exception type and signal are given instead.
+                let full = shownException != nil ? usual : tag(saying: shortest)
+                if full == nil, !keepsSignal { continue }
+                var tags: [String?] = [nil]
+                if keepsSignal, let full {
+                    let signal = full.split(separator: "/").last.map(String.init) ?? full
+                    tags = signal == full ? [full] : [full, signal]
+                }
+                for recursive in recursion ? [true, false] : [false] {
+                    for tag in tags {
+                        let title = make(shortest, [shownException, recursive ? "runaway recursion" : nil, phrase, tag].compactMap { $0 })
+                        if title.count <= limit { return title }
+                    }
+                }
+            }
         }
+        return make(shortest, [phrase].compactMap { $0 })
     }
 
     /// The plain sentence a title starts with.

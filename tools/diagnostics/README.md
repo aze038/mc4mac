@@ -94,11 +94,14 @@ names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMM
     also a country's domain, such as `setup.py`, shows as `setup[.]py`.
   - The place in a crash's or hang's title, where it happened, is code, so it stays whole:
     `NSApplication.run` in *…, called from NSApplication.run)*. That is the name after `in` or
-    `called from` in the brackets that end the title, when it is shaped like a function: its first
-    part has a capital letter or an underscore, and it holds only letters, digits and
-    underscores. Anywhere else, and in any other kind of problem, `NSApplication.run` shows as
-    `NSApplication[.]run`.
-  - A title that shows nothing, empty or only invisible characters, is stored as the signature.
+    `called from` in the brackets that end the title, when it is shaped as the app writes one:
+    two or three parts, the first with a capital letter or an underscore, and only letters,
+    digits and underscores. Anywhere else, and in any other kind of problem, `NSApplication.run`
+    shows as `NSApplication[.]run`. So `in evil.com` and `in PayPal.com.evil.ru` are still made
+    unclickable, but a made-up place shaped like a real one, such as `in Evil.com`, is not, as
+    nothing tells it apart from a function such as `Array.append`.
+  - A title that shows nothing, empty or only invisible characters, a blank Braille pattern or an
+    accent with no letter under it, is stored as the signature.
 - **Trimming**: titles to 120 characters, messages to 2,000, context to 16 KB, and every cell under
   Sheets' 50,000-character limit. Context too large to keep whole is stored as
   `{"truncated":true,"size":n,"start":"..."}`, so it is always JSON. Only `provider`, `kind`,
