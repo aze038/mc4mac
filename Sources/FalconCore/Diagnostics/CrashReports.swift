@@ -26,29 +26,66 @@ public struct CrashReportScanner: Sendable {
         public var body: JSONValue
     }
 
-    /// Reports newer than `after`, oldest first. Only files named for FalconMail are opened,
-    /// and only those whose header names exactly this app's bundle identifier are read on, so
-    /// a test or snapshot build's crash is never taken for the real app's.
-    public func reports(after: Date?, now: Date) -> [Report] {
+    /// What one look at the folder found.
+    public struct Scan: Sendable {
+        /// The installed app's crashes, oldest first: the newest ten of them.
+        public var reports: [Report] = []
+        /// Crashes of a FalconMail run from Xcode's build folder, which are never sent.
+        public var builtLocally: [Report] = []
+        /// The date of the newest file looked at, where the next scan starts.
+        public var checkedUntil: Date?
+    }
+
+    /// FalconMail's crash reports newer than `after`. Each file is looked at once, newest first:
+    /// its one-line header before anything else, and only a report whose header names exactly
+    /// this app's bundle identifier is read on, so a snapshot build's crash is never taken for
+    /// the real app's, and ten of another build's can never crowd out a real one. A Debug build
+    /// shares the identifier, so a report whose app ran from Xcode's build folder is set aside
+    /// too; one copied elsewhere first cannot be told apart.
+    public func scan(after: Date?, now: Date) -> Scan {
         let fm = FileManager.default
         let cutoff = after ?? now.addingTimeInterval(-CrashReportScanner.firstRunWindow)
         let names = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
-        let candidates = names.filter { $0.hasPrefix("FalconMail-") && $0.hasSuffix(".ips") }.compactMap { name -> (URL, Date)? in
+        let candidates = names.filter { $0.hasPrefix("FalconMail-") && $0.hasSuffix(".ips") }.compactMap { name -> (URL, Date, Int)? in
             let url = directory.appendingPathComponent(name)
             guard let attributes = try? fm.attributesOfItem(atPath: url.path),
-                  let modified = attributes[.modificationDate] as? Date, modified > cutoff,
-                  ((attributes[.size] as? Int) ?? 0) <= CrashReportScanner.maxFileSize else { return nil }
-            return (url, modified)
+                  let modified = attributes[.modificationDate] as? Date, modified > cutoff else { return nil }
+            return (url, modified, (attributes[.size] as? Int) ?? 0)
+        }.sorted { $0.1 > $1.1 }
+        var scan = Scan(checkedUntil: candidates.first?.1)
+        for (url, modified, size) in candidates where scan.reports.count < CrashReportScanner.maxPerScan {
+            guard size <= CrashReportScanner.maxFileSize,
+                  CrashReportScanner.header(of: url)?["bundleID"]?.stringValue == CrashReportScanner.bundleIdentifier,
+                  let report = CrashReportScanner.report(at: url, modified: modified) else { continue }
+            if CrashReportScanner.ranFromBuildFolder(report.body) {
+                scan.builtLocally.append(report)
+            } else {
+                scan.reports.append(report)
+            }
         }
-        return candidates.sorted { $0.1 < $1.1 }.suffix(CrashReportScanner.maxPerScan).compactMap { url, modified in
-            guard let data = try? Data(contentsOf: url) else { return nil }
-            let newline = data.firstIndex(of: 0x0A) ?? data.endIndex
-            guard let header = JSONValue.parse(Data(data[data.startIndex..<newline])),
-                  header["bundleID"]?.stringValue == CrashReportScanner.bundleIdentifier,
-                  newline < data.endIndex,
-                  let body = JSONValue.parse(Data(data[data.index(after: newline)...])) else { return nil }
-            return Report(url: url, modified: modified, header: header, body: body)
-        }
+        scan.reports.reverse()
+        return scan
+    }
+
+    private static func header(of url: URL) -> JSONValue? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let start = try? handle.read(upToCount: 16_384), let newline = start.firstIndex(of: 0x0A) else { return nil }
+        return JSONValue.parse(Data(start[start.startIndex..<newline]))
+    }
+
+    private static func report(at url: URL, modified: Date) -> Report? {
+        guard let data = try? Data(contentsOf: url), let newline = data.firstIndex(of: 0x0A),
+              let header = JSONValue.parse(Data(data[data.startIndex..<newline])),
+              let body = JSONValue.parse(Data(data[data.index(after: newline)...])) else { return nil }
+        return Report(url: url, modified: modified, header: header, body: body)
+    }
+
+    /// Xcode builds into `…/Build/Products/Debug`, in DerivedData or wherever `-derivedDataPath`
+    /// points; a copy people use is never run from there.
+    static func ranFromBuildFolder(_ body: JSONValue) -> Bool {
+        let path = body["procPath"]?.stringValue ?? ""
+        return path.contains("/Build/Products/") || path.contains("/DerivedData/")
     }
 }
 
@@ -63,7 +100,7 @@ public enum CrashReportDigest {
         let code = DiagnosticsSignature.crashCode(exception: exception?["type"]?.stringValue, signal: exception?["signal"]?.stringValue)
         let signature = DiagnosticsSignature.make(area: "Crash", code: code, place: place(in: body))
         let incident = header["incident_id"]?.stringValue ?? body["incident"]?.stringValue ?? report.url.lastPathComponent
-        let when = parseDate(body["captureTime"]?.stringValue ?? header["timestamp"]?.stringValue) ?? report.modified
+        let when = time(of: report)
         var message = "FalconMail crashed (\(code.replacingOccurrences(of: ".", with: ", ")))"
         if let indicator = body["termination"]?["indicator"]?.stringValue { message += ": \(indicator)" }
         if let reason = applicationSpecificInformation(body) { message += "\n" + reason }
@@ -71,10 +108,19 @@ public enum CrashReportDigest {
         let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("ips:\(install):\(incident)"), kind: .crash,
                                      signature: signature, title: DiagnosticsTitle.make(kind: .crash, area: "crash", code: code),
                                      area: "crash", firstAt: when, message: redactor.redact(message), context: context)
-        let app = header["app_version"]?.stringValue.map {
-            DiagnosticsApp(version: $0, build: header["build_version"]?.stringValue ?? "", channel: "release")
+        return (event, app(of: report), header["os_version"]?.stringValue)
+    }
+
+    /// When the crash happened, to the second the report gives.
+    static func time(of report: CrashReportScanner.Report) -> Date {
+        parseDate(report.body["captureTime"]?.stringValue ?? report.header["timestamp"]?.stringValue) ?? report.modified
+    }
+
+    /// The build that crashed, which may be older than the one reading the report.
+    static func app(of report: CrashReportScanner.Report) -> DiagnosticsApp? {
+        report.header["app_version"]?.stringValue.map {
+            DiagnosticsApp(version: $0, build: report.header["build_version"]?.stringValue ?? "", channel: "release")
         }
-        return (event, app, header["os_version"]?.stringValue)
     }
 
     /// The image of the first frame of the crashed thread that is not the machinery every
@@ -179,5 +225,29 @@ public enum CrashReportDigest {
             if let d = f.date(from: text) { return d }
         }
         return nil
+    }
+}
+
+/// A crash already reported, kept a while so the same crash arriving from the other source,
+/// macOS's crash report or MetricKit's, is sent once. MetricKit gives no exact time, only the
+/// span its payload covers, so a crash of the same build within that span counts as the same.
+struct CrashNote: Codable, Equatable, Sendable {
+    enum Source: String, Codable, Sendable { case report, metricKit }
+
+    /// The two sources stamp the same crash a little apart: the report when it was written,
+    /// MetricKit to its payload's rounded span.
+    static let slack: TimeInterval = 10 * 60
+
+    var source: Source
+    var from: Date
+    var to: Date
+    var app: DiagnosticsApp
+    /// Set once the other source's copy has been matched to it, so it stands for one crash only.
+    var matched = false
+
+    func isSameCrash(as other: CrashNote) -> Bool {
+        source != other.source && !matched && !other.matched
+            && app.version == other.app.version && app.build == other.app.build
+            && from.addingTimeInterval(-CrashNote.slack) <= other.to && other.from.addingTimeInterval(-CrashNote.slack) <= to
     }
 }

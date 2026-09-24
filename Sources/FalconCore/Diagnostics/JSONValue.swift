@@ -206,3 +206,90 @@ extension JSONValue {
         }
     }
 }
+
+// MARK: - Text for people to read
+
+extension JSONValue {
+    /// Indented JSON that reads well: an object or list short enough for one line stays on it,
+    /// and the keys named in `order` come first, in that order, the rest after them A to Z.
+    public func readable(order: [String] = [], width: Int = 88) -> String {
+        var out = ""
+        write(to: &out, indent: 0, column: 0, rank: Dictionary(order.enumerated().map { ($1, $0) }) { a, _ in a }, width: width)
+        return out
+    }
+
+    private func write(to out: inout String, indent: Int, column: Int, rank: [String: Int], width: Int) {
+        if estimatedSize + column <= width {
+            let line = oneLine(rank)
+            if line.count + column <= width {
+                out += line
+                return
+            }
+        }
+        let pad = String(repeating: " ", count: indent + 2)
+        switch self {
+        case .array(let a) where !a.isEmpty:
+            out += "[\n"
+            for (i, value) in a.enumerated() {
+                out += pad
+                value.write(to: &out, indent: indent + 2, column: indent + 2, rank: rank, width: width)
+                out += i < a.count - 1 ? ",\n" : "\n"
+            }
+            out += String(repeating: " ", count: indent) + "]"
+        case .object(let o) where !o.isEmpty:
+            out += "{\n"
+            let keys = JSONValue.ordered(o.keys, rank)
+            for (i, key) in keys.enumerated() {
+                let label = JSONValue.quoted(key) + ": "
+                out += pad + label
+                o[key]?.write(to: &out, indent: indent + 2, column: indent + 2 + label.count, rank: rank, width: width)
+                out += i < keys.count - 1 ? ",\n" : "\n"
+            }
+            out += String(repeating: " ", count: indent) + "}"
+        default:
+            out += oneLine(rank)
+        }
+    }
+
+    private func oneLine(_ rank: [String: Int]) -> String {
+        switch self {
+        case .null: return "null"
+        case .bool(let b): return b ? "true" : "false"
+        case .int(let i): return String(i)
+        case .double(let d): return d.isFinite ? String(d) : "0"
+        case .string(let s): return JSONValue.quoted(s)
+        case .array(let a): return a.isEmpty ? "[]" : "[ " + a.map { $0.oneLine(rank) }.joined(separator: ", ") + " ]"
+        case .object(let o):
+            guard !o.isEmpty else { return "{}" }
+            return "{ " + JSONValue.ordered(o.keys, rank).map { JSONValue.quoted($0) + ": " + (o[$0]?.oneLine(rank) ?? "null") }
+                .joined(separator: ", ") + " }"
+        }
+    }
+
+    private static func ordered(_ keys: Dictionary<String, JSONValue>.Keys, _ rank: [String: Int]) -> [String] {
+        keys.sorted { a, b in
+            switch (rank[a], rank[b]) {
+            case let (x?, y?): return x < y
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return a < b
+            }
+        }
+    }
+
+    private static func quoted(_ s: String) -> String {
+        var out = "\""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            case _ where scalar.value < 0x20: out += String(format: "\\u%04x", scalar.value)
+            default: out.unicodeScalars.append(scalar)
+            }
+        }
+        return out + "\""
+    }
+}

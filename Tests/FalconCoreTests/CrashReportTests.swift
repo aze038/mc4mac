@@ -23,7 +23,8 @@ final class CrashReportTests: XCTestCase {
 
     /// A report shaped like the ones macOS writes: a one-line header, then the body.
     static func ips(bundle: String = "com.falconmail.app", incident: String = UUID().uuidString, threads: Int = 3,
-                    framesPerThread: Int = 20, home: String = "/Users/kmuradoff") -> String {
+                    framesPerThread: Int = 20, home: String = "/Users/kmuradoff",
+                    appPath: String = "/Applications/FalconMail.app") -> String {
         let header = """
         {"app_name":"FalconMail","timestamp":"2026-09-20 10:11:12.00 +0100","app_version":"1.9.0","slice_uuid":"0B1C2D3E-0000-1111-2222-333344445555","build_version":"45","platform":1,"bundleID":"\(bundle)","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.6 (25G5023)","roots_installed":0,"name":"FalconMail","incident_id":"\(incident)"}
         """
@@ -53,7 +54,7 @@ final class CrashReportTests: XCTestCase {
         {"uptime":1200,"procRole":"Foreground","version":2,"userID":501,"deployVersion":210,"modelCode":"MacBookPro18,3",
          "coalitionID":1234,"osVersion":{"train":"macOS 26.6","build":"25G5023","releaseType":"User"},
          "captureTime":"2026-09-20 10:11:12.3456 +0100","incident":"\(incident)","pid":4242,"cpuType":"ARM-64",
-         "procLaunch":"2026-09-20 09:51:12.0000 +0100","procPath":"\(home)/Applications/FalconMail.app/Contents/MacOS/FalconMail",
+         "procLaunch":"2026-09-20 09:51:12.0000 +0100","procPath":"\(appPath)/Contents/MacOS/FalconMail",
          "bundleInfo":{"CFBundleShortVersionString":"1.9.0","CFBundleVersion":"45","CFBundleIdentifier":"\(bundle)"},
          "crashReporterKey":"D4F2E1C0-SECRET-KEY","sleepWakeUUID":"ABCDEF","bootSessionUUID":"123456",
          "exception":{"codes":"0x0000000000000001, 0x0000000000000000","rawCodes":[1,0],"type":"EXC_BREAKPOINT","signal":"SIGTRAP"},
@@ -112,6 +113,72 @@ final class CrashReportTests: XCTestCase {
         later.start()
         XCTAssertEqual(later.pendingRecords.filter { $0.event.kind == .crash }.map(\.event.id).last,
                        DiagnosticsEvent.stableID("ips:\(later.installID):22222222-2222-2222-2222-222222222222"))
+    }
+
+    /// A crash file's date has a fraction of a second; the next launch must still know it has
+    /// been reported, even after the upload emptied the queue.
+    func testAReportIsSentOnceEvenAfterTheQueueIsEmpty() async throws {
+        try write("FalconMail-2026-09-20-101112.ips", Self.ips(), modified: now.addingTimeInterval(-3_600.37))
+        FakeDiagnosticsServer.respond { _, _ in DiagnosticsFixtures.okReply }
+        defer { FakeDiagnosticsServer.reset() }
+        let first = makeCenter(clock: ManualClock(now))
+        first.start()
+        XCTAssertEqual(first.pendingRecords.filter { $0.event.kind == .crash }.count, 1)
+        _ = await first.uploadNow()
+        XCTAssertEqual(first.pendingCount, 0)
+        first.endSession()
+        first.stop()
+
+        let next = makeCenter(clock: ManualClock(now.addingTimeInterval(600)))
+        next.start()
+        XCTAssertEqual(next.pendingRecords.filter { $0.event.kind == .crash }.count, 0, "not sent again")
+    }
+
+    /// Ten newer reports of other builds must not hide a real one, nor be read again.
+    func testOtherBuildsReportsNeverCrowdOutTheRealOne() throws {
+        try write("FalconMail-2026-09-20-080000.ips", Self.ips(incident: "11111111-1111-1111-1111-111111111111"),
+                  modified: now.addingTimeInterval(-7_200))
+        for i in 0..<10 {
+            try write("FalconMail-2026-09-20-09000\(i).ips", Self.ips(bundle: "com.falconmail.app.snapshot"),
+                      modified: now.addingTimeInterval(-3_600 + Double(i)))
+        }
+        for i in 0..<10 {
+            try write("FalconMail-2026-09-20-10000\(i).ips", Self.ips(appPath: "/tmp/agent-dd/Build/Products/Debug/FalconMail.app"),
+                      modified: now.addingTimeInterval(-1_800 + Double(i)))
+        }
+        let center = makeCenter(clock: ManualClock(now))
+        center.start()
+        let crashes = center.pendingRecords.filter { $0.event.kind == .crash }
+        XCTAssertEqual(crashes.map(\.event.id), [DiagnosticsEvent.stableID("ips:\(center.installID):11111111-1111-1111-1111-111111111111")],
+                       "only the installed app's crash, not the snapshot's or a build run from Xcode's build folder")
+    }
+
+    /// MetricKit's crash diagnostic of the same crash, with its window given in UTC so the test
+    /// reads the same in every time zone.
+    private static let metricKitPayload = MetricKitDiagnosticsTests.payload
+        .replacingOccurrences(of: "2026-09-20 00:00:00", with: "2026-09-20 00:00:00 +0000")
+        .replacingOccurrences(of: "2026-09-20 23:59:00", with: "2026-09-20 23:59:00 +0000")
+
+    /// macOS writes a crash report and MetricKit reports the same crash again. It is sent once,
+    /// from the report, which says more.
+    func testACrashBothSourcesReportIsSentOnce() throws {
+        try write("FalconMail-2026-09-20-101112.ips", Self.ips(), modified: now.addingTimeInterval(-3_600))
+        let center = makeCenter(clock: ManualClock(now))
+        center.start()
+        center.ingestMetricKit(Data(Self.metricKitPayload.utf8))
+        center.waitUntilIdle()
+        XCTAssertEqual(center.pendingRecords.filter { $0.event.kind == .crash }.map { $0.event.context["source"] }, [.string("ips")])
+        XCTAssertEqual(center.pendingRecords.filter { $0.event.kind == .hang }.count, 1, "MetricKit's hangs still go")
+    }
+
+    func testADebugBuildsCrashIsSentFromNeitherSource() throws {
+        let debug = "/Users/kmuradoff/Library/Developer/Xcode/DerivedData/FalconMail-abc/Build/Products/Debug/FalconMail.app"
+        try write("FalconMail-2026-09-20-101112.ips", Self.ips(appPath: debug), modified: now.addingTimeInterval(-3_600))
+        let center = makeCenter(clock: ManualClock(now))
+        center.start()
+        center.ingestMetricKit(Data(Self.metricKitPayload.utf8))
+        center.waitUntilIdle()
+        XCTAssertEqual(center.pendingRecords.filter { $0.event.kind == .crash }.count, 0)
     }
 
     func testReportIsRedactedAndKeepsWhatSymbolicationNeeds() throws {

@@ -128,7 +128,9 @@ What becomes an event:
 - Every `Log.warning` and `Log.error` line, never `Log.info`. Each error alert and banner
   the app shows is one, under the area `Alert`.
 - Crashes, from the app's own reports in `~/Library/Logs/DiagnosticReports` at launch and
-  from MetricKit, which also reports hangs, heavy CPU use and heavy disk writes.
+  from MetricKit, which also reports hangs, heavy CPU use and heavy disk writes. A crash
+  both report is sent once, from the `.ips` report, which says more. A build run from
+  Xcode's build folder is never reported.
 - A `launch` event at each start, saying whether the last session quit normally, and a
   `health` event once a day.
 
@@ -139,9 +141,10 @@ again in ten minutes. An event leaves the queue only once the server has confirm
 Who sends: only a Release build with the bundle identifier `com.falconmail.app`, an
 endpoint and key in its Info.plist (the release workflow fills them from the
 `FALCON_DIAGNOSTICS_URL` and `FALCON_DIAGNOSTICS_KEY` secrets), and the switch on.
-Switching it off deletes the queue. The release workflow keeps each release's dSYM in
-`~/Library/Application Support/FalconMail Symbols/<version>/` on the runner, where the
-daily triage symbolicates crashes; dSYMs are never uploaded.
+Switching it off deletes the queue, and switching it back on leaves out whatever happened
+while it was off. The release workflow keeps each build's dSYM in
+`~/Library/Application Support/FalconMail Symbols/<version>/<build>/` on the runner,
+where the daily triage symbolicates crashes; dSYMs are never uploaded.
 
 ## Gmail specifics
 

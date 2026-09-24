@@ -150,7 +150,7 @@ enum DiagnosticsFixtures {
         return url
     }
 
-    static func event(_ signature: String = "IMAP.network@AccountSyncer.swift:131", kind: DiagnosticsKind = .error,
+    static func event(_ signature: String = "IMAP.network@AccountSyncer.swift:loop", kind: DiagnosticsKind = .error,
                       at date: Date = Date(timeIntervalSince1970: 1_790_000_000), message: String = "connection closed",
                       context: JSONValue = .object([:]), account: String? = nil) -> DiagnosticsEvent {
         DiagnosticsEvent(kind: kind, signature: signature, title: "Checking for new mail failed: the connection dropped",

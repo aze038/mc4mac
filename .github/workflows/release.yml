@@ -99,14 +99,17 @@ jobs:
           grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
 
       # The runner is the owner's Mac; the daily triage symbolicates crash reports from here.
-      # The dSYM is kept on this Mac only and never uploaded.
+      # The dSYM is kept on this Mac only and never uploaded. Each build keeps its own folder
+      # under its version, named by its build number, so building a version again never
+      # replaces the symbols of copies already handed out; the triage matches them by UUID.
       - name: Keep dSYM for crash symbolication
         run: |
           DSYM="build/Build/Products/Release/FalconMail.app.dSYM"
-          DEST="$HOME/Library/Application Support/FalconMail Symbols/$APP_VERSION"
+          BUILD="${{ github.run_number }}"
+          if [ "${{ github.run_attempt }}" != "1" ]; then BUILD="$BUILD-attempt-${{ github.run_attempt }}"; fi
+          DEST="$HOME/Library/Application Support/FalconMail Symbols/$APP_VERSION/$BUILD"
           if [ -d "$DSYM" ]; then
             mkdir -p "$DEST"
-            rm -rf "$DEST/FalconMail.app.dSYM"
             cp -R "$DSYM" "$DEST/"
             dwarfdump --uuid "$DSYM" > "$DEST/uuids.txt"
             echo "dSYM kept in $DEST"

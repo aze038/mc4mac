@@ -97,9 +97,10 @@ public final class DiagnosticsCenter: @unchecked Sendable {
     private var schedule: DiagnosticsSchedule
     private var counters: DiagnosticsCounters
     private var healthProvider: (@Sendable () async -> DiagnosticsHealthInput)?
+    private var healthInProgress = false
     private var loopTask: Task<Void, Never>?
     private var uploading = false
-    private var flushPending = false
+    private var pendingSave: DispatchWorkItem?
     private var markerActive = false
 
     struct Identity: Codable {
@@ -109,8 +110,27 @@ public final class DiagnosticsCenter: @unchecked Sendable {
 
     struct State: Codable {
         var lastHealthAt: Date?
-        var lastCrashReportAt: Date?
+        /// The date of the newest crash report looked at, where the next scan starts.
+        var crashReportsCheckedUntil: Date?
         var seenMetricKit: [String] = []
+        /// When the switch was last turned on. MetricKit's reports from before then are left out.
+        var enabledAt: Date?
+        var recentCrashes: [CrashNote] = []
+        /// The counts for the next health report, kept across launches so it covers the whole day.
+        var counters: DiagnosticsCounters?
+
+        /// Dates are kept as the seconds a `Date` holds rather than as ISO 8601 text, which drops
+        /// the fraction of a second a crash report's file date carries: the same report would
+        /// then count as new at every launch.
+        static func load(from url: URL) -> State? {
+            AtomicFile.read(url).flatMap { try? JSONDecoder().decode(State.self, from: $0) }
+        }
+
+        func save(to url: URL) {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            if let data = try? encoder.encode(self) { try? AtomicFile.write(data, to: url) }
+        }
     }
 
     public init(directory: URL, gate: DiagnosticsGate, environment: DiagnosticsEnvironment,
@@ -128,10 +148,10 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         self.identity = DiagnosticsCenter.loadIdentity(in: directory)
         self.marker = SessionMarker(directory: directory)
         self.redactor = DiagnosticsRedactor(salt: identity.salt, homePath: environment.homePath)
-        self.state = AtomicFile.readJSON(State.self, from: directory.appendingPathComponent("state.json")) ?? State()
+        self.state = State.load(from: directory.appendingPathComponent("state.json")) ?? State()
         let now = clock.now()
         self.schedule = DiagnosticsSchedule(launchedAt: now)
-        self.counters = DiagnosticsCounters(since: now)
+        self.counters = state.counters ?? DiagnosticsCounters(since: now)
     }
 
     /// The random UUID that tells this install's uploads apart from other Macs'.
@@ -178,6 +198,8 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         work.sync {
             loopTask?.cancel()
             loopTask = nil
+            pendingSave?.cancel()
+            pendingSave = nil
         }
     }
 
@@ -185,13 +207,14 @@ public final class DiagnosticsCenter: @unchecked Sendable {
     public func endSession() {
         work.sync {
             queue?.flush()
+            if gate.allowsUpload { saveState() }
             if markerActive { marker.end() }
             markerActive = false
         }
     }
 
     /// The Settings switch. Off stops uploads and deletes everything waiting; on starts
-    /// afresh, leaving out crashes from while it was off.
+    /// afresh, leaving out crashes, hangs and counts from while it was off.
     public func setEnabled(_ on: Bool) {
         let changed: Bool = gateLock.withLock {
             guard storedGate.userEnabled != on else { return false }
@@ -204,7 +227,10 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         work.async { [self] in
             if on {
                 guard gate.buildMaySend else { return }
-                state.lastCrashReportAt = max(state.lastCrashReportAt ?? .distantPast, clock.now())
+                let now = clock.now()
+                state.crashReportsCheckedUntil = max(state.crashReportsCheckedUntil ?? .distantPast, now)
+                state.enabledAt = now
+                counters = DiagnosticsCounters(since: now)
                 saveState()
                 openQueue()
                 _ = marker.begin(version: environment.app.version, now: clock.now())
@@ -247,12 +273,16 @@ public final class DiagnosticsCenter: @unchecked Sendable {
             }
             if event.signature.contains(".throttled@") { counters.throttles += 1 }
             queue.add(DiagnosticsRecord(event: event, app: environment.app, os: environment.os))
-            scheduleFlush()
+            scheduleSave()
         }
     }
 
     public func noteSyncPass() {
-        work.async { [self] in counters.syncPasses += 1 }
+        work.async { [self] in
+            guard gate.allowsUpload else { return }
+            counters.syncPasses += 1
+            scheduleSave()
+        }
     }
 
     /// A MetricKit diagnostic payload, as `MXDiagnosticPayload.jsonRepresentation()` gives it.
@@ -262,8 +292,14 @@ public final class DiagnosticsCenter: @unchecked Sendable {
             var urgent = false
             for item in MetricKitDiagnostics.items(from: json, install: identity.install, redactor: redactor, now: clock.now())
             where !state.seenMetricKit.contains(item.event.id) && !queue.contains(id: item.event.id) {
-                queue.add(DiagnosticsRecord(event: item.event, app: item.app ?? environment.app, os: item.os ?? environment.os))
                 state.seenMetricKit.append(item.event.id)
+                // A payload covers a span, often a day, and says only that its reports fall
+                // within it, so one that began before the switch went on is left out whole.
+                if let enabledAt = state.enabledAt, item.event.firstAt < enabledAt { continue }
+                let app = item.app ?? environment.app
+                if item.event.kind == .crash,
+                   !isNewCrash(CrashNote(source: .metricKit, from: item.event.firstAt, to: item.event.lastAt, app: app)) { continue }
+                queue.add(DiagnosticsRecord(event: item.event, app: app, os: item.os ?? environment.os))
                 urgent = urgent || item.event.kind.isUrgent
             }
             state.seenMetricKit = Array(state.seenMetricKit.suffix(200))
@@ -276,14 +312,15 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         let message = redactor.redact(entry.message)
         let code = DiagnosticsSignature.code(for: entry.error, message: message)
         let kind: DiagnosticsKind = entry.level == .error ? .error : .warning
-        var context: [String: JSONValue] = ["level": .string(entry.level.rawValue)]
+        var context: [String: JSONValue] = ["level": .string(entry.level.rawValue),
+                                            "source": .string("\(DiagnosticsSignature.fileName(entry.file)):\(entry.line)")]
         if let error = entry.error {
             let ns = error as NSError
             context["errorType"] = .string(String(describing: type(of: error)))
             context["errorDomain"] = .string(ns.domain)
             context["errorCode"] = .int(Int64(ns.code))
         }
-        return DiagnosticsEvent(kind: kind, signature: DiagnosticsSignature.make(area: entry.area, code: code, file: entry.file, line: entry.line),
+        return DiagnosticsEvent(kind: kind, signature: DiagnosticsSignature.make(area: entry.area, code: code, file: entry.file, function: entry.function),
                                 title: DiagnosticsTitle.make(kind: kind, area: entry.area, code: code), area: entry.area,
                                 firstAt: entry.date, message: message, context: redactor.redact(.object(context)),
                                 account: entry.account.map { DiagnosticsAccount($0, redactor: redactor) })
@@ -312,17 +349,35 @@ public final class DiagnosticsCenter: @unchecked Sendable {
 
     private func scanCrashReports() {
         guard let crashReports, let queue else { return }
-        let reports = crashReports.reports(after: state.lastCrashReportAt, now: clock.now())
-        guard !reports.isEmpty else { return }
-        for report in reports {
-            let (event, app, os) = CrashReportDigest.event(from: report, install: identity.install, redactor: redactor)
-            if !queue.contains(id: event.id) {
-                queue.add(DiagnosticsRecord(event: event, app: app ?? environment.app, os: os ?? environment.os))
-            }
-            state.lastCrashReportAt = max(state.lastCrashReportAt ?? .distantPast, report.modified)
+        let scan = crashReports.scan(after: state.crashReportsCheckedUntil, now: clock.now())
+        guard let checkedUntil = scan.checkedUntil else { return }
+        // Never sent, but noted, so MetricKit's copy of the same crash is left out too.
+        for report in scan.builtLocally {
+            let time = CrashReportDigest.time(of: report)
+            _ = isNewCrash(CrashNote(source: .report, from: time, to: time, app: CrashReportDigest.app(of: report) ?? environment.app))
         }
+        var found = false
+        for report in scan.reports {
+            let (event, app, os) = CrashReportDigest.event(from: report, install: identity.install, redactor: redactor)
+            let crashed = app ?? environment.app
+            guard isNewCrash(CrashNote(source: .report, from: event.firstAt, to: event.firstAt, app: crashed)),
+                  !queue.contains(id: event.id) else { continue }
+            queue.add(DiagnosticsRecord(event: event, app: crashed, os: os ?? environment.os))
+            found = true
+        }
+        state.crashReportsCheckedUntil = max(state.crashReportsCheckedUntil ?? .distantPast, checkedUntil)
         saveState()
-        schedule.urgent(at: clock.now())
+        if found { schedule.urgent(at: clock.now()) }
+    }
+
+    /// Notes a crash and says whether to send it: not when the other source has already sent it.
+    private func isNewCrash(_ note: CrashNote) -> Bool {
+        if let i = state.recentCrashes.firstIndex(where: { $0.isSameCrash(as: note) }) {
+            state.recentCrashes[i].matched = true
+            return false
+        }
+        state.recentCrashes = Array((state.recentCrashes + [note]).suffix(50))
+        return true
     }
 
     // MARK: Uploading
@@ -373,11 +428,14 @@ public final class DiagnosticsCenter: @unchecked Sendable {
                 break
             }
         }
+        // Cut short because the loop was restarted or stopped, which says nothing about the server.
+        let cancelled = Task.isCancelled
         work.sync {
             uploading = false
             let now = clock.now()
             switch failure {
             case nil: schedule.succeeded(at: now)
+            case _ where cancelled: break
             case .offline?: schedule.offline(at: now)
             default: schedule.failed(at: now, jitter: random())
             }
@@ -386,16 +444,20 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         return failure.map { .failed($0) } ?? .sent(events: sent, duplicates: duplicates)
     }
 
-    /// The daily health report, when a day has passed since the last.
+    /// The daily health report, when a day has passed since the last. Gathering its figures
+    /// takes a while, so the report is marked as under way first: a second caller in that time,
+    /// such as a loop restarted for a crash, finds it so and leaves it.
     func recordHealthIfDue() async {
         let provider: (@Sendable () async -> DiagnosticsHealthInput)? = work.sync {
-            guard gate.allowsUpload, queue != nil else { return nil }
+            guard gate.allowsUpload, queue != nil, !healthInProgress, let healthProvider else { return nil }
             if let last = state.lastHealthAt, clock.now().timeIntervalSince(last) < DiagnosticsCenter.healthInterval { return nil }
+            healthInProgress = true
             return healthProvider
         }
         guard let provider else { return }
         let input = await provider()
         work.sync {
+            healthInProgress = false
             guard gate.allowsUpload, let queue else { return }
             let now = clock.now()
             let event = DiagnosticsHealth.event(input: input, counters: counters, app: environment.app, redactor: redactor, now: now)
@@ -426,6 +488,7 @@ public final class DiagnosticsCenter: @unchecked Sendable {
             }
             guard !Task.isCancelled else { return }
             await recordHealthIfDue()
+            guard !Task.isCancelled else { return }
             _ = await uploadNow()
         }
     }
@@ -441,6 +504,12 @@ public final class DiagnosticsCenter: @unchecked Sendable {
 
     // MARK: What is waiting
 
+    /// The order a person reads an upload in: whose it is first, then each event opening with
+    /// its plain-language title and ending with its technical detail.
+    static let readingOrder = ["install", "app", "os", "hw", "locale", "schema", "events",
+                               "title", "provider", "kind", "host", "ref", "version", "build", "channel",
+                               "area", "count", "firstAt", "lastAt", "message", "account", "signature", "id", "context"]
+
     /// Everything waiting, as it would be sent, for the person to read. The ingest key is left
     /// out; it is the same for every copy of FalconMail and says nothing about this one.
     public func pendingDescription() -> String {
@@ -455,7 +524,7 @@ public final class DiagnosticsCenter: @unchecked Sendable {
                 guard let data = try? DiagnosticsJSON.encoder.encode(upload), case .object(var o)? = JSONValue.parse(data) else { return nil }
                 o["key"] = nil
                 o["sentAt"] = nil
-                return (try? DiagnosticsJSON.prettyEncoder.encode(JSONValue.object(o))).map { String(decoding: $0, as: UTF8.self) }
+                return JSONValue.object(o).readable(order: DiagnosticsCenter.readingOrder)
             }.joined(separator: "\n\n")
         }
     }
@@ -474,17 +543,23 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         if queue == nil { queue = DiagnosticsQueue(url: queueURL) }
     }
 
-    private func scheduleFlush() {
-        guard queue?.needsFlush == true, !flushPending else { return }
-        flushPending = true
-        work.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.flushPending = false
-            self?.queue?.flush()
+    /// Writes the queue and the counts a moment later, so a burst of errors costs one write.
+    private func scheduleSave() {
+        guard pendingSave == nil else { return }
+        let save = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            pendingSave = nil
+            guard gate.allowsUpload else { return }
+            queue?.flush()
+            saveState()
         }
+        pendingSave = save
+        work.asyncAfter(deadline: .now() + 2, execute: save)
     }
 
     private func saveState() {
-        try? AtomicFile.writeJSON(state, to: directory.appendingPathComponent("state.json"))
+        state.counters = counters
+        state.save(to: directory.appendingPathComponent("state.json"))
     }
 
     private static func loadIdentity(in directory: URL) -> Identity {

@@ -30,7 +30,7 @@ public struct DiagnosticsHealthInput: Sendable {
 }
 
 /// Counts kept between health reports.
-struct DiagnosticsCounters: Sendable {
+struct DiagnosticsCounters: Codable, Sendable {
     var syncPasses = 0
     var throttles = 0
     var errors = 0
@@ -71,12 +71,30 @@ enum DiagnosticsHealth {
         if let launch = input.launchSeconds { context["launchSeconds"] = .double((launch * 10).rounded() / 10) }
         if let memory = ProcessMetrics.memoryFootprint() { context["memoryBytes"] = .int(Int64(memory)) }
         let messages = input.accounts.reduce(0) { $0 + $1.messages }
-        let formatter = ByteCountFormatter()
-        let message = "\(input.accounts.count) accounts, \(messages) messages on this Mac (\(formatter.string(fromByteCount: Int64(input.storeBytes)))), "
-            + "\(counters.syncPasses) sync passes, \(counters.throttles) throttled, \(counters.errors) errors and \(counters.warnings) warnings since the last report"
+        let stored = Int64(input.storeBytes).formatted(.byteCount(style: .file).locale(DiagnosticsHealth.english))
+        let message = "\(count(input.accounts.count, "account")), \(count(messages, "message")) on this Mac (\(stored)). "
+            + "Since \(readable(counters.since)): \(count(counters.syncPasses, "sync pass", "sync passes")), "
+            + "\(counters.throttles) throttled, \(count(counters.errors, "error")) and \(count(counters.warnings, "warning"))."
         return DiagnosticsEvent(kind: .health, signature: DiagnosticsSignature.make(area: "Health", code: "daily", place: "FalconMail"),
                                 title: DiagnosticsTitle.make(kind: .health, area: "health", code: "daily"), area: "health",
                                 firstAt: counters.since, lastAt: now, message: message, context: .object(context))
+    }
+
+    private static func count(_ n: Int, _ one: String, _ many: String? = nil) -> String {
+        "\(n) \(n == 1 ? one : many ?? one + "s")"
+    }
+
+    /// The team reads every Mac's reports side by side, so they are written alike, whatever
+    /// language the Mac is set to.
+    private static let english = Locale(identifier: "en_GB")
+
+    /// `23 Sep 2026 at 09:00 UTC`.
+    private static func readable(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = english
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "d MMM yyyy 'at' HH:mm 'UTC'"
+        return f.string(from: date)
     }
 }
 

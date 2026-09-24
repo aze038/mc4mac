@@ -2,13 +2,21 @@ import Foundation
 
 /// Grouping keys. A signature names where and how something failed, never with what: the
 /// same failure at the same place reads the same on every Mac and every run, so the triage
-/// can count it. It is `Area.code@File.swift:line` for a logged failure, and
+/// can count it. It is `Area.code@File.swift:function` for a logged failure, and
 /// `Area.code@Binary` for a crash or a MetricKit report, whose place is only known after
 /// symbolication.
+///
+/// The place is the function rather than the line: lines move whenever code above them
+/// changes, nearly every release and above all in the one that fixes the failure, which would
+/// make a fixed issue look new and lose its notes.
 public enum DiagnosticsSignature {
-    public static func make(area: String, code: String, file: String, line: Int) -> String {
-        let name = file.split(separator: "/").last.map(String.init) ?? file
-        return "\(word(area)).\(word(code))@\(name):\(line)"
+    public static func make(area: String, code: String, file: String, function: String) -> String {
+        "\(word(area)).\(word(code))@\(fileName(file)):\(word(String(function.prefix { $0 != "(" })))"
+    }
+
+    /// `AccountSyncer.swift` from `FalconCore/AccountSyncer.swift`.
+    public static func fileName(_ file: String) -> String {
+        file.split(separator: "/").last.map(String.init) ?? file
     }
 
     public static func make(area: String, code: String, place: String) -> String {
@@ -181,8 +189,8 @@ public enum DiagnosticsSignature {
     /// The first words of a message nobody has classified yet, as a stable key: numbers,
     /// quoted text and references are gone, so every occurrence reads alike.
     static func shape(of message: String) -> String {
-        let cleaned = message
-            .replacingOccurrences(of: #"<[^<>]*>|"[^"]*"|“[^”]*”"#, with: " ", options: .regularExpression)
+        let cleaned = DiagnosticsRedactor.blankingQuoted(message)
+            .replacingOccurrences(of: #"<[^<>]*>"#, with: " ", options: .regularExpression)
         let words = cleaned.split(whereSeparator: { !$0.isLetter }).map(String.init).filter { $0.count > 1 }.prefix(5)
         guard let first = words.first else { return "unknown" }
         let rest = words.dropFirst().map { $0.prefix(1).uppercased() + $0.dropFirst().lowercased() }

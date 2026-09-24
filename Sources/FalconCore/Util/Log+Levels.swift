@@ -12,17 +12,19 @@ public struct LogRecord: Sendable {
     public let error: (any Error)?
     public let account: AccountInfo?
     public let file: String
+    public let function: String
     public let line: Int
     public let date: Date
 
     public init(level: LogLevel, area: String, message: String, error: (any Error)? = nil, account: AccountInfo? = nil,
-                file: String, line: Int, date: Date = Date()) {
+                file: String, function: String, line: Int, date: Date = Date()) {
         self.level = level
         self.area = area
         self.message = message
         self.error = error
         self.account = account
         self.file = file
+        self.function = function
         self.line = line
         self.date = date
     }
@@ -41,19 +43,20 @@ extension Log {
 
     /// Something went wrong but FalconMail carried on, such as a paused connection.
     public static func warning(_ area: String, _ message: @autoclosure () -> String, error: (any Error)? = nil,
-                               account: AccountInfo? = nil, file: String = #fileID, line: Int = #line) {
-        emit(.warning, area, message(), error, account, file, line)
+                               account: AccountInfo? = nil, file: String = #fileID, function: String = #function, line: Int = #line) {
+        emit(LogRecord(level: .warning, area: area, message: message(), error: error, account: account,
+                       file: file, function: function, line: line))
     }
 
     /// Something failed that the person may notice.
     public static func error(_ area: String, _ message: @autoclosure () -> String, error: (any Error)? = nil,
-                             account: AccountInfo? = nil, file: String = #fileID, line: Int = #line) {
-        emit(.error, area, message(), error, account, file, line)
+                             account: AccountInfo? = nil, file: String = #fileID, function: String = #function, line: Int = #line) {
+        emit(LogRecord(level: .error, area: area, message: message(), error: error, account: account,
+                       file: file, function: function, line: line))
     }
 
-    private static func emit(_ level: LogLevel, _ area: String, _ message: String, _ error: (any Error)?,
-                             _ account: AccountInfo?, _ file: String, _ line: Int) {
-        info(area, "\(level.rawValue): \(message)")
-        observer?(LogRecord(level: level, area: area, message: message, error: error, account: account, file: file, line: line))
+    private static func emit(_ record: LogRecord) {
+        info(record.area, "\(record.level.rawValue): \(record.message)")
+        observer?(record)
     }
 }

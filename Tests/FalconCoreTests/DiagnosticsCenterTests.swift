@@ -71,6 +71,45 @@ final class DiagnosticsCenterTests: XCTestCase {
         XCTAssertTrue(everything.contains(center.installID))
     }
 
+    /// Lines added above a log call, as nearly every release does, must not make its failure
+    /// look new, so the place in a signature is the function, not the line.
+    func testSignatureSurvivesLinesMovingAboveTheCall() {
+        let center = makeCenter()
+        center.start()
+        let error = FalconError.network("server closed session: Account exceeded command or bandwidth limits.")
+        let line = #line + 1
+        Log.error("IMAP", error.localizedDescription, error: error)
+
+        Log.error("IMAP", error.localizedDescription, error: error)
+        center.waitUntilIdle()
+        let imap = center.pendingRecords.map(\.event).filter { $0.area == "IMAP" }
+        XCTAssertEqual(imap.map(\.signature), ["IMAP.throttled@DiagnosticsCenterTests.swift:testSignatureSurvivesLinesMovingAboveTheCall"])
+        XCTAssertEqual(imap.first?.count, 2)
+        XCTAssertEqual(imap.first?.context["source"], .string("DiagnosticsCenterTests.swift:\(line)"),
+                       "the exact line is kept beside the signature for whoever reads the event")
+    }
+
+    /// What Settings shows under Show Data Waiting to Be Sent: small objects on one line, each
+    /// event opening with its title, and nothing lost on the way.
+    func testWaitingDataReadsWell() throws {
+        let center = makeCenter()
+        center.start()
+        throttled()
+        center.waitUntilIdle()
+        let text = center.pendingDescription()
+        XCTAssertTrue(text.contains(#""app": { "version": "1.10.0", "build": "123", "channel": "release" }"#), text)
+        XCTAssertTrue(text.contains(#""account": { "provider": "#) || text.contains(#""account": null"#), text)
+        let lines = text.components(separatedBy: "\n")
+        XCTAssertTrue(lines.allSatisfy { $0.count <= 88 || $0.contains(#""message": "#) }, text)
+        let event = try XCTUnwrap(lines.firstIndex { $0.contains(#""title": "The mail server paused"#) })
+        XCTAssertEqual(lines[event - 1].trimmingCharacters(in: .whitespaces), "{", "the title opens the event")
+        XCTAssertLessThan(event, try XCTUnwrap(lines.firstIndex { $0.contains(#""signature": "IMAP.throttled"#) }))
+
+        let parsed = try XCTUnwrap(JSONValue.parse(text))
+        let sent = try XCTUnwrap(JSONValue.parse(DiagnosticsJSON.encoder.encode(center.pendingRecords.map(\.event))))
+        XCTAssertEqual(parsed["events"], sent, "the same events, only laid out for reading")
+    }
+
     func testRepeatedErrorsFoldIntoOneEvent() {
         let center = makeCenter()
         center.start()
@@ -136,6 +175,24 @@ final class DiagnosticsCenterTests: XCTestCase {
         throttled()
         center.waitUntilIdle()
         XCTAssertEqual(center.pendingCount, 1, "capturing again from when it was switched back on")
+    }
+
+    /// MetricKit hands over past reports when it is listened to again; those from while the
+    /// switch was off stay behind, as crash reports do.
+    func testMetricKitReportsFromWhileSwitchedOffAreLeftOut() {
+        let center = makeCenter(clock: ManualClock())
+        center.start()
+        center.setEnabled(false)
+        center.setEnabled(true)
+        center.ingestMetricKit(Data(MetricKitDiagnosticsTests.payload.utf8))
+        center.waitUntilIdle()
+        XCTAssertEqual(center.pendingRecords.filter { $0.event.kind != .launch }.count, 0, "from 20 September, before it was switched on")
+
+        let later = MetricKitDiagnosticsTests.payload.replacingOccurrences(of: "2026-09-20", with: "2026-09-22")
+            .replacingOccurrences(of: #""version" : "1.0.0""#, with: #""version" : "1.0.1""#)
+        center.ingestMetricKit(Data(later.utf8))
+        center.waitUntilIdle()
+        XCTAssertEqual(center.pendingRecords.map(\.event.kind), [.crash, .hang, .cpu, .diskwrite])
     }
 
     func testLaunchingSwitchedOffDeletesWhatWasLeft() {
@@ -226,7 +283,8 @@ final class DiagnosticsCenterTests: XCTestCase {
     func testLargeQueuesGoInBatchesAndAFailureKeepsTheRest() async {
         let center = makeCenter()
         center.start()
-        for i in 0..<450 { Log.error("Area\(String(repeating: "x", count: i % 50))", "failure", file: "F.swift", line: i) }
+        let functions = ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
+        for i in 0..<450 { Log.error("Area\(String(repeating: "x", count: i % 50))", "failure", file: "F.swift", function: functions[i / 50]) }
         center.waitUntilIdle()
         let total = center.pendingCount
         XCTAssertEqual(total, 451)
@@ -301,11 +359,15 @@ final class DiagnosticsCenterTests: XCTestCase {
         center.noteSyncPass()
         throttled()
         center.waitUntilIdle()
+        // The upload loop would also check once the clock moves on; this test checks by hand.
+        center.stop()
 
         await center.recordHealthIfDue()
         let health = try XCTUnwrap(center.pendingRecords.map(\.event).first { $0.kind == .health })
         XCTAssertEqual(health.signature, "Health.daily@FalconMail")
         XCTAssertEqual(health.title, "Daily health report")
+        XCTAssertEqual(health.message, "2 accounts, 4200 messages on this Mac (1.2 GB). "
+                       + "Since 21 Sep 2026 at 14:13 UTC: 2 sync passes, 1 throttled, 1 error and 0 warnings.")
         XCTAssertEqual(health.context["syncPasses"], .int(2))
         XCTAssertEqual(health.context["throttles"], .int(1))
         XCTAssertEqual(health.context["errors"], .int(1))
@@ -325,6 +387,52 @@ final class DiagnosticsCenterTests: XCTestCase {
         let reports = center.pendingRecords.filter { $0.event.kind == .health }
         XCTAssertEqual(reports.count, 2)
         XCTAssertEqual(reports.last?.event.context["syncPasses"], .int(0), "counts start again after each report")
+    }
+
+    /// Gathering the health report's figures takes a while; a second check in that time, such
+    /// as a loop restarted for a crash, must not write a second report.
+    func testOverlappingHealthChecksRecordOneReport() async {
+        let center = makeCenter()
+        let calls = Locked(0)
+        let (release, releaser) = AsyncStream<Void>.makeStream()
+        center.start {
+            if calls.mutate({ $0 += 1; return $0 }) == 1 {
+                for await _ in release { break }
+            }
+            return DiagnosticsHealthInput(accounts: [], storeBytes: 0)
+        }
+        center.stop()
+        let first = Task { await center.recordHealthIfDue() }
+        waitUntil { calls.value == 1 }
+        await center.recordHealthIfDue()
+        releaser.yield()
+        await first.value
+        XCTAssertEqual(calls.value, 1)
+        XCTAssertEqual(center.pendingRecords.filter { $0.event.kind == .health }.count, 1)
+    }
+
+    /// The report covers the whole day even when FalconMail was quit or updated in between.
+    func testHealthCountsLastAcrossLaunches() async throws {
+        let clock = ManualClock()
+        let first = makeCenter(clock: clock)
+        first.start()
+        first.noteSyncPass()
+        first.noteSyncPass()
+        throttled()
+        first.waitUntilIdle()
+        first.endSession()
+        first.stop()
+
+        let second = makeCenter(clock: ManualClock(clock.now().addingTimeInterval(9 * 3_600)))
+        second.start { DiagnosticsHealthInput(accounts: [], storeBytes: 0) }
+        second.stop()
+        second.noteSyncPass()
+        second.waitUntilIdle()
+        await second.recordHealthIfDue()
+        let health = try XCTUnwrap(second.pendingRecords.map(\.event).first { $0.kind == .health })
+        XCTAssertEqual(health.context["syncPasses"], .int(3))
+        XCTAssertEqual(health.context["errors"], .int(1))
+        XCTAssertEqual(health.context["since"], .string(DiagnosticsJSON.iso(clock.now())))
     }
 }
 

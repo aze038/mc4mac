@@ -5,9 +5,10 @@ final class DiagnosticsSignatureTests: XCTestCase {
     private let redactor = DiagnosticsRedactor(salt: Data(repeating: 1, count: 32), homePath: "/Users/tester")
 
     private func signature(_ message: String, error: (any Error)? = nil, area: String = "IMAP",
-                           file: String = "FalconCore/AccountSyncer.swift", line: Int = 131) -> String {
+                           file: String = "FalconCore/AccountSyncer.swift", function: String = "loop()") -> String {
         let redacted = redactor.redact(message)
-        return DiagnosticsSignature.make(area: area, code: DiagnosticsSignature.code(for: error, message: redacted), file: file, line: line)
+        return DiagnosticsSignature.make(area: area, code: DiagnosticsSignature.code(for: error, message: redacted), file: file,
+                                         function: function)
     }
 
     private func dynamicPart(_ signature: String) -> String {
@@ -17,7 +18,7 @@ final class DiagnosticsSignatureTests: XCTestCase {
     func testContractExample() {
         let error = FalconError.network("server closed session: Account exceeded command or bandwidth limits.")
         XCTAssertEqual(signature("ana@example.com: \(error.localizedDescription)", error: error),
-                       "IMAP.throttled@AccountSyncer.swift:131")
+                       "IMAP.throttled@AccountSyncer.swift:loop")
     }
 
     func testSameFailureWithDifferentValuesGroupsTogether() {
@@ -28,10 +29,12 @@ final class DiagnosticsSignatureTests: XCTestCase {
     }
 
     func testUnclassifiedMessagesUseTheirFirstWords() {
-        let a = signature(#"Could not read the original message "Invoice 42" to attach it."#, area: "Alert", file: "AppModel.swift", line: 9)
-        let b = signature(#"Could not read the original message "Lunch" to attach it."#, area: "Alert", file: "AppModel.swift", line: 9)
+        let a = signature(#"Could not read the original message "Invoice 42" to attach it."#, area: "Alert", file: "AppModel.swift",
+                          function: "errorMessage")
+        let b = signature(#"Could not read the original message "Lunch" to attach it."#, area: "Alert", file: "AppModel.swift",
+                          function: "errorMessage")
         XCTAssertEqual(a, b)
-        XCTAssertEqual(a, "Alert.couldNotReadTheOriginal@AppModel.swift:9")
+        XCTAssertEqual(a, "Alert.couldNotReadTheOriginal@AppModel.swift:errorMessage")
     }
 
     func testSignaturesNeverCarryNumbersOrIDsFromValues() {

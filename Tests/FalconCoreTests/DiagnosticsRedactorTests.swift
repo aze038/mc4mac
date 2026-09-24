@@ -45,6 +45,21 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertEqual(out, "Could not reach <addr:\(redactor.ref("ana@example.com"))> today")
     }
 
+    func testSurnameFirstBracketedAndLongNames() {
+        let ana = "<addr:\(redactor.ref("ana@example.com"))>"
+        XCTAssertEqual(redactor.redact("To: Lima, Ana <ana@example.com>"), "To: \(ana)")
+        XCTAssertEqual(redactor.redact("Could not reach Lima, Ana <ana@example.com>"), "Could not reach \(ana)")
+        XCTAssertEqual(redactor.redact("To: de la Cruz, Ana <ana@example.com>, bob@example.org"),
+                       "To: \(ana), <addr:\(redactor.ref("bob@example.org"))>")
+        XCTAssertEqual(redactor.redact("Delivery to ana@example.com (Ana Lima) failed"), "Delivery to \(ana) failed")
+        XCTAssertEqual(redactor.redact("Delivery to <ana@example.com> (Ana Maria de la Cruz) failed"), "Delivery to \(ana) failed")
+        XCTAssertEqual(redactor.redact("Dr. Ana Maria de la Cruz Lima <ana@example.com> bounced"), "\(ana) bounced")
+        XCTAssertEqual(redactor.redact("Could not reach Ana Maria de la Cruz Lima <ana@example.com> today"), "Could not reach \(ana) today")
+        XCTAssertEqual(redactor.redact("Rejected ana@example.com (550 5.1.1 user unknown)"), "Rejected \(ana) (550 5.1.1 user unknown)",
+                       "a server's reason in brackets is not a name")
+        XCTAssertEqual(redactor.redact("Could not deliver, Ana <ana@example.com>"), "Could not deliver, \(ana)")
+    }
+
     func testBareAddressesIncludingPlusTagsAndSubdomains() {
         assertClean("Recipient user+billing@sub.domain.co.uk rejected: 550 5.1.1 does not exist",
                     lacks: ["user+billing", "sub.domain"], keeps: ["550 5.1.1", "rejected", "<addr:"])
@@ -88,6 +103,30 @@ final class DiagnosticsRedactorTests: XCTestCase {
         assertClean(#"F0003 LOGIN "ana@example.com" "hunter2 and more""#, lacks: ["hunter2", "ana@"], keeps: ["LOGIN <redacted>"])
         assertClean("F0003 LOGIN ana secret-pass", lacks: ["secret-pass"], keeps: ["LOGIN <redacted>"])
         assertClean("AUTH PLAIN AGFuYUBleGFtcGxlLmNvbQBodW50ZXIy", lacks: ["AGFuYUBl"], keeps: ["AUTH PLAIN <redacted>"])
+    }
+
+    /// IMAP ignores case, so a lower-case LOGIN is a command too where it can only be one.
+    func testLowerCaseLoginCommands() {
+        assertClean("a1 login ana@example.com hunter2", lacks: ["hunter2", "ana@"], keeps: ["a1 login <redacted>"])
+        assertClean("a1 login ana hunter2", lacks: ["hunter2"], keeps: ["a1 login <redacted>"])
+        assertClean(#"sent login "ana" "hunter 2""#, lacks: ["hunter"], keeps: ["login <redacted>"])
+        XCTAssertEqual(redactor.redact("Gmail login failed: invalid credentials"), "Gmail login failed: invalid credentials",
+                       "a sentence about logging in is left alone")
+        XCTAssertEqual(redactor.redact("a1 login <redacted>"), "a1 login <redacted>")
+    }
+
+    func testPasswordsWithSpacesAndShortKeys() {
+        assertClean("Password: hunter 2 with spaces", lacks: ["hunter", "2 with spaces"], keeps: ["Password=<redacted>"])
+        assertClean("password=hunter 2; user=ana", lacks: ["hunter", " 2"], keeps: ["password=<redacted>; user=ana"])
+        assertClean("pass=hunter2&user=x", lacks: ["hunter2"], keeps: ["pass=<redacted>&user=x"])
+        assertClean(#"{"pass": "hunter2"}"#, lacks: ["hunter2"])
+        XCTAssertEqual(redactor.redact("Sync pass: 3 new messages, 12 passes today"), "Sync pass: 3 new messages, 12 passes today")
+    }
+
+    func testRequestLinesLoseTheirQueryStrings() {
+        XCTAssertEqual(redactor.redact("GET /?code=4/0AX4XfWh&scope=https://mail.google.com/ HTTP/1.1"), "GET / HTTP/1.1")
+        XCTAssertEqual(redactor.redact("POST /oauth2callback?state=abc&code=xyz HTTP/1.1"), "POST /oauth2callback HTTP/1.1")
+        XCTAssertEqual(redactor.redact("GET /favicon.ico HTTP/1.1"), "GET /favicon.ico HTTP/1.1")
     }
 
     func testBearerTokensJWTsAndGoogleSecrets() {
@@ -178,12 +217,75 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertTrue(out.contains("Inbox kept"))
     }
 
+    /// A name such as HR or 2024 would take ordinary words and numbers with it anywhere else,
+    /// so it goes where a server or FalconMail names a folder with it.
+    func testShortFolderNamesGoWhereAFolderIsNamed() {
+        var r = redactor
+        r.labels = ["HR", "IT", "2024", "Payroll"]
+        for (input, name) in [("Could not move: Protocol error: [TRYCREATE] No folder HR (Failure)", "HR"),
+                              ("[NONEXISTENT] Unknown Mailbox: IT (now in authenticated state) (Failure)", "IT"),
+                              ("[TRYCREATE] Mailbox doesn't exist: 2024", "2024"),
+                              (#"Mailbox doesn't exist: "2024""#, "2024"),
+                              ("Could not move to HR", "HR"),
+                              ("Moved 3 messages into IT", "IT")] {
+            let out = r.redact(input)
+            XCTAssertEqual(out.components(separatedBy: r.label(name)).count, 2, "\(input) → \(out)")
+        }
+        XCTAssertEqual(r.redact("IT said HR will reply in 2024 after 3 attempts"), "IT said HR will reply in 2024 after 3 attempts",
+                       "elsewhere they are ordinary words and numbers")
+        XCTAssertEqual(r.redact("No folder HRM"), "No folder HRM")
+        XCTAssertEqual(r.redact(r.redact("No folder HR")), r.redact("No folder HR"))
+    }
+
     // MARK: Quoted text, IP addresses, numbers
 
     func testQuotedTextAndFileNames() {
         assertClean("The file “Invoice ACME 2024.pdf” couldn’t be opened because it isn’t there",
                     lacks: ["Invoice", "ACME"], keeps: ["couldn’t be opened", "isn’t there"])
         assertClean(#"Could not save "Lunch with Ana" to Drafts"#, lacks: ["Lunch", "Ana"], keeps: ["Drafts"])
+    }
+
+    /// macOS writes its file errors in the Mac's own language, with that language's quotation marks.
+    func testFileNamesInOtherLanguagesQuotationMarks() {
+        assertClean("Die Datei „Kündigung Ana Lima.eml“ konnte nicht geöffnet werden, da sie nicht existiert.",
+                    lacks: ["Kündigung", "Ana", "Lima"], keeps: ["Die Datei „…“ konnte nicht geöffnet werden"])
+        assertClean("Die Datei ‚Kündigung.eml‘ fehlt", lacks: ["Kündigung"], keeps: ["‚…‘ fehlt"])
+        assertClean("Impossible d’ouvrir le fichier « Facture ACME.pdf » car il n’existe pas.",
+                    lacks: ["Facture", "ACME"], keeps: ["Impossible d’ouvrir le fichier «…» car il n’existe pas."])
+        assertClean("Не удалось открыть файл «Зарплата Иванов.xlsx», так как он не существует.",
+                    lacks: ["Зарплата", "Иванов"], keeps: ["Не удалось открыть файл «…»"])
+        assertClean("Filen ”Lön Ana.pdf” kunde inte öppnas.", lacks: ["Lön", "Ana"], keeps: ["kunde inte öppnas"])
+        assertClean("Filen »Løn Ana.pdf« kunne ikke åbnes, og ›Bilag.pdf‹ heller ikke.", lacks: ["Løn", "Bilag"], keeps: ["kunne ikke åbnes"])
+        assertClean("Datei ‹Notiz.txt› fehlt", lacks: ["Notiz"])
+        assertClean("ファイル「請求書ACME.pdf」を開けませんでした。『議事録』も同様です。", lacks: ["請求書", "ACME", "議事録"],
+                    keeps: ["を開けませんでした"])
+    }
+
+    func testSingleQuotesGoButApostrophesStay() {
+        assertClean("The file ‘Invoice ACME.pdf’ couldn’t be opened.", lacks: ["Invoice", "ACME"], keeps: ["couldn’t be opened"])
+        assertClean("The file ‘Ana’s notes.txt’ isn’t there", lacks: ["Ana", "notes"], keeps: ["isn’t there"])
+        assertClean("Can't open 'Invoice ACME.zip' because it's gone", lacks: ["Invoice", "ACME"], keeps: ["Can't open", "it's gone"])
+        assertClean("Can't open 'Bob's files' now", lacks: ["Bob", "files"], keeps: ["Can't open", "now"])
+        XCTAssertEqual(redactor.redact("the users' folder isn't 'ready'"), "the users' folder isn't 'ready'",
+                       "a quoted code stays, as between double quotes")
+        assertClean(#"Could not open 'report.pdf' or "notes.txt""#, lacks: ["report", "notes"])
+    }
+
+    /// Crash reports name code between single quotes; that is what the triage needs.
+    func testCodeBetweenSingleQuotesStays() {
+        for text in ["*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: '*** -[__NSArrayM insertObject:atIndex:]: object cannot be nil'",
+                     "Fatal error: 'try!' expression unexpectedly raised an error",
+                     "Could not cast value of type 'NSTaggedPointerString' (0x1f0b3a8) to 'Swift.Optional<Swift.Int>' (0x1f0b400)."] {
+            XCTAssertEqual(redactor.redact(text), text)
+        }
+    }
+
+    func testSignatureShapeIgnoresEveryKindOfQuotedText() {
+        let messages = ["Die Datei „Kündigung Ana Lima.eml“ konnte nicht geöffnet werden",
+                        "Die Datei „Rechnung.pdf“ konnte nicht geöffnet werden"]
+        XCTAssertEqual(Set(messages.map(DiagnosticsSignature.shape(of:))), ["dieDateiKonnteNichtGeffnet"])
+        XCTAssertEqual(DiagnosticsSignature.shape(of: "Impossible d’ouvrir le fichier « Facture ACME.pdf » car"),
+                       DiagnosticsSignature.shape(of: "Impossible d’ouvrir le fichier « Rapport.pdf » car"))
     }
 
     func testClientIPsGoServerAddressesStay() {
