@@ -73,16 +73,17 @@ public enum AtomicFile {
     /// Reads a stored JSON file without ever losing it. A file this build cannot decode, perhaps
     /// written by another version, is moved aside whole under a new name, so the next save
     /// cannot overwrite it; one that cannot be read at all is left where it is. Either way it
-    /// is logged, and noted for the owner, as `what`.
-    public static func loadJSON<T: Decodable>(_ type: T.Type, from url: URL, what: String) -> StoredFile<T> {
-        load(from: url, what: what) { data in
+    /// is logged, and noted for the owner, as `what`. `names` are the folder names `what` holds,
+    /// which diagnostics take out.
+    public static func loadJSON<T: Decodable>(_ type: T.Type, from url: URL, what: String, names: [String] = []) -> StoredFile<T> {
+        load(from: url, what: what, names: names) { data in
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             return try decoder.decode(type, from: data)
         }
     }
 
-    public static func load<T>(from url: URL, what: String, decode: (Data) throws -> T) -> StoredFile<T> {
+    public static func load<T>(from url: URL, what: String, names: [String] = [], decode: (Data) throws -> T) -> StoredFile<T> {
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -90,8 +91,8 @@ public enum AtomicFile {
             return .missing
         } catch {
             Log.error("Store", "could not read \(what) at \(url.lastPathComponent): \(error.localizedDescription)", error: error,
-                      code: "unreadable", logAs: "store")
-            StoredFileNotices.add(what)
+                      code: "unreadable", names: names, logAs: "store")
+            StoredFileNotices.add(what, names: names)
             return .unreadable(detail: error.localizedDescription)
         }
         do {
@@ -100,13 +101,13 @@ public enum AtomicFile {
             let detail = String(describing: error)
             guard let aside = setAside(url) else {
                 Log.error("Store", "could not decode \(what) at \(url.lastPathComponent), and could not move it aside: \(detail)",
-                          error: error, code: "unreadable", logAs: "store")
-                StoredFileNotices.add(what)
+                          error: error, code: "unreadable", names: names, logAs: "store")
+                StoredFileNotices.add(what, names: names)
                 return .unreadable(detail: detail)
             }
             Log.error("Store", "could not decode \(what); kept it as \(aside.lastPathComponent): \(detail)", error: error,
-                      code: "setAside", logAs: "store")
-            StoredFileNotices.add(what)
+                      code: "setAside", names: names, logAs: "store")
+            StoredFileNotices.add(what, names: names)
             return .setAside(aside, detail: detail)
         }
     }
@@ -165,17 +166,50 @@ public enum StoredFile<Value> {
 /// instead of starting quietly without them.
 public enum StoredFileNotices {
     private static let lock = NSLock()
-    private static var names: [String] = []
+    private static var notes: [(what: String, names: [String])] = []
 
-    static func add(_ what: String) {
-        lock.withLock { names.append(what) }
+    static func add(_ what: String, names: [String] = []) {
+        lock.withLock { notes.append((what, names)) }
     }
 
     /// The names noted since the last call.
     public static func take() -> [String] {
         lock.withLock {
-            defer { names.removeAll() }
-            return names
+            defer { notes.removeAll() }
+            return notes.map(\.what)
         }
     }
+
+    /// What to tell the owner of the files noted since the last call, nil when there are none,
+    /// with the folder names it holds for diagnostics to take out.
+    public static func takeNotice() -> StoredFileNotice? {
+        let taken = lock.withLock {
+            defer { notes.removeAll() }
+            return notes
+        }
+        guard !taken.isEmpty else { return nil }
+        return StoredFileNotice(text: "FalconMail could not read \(ListFormatter.localizedString(byJoining: taken.map(\.what))). "
+                                    + "Nothing was written over: each was left as it was or kept under a name ending in “unreadable”. "
+                                    + "Details are in the log.",
+                                names: Array(Set(taken.flatMap(\.names))).sorted())
+    }
+}
+
+/// The owner's notice of stored files that could not be read.
+public struct StoredFileNotice: Sendable, Equatable {
+    public var text: String
+    /// The folder names `text` holds.
+    public var names: [String]
+}
+
+/// A folder's stored list of messages that is there but could not be read, as with wrong
+/// permissions. Nothing is written over it, and the folder is not synced until it can be read.
+public struct FolderIndexUnreadable: Error, LocalizedError, Sendable, Equatable {
+    /// The folder as the owner is told of it, such as "HR of ana@example.com".
+    public var folder: String
+    /// The folder's path and name, which diagnostics take out of every line about it.
+    public var names: [String]
+    public var detail: String
+
+    public var errorDescription: String? { "The messages listed for \(folder) could not be read: \(detail)" }
 }

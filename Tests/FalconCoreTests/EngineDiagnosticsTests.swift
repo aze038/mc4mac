@@ -509,6 +509,72 @@ final class EngineDiagnosticsTests: XCTestCase {
         }
     }
 
+    /// Folders whose stored files FalconMail cannot read, a short name and a long one, met before
+    /// the app has told diagnostics any folder name: every line about them, the Store warnings
+    /// and errors, the failed pass and the alert the owner is shown, reaches the upload without
+    /// the folders' names.
+    func testUnreadableFilesOfAFolderReachTheUploadWithoutItsName() async throws {
+        let server = try EngineHarness.gmailServer()
+        let folders = ["HR", "Clients/ACME Contracts"]
+        for path in folders {
+            server.addMailbox(path)
+            server.add(FakeIMAPServer.message("m-\(path.count)"), to: path)
+        }
+        let h = try await started(server)
+        try await h.syncOnce()
+        await h.store.flushAll()
+        let hr = try await h.folder("HR")
+        let acme = try await h.folder("Clients/ACME Contracts")
+        func file(_ folder: FolderInfo, _ name: String) -> URL {
+            h.layout.folderDirectory(accountID: folder.accountID, folderID: folder.id).appendingPathComponent(name)
+        }
+        // Journal lines this build cannot read in both, an index it cannot decode in HR's.
+        for folder in [hr, acme] {
+            let journal = file(folder, "journal.jsonl")
+            let old = (try? Data(contentsOf: journal)) ?? Data()
+            try (old + Data("{ not a line\n{ nor this\n{ nor this one\n".utf8)).write(to: journal)
+        }
+        try Data("not a property list".utf8).write(to: file(hr, "index.plist"))
+        _ = StoredFileNotices.take()
+        startCenter()
+
+        let reloaded = MailStore(layout: h.layout)
+        try await reloaded.load()
+        for folder in [hr, acme] { _ = try await reloaded.folderStore(folder) }
+        center?.waitUntilIdle()
+        // As the app shows it once a pass is over.
+        let notice = try XCTUnwrap(StoredFileNotices.takeNotice())
+        XCTAssertTrue(notice.text.contains("the messages listed for HR of owner@example.com"), "the owner is told which: \(notice.text)")
+        Log.error("Alert", notice.text, names: notice.names)
+
+        // An index that cannot be read at all fails the pass, which the loop reports.
+        let acmeIndex = file(acme, "index.plist")
+        try await reloaded.folderStore(acme).flush()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: acmeIndex.path))
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: acmeIndex.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: acmeIndex.path) }
+        await h.syncer.stop()
+        let again = try await EngineHarness(server: server, root: h.root)
+        harness = again
+        await again.syncer.start()
+        await assertEventually { await !again.events.errors.isEmpty }
+        let shown = await again.events.errors.first ?? ""
+        XCTAssertTrue(shown.contains("Clients/ACME Contracts of owner@example.com could not be read"), shown)
+
+        center?.waitUntilIdle()
+        let areas = Set((center?.pendingRecords ?? []).map(\.event.signature))
+        for signature in ["Store.journalLinesSkipped@FolderStore.swift:load", "Store.setAside@FileLayout.swift:load",
+                          "Store.unreadable@FileLayout.swift:load"] {
+            XCTAssertTrue(areas.contains(signature), "\(signature) in \(areas.sorted())")
+        }
+        XCTAssertTrue(areas.contains { $0.hasPrefix("IMAP.") && $0.hasSuffix("@AccountSyncer.swift:loop") }, "\(areas.sorted())")
+        XCTAssertTrue(areas.contains { $0.hasPrefix("Alert.") }, "\(areas.sorted())")
+        let upload = try await uploaded()
+        for word in ["\"HR", " HR ", " HR;", "ACME", "Contracts", "Clients", "owner@"] {
+            XCTAssertFalse(upload.contains(word), "\(word) reached the upload")
+        }
+    }
+
     /// The same lines, fed to the observer as the app would hand them over with only the folder
     /// names it knows: the redactor still takes out every one that stands as a word.
     func testEngineLinesWithTheAppsFolderNamesAloneAreRedacted() throws {

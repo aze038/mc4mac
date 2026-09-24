@@ -13,8 +13,10 @@ public actor FolderStore {
     public let folderID: UUID
     public let accountID: UUID
     private let directory: URL
-    /// Names the folder in the log and to the owner.
+    /// Names the folder in the log and to the owner, as "HR of ana@example.com".
     private let name: String
+    /// The folder's own path and name, which diagnostics take out of every line about it.
+    private let names: [String]
     /// Where an index that could not be decoded was moved at load; its messages are listed again
     /// from the server.
     public private(set) var snapshotSetAside: URL?
@@ -41,17 +43,18 @@ public actor FolderStore {
     private var journalURL: URL { directory.appendingPathComponent("journal.jsonl") }
     private var bodiesURL: URL { directory.appendingPathComponent("Bodies", isDirectory: true) }
 
-    public init(accountID: UUID, folderID: UUID, directory: URL, name: String? = nil) {
+    public init(accountID: UUID, folderID: UUID, directory: URL, name: String? = nil, names: [String] = []) {
         self.accountID = accountID
         self.folderID = folderID
         self.directory = directory
         self.name = name ?? folderID.uuidString
+        self.names = names
     }
 
     public func load() throws {
         guard !loaded else { return }
         try FileManager.default.createDirectory(at: bodiesURL, withIntermediateDirectories: true)
-        let snapshot = AtomicFile.load(from: snapshotURL, what: "the messages listed for \(name)") { data in
+        let snapshot = AtomicFile.load(from: snapshotURL, what: "the messages listed for \(name)", names: names) { data in
             try PropertyListDecoder().decode([MessageSummary].self, from: data)
         }
         switch snapshot {
@@ -63,7 +66,7 @@ public actor FolderStore {
             snapshotSetAside = aside
         case .unreadable(let detail):
             // Carrying on empty would write a near-empty index over the one still on disk.
-            throw FalconError.storage("The messages listed for \(name) could not be read: \(detail)")
+            throw FolderIndexUnreadable(folder: name, names: names, detail: detail)
         }
         loaded = true
         if let data = AtomicFile.read(journalURL) {
@@ -74,7 +77,7 @@ public actor FolderStore {
             }
             // A line cut short by a crash is expected; more than one says something else is wrong.
             if skipped > 1 {
-                Log.warning("Store", "\(name): skipped \(skipped) unreadable journal lines", code: "journalLinesSkipped", names: [name],
+                Log.warning("Store", "\(name): skipped \(skipped) unreadable journal lines", code: "journalLinesSkipped", names: names,
                             logAs: "store")
             } else if skipped > 0 {
                 Log.info("store", "\(name): skipped \(skipped) unreadable journal lines")

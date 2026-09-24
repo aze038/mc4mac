@@ -318,6 +318,7 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         if let failure = entry.error as? MailServiceError, let name = failure.name, failure.kind != .folderListUnreadable {
             names.append(name)
         }
+        if let unreadable = entry.error as? FolderIndexUnreadable { names += unreadable.names }
         let message = redactor.redact(entry.message, naming: names)
         let code = entry.code.map(DiagnosticsSignature.word) ?? DiagnosticsSignature.code(for: entry.error, message: message)
         let kind: DiagnosticsKind = entry.level == .error ? .error : .warning

@@ -169,8 +169,13 @@ final class AppModel {
     var outboxItems: [OutboxItem] = []
     var archiveRecords: [ArchiveRecord] = []
     var errorMessage: String? {
-        didSet { if let errorMessage, errorMessage != oldValue { Log.error("Alert", errorMessage) } }
+        didSet {
+            if let errorMessage, errorMessage != oldValue { Log.error("Alert", errorMessage, names: alertNames) }
+            alertNames = []
+        }
     }
+    /// The folder names the next `errorMessage` holds, which diagnostics take out of it.
+    @ObservationIgnored private var alertNames: [String] = []
     var actionError: String?
     var actionErrorNeedsDismissal = false
     var pendingUndo: PendingUndo?
@@ -515,11 +520,9 @@ final class AppModel {
     /// again after each pass of the engine, which reads some files only when it first needs
     /// them: the actions waiting for the server, and the index of a folder not yet opened.
     private func noteUnreadableFiles() {
-        let names = StoredFileNotices.take()
-        guard !names.isEmpty else { return }
-        let notice = "FalconMail could not read \(ListFormatter.localizedString(byJoining: names)). "
-            + "Nothing was written over: each was left as it was or kept under a name ending in “unreadable”. Details are in the log."
-        errorMessage = errorMessage.map { $0 + "\n\n" + notice } ?? notice
+        guard let notice = StoredFileNotices.takeNotice() else { return }
+        alertNames = notice.names
+        errorMessage = errorMessage.map { $0 + "\n\n" + notice.text } ?? notice.text
     }
 
     var windowsToRestore: [String] {

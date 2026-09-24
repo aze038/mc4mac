@@ -156,6 +156,9 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
             return make(.expungeRefused, "\(e.others.count) other messages marked \\Deleted and no UIDPLUS", name: e.mailbox)
         case let e as SMTPServerError:
             return make(smtpKind(e), "SMTP \(e.stage.rawValue) \(e.code) \(e.text)", name: e.stage == .recipient ? e.recipient : nil)
+        case let e as FolderIndexUnreadable:
+            // Something on this Mac; the folder goes with it, so diagnostics take its name out.
+            return make(.local, e.localizedDescription, name: e.names.first)
         case let e as FalconError:
             switch e {
             case .notAuthenticated: return make(.needsSignIn, "no usable sign-in")

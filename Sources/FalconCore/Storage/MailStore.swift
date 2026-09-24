@@ -225,7 +225,8 @@ public actor MailStore {
         if let loading = folderStoreLoads[folder.id] { return try await loading.value }
         let s = FolderStore(accountID: folder.accountID, folderID: folder.id,
                             directory: layout.folderDirectory(accountID: folder.accountID, folderID: folder.id),
-                            name: "\(folder.path) of \(account(folder.accountID)?.email ?? "an account")")
+                            name: "\(folder.path) of \(account(folder.accountID)?.email ?? "an account")",
+                            names: [folder.path, folder.name])
         let loading = Task { () async throws -> FolderStore in
             try await s.load()
             if await s.snapshotSetAside != nil {

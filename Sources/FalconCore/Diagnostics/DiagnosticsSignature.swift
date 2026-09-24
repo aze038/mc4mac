@@ -51,6 +51,7 @@ public enum DiagnosticsSignature {
         // Setting an account up, a refused sign-in is a wrong name or password.
         if let probe = error as? AccountProbeFailure { return probe.failure.kind == .needsSignIn ? "wrongPassword" : code(forFailure: probe.failure) }
         if isMailEngineError(error) { return code(forFailure: MailServiceError.classify(error, email: "", isGoogle: false)) }
+        if error is FolderIndexUnreadable { return "unreadable" }
         if let f = error as? FalconError {
             switch f {
             case .notAuthenticated: return "notSignedIn"
