@@ -10,7 +10,8 @@ import Network
 /// commands and bytes per session, and can be told to misbehave in the ways Gmail and the
 /// network do: BYE (also during IDLE, and without closing), a tagged NO with a response code, a
 /// refused sign-in, a stalled command, a black hole, a close after a silence, a connection cut
-/// after a given command, a renumbered mailbox, and news sent before "+ idling". Given the
+/// after a given command, a renumbered mailbox, a flag fetch or search that lists nothing, an
+/// APPEND whose reply is lost, and news sent before "+ idling". Given the
 /// capabilities, it answers CONDSTORE's CHANGEDSINCE and ESEARCH as Gmail does.
 final class FakeIMAPServer: @unchecked Sendable {
     struct Message {
@@ -79,6 +80,8 @@ final class FakeIMAPServer: @unchecked Sendable {
     private var queuedForIdle: [(mailbox: String, message: Message)] = []
     private var cutAfter: (verb: String, remaining: Int)?
     private var searchesToEmpty = 0
+    private var flagFetchesToEmpty = 0
+    private var appendRepliesToLose = 0
     private var exchangeLog: [Exchange] = []
 
     init(capabilities: [String] = ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE"],
@@ -217,6 +220,18 @@ final class FakeIMAPServer: @unchecked Sendable {
     /// a moment might say.
     func emptyNextSearches(_ count: Int) {
         lock.withLock { searchesToEmpty = count }
+    }
+
+    /// The next `count` fetches of flags alone list no message, as a server that has lost track
+    /// of a mailbox for a moment might answer.
+    func emptyNextFlagFetches(_ count: Int) {
+        lock.withLock { flagFetchesToEmpty = count }
+    }
+
+    /// The next APPEND stores its message and the connection then closes without a reply, as
+    /// one lost at that moment does: the client cannot know the message went in.
+    func loseNextAppendReply() {
+        lock.withLock { appendRepliesToLose += 1 }
     }
 
     /// The connection that sends the `count`th command whose name starts with `verb`, from now
@@ -393,6 +408,22 @@ final class FakeIMAPServer: @unchecked Sendable {
             }
             cutAfter = (rule.verb, rule.remaining - 1)
             return false
+        }
+    }
+
+    fileprivate func takeEmptyFlagFetch() -> Bool {
+        lock.withLock {
+            guard flagFetchesToEmpty > 0 else { return false }
+            flagFetchesToEmpty -= 1
+            return true
+        }
+    }
+
+    fileprivate func takeLostAppendReply() -> Bool {
+        lock.withLock {
+            guard appendRepliesToLose > 0 else { return false }
+            appendRepliesToLose -= 1
+            return true
         }
     }
 
@@ -642,6 +673,7 @@ private final class Session: @unchecked Sendable {
         guard let space = arguments.firstIndex(of: " ") else { return write("\(tag) BAD\r\n") }
         let wanted = Session.uidSet(String(arguments[..<space]), last: box.messages.last?.uid ?? 0)
         let items = arguments[space...].uppercased()
+        if items.hasPrefix(" (UID FLAGS)"), server.takeEmptyFlagFetch() { return write("\(tag) OK FETCH completed\r\n") }
         var changedSince: UInt64?
         if let modifier = items.range(of: "(CHANGEDSINCE ") {
             guard server.offersCondstore else { return write("\(tag) BAD CHANGEDSINCE needs CONDSTORE\r\n") }
@@ -783,6 +815,7 @@ private final class Session: @unchecked Sendable {
         guard let (validity, uid) = server.with({ $0.appendMessage(data, flags: flags, date: date, to: name) }) else {
             return write("\(tag) NO [TRYCREATE] No folder \(name) (Failure)\r\n")
         }
+        if server.takeLostAppendReply() { return false }
         return write("\(tag) OK [APPENDUID \(validity) \(uid)] APPEND completed\r\n")
     }
 

@@ -138,11 +138,8 @@ struct ArchiveSheet: View {
                 var req = request
                 req.parentID = parent
                 guard let syncer = await model.coordinator.syncer(for: id) else { throw FalconError.storage("account is not running") }
-                let client = try await syncer.openArchiveSourceClient()
-                defer { Task { await client.logout() } }
-                let allowance: DownloadAllowance = { try await syncer.waitForAllowance(.background, bytes: $0) }
-                let outcome = try await ArchiveJob.run(request: req, account: account, client: client, storage: storage,
-                                                       allowance: allowance) { progress in
+                let outcome = try await ArchiveJob.run(request: req, account: account, source: syncer.archiveSource(),
+                                                       storage: storage) { progress in
                     Task { @MainActor in
                         switch progress {
                         case .status(let s): status = s

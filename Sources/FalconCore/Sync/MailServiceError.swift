@@ -145,8 +145,11 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
             return make(.mailboxRenumbered, "UIDVALIDITY \(e.expected) is now \(e.found)", name: e.mailbox)
         case let e as IMAPMessageMissing:
             return make(.messageGone, "UID \(e.uid) not returned")
-        case is IMAPNotSent:
+        case let e as IMAPNotSent:
+            if let bye = e.bye { return classify(bye, email: email, isGoogle: isGoogle) }
             return make(.connectionDropped, "connection lost before the work was sent")
+        case let e as IMAPAppendUnconfirmed:
+            return classify(e.cause, email: email, isGoogle: isGoogle)
         case let e as StreamStalled:
             return make(.connectionDropped, "no reply within \(String(format: "%g", e.seconds)) s")
         case let e as IMAPExpungeRefused:

@@ -205,7 +205,15 @@ final class TrafficTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(h.meter.used(.upload, by: id) - upBefore, draft.count)
     }
 
-    func testAnArchiveJobWaitsAtItsAllowanceAndThenCarriesOn() async throws {
+    private func archiveRequest(_ h: EngineHarness) throws -> (ArchiveRequest, LocalFolderStorage) {
+        let archives = root.appendingPathComponent("Archives")
+        try FileManager.default.createDirectory(at: archives, withIntermediateDirectories: true)
+        let request = ArchiveRequest(accountID: h.account.id, folderPaths: ["INBOX"], olderThan: nil, name: "Old mail", password: nil,
+                                     removeFromServer: false, parentID: nil)
+        return (request, LocalFolderStorage(root: archives))
+    }
+
+    func testAnArchiveJobWaitsAtItsAllowanceAndCarriesOnOnANewConnection() async throws {
         let server = try EngineHarness.gmailServer()
         let longAgo = Date(timeIntervalSince1970: 1_600_000_000)
         for n in 1...10 { server.add(FakeIMAPServer.message("old-\(n)"), to: "INBOX", date: longAgo) }
@@ -215,31 +223,65 @@ final class TrafficTests: XCTestCase {
         let h = try await EngineHarness(server: server, root: root, pacing: pacing,
                                         limits: TrafficLimits(background: 7_000, download: 50_000_000, upload: 50_000_000), clock: clock.reading)
         harness = h
-        let archives = root.appendingPathComponent("Archives")
-        try FileManager.default.createDirectory(at: archives, withIntermediateDirectories: true)
-        let request = ArchiveRequest(accountID: h.account.id, folderPaths: ["INBOX"], olderThan: nil, name: "Old mail", password: nil,
-                                     removeFromServer: false, parentID: nil)
-        let syncer = h.syncer
-        let client = try await syncer.openArchiveSourceClient()
+        // What Gmail, something on the way or the Mac's sleep does to a connection left quiet
+        // for the hours an allowance can take to come back.
+        server.closeAfterSilence(0.6)
+        let (request, storage) = try archiveRequest(h)
+        let source = h.syncer.archiveSource()
         let account = h.account
-        let job = Task {
-            try await ArchiveJob.run(request: request, account: account, client: client, storage: LocalFolderStorage(root: archives),
-                                     allowance: { try await syncer.waitForAllowance(.background, bytes: $0) }) { _ in }
-        }
+        let job = Task { try await ArchiveJob.run(request: request, account: account, source: source, storage: storage) { _ in } }
         func bodiesFetched() -> Int { server.commands.filter { $0.contains("BODY.PEEK[]") }.count }
         await assertEventually { await h.events.progress.contains { $0.contains("has used today's download allowance") } }
         let fetched = bodiesFetched()
         XCTAssertGreaterThan(fetched, 0)
         XCTAssertLessThan(fetched, 10)
-        try await Task.sleep(nanoseconds: 300_000_000)
+        let logins = server.loginCount
+        try await Task.sleep(nanoseconds: 1_500_000_000)
         XCTAssertEqual(bodiesFetched(), fetched, "nothing is downloaded while the allowance is spent")
+        XCTAssertEqual(server.openConnections, 0, "the job's quiet connection was closed meanwhile")
         XCTAssertGreaterThan(h.meter.used(.background, by: h.account.id), 0, "the archive's connection counts as background")
 
         clock.advance(25 * 60 * 60)
         let outcome = try await within(10) { try await job.value }
         XCTAssertEqual(outcome.manifest.messageCount, 10, "it carries on where it stopped")
         XCTAssertEqual(bodiesFetched(), 10, "and fetches nothing twice")
-        await client.logout()
+        XCTAssertEqual(server.loginCount, logins + 1, "on one new connection")
+        await assertEventually { server.openConnections == 0 }
+    }
+
+    func testAThrottleMetByAnArchiveJobPausesTheAccountAndTheJobCarriesOnAfterIt() async throws {
+        let server = try EngineHarness.gmailServer()
+        let longAgo = Date(timeIntervalSince1970: 1_600_000_000)
+        for n in 1...10 { server.add(FakeIMAPServer.message("old-\(n)"), to: "INBOX", date: longAgo) }
+        var pacing = SyncPacing()
+        pacing.budgetRecheck = 0.05
+        pacing.throttlePauses = [2, 4, 8, 16]
+        let h = try await EngineHarness(server: server, root: root, pacing: pacing)
+        harness = h
+        let (request, storage) = try archiveRequest(h)
+        server.refuseNext("UID FETCH", code: "THROTTLED", text: "Account exceeded command or bandwidth limits. (Failure)")
+        let source = h.syncer.archiveSource()
+        let account = h.account
+        let job = Task { try await ArchiveJob.run(request: request, account: account, source: source, storage: storage) { _ in } }
+
+        await assertEventually { await h.events.pauses.count == 1 }
+        let logins = server.loginCount
+        do {
+            _ = try await h.syncer.openArchiveSourceClient()
+            XCTFail("no connection is opened during the pause")
+        } catch {
+            XCTAssertEqual(MailServiceError.classify(error, account: account).kind, .throttled)
+        }
+        XCTAssertEqual(server.loginCount, logins, "nothing signs in while Gmail asked for quiet")
+        let stored = try XCTUnwrap(AtomicFile.readJSON(SyncExtras.self, from: h.layout.syncExtrasFile(account.id)))
+        XCTAssertEqual(stored.imapPauseLevel, 0, "the throttle counts towards the next, longer cool-down")
+        XCTAssertNotNil(stored.lastThrottleAt)
+
+        let outcome = try await within(15) { try await job.value }
+        XCTAssertEqual(outcome.manifest.messageCount, 10, "the job carries on once the pause is over")
+        XCTAssertEqual(server.loginCount, logins + 1)
+        let pauses = await h.events.pauses
+        XCTAssertEqual(pauses.count, 1)
     }
 
     func testAnImportWaitsForTheUploadAllowanceAndSyncsItsFolderSparingly() async throws {
@@ -281,5 +323,76 @@ final class TrafficTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(later.timeIntervalSince(earlier), 0.9, "at most one sync of the folder per spacing")
         }
         XCTAssertFalse(server.commands.contains { $0.contains(" LIST ") }, "no pass over the whole account")
+    }
+
+    /// An account with a folder "Imported", listed once, and the messages an import brings.
+    private func importing(limits: TrafficLimits = .standard, pacing: SyncPacing, clock: TestClock = TestClock())
+        async throws -> (EngineHarness, FolderInfo, [ImportedMessage]) {
+        let server = try EngineHarness.gmailServer()
+        server.addMailbox("Imported")
+        let h = try await EngineHarness(server: server, root: root, pacing: pacing, limits: limits, clock: clock.reading)
+        harness = h
+        try await h.syncOnce()
+        let messages = (1...8).map { ImportedMessage(raw: FakeIMAPServer.message("imported-\($0)"), flags: [.seen], date: nil) }
+        return (h, try await h.folder("Imported"), messages)
+    }
+
+    private func importedIDs(_ server: FakeIMAPServer) -> [String] {
+        server.messages(in: "Imported").compactMap { MIMEParser.parseHeaders($0.data).first("Message-ID") }
+    }
+
+    func testAnImportCarriesOnOnANewConnectionAfterWaitingForItsAllowance() async throws {
+        let clock = TestClock()
+        var pacing = SyncPacing()
+        pacing.budgetRecheck = 0.05
+        let (h, folder, messages) = try await importing(limits: TrafficLimits(background: 50_000_000, download: 50_000_000, upload: 7_000),
+                                                        pacing: pacing, clock: clock)
+        let server = h.server
+        server.closeAfterSilence(0.6)
+        let syncer = h.syncer
+        let task = Task { for m in messages { try await syncer.importMessage(m, into: folder) } }
+        await assertEventually { await h.events.progress.contains { $0.contains("uploads resume") } }
+        let before = server.messages(in: "Imported").count
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertEqual(server.openConnections, 0, "the op connection was closed while the import waited")
+
+        clock.advance(25 * 60 * 60)
+        try await within(10) { try await task.value }
+        let ids = importedIDs(server)
+        XCTAssertGreaterThan(before, 0)
+        XCTAssertEqual(ids.count, 8, "the rest of the file went in after the wait")
+        XCTAssertEqual(Set(ids).count, 8, "and none twice")
+    }
+
+    func testAThrottleDuringAnImportWaitsOutItsPauseAndLosesNothing() async throws {
+        var pacing = SyncPacing()
+        pacing.budgetRecheck = 0.05
+        pacing.throttlePauses = [1, 2, 4, 8]
+        let (h, folder, messages) = try await importing(pacing: pacing)
+        let server = h.server
+        server.refuseNext("APPEND", code: "THROTTLED", text: "Account exceeded command or bandwidth limits. (Failure)")
+        let syncer = h.syncer
+        try await within(15) { for m in messages { try await syncer.importMessage(m, into: folder) } }
+        let ids = importedIDs(server)
+        XCTAssertEqual(ids.count, 8, "the refused message went in once the pause was over")
+        XCTAssertEqual(Set(ids).count, 8)
+        let pauses = await h.events.pauses
+        XCTAssertEqual(pauses.count, 1, "the account paused, as for a throttle on any connection")
+    }
+
+    func testAnAppendWhoseAnswerNeverCameIsNotSentAgain() async throws {
+        var pacing = SyncPacing()
+        pacing.minimumReconnectInterval = 0.05
+        let (h, folder, messages) = try await importing(pacing: pacing)
+        let server = h.server
+        // The connection drops once the message is on its way: the server may have stored it.
+        server.loseNextAppendReply()
+        do {
+            try await h.syncer.importMessage(messages[0], into: folder)
+            XCTFail("its fate is unknown, so it is not tried again")
+        } catch {
+            XCTAssertEqual(MailServiceError.classify(error, account: h.account).kind, .connectionDropped)
+        }
+        XCTAssertEqual(importedIDs(server).count, 1, "stored once, never twice")
     }
 }

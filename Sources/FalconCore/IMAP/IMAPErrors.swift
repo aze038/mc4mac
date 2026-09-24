@@ -74,10 +74,29 @@ public struct IMAPExpungeRefused: Error, LocalizedError, Sendable, Equatable {
     }
 }
 
-/// The connection had already failed when this work's turn on it came, so none of it reached
-/// the server and it can be tried again on a new connection without doing anything twice.
+/// The connection had already failed when this work's turn on it came, or an APPEND failed
+/// before the server asked for its message, so nothing the server could act on reached it and
+/// the work can be tried again on a new connection without doing anything twice.
 public struct IMAPNotSent: Error, LocalizedError, Sendable, Equatable {
-    public init() {}
+    /// The server's BYE, when it ended the session before the work could go out: a throttle
+    /// still counts as one.
+    public var bye: IMAPBye?
 
-    public var errorDescription: String? { "The connection to the mail server was lost." }
+    public init(bye: IMAPBye? = nil) {
+        self.bye = bye
+    }
+
+    public var errorDescription: String? { bye?.errorDescription ?? "The connection to the mail server was lost." }
+}
+
+/// An APPEND whose message went out but whose answer never came, so the server may have
+/// stored it: sending it again could store it twice.
+public struct IMAPAppendUnconfirmed: Error, LocalizedError, Sendable {
+    public var cause: Error
+
+    public init(cause: Error) {
+        self.cause = cause
+    }
+
+    public var errorDescription: String? { (cause as? LocalizedError)?.errorDescription ?? cause.localizedDescription }
 }

@@ -25,6 +25,9 @@ public struct SyncPacing: Sendable {
     public var idleRefresh: TimeInterval = 240
     /// A folder with more new mail than one pass takes gets its next pass no sooner than this.
     public var catchUpInterval: TimeInterval = 5 * 60
+    /// A folder the server reports empty, where many messages are listed, is emptied only when
+    /// a pass at least this much later finds it empty too.
+    public var emptyFolderConfirmation: TimeInterval = 60
     /// The least time between two attempts to connect, so that flapping Wi-Fi cannot make a
     /// burst of sign-ins.
     public var minimumReconnectInterval: TimeInterval = 30
@@ -113,6 +116,9 @@ public actor AccountSyncer {
     /// Folders with more new mail than one pass takes: when the next pass may take more, and
     /// the messages still to fetch.
     private var catchUps: [UUID: (notBefore: Date, unfetched: [UInt32])] = [:]
+    /// Folders whose full passes have found the server reporting none of the messages listed,
+    /// and since when.
+    private var reportedEmpty: [UUID: Date] = [:]
     private var appendSyncs: [UUID: Task<Void, Never>] = [:]
     private var lastAppendSync: [UUID: Date] = [:]
     private var sentSyncs: Task<Void, Never>?
@@ -445,16 +451,21 @@ public actor AccountSyncer {
 
     /// Waits until `bytes` more fit in the account's `budget`, and out any pause, telling the
     /// owner why. For long jobs, an archive or an import, which carry on where they stopped
-    /// rather than fail.
-    public func waitForAllowance(_ budget: TrafficBudget, bytes: Int) async throws {
+    /// rather than fail. True when it had to wait: a connection left quiet meanwhile may have
+    /// been closed.
+    @discardableResult
+    public func waitForAllowance(_ budget: TrafficBudget, bytes: Int) async throws -> Bool {
         var told = false
+        var waited = false
         while true {
             try Task.checkCancellation()
             if let left = pauseRemaining() {
+                waited = true
                 try await Task.sleep(nanoseconds: UInt64(min(left, pacing.budgetRecheck) * 1_000_000_000))
                 continue
             }
-            guard !meter.allows(budget, adding: bytes, for: account.id) else { return }
+            guard !meter.allows(budget, adding: bytes, for: account.id) else { return waited }
+            waited = true
             let until = meter.whenAllows(budget, adding: bytes, for: account.id)
             if !told {
                 told = true
@@ -509,11 +520,13 @@ public actor AccountSyncer {
     }
 
     /// Runs `work` as one unit on the op connection. A connection that fails is discarded so
-    /// the next call opens a fresh one. Work that found it already gone when its turn came sent
-    /// nothing, and is always tried once more on a fresh connection. So is work on one that had
-    /// sat unused, which the server or the network may have closed meanwhile, when
-    /// `repeatable`; work that must not happen twice, such as an APPEND, is not, and nor is
-    /// anything after a throttle or any other refusal that a new connection would only repeat.
+    /// the next call opens a fresh one. Work that sent nothing the server could act on, because
+    /// the connection was already gone when its turn came or an APPEND failed before the server
+    /// asked for its message, is always tried once more on a fresh connection. So is work on
+    /// one that had sat unused, which the server or the network may have closed meanwhile, when
+    /// `repeatable`; work that must not happen twice, such as an APPEND that went out, is not,
+    /// and nor is anything after a throttle or any other refusal that a new connection would
+    /// only repeat.
     private func withOpConnection<T: Sendable>(repeatable: Bool = true,
                                                _ work: @Sendable (IMAPClient) async throws -> T) async throws -> T {
         try refuseWhilePaused()
@@ -764,10 +777,12 @@ public actor AccountSyncer {
 
         if pass == .full {
             if status.exists == 0 {
-                let known = await fs.uids()
-                if !known.isEmpty { try await fs.remove(uids: Array(known)) }
-            } else if folder.oldestSyncedUID > 0 {
-                try await checkFlagsAndDeletions(folder, status: status, client: client, fs: fs, unfetched: arrived.unfetched)
+                try await empty(&folder, fs: fs)
+            } else {
+                reportedEmpty[folder.id] = nil
+                if folder.oldestSyncedUID > 0 {
+                    try await checkFlagsAndDeletions(folder, status: status, client: client, fs: fs, unfetched: arrived.unfetched)
+                }
             }
         }
 
@@ -807,6 +822,42 @@ public actor AccountSyncer {
         }
     }
 
+    /// Takes every row off a folder the server says is empty. A few go at once; more only when
+    /// a pass `emptyFolderConfirmation` later finds it empty too, since a server can report
+    /// none for a moment, and nothing would list rows below the cursor again. Once they go, the
+    /// oldest listed UID moves just above the cursor, so that Load older lists whatever the
+    /// server shows below it again.
+    private func empty(_ folder: inout FolderInfo, fs: FolderStore) async throws {
+        let known = await fs.uids()
+        guard !known.isEmpty else {
+            reportedEmpty[folder.id] = nil
+            return
+        }
+        if known.count > 10 {
+            let since = reportedEmpty[folder.id] ?? Date()
+            reportedEmpty[folder.id] = since
+            guard Date().timeIntervalSince(since) >= pacing.emptyFolderConfirmation else {
+                Log.info("sync", "\(account.email) \(folder.path): the server reports no messages where \(known.count) are listed; left alone for now")
+                return
+            }
+        }
+        reportedEmpty[folder.id] = nil
+        try await fs.remove(uids: Array(known))
+        await indexer?.remove(ids: known.map { MessageSummary.makeID(accountID: account.id, folderID: folder.id, uid: $0) })
+        // A folder never listed to the end starts again from scratch.
+        let raised = folder.lastSyncedUID > 0 ? folder.lastSyncedUID + 1 : 0
+        let validity = folder.uidValidity
+        folder.oldestSyncedUID = raised
+        try await store.updateFolder(folder.id) { current in
+            guard current.uidValidity == validity else { return }
+            current.oldestSyncedUID = raised
+        }
+        extras.updateFolder(folder.id, uidValidity: validity) {
+            $0.belowWindow = 0
+            $0.flagSliceBelow = nil
+        }
+    }
+
     /// What a pass found above a folder's cursor.
     private struct NewMail {
         var messages: [MessageSummary] = []
@@ -827,7 +878,12 @@ public actor AccountSyncer {
         let candidates: [UInt32]
         if folder.lastSyncedUID == 0 {
             let all = try await client.uidSearch("ALL")
-            candidates = Array(all.suffix(pacing.initialWindow))
+            var start = all.suffix(pacing.initialWindow).first ?? 0
+            // A first pass cut short saved where its window began. Taken again, the window
+            // begins there at the latest: mail that arrived meanwhile pushes the newest thousand
+            // up, and what lay between the two starts would be skipped for good.
+            if folder.oldestSyncedUID > 0 { start = min(start, folder.oldestSyncedUID) }
+            candidates = all.filter { $0 >= start }
             folder.oldestSyncedUID = candidates.first ?? 0
             let below = all.count - candidates.count
             extras.updateFolder(folder.id, uidValidity: folder.uidValidity) { $0.belowWindow = below }
@@ -840,7 +896,8 @@ public actor AccountSyncer {
         let accounted = { (uid: UInt32) -> Bool in have.contains(uid) || self.isSuppressed(folderID: folderID, uid: uid) }
         let missing = candidates.filter { !accounted($0) }
         let taking = missing.suffix(pacing.catchUpWindow)
-        if taking.count < missing.count {
+        let later = Array(missing.dropLast(taking.count))
+        if !later.isEmpty {
             Log.info("sync", "\(account.email) \(folder.path): \(missing.count) new messages, taking the newest \(taking.count) this pass")
         }
 
@@ -870,7 +927,9 @@ public actor AccountSyncer {
             await store.notifyMessagesChanged(folderID: folder.id)
         }
         if folder.oldestSyncedUID == 0 { folder.oldestSyncedUID = candidates.first ?? folder.lastSyncedUID }
-        result.unfetched = missing.filter { !accounted($0) }
+        // Only what the window left for a later pass is a backlog. A message asked for and not
+        // returned was moved or deleted meanwhile, and holds up nothing that arrives after it.
+        result.unfetched = later
         if result.unfetched.isEmpty {
             catchUps[folder.id] = nil
         } else {
@@ -890,24 +949,29 @@ public actor AccountSyncer {
     }
 
     /// Brings flags up to date and removes messages gone from the server, asking for little.
-    /// With CONDSTORE only the flags changed since the last pass come back. Without it, the
+    /// With CONDSTORE only the flags changed since the last pass come back, together with one
+    /// slice of older messages a pass until every one has been looked at once since the first
+    /// mark: a row stored before it may have changed before it too. Without CONDSTORE, the
     /// newest `flagWindow` messages are checked, and one slice of as many older ones, a
-    /// different slice each pass; a row is taken for gone only when a check covered its UID.
-    /// Deletions further back show as the server holding fewer messages than FalconMail knows
-    /// of, and only then does a search list them.
+    /// different slice each pass. A check takes a row for gone only when it covered its UID and
+    /// the server's count agrees; deletions further back show as the server holding fewer
+    /// messages than FalconMail knows of, and only then does a search list them.
     private func checkFlagsAndDeletions(_ folder: FolderInfo, status: IMAPMailboxStatus, client: IMAPClient, fs: FolderStore,
                                         unfetched: [UInt32]) async throws {
         let known = await fs.uids().sorted()
-        guard let lowest = known.first else { return }
+        guard !known.isEmpty else { return }
         var state = extras.folder(folder)
         let newest = Array(known.suffix(pacing.flagWindow))
         let older = known.dropLast(pacing.flagWindow)
         var removed = Set<UInt32>()
+        var refused = false
         // With actions on their way the server still holds rows taken out here, and the counts
         // cannot agree; the pass after they finish looks again.
         let settled = suppressedUIDs[folder.id]?.isEmpty ?? true
-        // How many messages the server's count says it no longer has. A reply that would take
-        // far more rows than that is not believed: nothing brings back a row below the cursor.
+        // How many messages the server's count says it no longer has; nil before the folder has
+        // been counted, or while actions are on their way, when a check takes nothing. A check
+        // that would take far more rows than that is not believed: nothing brings back a row
+        // below the cursor.
         let missingOnServer = settled ? state.belowWindow.map { known.count + $0 + unfetched.count - status.exists } : nil
         let slack = max(10, status.exists / 100)
 
@@ -918,38 +982,60 @@ public actor AccountSyncer {
         func remove(_ gone: [UInt32]) async throws {
             let fresh = gone.filter { !removed.contains($0) }
             guard !fresh.isEmpty else { return }
-            if let missingOnServer, removed.count + fresh.count > max(0, missingOnServer) + slack {
-                Log.info("sync", "\(account.email) \(folder.path): a reply would remove \(fresh.count) rows where the count is short by \(missingOnServer); left alone")
-                return
-            }
             try await fs.remove(uids: fresh)
             removed.formUnion(fresh)
             await indexer?.remove(ids: fresh.map { MessageSummary.makeID(accountID: account.id, folderID: folder.id, uid: $0) })
         }
+        func removeIfCounted(_ gone: [UInt32]) async throws {
+            let fresh = gone.filter { !removed.contains($0) }
+            guard !fresh.isEmpty, let missingOnServer else { return }
+            guard removed.count + fresh.count <= max(0, missingOnServer) + slack else {
+                // The count itself may be what is wrong; the search below sets it right.
+                refused = true
+                Log.info("sync", "\(account.email) \(folder.path): a reply would remove \(fresh.count) rows where the count is short by \(missingOnServer); left alone")
+                return
+            }
+            try await remove(fresh)
+        }
+        func check(_ slice: [UInt32]) async throws {
+            guard !slice.isEmpty else { return }
+            let flags = try await client.fetchFlags(uidRange: AccountSyncer.uidSet(AccountSyncer.ranges(covering: slice, skipping: unfetched)))
+            try await apply(flags)
+            let answered = Set(flags.map(\.uid))
+            try await removeIfCounted(slice.filter { !answered.contains($0) })
+        }
+        /// The next slice of older messages: downwards from just below the newest, and round
+        /// again from the top once the last reached the oldest.
+        func nextOlderSlice() -> [UInt32] {
+            guard !older.isEmpty else {
+                state.flagSliceBelow = nil
+                return []
+            }
+            var top = state.flagSliceBelow.flatMap { below in older.firstIndex { $0 >= below } } ?? older.endIndex
+            if top == older.startIndex { top = older.endIndex }
+            let bottom = max(older.startIndex, top - pacing.flagWindow)
+            state.flagSliceBelow = bottom == older.startIndex ? nil : older[bottom]
+            return Array(older[bottom..<top])
+        }
 
         var newestChecked = false
-        if let modSeq = status.highestModSeq, await client.hasCapability("CONDSTORE"), let since = state.highestModSeq {
-            if modSeq != since {
+        let condstore = await client.hasCapability("CONDSTORE") && status.highestModSeq != nil
+        if condstore, let since = state.highestModSeq {
+            if status.highestModSeq != since {
                 let ranges = AccountSyncer.ranges(covering: known, skipping: unfetched)
                 try await apply(try await client.fetchFlags(uidRange: AccountSyncer.uidSet(ranges), changedSince: since))
             }
+            if state.flagsSwept != true {
+                try await check(nextOlderSlice())
+                state.flagsSwept = state.flagSliceBelow == nil
+            }
         } else {
-            var targets = [newest]
-            if !older.isEmpty {
-                // Downwards from just below the newest, and round again from the top.
-                var top = state.flagSliceBelow.flatMap { below in older.firstIndex { $0 >= below } } ?? older.endIndex
-                if top == older.startIndex { top = older.endIndex }
-                let bottom = max(older.startIndex, top - pacing.flagWindow)
-                targets.append(Array(older[bottom..<top]))
-                state.flagSliceBelow = bottom == older.startIndex ? nil : older[bottom]
-            }
-            for slice in targets where !slice.isEmpty {
-                let flags = try await client.fetchFlags(uidRange: AccountSyncer.uidSet(AccountSyncer.ranges(covering: slice, skipping: unfetched)))
-                try await apply(flags)
-                let answered = Set(flags.map(\.uid))
-                try await remove(slice.filter { !answered.contains($0) })
-            }
+            // The first mark: from here the older rows are looked at once each, from the top.
+            if condstore { state.flagSliceBelow = nil }
+            try await check(newest)
+            try await check(nextOlderSlice())
             newestChecked = true
+            if condstore { state.flagsSwept = state.flagSliceBelow == nil }
         }
         state.highestModSeq = status.highestModSeq
 
@@ -961,16 +1047,22 @@ public actor AccountSyncer {
             if let count = await expected(), status.exists < count, !newestChecked, let bound = newest.first {
                 // Most deletions are of recent mail, which a short search finds.
                 let present = Set(try await client.uidSearch("UID \(bound):*"))
-                try await remove(newest.filter { !present.contains($0) })
+                try await removeIfCounted(newest.filter { !present.contains($0) })
             }
             let count = await expected()
-            if count == nil || status.exists < count! {
+            if refused || count == nil || status.exists < count! {
                 let all = try await client.uidSearch("ALL")
                 if all.count + slack >= status.exists {
+                    // A search that lists what the server's own count says it holds is believed.
                     let present = Set(all)
                     try await remove(known.filter { !present.contains($0) })
-                    let oldest = await store.folder(folder.id)?.oldestSyncedUID ?? lowest
-                    state.belowWindow = all.filter { $0 < max(oldest, 1) }.count
+                    // What the server holds up to the cursor that is neither stored nor still to
+                    // fetch, below the oldest listed or in a gap above it, so that the count
+                    // agrees with EXISTS from here on however the gap came about.
+                    let stored = await fs.uids()
+                    let queued = Set(unfetched)
+                    let cursor = folder.lastSyncedUID
+                    state.belowWindow = all.filter { $0 <= cursor && !stored.contains($0) && !queued.contains($0) }.count
                 } else {
                     Log.info("sync", "\(account.email) \(folder.path): a search listed \(all.count) of \(status.exists) messages; left alone")
                 }
@@ -1207,7 +1299,9 @@ public actor AccountSyncer {
             from: AddressParser.parse(h.first("From")).first ?? EmailAddress(address: ""),
             to: AddressParser.parse(h.first("To")),
             cc: AddressParser.parse(h.first("Cc")),
-            date: h.first("Date").flatMap(RFC5322Date.parse) ?? Date(),
+            // Without a Date header that can be read, a message is dated when the server received
+            // it: dated now, old mail imported without one would pass for new.
+            date: h.first("Date").flatMap(RFC5322Date.parse) ?? e.internalDate ?? Date(),
             flags: MessageFlags(imapFlags: e.flags),
             size: e.size,
             hasAttachments: looksAttached
@@ -1574,26 +1668,48 @@ public actor AccountSyncer {
 
     public func append(raw: Data, to folder: FolderInfo, flags: MessageFlags, date: Date?) async throws {
         do {
-            guard meter.allows(.upload, adding: raw.count, for: account.id) else {
-                throw MailServiceError(kind: .overUploadBudget, account: account, detail: "upload allowance used",
-                                       retryAfter: meter.whenAllows(.upload, adding: raw.count, for: account.id))
-            }
-            // Never repeated on a fresh connection: an APPEND that did reach the server would be stored twice.
-            _ = try await withOpConnection(repeatable: false) { client in
-                try await client.append(mailbox: folder.path, message: raw, flags: flags.imapFlags, date: date)
-            }
+            try await upload(raw, to: folder, flags: flags, date: date)
         } catch {
             throw await failed("saving a message to \(folder.path)", error, folder: folder)
         }
         syncSoon(afterSavingTo: folder.id)
     }
 
+    /// One APPEND on the op connection. It is never repeated once the message has gone out,
+    /// since one that did reach the server would be stored twice; one that failed before the
+    /// server asked for the message is tried once more on a fresh connection.
+    private func upload(_ raw: Data, to folder: FolderInfo, flags: MessageFlags, date: Date?) async throws {
+        guard meter.allows(.upload, adding: raw.count, for: account.id) else {
+            throw MailServiceError(kind: .overUploadBudget, account: account, detail: "upload allowance used",
+                                   retryAfter: meter.whenAllows(.upload, adding: raw.count, for: account.id))
+        }
+        _ = try await withOpConnection(repeatable: false) { client in
+            try await client.append(mailbox: folder.path, message: raw, flags: flags.imapFlags, date: date)
+        }
+    }
+
     /// Uploads one imported message into `folder`. When the account's upload allowance is used
     /// up, or Gmail asked for quiet, it waits and then goes on, so that an import of thousands
-    /// pauses rather than failing part of the way through.
+    /// pauses rather than failing part of the way through. A message the server certainly did
+    /// not store, because the connection dropped before it went or Gmail turned it away, is
+    /// tried again once the pause that began is over, or a little later.
     public func importMessage(_ message: ImportedMessage, into folder: FolderInfo) async throws {
-        try await waitForAllowance(.upload, bytes: message.raw.count)
-        try await append(raw: message.raw, to: folder, flags: message.flags, date: message.date)
+        var attempts = 0
+        while true {
+            try await waitForAllowance(.upload, bytes: message.raw.count)
+            do {
+                try await upload(message.raw, to: folder, flags: message.flags, date: message.date)
+                break
+            } catch {
+                let failure = await failed("importing a message into \(folder.path)", error, folder: folder)
+                attempts += 1
+                guard attempts < 3, !(error is IMAPAppendUnconfirmed), (failure as? MailServiceError)?.isTransient ?? false else { throw failure }
+                if pauseRemaining() == nil {
+                    try await Task.sleep(nanoseconds: UInt64(pacing.minimumReconnectInterval * 1_000_000_000))
+                }
+            }
+        }
+        syncSoon(afterSavingTo: folder.id)
     }
 
     /// Syncs a folder that messages were saved to, once for however many are saved within
@@ -1619,13 +1735,13 @@ public actor AccountSyncer {
         guard let folder = await store.folder(input.id), folder.oldestSyncedUID > 1 else { return }
         let fs = try await store.folderStore(folder)
         let oldest = folder.oldestSyncedUID
-        let listed: [UInt32]
         let window: [UInt32]
+        let stored = await fs.uids()
+        var added = 0
         do {
-            listed = try await withMailbox(folder.path, uidValidity: folder.uidValidity) { client in
-                try await client.uidSearch("UID 1:\(oldest - 1)")
+            window = try await withMailbox(folder.path, uidValidity: folder.uidValidity) { client in
+                Array(try await client.uidSearch("UID 1:\(oldest - 1)").suffix(count))
             }
-            window = Array(listed.suffix(count))
             guard !window.isEmpty else { return }
             var start = 0
             while start < window.count {
@@ -1638,6 +1754,7 @@ public actor AccountSyncer {
                 var summaries = await AccountSyncer.thread(envelopes.map { AccountSyncer.summary(from: $0, accountID: account.id, folderID: folder.id) }, in: fs)
                 summaries.removeAll { isSuppressed(folderID: folder.id, uid: $0.uid) }
                 try await fs.upsert(summaries)
+                added += summaries.filter { !stored.contains($0.uid) }.count
                 await indexer?.index(summaries)
                 start += batchSize
             }
@@ -1651,10 +1768,12 @@ public actor AccountSyncer {
                 guard current.uidValidity == validity else { return }
                 current.oldestSyncedUID = current.oldestSyncedUID == 0 ? first : min(current.oldestSyncedUID, first)
             }
-            // What the server holds below the new oldest, for a pass to tell deletions from its count.
-            if let now = await store.folder(folder.id), now.uidValidity == validity {
-                let below = listed.filter { $0 < now.oldestSyncedUID }.count
-                extras.updateFolder(folder.id, uidValidity: validity) { $0.belowWindow = below }
+            // The rows it stored are no longer among those the server holds unlisted, which a
+            // pass counts to tell deletions from its EXISTS.
+            if await stillNumbered(folder.id, as: validity) {
+                extras.updateFolder(folder.id, uidValidity: validity) { state in
+                    state.belowWindow = state.belowWindow.map { max(0, $0 - added) }
+                }
             }
         }
         try await store.refreshCounts(folderID: folder.id)
@@ -1689,6 +1808,15 @@ public actor AccountSyncer {
         } catch {
             throw await failed("connecting for an archive", error, folder: nil)
         }
+    }
+
+    /// What an archive job of this account runs on: connections of its own, the background
+    /// allowance, and this syncer to hear of what goes wrong, so that a throttle met by the job
+    /// pauses the whole account and counts towards the next, longer cool-down.
+    public nonisolated func archiveSource() -> ArchiveSource {
+        ArchiveSource(connect: { try await self.openArchiveSourceClient() },
+                      allowance: { try await self.waitForAllowance(.background, bytes: $0) },
+                      failed: { await self.failed("archiving", $0, folder: nil) })
     }
 
     public func createMailbox(named name: String) async throws {

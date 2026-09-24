@@ -24,7 +24,11 @@ struct FolderSyncExtras: Codable, Equatable {
     /// The next slice of older messages whose flags are checked ends just below this UID; nil
     /// starts again just below the newest.
     var flagSliceBelow: UInt32?
-    /// How many messages the server held below the oldest one listed here, when last counted.
+    /// Under CONDSTORE, true once every older message has been checked since `highestModSeq`
+    /// was first taken, after which the changes since it are all a pass asks for.
+    var flagsSwept: Bool?
+    /// How many messages the server held that are neither stored nor waiting to be fetched,
+    /// below the oldest one listed or in a gap above it, when last counted.
     var belowWindow: Int?
 
     init(uidValidity: UInt32) {

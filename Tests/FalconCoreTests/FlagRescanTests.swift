@@ -11,12 +11,14 @@ final class FlagRescanTests: XCTestCase {
     }
 
     /// An account whose INBOX holds `count` messages, all listed by a first pass.
-    private func listed(_ count: Int, capabilities: [String]? = nil, root: URL? = nil) async throws -> EngineHarness {
+    private func listed(_ count: Int, capabilities: [String]? = nil, root: URL? = nil,
+                        emptyFolderConfirmation: TimeInterval = 60) async throws -> EngineHarness {
         let server = try EngineHarness.gmailServer(capabilities: capabilities)
         server.addMany(count, to: "INBOX") { FakeIMAPServer.message("m\($0)", body: "Message \($0).") }
         var pacing = SyncPacing()
         pacing.initialWindow = count
         pacing.catchUpWindow = count
+        pacing.emptyFolderConfirmation = emptyFolderConfirmation
         let h = try await EngineHarness(server: server, root: root, pacing: pacing)
         harness = h
         try await h.syncOnce()
@@ -99,10 +101,16 @@ final class FlagRescanTests: XCTestCase {
         XCTAssertEqual(later.count, 2_999)
     }
 
+    private let condstore = ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE", "CONDSTORE", "ESEARCH"]
+
     func testWithCondstoreOnlyChangedFlagsComeBack() async throws {
-        let h = try await listed(3_000, capabilities: ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE", "CONDSTORE", "ESEARCH"])
+        let h = try await listed(3_000, capabilities: condstore)
+        // The first pass looked at the newest and 1001–2000; this one ends the rotation.
         try await h.syncOnce()
-        XCTAssertTrue(flagFetches(h.server).isEmpty, "nothing changed, so no flag is asked for")
+        XCTAssertEqual(flagFetches(h.server).map(\.line).filter { $0.contains("UID FETCH 1:1000 (UID FLAGS)") }.count, 1)
+        h.server.resetCounters()
+        try await h.syncOnce()
+        XCTAssertTrue(flagFetches(h.server).isEmpty, "every row has been looked at since the first mark and nothing changed, so no flag is asked for")
 
         h.server.resetCounters()
         h.server.setFlags(["\\Flagged"], uid: 5, in: "INBOX")
@@ -122,6 +130,113 @@ final class FlagRescanTests: XCTestCase {
         let searches = h.server.exchanges.filter { $0.line.contains("UID SEARCH") }
         XCTAssertTrue(searches.allSatisfy { $0.line.contains("RETURN (ALL)") }, "searches use ESEARCH where offered")
         XCTAssertLessThan(searches.reduce(0) { $0 + $1.replyBytes }, 400, "a compact set, not three thousand numbers")
+    }
+
+    func testOnCondstoreAFlagChangedBeforeTheFirstMarkIsFoundWithinOneRotation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("falcon-extras-\(UUID().uuidString)", isDirectory: true)
+        let first = try await listed(5_000, capabilities: condstore, root: root)
+        await first.syncer.stop()
+        // As the earlier release leaves it: rows and cursors, no mark, and changes made since.
+        try FileManager.default.removeItem(at: FileLayout(root: root).syncExtrasFile(first.account.id))
+        let server = first.server
+        server.setFlags(["\\Seen"], uid: 10, in: "INBOX")
+        server.setFlags(["\\Seen"], uid: 1_500, in: "INBOX")
+        let second = try await EngineHarness(server: server, root: root)
+        for _ in 1...4 { try await second.syncOnce() }
+        let oldest = try await second.message(uid: 10, in: "INBOX")
+        let middle = try await second.message(uid: 1_500, in: "INBOX")
+        XCTAssertTrue(oldest.isRead)
+        XCTAssertTrue(middle.isRead)
+        server.resetCounters()
+        try await second.syncOnce()
+        XCTAssertTrue(flagFetches(server).isEmpty, "after one rotation only what changed is asked for")
+        let inbox = try await second.folder("INBOX")
+        let stored = AtomicFile.readJSON(SyncExtras.self, from: FileLayout(root: root).syncExtrasFile(second.account.id))
+        XCTAssertEqual(stored?.folders?[inbox.id.uuidString]?.flagsSwept, true, "and a relaunch does not start the rotation again")
+        await second.finish()
+        harness = nil
+    }
+
+    func testAFlagReplyListingNothingTakesNoRowsBeforeTheFolderIsCounted() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("falcon-extras-\(UUID().uuidString)", isDirectory: true)
+        let first = try await listed(3_000, root: root)
+        await first.syncer.stop()
+        // The first pass after an upgrade: no count of what lies below the rows yet.
+        try FileManager.default.removeItem(at: FileLayout(root: root).syncExtrasFile(first.account.id))
+        let server = first.server
+        let second = try await EngineHarness(server: server, root: root)
+        server.emptyNextFlagFetches(1)
+        for _ in 1...4 { try await second.syncOnce() }
+        let rows = try await second.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 3_000, "rows below the cursor, which nothing would fetch again")
+        await second.finish()
+        harness = nil
+    }
+
+    func testAFlagReplyListingNothingTakesNoRowsWhileAnActionIsOnItsWay() async throws {
+        let h = try await listed(3_000)
+        await h.syncer.setUndoWindow(60)
+        let records = try await h.syncer.setFlag(.flagged, on: [try await h.message(uid: 2_500, in: "INBOX")], enabled: true)
+        h.server.emptyNextFlagFetches(1)
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 3_000, "with an action on its way the count cannot vouch for the reply")
+        for record in records { _ = await h.syncer.undo(record.id) }
+    }
+
+    func testRowsMissingHereHoldBackNoDeletion() async throws {
+        let h = try await listed(3_000)
+        // Rows the server still holds that FalconMail lost, however that came about.
+        let stored = try await h.store.folderStore(try await h.folder("INBOX"))
+        try await stored.remove(uids: Array(1_000...1_049))
+        for uid in UInt32(2_901)...3_000 { h.server.remove(uid: uid, from: "INBOX") }
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 2_850, "the hundred deleted on the server went, though the count was 50 out")
+        h.server.resetCounters()
+        try await h.syncOnce()
+        XCTAssertFalse(h.server.commands.contains { $0.contains("SEARCH ALL") }, "the count agrees again")
+
+        for uid in UInt32(2_871)...2_900 { h.server.remove(uid: uid, from: "INBOX") }
+        try await h.syncOnce()
+        let later = try await h.uids(in: "INBOX")
+        XCTAssertEqual(later.count, 2_820, "and so does a later deletion smaller than the gap")
+    }
+
+    func testAServerReportingNoMessagesForAMomentEmptiesNothing() async throws {
+        let h = try await listed(30)
+        let messages = h.server.messages(in: "INBOX")
+        for m in messages { h.server.remove(uid: m.uid, from: "INBOX") }
+        try await h.syncOnce()
+        let kept = try await h.uids(in: "INBOX")
+        XCTAssertEqual(kept.count, 30, "one pass that finds the folder empty is not believed")
+        for m in messages { h.server.add(m.data, to: "INBOX", uid: m.uid) }
+        try await h.syncOnce()
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 30)
+    }
+
+    func testAFolderEmptiedOnTheServerIsEmptiedByALaterPass() async throws {
+        let h = try await listed(30, emptyFolderConfirmation: 0.5)
+        for m in h.server.messages(in: "INBOX") { h.server.remove(uid: m.uid, from: "INBOX") }
+        try await h.syncOnce()
+        try await h.syncOnce()
+        let soon = try await h.uids(in: "INBOX")
+        XCTAssertEqual(soon.count, 30, "a pass moments later is no confirmation")
+        try await Task.sleep(nanoseconds: 600_000_000)
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertTrue(rows.isEmpty, "a later pass confirms it")
+        let inbox = try await h.folder("INBOX")
+        XCTAssertEqual(inbox.oldestSyncedUID, inbox.lastSyncedUID + 1, "Load older looks below the cursor for anything shown again")
+
+        let few = try await listed(5)
+        for m in few.server.messages(in: "INBOX") { few.server.remove(uid: m.uid, from: "INBOX") }
+        try await few.syncOnce()
+        let none = try await few.uids(in: "INBOX")
+        XCTAssertTrue(none.isEmpty, "a few rows go at once")
+        await h.finish()
     }
 
     func testIdleWakesFetchOnlyNewMessages() async throws {

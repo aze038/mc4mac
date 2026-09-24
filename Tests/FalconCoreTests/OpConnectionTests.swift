@@ -338,20 +338,26 @@ final class OpConnectionTests: XCTestCase {
         server.dropAllConnections()
         await assertEventually { server.openConnections == 0 }
 
+        // Gone before the server asked for the message: nothing reached it, so the draft is
+        // saved on a new connection.
         let draft = FakeIMAPServer.message("draft", from: "owner@example.com", to: "ana@example.com")
-        do {
-            try await harness.syncer.append(raw: draft, to: drafts, flags: [.draft, .seen], date: nil)
-            XCTFail("the connection had gone")
-        } catch let failure as MailServiceError {
-            XCTAssertEqual(failure.kind, .connectionDropped)
-        }
-        XCTAssertTrue(server.messages(in: "[Gmail]/Drafts").isEmpty, "an APPEND is not repeated by itself")
-
         try await harness.syncer.append(raw: draft, to: drafts, flags: [.draft, .seen], date: nil)
         let stored = server.messages(in: "[Gmail]/Drafts")
         XCTAssertEqual(stored.count, 1)
         XCTAssertEqual(stored.first?.data, draft)
         XCTAssertEqual(Set(stored.first?.flags ?? []), ["\\Draft", "\\Seen"])
+
+        // Gone once the message was on its way: the server may have stored it, so it is not
+        // sent again.
+        server.loseNextAppendReply()
+        do {
+            try await harness.syncer.append(raw: FakeIMAPServer.message("draft-2", from: "owner@example.com"), to: drafts,
+                                            flags: [.draft, .seen], date: nil)
+            XCTFail("its answer never came")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .connectionDropped)
+        }
+        XCTAssertEqual(server.messages(in: "[Gmail]/Drafts").count, 2, "an APPEND that went out is not repeated by itself")
     }
 
     func testCreatingAFolderUsesTheOpConnection() async throws {

@@ -97,6 +97,85 @@ final class CatchUpTests: XCTestCase {
         XCTAssertEqual(inbox.lastSyncedUID, 10, "the gap below them keeps the cursor where an earlier build would look again")
     }
 
+    func testAFirstPassCutShortAndTakenAgainLeavesNoGap() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.addMany(1_500, to: "INBOX") { FakeIMAPServer.message("m\($0)", body: "Message \($0).") }
+        let h = try await EngineHarness(server: server)
+        harness = h
+        // The third batch of the newest thousand is the last before the link drops.
+        server.cutAfter("UID FETCH", count: 3)
+        do {
+            try await h.syncOnce()
+            XCTFail("the pass was cut short")
+        } catch {}
+        let cut = try await h.folder("INBOX")
+        XCTAssertEqual(cut.lastSyncedUID, 0)
+        XCTAssertEqual(cut.oldestSyncedUID, 501)
+        let partial = try await h.uids(in: "INBOX")
+        XCTAssertEqual(partial.count, 300)
+
+        // Mail arrives before the pass is taken again, pushing the newest thousand up.
+        server.addMany(50, to: "INBOX") { FakeIMAPServer.message("late\($0)", body: "Late \($0).") }
+        try await h.syncOnce()
+        let resumed = try await h.uids(in: "INBOX")
+        XCTAssertEqual(resumed, Set(UInt32(501)...1_550), "nothing between where the two windows began is skipped")
+        let inbox = try await h.folder("INBOX")
+        XCTAssertEqual(inbox.oldestSyncedUID, 501)
+        XCTAssertEqual(inbox.lastSyncedUID, 1_550)
+        try await h.syncer.loadOlder(folder: inbox, count: 2_000)
+        let all = try await h.uids(in: "INBOX")
+        XCTAssertEqual(all, Set(UInt32(1)...1_550))
+    }
+
+    func testAMessageGoneBeforeItsHeadersCameHoldsUpNothing() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.add(FakeIMAPServer.message("before"), to: "INBOX")
+        var pacing = SyncPacing()
+        pacing.fullSyncInterval = 3600
+        let h = try await started(server, pacing: pacing)
+        await h.syncer.start()
+        await assertEventually { server.idlingCount == 1 }
+        server.resetCounters()
+        server.stallNext("UID FETCH", seconds: 0.5)
+        let moved = server.deliver(FakeIMAPServer.message("moved", date: Date()), to: "INBOX")
+        // Another client files it elsewhere while its headers are on their way.
+        await assertEventually { server.commands.contains { $0.contains("HEADER.FIELDS") } }
+        server.remove(uid: moved, from: "INBOX")
+        await assertEventually { server.idlingCount == 1 }
+        server.deliver(FakeIMAPServer.message("next", date: Date()), to: "INBOX")
+        await assertEventually("the next message is not held back as if a backlog were waiting") {
+            ((try? await h.uids(in: "INBOX")) ?? []).count == 2
+        }
+    }
+
+    /// A message from an old mailbox, with no Date header or one in `date`'s words.
+    private func undated(_ tag: String, date: String? = nil) -> Data {
+        Data(("From: ana@example.com\r\nTo: owner@example.com\r\nSubject: Message \(tag)\r\n" + (date.map { "Date: \($0)\r\n" } ?? "")
+              + "Message-ID: <\(tag)@example.com>\r\n\r\nFrom an old mailbox.\r\n").utf8)
+    }
+
+    func testOldMailWithoutADateThatCanBeReadIsNotTakenForNew() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.add(FakeIMAPServer.message("before"), to: "INBOX")
+        let h = try await started(server, pacing: catchingUp)
+        try await h.rules.save([RuleDefinition(name: "Flag everything", conditions: [RuleCondition(field: .subject, op: .contains, value: "Message")],
+                                               actions: [RuleAction(kind: .flag)])])
+        let longAgo = Date(timeIntervalSince1970: 1_080_000_000)
+        for n in 1...20 { server.add(undated("undated-\(n)"), to: "INBOX", date: longAgo) }
+        for n in 1...5 { server.add(undated("asctime-\(n)", date: "Tue Mar 18 10:03:20 2003"), to: "INBOX", date: longAgo) }
+        server.add(FakeIMAPServer.message("today", date: Date()), to: "INBOX")
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 27)
+        await assertEventually { await !h.events.announced.isEmpty }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let told = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(told, ["<today@example.com>"], "no notification or sound for old mail without a date")
+        XCTAssertEqual(server.commands.filter { $0.contains("UID STORE") }.count, 1, "the rule ran on today's message alone")
+        let dated = try await h.message(uid: 2, in: "INBOX")
+        XCTAssertEqual(dated.date.timeIntervalSince1970, longAgo.timeIntervalSince1970, accuracy: 1, "dated when the server received it")
+    }
+
     func testAnImportOf24kOldMessagesRunsNoRulesAndMakesNoNoise() async throws {
         let server = try EngineHarness.gmailServer()
         for n in 1...5 { server.add(FakeIMAPServer.message("before-\(n)"), to: "INBOX") }

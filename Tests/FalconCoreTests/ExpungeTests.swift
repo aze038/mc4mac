@@ -100,18 +100,16 @@ final class ExpungeTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Archives"), withIntermediateDirectories: true)
         Log.start(in: root)
-        let client = try await server.client()
         let account = AccountInfo(email: "owner@example.com", displayName: "Owner")
         let request = ArchiveRequest(accountID: account.id, folderPaths: ["INBOX"], olderThan: Date(timeIntervalSince1970: 1_700_000_000),
                                      name: "Old mail", password: nil, removeFromServer: true, parentID: nil)
-        let outcome = try await ArchiveJob.run(request: request, account: account, client: client,
-                                               storage: LocalFolderStorage(root: root.appendingPathComponent("Archives")),
-                                               allowance: { _ in }) { _ in }
+        let source = ArchiveSource(connect: { try await server.client() }, allowance: { _ in false }, failed: { $0 })
+        let outcome = try await ArchiveJob.run(request: request, account: account, source: source,
+                                               storage: LocalFolderStorage(root: root.appendingPathComponent("Archives"))) { _ in }
         XCTAssertEqual(outcome.manifest.messageCount, 2)
         XCTAssertEqual(outcome.keptOnServer, ["INBOX"], "another message is marked and the server has no UIDPLUS")
         XCTAssertEqual(server.messages(in: "INBOX").count, 3, "nothing purged")
         XCTAssertFalse(server.commands.contains { $0.hasSuffix(" EXPUNGE") })
-        await client.logout()
         server.stop()
     }
 }

@@ -5,6 +5,9 @@ public struct IMAPMessageEnvelope: Sendable {
     public var flags: [String]
     public var size: Int
     public var header: Data
+    /// When the server received the message, which stands in for a Date header that is missing
+    /// or cannot be read.
+    public var internalDate: Date?
 }
 
 /// How long a connection waits for the server before giving it up. A path that dies without a
@@ -235,12 +238,13 @@ public actor IMAPClient {
     public func fetchEnvelopes(uids: [UInt32]) async throws -> [IMAPMessageEnvelope] {
         guard !uids.isEmpty else { return [] }
         let set = IMAPClient.sequenceSet(uids)
-        let responses = try await run("UID FETCH \(set) (UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (\(IMAPClient.headerFields))])",
+        let responses = try await run("UID FETCH \(set) (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (\(IMAPClient.headerFields))])",
                                       mailbox: selectedMailbox)
         var out: [IMAPMessageEnvelope] = []
         for r in responses {
             if case .fetch(let item) = r, let uid = item.uid {
-                out.append(IMAPMessageEnvelope(uid: uid, flags: item.flags ?? [], size: item.size ?? 0, header: item.headerSection ?? Data()))
+                out.append(IMAPMessageEnvelope(uid: uid, flags: item.flags ?? [], size: item.size ?? 0, header: item.headerSection ?? Data(),
+                                               internalDate: item.internalDate.flatMap(IMAPClient.parseInternalDate)))
             }
         }
         return out
@@ -344,31 +348,50 @@ public actor IMAPClient {
         guard others.isEmpty else { throw IMAPExpungeRefused(mailbox: selectedMailbox, others: others.sorted()) }
     }
 
+    /// Stores `message` in `mailbox`. Until the server asks for the message nothing it could
+    /// store has gone out, so a failure then is `IMAPNotSent`, safe to try again on another
+    /// connection. Once the message has gone, any failure but the server's own refusal is
+    /// `IMAPAppendUnconfirmed`: the server may have stored it.
     @discardableResult
     public func append(mailbox: String, message: Data, flags: [String], date: Date?) async throws -> UInt32? {
         var cmd = "APPEND \(quote(mailbox))"
         if !flags.isEmpty { cmd += " (\(flags.joined(separator: " ")))" }
         if let date { cmd += " \(quote(IMAPClient.internalDate(date)))" }
         return try await locked {
-            let tag = try await sendCommand("\(cmd) {\(message.count)}")
-            waiting: while true {
-                switch try await readResponse() {
-                case .continuation:
-                    break waiting
-                case .tagged(let t, let status, let code, let text) where t == tag:
-                    throw IMAPServerError(status: status, code: code, text: text, command: "APPEND", mailbox: mailbox)
-                default:
-                    continue
+            let tag: String
+            do {
+                tag = try await sendCommand("\(cmd) {\(message.count)}")
+                waiting: while true {
+                    switch try await readResponse() {
+                    case .continuation:
+                        break waiting
+                    case .tagged(let t, let status, let code, let text) where t == tag:
+                        throw IMAPServerError(status: status, code: code, text: text, command: "APPEND", mailbox: mailbox)
+                    default:
+                        continue
+                    }
                 }
+            } catch let refusal as IMAPServerError {
+                throw refusal
+            } catch let bye as IMAPBye {
+                throw IMAPNotSent(bye: bye)
+            } catch {
+                throw IMAPNotSent()
             }
-            try await sendData(message)
-            try await sendLine("")
-            let reply = try await collect(tag: tag, command: "APPEND", mailbox: mailbox, includeTagged: true).last
-            if case .tagged(_, _, let code?, _) = reply {
-                let parts = code.split(separator: " ")
-                if parts.count == 3, parts[0].uppercased() == "APPENDUID" { return UInt32(parts[2]) }
+            do {
+                try await sendData(message)
+                try await sendLine("")
+                let reply = try await collect(tag: tag, command: "APPEND", mailbox: mailbox, includeTagged: true).last
+                if case .tagged(_, _, let code?, _) = reply {
+                    let parts = code.split(separator: " ")
+                    if parts.count == 3, parts[0].uppercased() == "APPENDUID" { return UInt32(parts[2]) }
+                }
+                return nil
+            } catch let refusal as IMAPServerError {
+                throw refusal
+            } catch {
+                throw IMAPAppendUnconfirmed(cause: error)
             }
-            return nil
         }
     }
 
@@ -620,5 +643,14 @@ public actor IMAPClient {
         f.timeZone = TimeZone(secondsFromGMT: 0)
         f.dateFormat = "d-MMM-yyyy HH:mm:ss +0000"
         return f.string(from: date)
+    }
+
+    /// An INTERNALDATE as servers send it, "17-Jul-1996 02:44:25 -0700", the day perhaps
+    /// padded with a space.
+    static func parseInternalDate(_ text: String) -> Date? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "d-MMM-yyyy HH:mm:ss Z"
+        return f.date(from: text.trimmingCharacters(in: .whitespaces))
     }
 }
