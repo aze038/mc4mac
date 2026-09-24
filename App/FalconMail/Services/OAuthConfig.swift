@@ -6,18 +6,30 @@ enum OAuthConfigLoader {
     static let keychainAccount = "google.oauth.client"
 
     static func load() -> OAuthClientConfig? {
-        if let id = Bundle.main.object(forInfoDictionaryKey: "FalconGoogleClientID") as? String, isUsable(id) {
-            return OAuthClientConfig(clientID: id, clientSecret: Bundle.main.object(forInfoDictionaryKey: "FalconGoogleClientSecret") as? String)
-        }
-        if let url = Bundle.main.url(forResource: "GoogleOAuth", withExtension: "plist"),
-           let dict = NSDictionary(contentsOf: url) as? [String: Any],
-           let id = dict["ClientID"] as? String, isUsable(id) {
-            return OAuthClientConfig(clientID: id, clientSecret: dict["ClientSecret"] as? String)
-        }
-        if let stored = try? keychain.loadCodable(OAuthClientConfig.self, account: keychainAccount), !stored.clientID.isEmpty {
-            return stored
-        }
-        return nil
+        bundled ?? configFile ?? override
+    }
+
+    /// Every client this build can sign in with, the one `load` picks first. A token is
+    /// refreshed by the client that issued it, which may be one sign-in no longer picks.
+    static func all() -> [OAuthClientConfig] {
+        [bundled, configFile, override].compactMap { $0 }
+    }
+
+    private static var bundled: OAuthClientConfig? {
+        guard let id = Bundle.main.object(forInfoDictionaryKey: "FalconGoogleClientID") as? String, isUsable(id) else { return nil }
+        return OAuthClientConfig(clientID: id, clientSecret: Bundle.main.object(forInfoDictionaryKey: "FalconGoogleClientSecret") as? String)
+    }
+
+    private static var configFile: OAuthClientConfig? {
+        guard let url = Bundle.main.url(forResource: "GoogleOAuth", withExtension: "plist"),
+              let dict = NSDictionary(contentsOf: url) as? [String: Any],
+              let id = dict["ClientID"] as? String, isUsable(id) else { return nil }
+        return OAuthClientConfig(clientID: id, clientSecret: dict["ClientSecret"] as? String)
+    }
+
+    private static var override: OAuthClientConfig? {
+        guard let stored = try? keychain.loadCodable(OAuthClientConfig.self, account: keychainAccount), !stored.clientID.isEmpty else { return nil }
+        return stored
     }
 
     static var isBuiltIn: Bool {

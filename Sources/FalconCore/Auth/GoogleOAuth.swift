@@ -90,7 +90,8 @@ public struct GoogleOAuth: Sendable {
         }
         let r = try JSONDecoder().decode(Reply.self, from: data)
         return OAuthToken(accessToken: r.access_token, refreshToken: r.refresh_token ?? existingRefresh,
-                          expiresAt: Date().addingTimeInterval(r.expires_in), scope: r.scope ?? "", tokenType: r.token_type ?? "Bearer")
+                          expiresAt: Date().addingTimeInterval(r.expires_in), scope: r.scope ?? "", tokenType: r.token_type ?? "Bearer",
+                          clientID: config.clientID)
     }
 
     public func userEmail(accessToken: String) async throws -> (email: String, name: String) {
@@ -105,30 +106,68 @@ public struct GoogleOAuth: Sendable {
     }
 }
 
+/// Where the account tokens are kept: the keychain, or memory in the tests.
+struct TokenVault: Sendable {
+    var load: @Sendable (UUID) throws -> OAuthToken?
+    var save: @Sendable (OAuthToken, UUID) throws -> Void
+
+    static func keychain(_ keychain: KeychainStore) -> TokenVault {
+        TokenVault(load: { try keychain.loadCodable(OAuthToken.self, account: "oauth.\($0.uuidString)") },
+                   save: { try keychain.saveCodable($0, account: "oauth.\($1.uuidString)") })
+    }
+}
+
 public actor TokenStore {
     private let keychain: KeychainStore
+    private let vault: TokenVault
     private var cache: [UUID: OAuthToken] = [:]
-    private var oauthByAccount: [UUID: GoogleOAuth] = [:]
     private let clientConfigProvider: @Sendable () -> OAuthClientConfig?
+    private let knownClientConfigs: @Sendable () -> [OAuthClientConfig]
+    private let refresher: @Sendable (OAuthToken, OAuthClientConfig) async throws -> OAuthToken
+    private let now: @Sendable () -> Date
+    /// The refresh under way for each account, which every caller who needs one waits for.
+    private var refreshing: [UUID: Task<OAuthToken, Error>] = [:]
+    private var keepers: [UUID: Task<Void, Never>] = [:]
+    /// Accounts whose token was issued to a client this build does not have, already logged.
+    private var clientMissing: Set<UUID> = []
+    /// A token is refreshed this long before it expires, so that nothing the owner does waits.
+    static let refreshLead: TimeInterval = 5 * 60
 
-    public init(keychain: KeychainStore = KeychainStore(), clientConfigProvider: @escaping @Sendable () -> OAuthClientConfig?) {
+    /// `knownClientConfigs` lists every OAuth client this build can use: a token is refreshed
+    /// by the client that issued it, which need not be the one sign-in uses now.
+    public init(keychain: KeychainStore = KeychainStore(), clientConfigProvider: @escaping @Sendable () -> OAuthClientConfig?,
+                knownClientConfigs: @escaping @Sendable () -> [OAuthClientConfig] = { [] }) {
+        self.init(keychain: keychain, vault: .keychain(keychain), clientConfigProvider: clientConfigProvider,
+                  knownClientConfigs: knownClientConfigs, refresher: { token, config in try await GoogleOAuth(config: config).refresh(token) })
+    }
+
+    /// Tests keep tokens in memory and refresh them without Google.
+    init(keychain: KeychainStore, vault: TokenVault, clientConfigProvider: @escaping @Sendable () -> OAuthClientConfig?,
+         knownClientConfigs: @escaping @Sendable () -> [OAuthClientConfig],
+         refresher: @escaping @Sendable (OAuthToken, OAuthClientConfig) async throws -> OAuthToken,
+         now: @escaping @Sendable () -> Date = { Date() }) {
         self.keychain = keychain
+        self.vault = vault
         self.clientConfigProvider = clientConfigProvider
+        self.knownClientConfigs = knownClientConfigs
+        self.refresher = refresher
+        self.now = now
     }
 
     public func save(_ token: OAuthToken, for accountID: UUID) throws {
         cache[accountID] = token
-        try keychain.saveCodable(token, account: "oauth.\(accountID.uuidString)")
+        try vault.save(token, accountID)
     }
 
     public func token(for accountID: UUID) throws -> OAuthToken? {
         if let t = cache[accountID] { return t }
-        let t = try keychain.loadCodable(OAuthToken.self, account: "oauth.\(accountID.uuidString)")
+        let t = try vault.load(accountID)
         cache[accountID] = t
         return t
     }
 
     public func remove(accountID: UUID) {
+        stopKeepingFresh(accountID)
         cache[accountID] = nil
         keychain.delete(account: "oauth.\(accountID.uuidString)")
         keychain.delete(account: "password.\(accountID.uuidString)")
@@ -146,16 +185,72 @@ public actor TokenStore {
     /// The account's access token, refreshed first when it is about to expire, or always when
     /// `forceRefresh`, as after the server turned down one that had not expired.
     public func validAccessToken(for accountID: UUID, forceRefresh: Bool = false) async throws -> String {
-        guard var token = try token(for: accountID) else { throw FalconError.notAuthenticated }
-        if forceRefresh || token.isExpiringSoon {
-            guard let config = clientConfigProvider() else { throw FalconError.notAuthenticated }
-            do {
-                token = try await GoogleOAuth(config: config).refresh(token)
-            } catch FalconError.http(let status, _) where status == 400 || status == 401 {
-                throw FalconError.notAuthenticated
-            }
-            try save(token, for: accountID)
+        guard let token = try token(for: accountID) else { throw FalconError.notAuthenticated }
+        guard forceRefresh || token.expiresAt.timeIntervalSince(now()) < 120 else { return token.accessToken }
+        return try await refreshed(accountID).accessToken
+    }
+
+    /// A fresh token for the account. However many ask at once, one refresh is made and all
+    /// of them get its result.
+    private func refreshed(_ accountID: UUID) async throws -> OAuthToken {
+        if let running = refreshing[accountID] { return try await running.value }
+        guard let token = try token(for: accountID) else { throw FalconError.notAuthenticated }
+        let client = try issuer(of: token, accountID: accountID)
+        let refresher = refresher
+        let running = Task { try await refresher(token, client) }
+        refreshing[accountID] = running
+        defer { refreshing[accountID] = nil }
+        let fresh: OAuthToken
+        do {
+            fresh = try await running.value
+        } catch FalconError.http(let status, _) where status == 400 || status == 401 {
+            throw FalconError.notAuthenticated
         }
-        return token.accessToken
+        try save(fresh, for: accountID)
+        return fresh
+    }
+
+    /// The client to refresh `token` with: the one that issued it. Google refuses a refresh
+    /// token from any other as unauthorized_client, so a token from a client this build no
+    /// longer has means signing in again, said once, never a refresh that cannot work.
+    private func issuer(of token: OAuthToken, accountID: UUID) throws -> OAuthClientConfig {
+        guard let current = clientConfigProvider() else { throw FalconError.notAuthenticated }
+        guard let issuer = token.clientID, issuer != current.clientID else { return current }
+        if let known = knownClientConfigs().first(where: { $0.clientID == issuer }) { return known }
+        if clientMissing.insert(accountID).inserted {
+            Log.info("auth", "account \(accountID.uuidString): its sign-in came from an OAuth client this build does not have; it must sign in again")
+        }
+        throw FalconError.notAuthenticated
+    }
+
+    /// Refreshes the account's token about five minutes before it expires, from now until
+    /// `stopKeepingFresh`, so that no message opened or sent waits for Google.
+    public func keepFresh(_ accountID: UUID) {
+        keepers[accountID]?.cancel()
+        keepers[accountID] = Task { [weak self] in await self?.refreshAhead(accountID) }
+    }
+
+    public func stopKeepingFresh(_ accountID: UUID) {
+        keepers.removeValue(forKey: accountID)?.cancel()
+    }
+
+    private func refreshAhead(_ accountID: UUID) async {
+        while !Task.isCancelled {
+            guard let token = try? token(for: accountID), token.refreshToken != nil else { return }
+            let wait = token.expiresAt.timeIntervalSince(now()) - TokenStore.refreshLead
+            if wait > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                continue
+            }
+            do {
+                _ = try await refreshed(accountID)
+            } catch FalconError.notAuthenticated {
+                // The owner has to sign in again; the sync loop says so.
+                return
+            } catch {
+                // Offline or Google busy: the next request refreshes on its own, or this tries again.
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+            }
+        }
     }
 }

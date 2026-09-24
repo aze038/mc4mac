@@ -430,7 +430,7 @@ final class AppModel {
         let info = Bundle.main.infoDictionary
         Log.info("app", "launch version=\(info?["CFBundleShortVersionString"] as? String ?? "?") build=\(info?["CFBundleVersion"] as? String ?? "?") data=\(layout.root.path)")
         let store = MailStore(layout: layout)
-        let tokens = TokenStore { OAuthConfigLoader.load() }
+        let tokens = TokenStore(clientConfigProvider: { OAuthConfigLoader.load() }, knownClientConfigs: { OAuthConfigLoader.all() })
         let rules = RuleStore(layout: layout)
         let mutes = MuteStore(layout: layout)
         self.store = store

@@ -123,9 +123,11 @@ public actor SyncCoordinator {
         await s.setUndoWindow(undoWindow)
         syncers[account.id] = s
         await s.start()
+        if !account.usesPassword { await tokens.keepFresh(account.id) }
     }
 
     public func stop(accountID: UUID) async {
+        await tokens.stopKeepingFresh(accountID)
         await syncers[accountID]?.stop()
         syncers[accountID] = nil
     }
@@ -137,7 +139,10 @@ public actor SyncCoordinator {
         meterSaves = nil
         pathMonitor?.cancel()
         pathMonitor = nil
-        for s in syncers.values { await s.stop() }
+        for (id, s) in syncers {
+            await tokens.stopKeepingFresh(id)
+            await s.stop()
+        }
         syncers.removeAll()
         meter.persist()
     }
