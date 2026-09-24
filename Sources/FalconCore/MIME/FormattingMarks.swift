@@ -6,8 +6,8 @@ import AppKit
 enum FormattingMarks {
     struct Mark: Equatable {
         /// The character the mark stands for, in the UTF-16 units a text view counts in. The
-        /// empty paragraph after a final line break, or the one paragraph of an empty text, has
-        /// no character of its own; its ¶ is at the text's length.
+        /// empty line after a final line break, or the one paragraph of an empty text, has no
+        /// character of its own; its ¶ is at the text's length.
         var character: Int
         var symbol: String
         /// Drawn after the character rather than over the gap it leaves: the last paragraph has
@@ -35,17 +35,27 @@ enum FormattingMarks {
         }
     }
 
+    /// Whether what follows `character` starts a new line: after a paragraph's line break, or
+    /// the line break within a paragraph that Shift-Return types, the caret stands on the next
+    /// line.
+    static func breaksLine(_ character: unichar) -> Bool {
+        switch character {
+        case 0x0A, 0x0D, 0x2028, 0x2029: return true
+        default: return false
+        }
+    }
+
     /// The marks for the characters of `range`, and, when it reaches the end of `text`, the ¶
     /// Word puts at the end of the last paragraph: after a last paragraph that has no line
-    /// break, or on the empty line that follows a final line break, as on the one line of an
-    /// empty text.
+    /// break, or on the empty line that follows a final line break of either kind, as on the
+    /// one line of an empty text.
     static func marks(in text: NSString, range: NSRange) -> [Mark] {
         var marks: [Mark] = []
         for index in range.location..<NSMaxRange(range) {
             if let symbol = symbol(for: text.character(at: index)) { marks.append(Mark(character: index, symbol: symbol)) }
         }
         guard NSMaxRange(range) == text.length else { return marks }
-        if text.length == 0 || symbol(for: text.character(at: text.length - 1)) == paragraph {
+        if text.length == 0 || breaksLine(text.character(at: text.length - 1)) {
             marks.append(Mark(character: text.length, symbol: paragraph))
         } else {
             marks.append(Mark(character: text.length - 1, symbol: paragraph, after: true))

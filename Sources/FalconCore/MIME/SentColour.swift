@@ -14,10 +14,19 @@ enum SentColour {
     /// another space, such as Display P3 or a grey, as it looks in sRGB, and one that follows
     /// the appearance as it looks in light, on the white page a message is read on unless the
     /// reader says otherwise. A pattern, which has no one colour, is left as it is.
+    ///
+    /// A colour already in calibrated RGB keeps its values. Word, Excel and Outlook put RTF on
+    /// the pasteboard with a plain colour table, whose values are the sRGB colours chosen there,
+    /// and AppKit reads that table as calibrated RGB, as the draft's and a signature's RTF then
+    /// keep it: pasted text, table shading and lines and a signature designed in Word go out in
+    /// Office's own colours only if those values are written as they are. Nothing in the app
+    /// makes a calibrated colour itself, so only one picked in the colour panel's Generic RGB
+    /// goes out by its values rather than as it looks.
     static func forWriter(_ colour: NSColor) -> NSColor {
-        guard let sRGB = inSRGB(colour) else { return colour }
-        return NSColor(calibratedRed: byte(sRGB.redComponent), green: byte(sRGB.greenComponent),
-                       blue: byte(sRGB.blueComponent), alpha: sRGB.alphaComponent)
+        let fromOffice = colour.type == .componentBased && colour.colorSpace == .genericRGB
+        guard let values = fromOffice ? colour : inSRGB(colour) else { return colour }
+        return NSColor(calibratedRed: byte(values.redComponent), green: byte(values.greenComponent),
+                       blue: byte(values.blueComponent), alpha: values.alphaComponent)
     }
 
     /// `colour` in sRGB, resolved for the light appearance when it follows the appearance.

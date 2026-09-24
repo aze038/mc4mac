@@ -244,6 +244,60 @@ final class ComposedHTMLTests: XCTestCase {
         XCTAssertTrue(html.contains("background-color: #ffff00"), html)
     }
 
+    /// RTF as Word, Excel and Outlook put it on the pasteboard: a plain colour table, which
+    /// AppKit reads as calibrated RGB, of #C00000, #1F4E79, #E2EFDA and #FFC000.
+    private func pastedFromOffice(_ body: String) throws -> NSAttributedString {
+        let rtf = #"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Calibri;}}"#
+            + #"{\colortbl;\red192\green0\blue0;\red31\green78\blue121;\red226\green239\blue218;\red255\green192\blue0;}"#
+            + body + "}"
+        return try NSAttributedString(data: Data(rtf.utf8), options: [.documentType: NSAttributedString.DocumentType.rtf],
+                                      documentAttributes: nil)
+    }
+
+    private let officeShifted = ["#ce1c00", "#27628c", "#e7f2e1", "#ffca00"]
+
+    /// Text and a table pasted from Word or Excel, with its cells' shading and lines, go out in
+    /// the colours they were given there, not shifted as if Office's values were calibrated RGB.
+    func testColoursPastedFromOfficeAreSentAsTheyWereChosen() throws {
+        let pasted = try pastedFromOffice(#"""
+            \pard\f0\fs22{\cf2 Figures }{\cf1\cb4 as agreed}\par
+            \trowd\trgaph108\trleft0
+            \clbrdrt\brdrs\brdrw10\brdrcf2\clbrdrl\brdrs\brdrw10\brdrcf2\clbrdrb\brdrs\brdrw10\brdrcf2\clbrdrr\brdrs\brdrw10\brdrcf2\clcbpat3\cellx2000
+            \clbrdrt\brdrs\brdrw10\brdrcf1\clbrdrl\brdrs\brdrw10\brdrcf1\clbrdrb\brdrs\brdrw10\brdrcf1\clbrdrr\brdrs\brdrw10\brdrcf1\clcbpat4\cellx4000
+            \pard\intbl{\cf1 Alert}\cell{\cf2 Note}\cell\row
+            \pard\par
+            """#)
+        let html = try sent(pasted)
+        XCTAssertTrue(html.contains("color: #1f4e79\">Figures <"), html)
+        XCTAssertTrue(html.contains("color: #c00000; background-color: #ffc000\">as agreed<"), html)
+        let cells = cells(in: html)
+        XCTAssertEqual(cells.count, 2, html)
+        XCTAssertTrue(cells[0].contains("background-color: #e2efda"), cells[0])
+        XCTAssertTrue(cells[0].contains("border-color: #1f4e79 #1f4e79 #1f4e79 #1f4e79"), cells[0])
+        XCTAssertTrue(cells[1].contains("background-color: #ffc000"), cells[1])
+        XCTAssertTrue(cells[1].contains("border-color: #c00000 #c00000 #c00000 #c00000"), cells[1])
+        XCTAssertTrue(html.contains("color: #c00000\">Alert<"), html)
+        XCTAssertTrue(html.contains("color: #1f4e79\">Note<"), html)
+        for shifted in officeShifted { XCTAssertFalse(html.contains(shifted), shifted) }
+    }
+
+    /// A signature designed in Word and pasted into the signature editor, which keeps the source's
+    /// formatting, goes out in Word's colours once it is saved and opens a message.
+    func testASignaturePastedFromWordIsSentInWordsColours() throws {
+        let pasted = try pastedFromOffice(#"\pard\f0\fs22{\cf2 Alex Moreno}\par{\cf1\cb3 Finance}\par{\cb4 Leeds office}"#)
+        var signature = Signature(name: "Work")
+        signature.setText(pasted)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+        let rich = try XCTUnwrap(ComposedBody.opening(lead: "Thanks,\n", signature: signature, tail: "", attributes: attributes).rich)
+        let rtf = try XCTUnwrap(rich.rtf(from: NSRange(location: 0, length: rich.length),
+                                         documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]))
+        let html = ComposedHTML.document(rtf: rtf, plain: rich.string, historyPlain: "", historyHTML: "")
+        XCTAssertTrue(html.contains("color: #1f4e79\">Alex Moreno<"), html)
+        XCTAssertTrue(html.contains("color: #c00000; background-color: #e2efda\">Finance<"), html)
+        XCTAssertTrue(html.contains("background-color: #ffc000\">Leeds office<"), html)
+        for shifted in officeShifted { XCTAssertFalse(html.contains(shifted), shifted) }
+    }
+
     /// A reply's own text is sent in its exact colours; the original after it is sent as its own
     /// HTML, not a character of it changed, whatever colours it holds.
     func testAReplyIsExactAndItsOriginalUntouched() throws {

@@ -20,12 +20,14 @@ final class FormattingMarksTests: XCTestCase {
     }
 
     /// Word marks the end of every paragraph once, the last too: after its text when it has no
-    /// line break, and when the text ends in a line break, on the empty line that follows, as
-    /// on the one line of an empty text.
+    /// line break, and when the text ends in a line break, a paragraph's or Shift-Return's, on
+    /// the empty line that follows, as on the one line of an empty text.
     func testEveryParagraphIsMarkedOnceWhereverTheTextEnds() {
         for (text, last, paragraphs) in [("a b", FormattingMarks.Mark(character: 2, symbol: "¶", after: true), 1),
                                          ("a\n", FormattingMarks.Mark(character: 2, symbol: "¶"), 2),
                                          ("a\u{2029}", FormattingMarks.Mark(character: 2, symbol: "¶"), 2),
+                                         ("a\u{2028}", FormattingMarks.Mark(character: 2, symbol: "¶"), 1),
+                                         ("a\u{2028}b", FormattingMarks.Mark(character: 2, symbol: "¶", after: true), 1),
                                          ("a\n\n", FormattingMarks.Mark(character: 3, symbol: "¶"), 3),
                                          ("", FormattingMarks.Mark(character: 0, symbol: "¶"), 1)] {
             let string = text as NSString
@@ -98,6 +100,32 @@ final class FormattingMarksTests: XCTestCase {
             XCTAssertEqual(last.x, caret.minX, accuracy: 0.5, "alignment \(alignment.rawValue)")
             XCTAssertTrue(caret.minY < last.y && last.y <= caret.maxY, "\(caret) \(last)")
         }
+    }
+
+    /// A body that ends in Shift-Return's line break shows its last ¶ on the empty line after
+    /// it, where the caret stands, not at the far end of the line before.
+    func testTheEmptyLineAfterShiftReturnShowsTheLastMark() throws {
+        let (view, layout) = composer()
+        view.drawsBackground = false
+        view.insertText("Alex Moreno", replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.insertLineBreak(nil)
+        let storage = try XCTUnwrap(view.textStorage)
+        XCTAssertEqual(storage.string, "Alex Moreno\u{2028}")
+        let container = try XCTUnwrap(layout.textContainers.first)
+        layout.ensureLayout(for: container)
+        let found = FormattingMarks.marks(in: storage.string as NSString, range: NSRange(location: 0, length: storage.length))
+        XCTAssertEqual(found.filter { $0.symbol == "¶" }, [.init(character: 12, symbol: "¶")])
+        let start = try XCTUnwrap(found.last.flatMap(layout.baselineStart))
+        var count = 0
+        let caret = try XCTUnwrap(layout.rectArray(forCharacterRange: NSRange(location: 12, length: 0),
+                                                   withinSelectedCharacterRange: NSRange(location: 12, length: 0),
+                                                   in: container, rectCount: &count)?.pointee)
+        XCTAssertEqual(start.x, caret.minX, accuracy: 0.5)
+        XCTAssertTrue(caret.minY < start.y && start.y <= caret.maxY, "\(caret) \(start)")
+        let line = layout.extraLineFragmentRect.offsetBy(dx: view.textContainerOrigin.x, dy: view.textContainerOrigin.y)
+        XCTAssertEqual(inkedPixels(displaying: view, in: line), 0, "nothing is drawn there without the marks")
+        layout.showsMarks = true
+        XCTAssertGreaterThan(inkedPixels(displaying: view, in: line), 0, "the empty line's ¶")
     }
 
     /// An empty body shows the ¶ of its one paragraph where the caret stands, drawn when its
