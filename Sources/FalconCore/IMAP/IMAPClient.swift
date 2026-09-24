@@ -55,6 +55,8 @@ public actor IMAPClient {
     private var idleContinued = false
     private var idleStopRequested = false
     private var idleDoneSent = false
+    /// The wait between two polls of a server without IDLE, which `finishIdle` cuts short.
+    private var pollWait: Task<Void, Never>?
     private let turn = AsyncMutex()
     private nonisolated let turnID = UUID()
     private var turnTaking = TurnTaking.whole
@@ -432,7 +434,16 @@ public actor IMAPClient {
     /// that has decided not to fetch anything before `maxWait` whatever arrives.
     public func idle(maxWait: TimeInterval, wakeOnNews: Bool = true) async throws -> Bool {
         guard hasCapability("IDLE") else {
-            try await Task.sleep(nanoseconds: UInt64(min(maxWait, 60) * 1_000_000_000))
+            // A server without IDLE is asked with a NOOP at most a minute apart. `finishIdle`
+            // ends the wait at once, as it ends an IDLE, so a sync asked for waits for nothing.
+            if !idleStopRequested {
+                let wait = Task { _ = try? await Task.sleep(nanoseconds: UInt64(min(maxWait, 60) * 1_000_000_000)) }
+                pollWait = wait
+                await withTaskCancellationHandler { await wait.value } onCancel: { wait.cancel() }
+                pollWait = nil
+            }
+            idleStopRequested = false
+            try Task.checkCancellation()
             let responses = try await run("NOOP")
             return responses.contains { if case .exists = $0 { return true }; if case .expunge = $0 { return true }; return false }
         }
@@ -491,6 +502,7 @@ public actor IMAPClient {
     public func finishIdle() async throws {
         guard idleTag != nil, idleContinued else {
             idleStopRequested = true
+            pollWait?.cancel()
             return
         }
         try await sendDone()

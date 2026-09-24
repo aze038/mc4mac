@@ -612,4 +612,25 @@ final class EngineSoundTests: XCTestCase {
         listener.hear(await h.events.timed)
         XCTAssertEqual(listener.sounds, [.newMessage, .newMessage], "the bulk's newest and the one asked for; never No new messages")
     }
+
+    func testACheckOnAServerWithoutIdleIsAnsweredAtOnce() async throws {
+        let clock = Date()
+        let server = try EngineHarness.gmailServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "MOVE", "UIDPLUS", "SPECIAL-USE"])
+        server.add(FakeIMAPServer.message("first"), to: "INBOX")
+        let h = try await EngineHarness(server: server, pacing: pacing)
+        harness = h
+        await h.syncer.start()
+        await assertEventually { await self.finishedCount(h) == 1 }
+        // Between polls the engine waits up to a minute for a server that cannot idle.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let listener = Listener(start: clock)
+        let asked = Date()
+        listener.check([h.account.id], at: asked)
+        await h.syncer.requestSync(check: true)
+        await assertEventually(within: 5) { await self.checkedCount(h) == 1 }
+        XCTAssertLessThan(Date().timeIntervalSince(asked), 5, "the wait between polls was ended for it")
+        await h.settled()
+        listener.hear(await h.events.timed)
+        XCTAssertEqual(listener.sounds, [.noNewMessages])
+    }
 }
