@@ -37,6 +37,26 @@ final class DiagnosticsQueueTests: XCTestCase {
         XCTAssertEqual(DiagnosticsQueue(url: url).records.first?.event.count, 3)
     }
 
+    /// The backend counts at most 10,000 occurrences in one event, so a busier failure starts a
+    /// new event there rather than be under-reported.
+    func testAFoldedEventThatReachesTheCapStartsANewOne() {
+        let queue = DiagnosticsQueue(url: url)
+        var first = DiagnosticsFixtures.event(at: start)
+        first.count = DiagnosticsEvent.maxCount - 2
+        queue.add(DiagnosticsFixtures.record(first))
+        XCTAssertEqual(queue.add(DiagnosticsFixtures.record(DiagnosticsFixtures.event(at: start.addingTimeInterval(1)))), .folded)
+        XCTAssertEqual(queue.add(DiagnosticsFixtures.record(DiagnosticsFixtures.event(at: start.addingTimeInterval(2)))), .folded)
+        XCTAssertEqual(queue.records.map(\.event.count), [DiagnosticsEvent.maxCount])
+        XCTAssertEqual(queue.add(DiagnosticsFixtures.record(DiagnosticsFixtures.event(at: start.addingTimeInterval(3)))), .added)
+        XCTAssertEqual(queue.add(DiagnosticsFixtures.record(DiagnosticsFixtures.event(at: start.addingTimeInterval(4)))), .folded)
+        var several = DiagnosticsFixtures.event(at: start.addingTimeInterval(5))
+        several.count = DiagnosticsEvent.maxCount - 1
+        XCTAssertEqual(queue.add(DiagnosticsFixtures.record(several)), .added, "one that would pass the cap is not folded in part")
+        XCTAssertEqual(queue.records.map(\.event.count), [DiagnosticsEvent.maxCount, 2, DiagnosticsEvent.maxCount - 1])
+        XCTAssertEqual(queue.records.map(\.event.count).reduce(0, +), DiagnosticsEvent.maxCount * 2 + 1, "every occurrence is counted")
+        XCTAssertTrue(queue.records.allSatisfy { $0.event.count <= DiagnosticsEvent.maxCount })
+    }
+
     func testFoldingKeepsDistinctThingsApart() {
         let queue = DiagnosticsQueue(url: url)
         queue.add(DiagnosticsFixtures.record(DiagnosticsFixtures.event(at: start)))

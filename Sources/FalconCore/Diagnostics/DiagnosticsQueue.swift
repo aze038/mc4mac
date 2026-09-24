@@ -33,7 +33,7 @@ public final class DiagnosticsQueue {
     public enum Outcome: Equatable { case added, folded }
 
     /// Folds into a record of the same signature, kind, account and build that began less than
-    /// an hour before and has not been sent, or adds a new one.
+    /// an hour before, has not been sent and has room in its count, or adds a new one.
     @discardableResult
     public func add(_ record: DiagnosticsRecord) -> Outcome {
         if record.event.kind.folds, let i = foldTarget(for: record) {
@@ -102,6 +102,7 @@ public final class DiagnosticsQueue {
     private func foldTarget(for record: DiagnosticsRecord) -> Int? {
         records.lastIndex { existing in
             !existing.sealed
+                && existing.event.count + record.event.count <= DiagnosticsEvent.maxCount
                 && existing.event.signature == record.event.signature
                 && existing.event.kind == record.event.kind
                 && existing.event.account?.ref == record.event.account?.ref

@@ -57,7 +57,7 @@ At most 200 events per body.
 | `signature` | Stable grouping key with no dynamic values: area + error type/code + source location, for example `IMAP.throttled@AccountSyncer.swift:loop`. The location is the file and function, not the line, so the key survives edits above the call |
 | `title` | Short plain-language description a non-programmer understands, stable for the signature, at most 120 characters, for example *Gmail paused the connection: too many requests*, *FalconMail crashed while opening a message*, *Sending a message failed: the server refused the password* |
 | `area` | The log area |
-| `count` | Number of occurrences folded into this event |
+| `count` | Number of occurrences folded into this event, from 1 to 10,000. The app starts a new event once one reaches 10,000, and the backend caps a larger count at 10,000 |
 | `firstAt`, `lastAt` | ISO 8601 |
 | `message` | Redacted text, at most 2,000 characters |
 | `context` | Redacted JSON object, at most 16 KB serialised |

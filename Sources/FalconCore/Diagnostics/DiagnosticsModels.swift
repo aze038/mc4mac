@@ -61,6 +61,9 @@ public struct DiagnosticsEvent: Codable, Hashable, Sendable, Identifiable {
     public static let maxMessage = 2_000
     public static let maxContextBytes = 16 * 1024
     public static let maxTitle = 120
+    /// The most occurrences one event may count; the backend caps `count` here. The queue starts
+    /// a new event rather than fold past it, so no occurrence goes uncounted.
+    public static let maxCount = 10_000
 
     public var id: String
     public var kind: DiagnosticsKind
