@@ -400,6 +400,9 @@ final class AppModel {
     }
 
     init() {
+        Log.start(in: layout.root)
+        let info = Bundle.main.infoDictionary
+        Log.info("app", "launch version=\(info?["CFBundleShortVersionString"] as? String ?? "?") build=\(info?["CFBundleVersion"] as? String ?? "?") data=\(layout.root.path)")
         let store = MailStore(layout: layout)
         let tokens = TokenStore { OAuthConfigLoader.load() }
         let rules = RuleStore(layout: layout)
@@ -1778,6 +1781,7 @@ final class AppModel {
     }
 
     func shutdown() async {
+        Log.info("app", "quit")
         cancelPendingRead()
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
@@ -1787,6 +1791,7 @@ final class AppModel {
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
         await coordinator.stopAll()
+        Log.flush()
     }
 }
 

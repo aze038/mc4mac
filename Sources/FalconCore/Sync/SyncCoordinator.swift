@@ -8,6 +8,7 @@ public actor SyncCoordinator {
     public let indexer: SpotlightIndexer
     public let pendingActions: PendingActionStore
     private var syncers: [UUID: AccountSyncer] = [:]
+    private var heartbeat: Task<Void, Never>?
     private let eventContinuation: AsyncStream<SyncEvent>.Continuation
     public nonisolated let events: AsyncStream<SyncEvent>
 
@@ -28,6 +29,26 @@ public actor SyncCoordinator {
         for account in await store.allAccounts() where account.isEnabled {
             await start(account: account)
         }
+        startHeartbeat()
+    }
+
+    /// A line every half hour while FalconMail runs, so a log that goes quiet means FalconMail
+    /// was not running rather than that nothing went wrong.
+    private func startHeartbeat() {
+        guard heartbeat == nil else { return }
+        heartbeat = Task(priority: .background) { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30 * 60 * 1_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                await self.logAlive()
+            }
+        }
+    }
+
+    private func logAlive() async {
+        var downloaded = 0
+        for id in syncers.keys { downloaded += await BandwidthMeter.shared.spentToday(id) }
+        Log.info("app", "alive accounts=\(syncers.count) bodiesToday=\(downloaded / 1_000_000)MB")
     }
 
     public var bodyPrefetch = 150
@@ -66,6 +87,8 @@ public actor SyncCoordinator {
     }
 
     public func stopAll() async {
+        heartbeat?.cancel()
+        heartbeat = nil
         for s in syncers.values { await s.stop() }
         syncers.removeAll()
     }
