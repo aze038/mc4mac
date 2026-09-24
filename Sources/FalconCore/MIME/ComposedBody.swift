@@ -157,6 +157,71 @@ public enum ComposedBody {
         editor.window?.makeFirstResponder(editor)
     }
 
+    /// Outlook's most columns a table can have, as Insert Table allows.
+    public static let mostTableColumns = 63
+
+    /// What Convert Text to Table would turn into a table: the whole paragraphs the selection
+    /// touches, stopping short of the original, when the selection is in the user's own text and
+    /// holds only text outside any table. Nil when there is nothing it can convert, which is what
+    /// dims the menu item.
+    @MainActor
+    public static func convertibleRange(in editor: NSTextView, before history: String) -> NSRange? {
+        guard let storage = editor.textStorage else { return nil }
+        let selection = editor.selectedRange()
+        guard selection.length > 0, NSMaxRange(selection) <= storage.length else { return nil }
+        let text = storage.string as NSString
+        var range = text.paragraphRange(for: selection)
+        if let start = historyStart(in: storage.string, history: history) {
+            guard selection.location < start else { return nil }
+            range.length = min(NSMaxRange(range), start) - range.location
+        }
+        guard range.length > 0 else { return nil }
+        var plain = true
+        storage.enumerateAttributes(in: range) { attributes, _, stop in
+            let inTable = !((attributes[.paragraphStyle] as? NSParagraphStyle)?.textBlocks.isEmpty ?? true)
+            if inTable || attributes[.attachment] != nil {
+                plain = false
+                stop.pointee = true
+            }
+        }
+        let cells = ComposedTable.cells(from: text.substring(with: range))
+        guard plain, let columns = cells.first?.count, columns <= mostTableColumns else { return nil }
+        return range
+    }
+
+    /// Replaces the paragraphs `convertibleRange` finds with Outlook's Table Grid holding their
+    /// text, as one step Undo takes back; the caret lands in the first cell. Each cell keeps its
+    /// text's own formatting and links, so nothing the recipient would have had is lost; the
+    /// paragraph breaks and the cells padding short rows take the formatting where the text
+    /// starts.
+    @MainActor
+    public static func convertToTable(in editor: NSTextView, before history: String, font: NSFont, lines: NSColor) {
+        guard let range = convertibleRange(in: editor, before: history), let storage = editor.textStorage else { return }
+        let contents = ComposedTable.cellRanges(in: (storage.string as NSString).substring(with: range)).map { row in
+            row.map { storage.attributedSubstring(from: NSRange(location: range.location + $0.location, length: $0.length)) }
+        }
+        guard let columns = contents.first?.count else { return }
+        var attributes = storage.attributes(at: range.location, effectiveRange: nil)
+        attributes[.link] = nil
+        attributes[.font] = attributes[.font] ?? font
+        attributes[.foregroundColor] = attributes[.foregroundColor] ?? NSColor.labelColor
+        let bodyWidth = textWidth(of: editor)
+        let width = ComposedTable.width(room: bodyWidth, body: bodyWidth, columns: columns)
+        let table = NSMutableAttributedString(attributedString: ComposedTable.grid(rows: contents.count, columns: columns, width: width,
+                                                                                   lines: lines, attributes: attributes, contents: contents))
+        // A table at the very end would leave nowhere to type below it.
+        if NSMaxRange(range) == storage.length {
+            table.append(NSAttributedString(string: "\n", attributes: attributes))
+        }
+        editor.breakUndoCoalescing()
+        guard editor.shouldChangeText(in: range, replacementString: table.string) else { return }
+        storage.replaceCharacters(in: range, with: table)
+        editor.didChangeText()
+        editor.undoManager?.setActionName("Convert Text to Table")
+        editor.setSelectedRange(NSRange(location: range.location, length: 0))
+        editor.window?.makeFirstResponder(editor)
+    }
+
     /// The caret's formatting, or, when the insertion was moved out of the original, the
     /// formatting where the original starts: the character before it may close a table cell, and
     /// its paragraph would draw the insertion into that cell.

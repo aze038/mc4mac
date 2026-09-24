@@ -4,13 +4,14 @@ import AppKit
 import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
-/// Table picker, the main window's Home ribbon, which shares the compose ribbon's tiles, the
-/// Settings window's icon grid, its Signatures pane with two stand-in signatures, with none and
-/// with its notice of a damaged file set aside, its Notifications and Sounds pane and every other
-/// pane, and a signature's editor window for a signature, for a new one and with ¶ showing the
-/// marks for what does not print, in both appearances
-/// into PNGs at twice their size in that directory, writes down beside them the words and
-/// buttons of the question asked before a signature is deleted, then quits.
+/// Table picker idle and with a size and text to convert, the address suggestions over a
+/// compose window's header, the alert on closing an unsent message, the main window's Home ribbon,
+/// which shares the compose ribbon's tiles, the Settings window's icon grid, its Signatures pane
+/// with two stand-in signatures, with none and with its notice of a damaged file set aside, its
+/// Notifications and Sounds pane and every other pane, and a signature's editor window for a
+/// signature, for a new one and with ¶ showing the marks for what does not print, in both
+/// appearances into PNGs at twice their size in that directory, writes down beside them the words
+/// and buttons of the question asked before a signature is deleted, then quits.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -28,11 +29,12 @@ enum ComposeSnapshot {
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")
-            // The menu material's own grey, as it shows over a compose window.
-            let ground = name == "dark" ? Color(red: 85 / 255, green: 84 / 255, blue: 90 / 255)
-                                        : Color(red: 223 / 255, green: 222 / 255, blue: 228 / 255)
-            render(picker.background(ground), size: NSSize(width: 220, height: 240), appearance: appearance,
-                   to: "\(directory)/picker-\(name).png")
+            let menu = NSSize(width: TableGrid.width, height: 272)
+            render(picker(hovering: nil, converts: false), size: menu, appearance: appearance, to: "\(directory)/table-\(name).png")
+            render(picker(hovering: TableSize(columns: 3, rows: 4), converts: true), size: menu, appearance: appearance,
+                   to: "\(directory)/table-hover-\(name).png")
+            suggestions(model, appearance: appearance, to: directory, name: name)
+            unsentAlert(appearance: appearance, to: "\(directory)/close-unsent-\(name).png")
             render(CommandBar().environment(model).frame(maxHeight: .infinity, alignment: .top),
                    size: NSSize(width: 1728, height: 140), appearance: appearance,
                    to: "\(directory)/home-\(name).png")
@@ -175,20 +177,56 @@ enum ComposeSnapshot {
         }
     }
 
-    @MainActor private static var picker: some View {
+    @MainActor private static func picker(hovering size: TableSize?, converts: Bool) -> some View {
         let selection = TableGridSelection()
-        selection.hovered = TableSize(columns: 3, rows: 4)
-        return TableGridPicker(selection: selection, insert: { _ in }, insertCustom: {})
+        selection.hovered = size
+        return TableGridPicker(selection: selection, insert: { _ in }, insertCustom: {}, convertText: converts ? {} : nil)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    @MainActor private static func render(_ view: some View, size: NSSize, appearance: NSAppearance.Name, to path: String) {
-        let host = NSHostingView(rootView: view)
-        host.frame = NSRect(origin: .zero, size: size)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.appearance = NSAppearance(named: appearance)
-        window.contentView = host
-        capture(host, appearance: appearance, to: path)
+    /// The address suggestions as a compose window shows them: its own header with "kam" typed
+    /// in To, and over it the list where the field hangs its window, placed by the field's own
+    /// reckoning, since a child window is not drawn with the window it hangs from. The list holds
+    /// a contact with a label and two recent addresses, the middle one highlighted, the last two
+    /// too long for their columns. Cut twice to Outlook's captures: the list alone, framed from
+    /// the outside of the To box's foot and left edge, and the list in context, that corner 67
+    /// points in and 100 down.
+    @MainActor private static func suggestions(_ model: AppModel, appearance: NSAppearance.Name, to directory: String, name: String) {
+        var draft = ComposeDraft(accountID: UUID())
+        draft.to = "kam"
+        let id = model.newDraft(draft)
+        defer { model.drafts[id] = nil }
+        // Titled, with its content under the title bar, as a compose window is: the view dresses
+        // its window's title bar, and a borderless window has none to dress.
+        let compose = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                           size: NSSize(width: OL.composeWindowWidth, height: 480), appearance: appearance,
+                           style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+        let rows = [
+            RecipientSuggestion(name: "Kamal Muradov", email: "kamal.muradov@example.com", label: "Work"),
+            RecipientSuggestion(name: "kamal-muradov-example", email: "notifications@example.com", isRecentAddress: true),
+            RecipientSuggestion(name: "kamal-muradov-example/example-project-tools",
+                                email: "example-project-tools@noreply.example.com", isRecentAddress: true),
+        ]
+        let list = NSHostingView(rootView: SuggestionList(rows: rows, highlighted: 1, accept: { _ in }, highlight: { _ in },
+                                                          remove: { _ in }))
+        let listSize = list.fittingSize
+        guard let drawnWindow = image(of: compose, appearance: appearance),
+              let drawnList = image(of: host(list, size: listSize, appearance: appearance), appearance: appearance),
+              let box = views(of: RecipientSuggestions.AnchorView.self, in: compose)
+                  .map({ $0.convert($0.bounds, to: nil) }).max(by: { $0.maxY < $1.maxY })
+        else { return }
+        // The content reaches under the title bar, so it is taller than asked for.
+        let size = compose.bounds.size
+        guard let shown = draw([(drawnWindow, NSRect(origin: .zero, size: size)),
+                                (drawnList, RecipientSuggestions.panelFrame(under: box, size: listSize))], size: size)
+        else { return }
+        let corner = box.insetBy(dx: -SuggestionLook.boxBorderOutside, dy: -SuggestionLook.boxBorderOutside).origin
+        let cuts = [("suggestions", NSRect(x: corner.x, y: corner.y - 148, width: 516, height: 148)),
+                    ("suggestions-in-context", NSRect(x: corner.x - 67, y: corner.y - 10, width: 500, height: 110))]
+        for (cut, rect) in cuts {
+            write(draw([(shown, NSRect(x: -rect.minX, y: -rect.minY, width: size.width, height: size.height))], size: rect.size),
+                  to: "\(directory)/\(cut)-\(name).png")
+        }
     }
 
     @MainActor private static func describe(_ alert: NSAlert) -> String {
@@ -204,19 +242,91 @@ enum ComposeSnapshot {
             + "Panel \(Int(alert.window.frame.width)) × \(Int(alert.window.frame.height)) pt\n"
     }
 
-    @MainActor private static func capture(_ view: NSView, appearance: NSAppearance.Name, to path: String) {
+    /// Every view of `type` under `view`.
+    @MainActor private static func views<T: NSView>(of type: T.Type, in view: NSView) -> [T] {
+        view.subviews.flatMap { ($0 as? T).map { [$0] } ?? views(of: type, in: $0) }
+    }
+
+    /// Bitmaps laid over one another in a new one `size` points big, each in its rectangle.
+    private static func draw(_ layers: [(NSBitmapImageRep, NSRect)], size: NSSize) -> NSBitmapImageRep? {
+        guard let rep = bitmap(size) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        for (layer, rect) in layers {
+            layer.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    /// The alert's own content: its glass cannot be drawn off screen, so the content is laid on
+    /// the window background colour, and a window that is not key draws its default button grey
+    /// rather than blue.
+    @MainActor private static func unsentAlert(appearance: NSAppearance.Name, to path: String) {
+        let alert = UnsentMessageAlert.make()
+        alert.window.appearance = NSAppearance(named: appearance)
+        alert.layout()
+        guard let content = alert.window.contentView else { return }
+        capture(content, appearance: appearance, ground: .windowBackgroundColor, to: path)
+    }
+
+    @MainActor private static func render(_ view: some View, size: NSSize, appearance: NSAppearance.Name, to path: String) {
+        capture(host(view, size: size, appearance: appearance), appearance: appearance, to: path)
+    }
+
+    /// `view`, `size` points big, as the content of a window in `appearance` that is never shown.
+    @MainActor private static func host<V: NSView>(_ view: V, size: NSSize, appearance: NSAppearance.Name,
+                                                   style: NSWindow.StyleMask = [.borderless]) -> V {
+        view.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: view.frame, styleMask: style, backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = view
+        return view
+    }
+
+    @MainActor private static func host(_ view: some View, size: NSSize, appearance: NSAppearance.Name,
+                                        style: NSWindow.StyleMask = [.borderless]) -> NSView {
+        host(NSHostingView(rootView: view), size: size, appearance: appearance, style: style)
+    }
+
+    @MainActor private static func capture(_ view: NSView, appearance: NSAppearance.Name, ground: NSColor? = nil, to path: String) {
+        write(image(of: view, appearance: appearance, ground: ground), to: path)
+    }
+
+    @MainActor private static func image(of view: NSView, appearance: NSAppearance.Name, ground: NSColor? = nil) -> NSBitmapImageRep? {
         view.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
         view.layoutSubtreeIfNeeded()
         let size = view.bounds.size
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
-                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return }
-        rep.size = size
+        guard var rep = bitmap(size) else { return nil }
         NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
             view.cacheDisplay(in: view.bounds, to: rep)
         }
-        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        if let ground, let grounded = bitmap(size) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: grounded)
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                ground.setFill()
+                NSRect(origin: .zero, size: size).fill()
+                rep.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: 1,
+                         respectFlipped: false, hints: nil)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            rep = grounded
+        }
+        return rep
+    }
+
+    private static func write(_ rep: NSBitmapImageRep?, to path: String) {
+        try? rep?.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+
+    private static func bitmap(_ size: NSSize) -> NSBitmapImageRep? {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        rep?.size = size
+        return rep
     }
 }
 #endif

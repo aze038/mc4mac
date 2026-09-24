@@ -33,10 +33,21 @@ struct ComposeView: View {
         }
         .frame(minWidth: 600, minHeight: embedded ? 0 : 480)
         .background(embedded ? nil : PopupWindowAccessor())
-        .onAppear { load() }
+        .background {
+            if !embedded {
+                CloseGuardInstaller { window in model.mayCloseUnsent(draftID, over: window) { window.close() } }
+            }
+        }
+        .onAppear {
+            if !embedded { model.composeWindowDrafts.insert(draftID) }
+            load()
+        }
         .onDisappear {
             editSessions.values.forEach { $0.stop() }
-            if !embedded { model.saveDraftToServer(draftID) }
+            if !embedded {
+                model.composeWindowDrafts.remove(draftID)
+                model.saveDraftToServer(draftID)
+            }
         }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             Task {
@@ -487,7 +498,7 @@ struct RecipientField: View {
     @Environment(AppModel.self) private var model
     let label: String
     @Binding var text: String
-    @State private var suggestions: [ContactInfo] = []
+    @State private var suggestions: [RecipientSuggestion] = []
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -498,12 +509,16 @@ struct RecipientField: View {
                 .focused($focused)
                 .background {
                     // Stretched over the header field's box, so the list hangs from the box's corner.
-                    RecipientSuggestions(contacts: suggestions, text: text,
+                    RecipientSuggestions(rows: suggestions, text: text,
                                          accept: { completed in
                                              suggestions = []
                                              text = completed
                                          },
-                                         dismiss: { suggestions = [] })
+                                         dismiss: { suggestions = [] },
+                                         remove: { row in
+                                             model.forgetRecentAddress(row.email)
+                                             suggest(for: text)
+                                         })
                         .padding(.horizontal, -OL.composeTextInset)
                         .frame(height: OL.composeField)
                 }
@@ -520,6 +535,6 @@ struct RecipientField: View {
             suggestions = []
             return
         }
-        suggestions = Array(RecipientText.suggestions(from: model.contactList, for: fragment).prefix(RecipientSuggestions.maxRows))
+        suggestions = RecipientText.suggestionRows(from: model.contactList, for: fragment, limit: RecipientSuggestions.maxRows)
     }
 }

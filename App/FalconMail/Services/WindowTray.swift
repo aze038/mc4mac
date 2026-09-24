@@ -49,6 +49,13 @@ final class WindowTray: ObservableObject {
         NSApp.isActive && mailboxWindows.contains { $0.window?.isVisible == true }
     }
 
+    /// The mailbox window a question about one of its tabs belongs over: the key one, else the
+    /// last one showing.
+    var frontMailboxWindow: NSWindow? {
+        let windows = mailboxWindows.compactMap(\.window)
+        return windows.first { $0.isKeyWindow } ?? windows.last { $0.isVisible }
+    }
+
     func orderMailboxWindowFront() -> Bool {
         mailboxWindows.removeAll { $0.window == nil }
         let candidates = mailboxWindows.compactMap { $0.window }
@@ -102,7 +109,15 @@ final class WindowTray: ObservableObject {
 
     func close(_ entry: Entry) {
         entries.removeAll { $0.id == entry.id }
-        entry.window?.close()
+        guard let window = entry.window else { return }
+        // A window that may ask before it closes, as a message not yet sent does, comes back
+        // first, so its question has somewhere to appear.
+        if window.closeGuard != nil {
+            window.makeKeyAndOrderFront(nil)
+            window.performClose(nil)
+        } else {
+            window.close()
+        }
     }
 
     private func remove(_ window: NSWindow) {
@@ -119,6 +134,16 @@ final class WindowTray: ObservableObject {
             method_exchangeImplementations(original, replacement)
         }
     }
+
+    /// Routes the close button, Close in the File menu and Command-W through a window's close
+    /// guard. SwiftUI keeps its windows' delegates to itself, so windowShouldClose is not ours to
+    /// answer; a window without a guard closes as it always did.
+    nonisolated static func installCloseHook() {
+        if let original = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.performClose(_:))),
+           let replacement = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.falcon_performClose(_:))) {
+            method_exchangeImplementations(original, replacement)
+        }
+    }
 }
 
 final class WeakWindow {
@@ -126,7 +151,22 @@ final class WeakWindow {
     init(_ w: NSWindow) { window = w }
 }
 
+private var closeGuardKey: UInt8 = 0
+
 extension NSWindow {
+    /// Asked before the window closes at the user's request; false keeps it open, as when an
+    /// alert has gone up that will close it or not once answered. Closing it from code, as
+    /// sending a message does, is never asked.
+    var closeGuard: (@MainActor (NSWindow) -> Bool)? {
+        get { objc_getAssociatedObject(self, &closeGuardKey) as? @MainActor (NSWindow) -> Bool }
+        set { objc_setAssociatedObject(self, &closeGuardKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+
+    @objc func falcon_performClose(_ sender: Any?) {
+        if let closeGuard, !closeGuard(self) { return }
+        falcon_performClose(sender)
+    }
+
     @objc func falcon_miniaturize(_ sender: Any?) {
         if identifier?.rawValue == WindowTray.popupIdentifier {
             MainActor.assumeIsolated { WindowTray.shared.minimize(self) }
@@ -201,7 +241,7 @@ struct WindowTrayBar: View {
                     HStack(spacing: 6) {
                         Image(systemName: model.icon(for: tab)).font(.caption)
                         Text(model.title(for: tab)).font(.caption).lineLimit(1).frame(maxWidth: 220)
-                        Button { model.closeTab(tab) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
+                        Button { model.closeTabAsked(tab) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))

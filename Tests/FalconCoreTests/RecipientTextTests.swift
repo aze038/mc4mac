@@ -98,6 +98,60 @@ final class RecipientTextTests: XCTestCase {
         }
     }
 
+    private func entry(_ name: String, _ email: String, source: String, uses: Int = 1, label: String? = nil) -> ContactInfo {
+        ContactInfo(id: source + ":" + email, accountID: UUID(), name: name, email: email, source: source, useCount: uses, label: label)
+    }
+
+    func testRowsCarryTheContactListsLabelAndMarkOnlyRecentAddresses() {
+        let kamal = entry("Kamal Muradov", "kamal@example.com", source: "google", uses: 5, label: "Work")
+        let bot = entry("kamal-bot", "notifications@example.org", source: ContactInfo.recentSource, uses: 3)
+        let rows = RecipientText.suggestionRows(from: [bot, kamal], for: "kam", limit: 8)
+        XCTAssertEqual(rows, [
+            RecipientSuggestion(name: "Kamal Muradov", email: "kamal@example.com", label: "Work", isRecentAddress: false),
+            RecipientSuggestion(name: "kamal-bot", email: "notifications@example.org", label: "", isRecentAddress: true),
+        ])
+    }
+
+    func testAnAddressInAContactListIsNotARecentOneEvenWhenItsRecentEntryRanksFirst() {
+        let listed = entry("Dan Brown", "dan@acme.com", source: "google", uses: 0, label: "Home")
+        let recent = entry("", "Dan@Acme.com", source: ContactInfo.recentSource, uses: 9)
+        let rows = RecipientText.suggestionRows(from: [recent, listed], for: "dan", limit: 8)
+        XCTAssertEqual(rows, [RecipientSuggestion(name: "Dan Brown", email: "Dan@Acme.com", label: "Home", isRecentAddress: false)])
+    }
+
+    func testRowsKeepTheSuggestionOrderAndLimit() {
+        let people = (1...12).map { entry("Kam \($0)", "kam\($0)@example.com", source: "google", uses: $0) }
+        let rows = RecipientText.suggestionRows(from: people, for: "kam", limit: 8)
+        XCTAssertEqual(rows.map(\.email), RecipientText.suggestions(from: people, for: "kam").prefix(8).map(\.email))
+        XCTAssertEqual(RecipientText.suggestionRows(from: people, for: " ", limit: 8), [])
+    }
+
+    func testForgettingARecentAddressLeavesContactsAndOtherAddresses() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ContactStore(layout: FileLayout(root: directory))
+        let account = UUID(), other = UUID()
+        try await store.replace(accountID: account, source: "google",
+                                with: [ContactInfo(id: "g:dan", accountID: account, name: "Dan", email: "dan@acme.com", source: "google")])
+        try await store.recordUse(accountID: account, addresses: [EmailAddress(address: "bot@example.org"), EmailAddress(address: "ann@example.org")])
+        try await store.recordUse(accountID: other, addresses: [EmailAddress(address: "BOT@example.org"), EmailAddress(address: "dan@acme.com")])
+
+        try await store.forgetRecent("bot@EXAMPLE.org")
+        try await store.forgetRecent("dan@acme.com")
+
+        let left = await store.all().map { "\($0.source) \($0.email.lowercased())" }.sorted()
+        XCTAssertEqual(left, ["google dan@acme.com", "recent ann@example.org"])
+        let reopened = await ContactStore(layout: FileLayout(root: directory)).all().map { $0.email.lowercased() }.sorted()
+        XCTAssertEqual(reopened, ["ann@example.org", "dan@acme.com"])
+    }
+
+    func testContactsSavedBeforeLabelsStillLoad() throws {
+        let saved = #"[{"id":"g:1","accountID":"8E0C4E2B-0D5C-4C1B-9A3A-6F2B7F0C1D2E","name":"Ann","email":"ann@example.com","source":"google","useCount":2}]"#
+        let decoded = try JSONDecoder().decode([ContactInfo].self, from: Data(saved.utf8))
+        XCTAssertEqual(decoded.first?.label, nil)
+        XCTAssertEqual(decoded.first?.isRecentAddress, false)
+    }
+
     func testCompletedNamesThatNeedQuotingParseBack() {
         let completed = RecipientText.completing("mur", with: EmailAddress(name: "Muradov, Kamal", address: "kamal@example.com"))
         XCTAssertEqual(completed, "\"Muradov, Kamal\" <kamal@example.com>, ")

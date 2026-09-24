@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import FalconCore
 
 enum WorkspaceTab: Hashable, Codable, Identifiable {
@@ -19,7 +20,11 @@ extension AppModel {
         openTab(.message(message.id))
     }
 
-    func openCompose(_ draft: ComposeDraft) {
+    /// Opens `draft` to be written. `onlyCopy` says nothing else holds what it says, as with a
+    /// send called back from the Outbox, so closing it always asks before dropping it.
+    func openCompose(_ draft: ComposeDraft, onlyCopy: Bool = false) {
+        var draft = draft
+        if !onlyCopy { draft.markOpened() }
         let id = newDraft(draft)
         if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
             open(id)
@@ -56,7 +61,37 @@ extension AppModel {
     }
 
     func closeActiveTab() {
-        if let t = activeTab { closeTab(t) }
+        if let t = activeTab { closeTabAsked(t) }
+    }
+
+    /// Closes `tab` as the user asked to: a message not yet sent closes as Outlook closes one,
+    /// with its alert over the mailbox window when there is something to lose.
+    func closeTabAsked(_ tab: WorkspaceTab) {
+        guard case .compose(let id) = tab else { return closeTab(tab) }
+        if mayCloseUnsent(id, over: WindowTray.shared.frontMailboxWindow, close: { [weak self] in self?.closeTab(tab) }) {
+            closeTab(tab)
+        }
+    }
+
+    /// Whether the compose window or tab holding draft `id` may close now. A message as it was
+    /// opened, or with nothing in it, closes at once and nothing of it is kept. Otherwise
+    /// Outlook's alert goes up over `window` and this says no. `close` runs once the answer has
+    /// kept the draft or dropped it, and closing saves whatever is still held to the Drafts
+    /// folder as it always has; Continue Writing leaves the message open.
+    func mayCloseUnsent(_ id: UUID, over window: NSWindow?, close: @escaping @MainActor () -> Void) -> Bool {
+        guard let draft = drafts[id] else { return true }
+        switch UnsentMessage.closing(untouched: draft.isUntouched, blank: draft.isBlank) {
+        case .discardQuietly:
+            drafts[id] = nil
+            return true
+        case .ask:
+            UnsentMessageAlert.ask(over: window) { [weak self] choice in
+                guard choice.closes else { return }
+                if !choice.keepsDraft { self?.drafts[id] = nil }
+                close()
+            }
+            return false
+        }
     }
 
     func title(for tab: WorkspaceTab) -> String {
@@ -118,7 +153,7 @@ struct WorkspaceTabStrip: View {
             if closable, let tab {
                 Button { model.minimizeTab(tab) } label: { Image(systemName: "minus").font(.caption2) }
                     .buttonStyle(.plain).help("Minimize to the tray")
-                Button { model.closeTab(tab) } label: { Image(systemName: "xmark").font(.caption2) }
+                Button { model.closeTabAsked(tab) } label: { Image(systemName: "xmark").font(.caption2) }
                     .buttonStyle(.plain).help("Close")
             }
         }

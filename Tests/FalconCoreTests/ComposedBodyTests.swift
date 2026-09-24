@@ -269,6 +269,95 @@ final class ComposedBodyTests: XCTestCase {
         XCTAssertEqual(point, (storage.string as NSString).length - (composed as NSString).length)
     }
 
+    func testTextSplitsIntoCellsAtTabsOrElseCommas() {
+        XCTAssertEqual(ComposedTable.cells(from: "Name\tRole, title\nAnn\tEditor\n\nBo\n"),
+                       [["Name", "Role, title"], ["Ann", "Editor"], ["Bo", ""]])
+        XCTAssertEqual(ComposedTable.cells(from: "a, b ,c\r\nd"), [["a", "b", "c"], ["d", "", ""]])
+        XCTAssertEqual(ComposedTable.cells(from: " \n"), [])
+    }
+
+    /// Each cell's text in reading order, the cell's paragraph break left off.
+    private func cellTexts(in editor: NSTextView) throws -> [String] {
+        let storage = try XCTUnwrap(editor.textStorage)
+        var texts: [String] = []
+        storage.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let block = (value as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock else { return }
+            let cell = storage.range(of: block, at: range.location)
+            if cell.location == range.location {
+                texts.append((storage.string as NSString).substring(with: cell).trimmingCharacters(in: .newlines))
+            }
+        }
+        return texts
+    }
+
+    func testSelectedLinesConvertToATableAboveTheOriginal() throws {
+        let editor = editor("Team:\nName\tRole\nAnn\tEditor" + historyPlain)
+        editor.setSelectedRange(NSRange(location: 8, length: 15))
+        XCTAssertEqual(ComposedBody.convertibleRange(in: editor, before: historyPlain), NSRange(location: 6, length: 20))
+        ComposedBody.convertToTable(in: editor, before: historyPlain, font: font, lines: .labelColor)
+
+        let table = try XCTUnwrap(tables(in: editor).first)
+        XCTAssertEqual(table.numberOfColumns, 2)
+        XCTAssertEqual(try cellTexts(in: editor), ["Name", "Role", "Ann", "Editor"])
+        XCTAssertTrue(editor.string.hasPrefix("Team:\n"))
+        XCTAssertTrue(editor.string.hasSuffix(historyPlain))
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 6, length: 0))
+        XCTAssertEqual(occurrences(of: historyHTML, in: try sent(editor)), 1)
+    }
+
+    func testConvertedTextKeepsItsLinksAndFormatting() throws {
+        let editor = editor("Name,Where\nDocs, click here" + historyPlain)
+        let storage = try XCTUnwrap(editor.textStorage)
+        let link = try XCTUnwrap(URL(string: "https://example.com/spec"))
+        let bold = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+        storage.addAttribute(.link, value: link, range: (storage.string as NSString).range(of: "click here"))
+        storage.addAttribute(.font, value: bold, range: (storage.string as NSString).range(of: "Docs"))
+        editor.setSelectedRange(NSRange(location: 0, length: 26))
+        ComposedBody.convertToTable(in: editor, before: historyPlain, font: font, lines: .labelColor)
+
+        XCTAssertEqual(try cellTexts(in: editor), ["Name", "Where", "Docs", "click here"])
+        let text = storage.string as NSString
+        let linked = text.range(of: "click here")
+        var extent = NSRange()
+        XCTAssertEqual(storage.attribute(.link, at: linked.location, longestEffectiveRange: &extent,
+                                         in: NSRange(location: 0, length: text.length)) as? URL, link)
+        XCTAssertEqual(extent, linked)
+        let traits = { (word: String) in
+            NSFontManager.shared.traits(of: storage.attribute(.font, at: text.range(of: word).location, effectiveRange: nil) as? NSFont ?? self.font)
+        }
+        XCTAssertTrue(traits("Docs").contains(.boldFontMask))
+        XCTAssertFalse(traits("Name").contains(.boldFontMask))
+        let html = try sent(editor)
+        XCTAssertTrue(html.contains("https://example.com/spec"), html)
+        XCTAssertEqual(occurrences(of: historyHTML, in: html), 1)
+    }
+
+    func testTextAtTheEndConvertsWithAParagraphLeftBelowTheTable() throws {
+        let editor = editor("a,b\nc,d")
+        editor.setSelectedRange(NSRange(location: 0, length: 7))
+        ComposedBody.convertToTable(in: editor, before: "", font: font, lines: .labelColor)
+        XCTAssertEqual(try cellTexts(in: editor), ["a", "b", "c", "d"])
+        XCTAssertTrue(editor.string.hasSuffix("d\n\n"))
+    }
+
+    func testNothingConvertsWithoutASelectionInTheUsersOwnPlainText() throws {
+        let plain = editor("a,b\n" + historyPlain)
+        plain.setSelectedRange(NSRange(location: 1, length: 0))
+        XCTAssertNil(ComposedBody.convertibleRange(in: plain, before: historyPlain))
+        plain.setSelectedRange(NSRange(location: 6, length: 10))
+        XCTAssertNil(ComposedBody.convertibleRange(in: plain, before: historyPlain))
+
+        let tabled = editor("x\n")
+        tabled.setSelectedRange(NSRange(location: 2, length: 0))
+        ComposedBody.insertTable(rows: 1, columns: 2, into: tabled, before: "", font: font, lines: .labelColor)
+        tabled.setSelectedRange(NSRange(location: 0, length: (tabled.string as NSString).length))
+        XCTAssertNil(ComposedBody.convertibleRange(in: tabled, before: ""))
+
+        let wide = editor(Array(repeating: "x", count: ComposedBody.mostTableColumns + 1).joined(separator: ","))
+        wide.setSelectedRange(NSRange(location: 0, length: 3))
+        XCTAssertNil(ComposedBody.convertibleRange(in: wide, before: ""))
+    }
+
     func testATableIsNoWiderThanOutlooksPage() throws {
         let editor = editor("Figures:\n", width: 1400)
         editor.setSelectedRange(NSRange(location: 9, length: 0))

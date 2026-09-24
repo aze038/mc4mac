@@ -100,6 +100,7 @@ struct ComposeRibbon: View {
         TableGridPanel.show(below: tableTile, hovering: size,
                             insert: { formatter.insertTable(rows: $0.rows, columns: $0.columns) },
                             insertCustom: onInsertTableDialog,
+                            convertText: formatter.canConvertTextToTable ? { formatter.convertTextToTable() } : nil,
                             closed: { tableOpen = false })
     }
 

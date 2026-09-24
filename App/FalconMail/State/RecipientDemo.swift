@@ -128,9 +128,9 @@ enum RecipientDemo {
     private static func events(for key: String, in window: NSWindow) -> [NSEvent] {
         guard key.hasPrefix("{click"), let row = Int(key.dropFirst(6).dropLast()) else { return keyDown(key, in: window).map { [$0] } ?? [] }
         guard let list = window.childWindows?.first(where: \.isVisible) else { return [] }
-        let y = list.frame.height - RecipientSuggestions.listInset - (CGFloat(row) - 0.5) * RecipientSuggestions.rowHeight
+        let y = RecipientSuggestions.rowMidY(row, inPanelOfHeight: list.frame.height)
         return [NSEvent.EventType.leftMouseDown, .leftMouseUp].compactMap {
-            NSEvent.mouseEvent(with: $0, location: NSPoint(x: 40, y: y), modifierFlags: [],
+            NSEvent.mouseEvent(with: $0, location: NSPoint(x: 60, y: y), modifierFlags: [],
                                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: list.windowNumber,
                                context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
         }
