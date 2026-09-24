@@ -5,7 +5,7 @@ freightmasters.llc can open, and the next release sends them.
 
 **Everyone at freightmasters.llc can see these reports.** That is why FalconMail redacts them
 before sending: no message content, subjects, addresses, names or passwords ever leave a Mac
-(`docs/DIAGNOSTICS.md` lists every rule).
+(`docs/DIAGNOSTICS.md` explains it in plain words and lists every redaction rule).
 
 ## 1. Create the script
 

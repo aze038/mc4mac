@@ -90,7 +90,8 @@ names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMM
 
 ### Reading, for the owner's tooling
 
-`op=read` pages through every month oldest first. Rows carry the contract's fields plus `build`.
+`op=read` pages through every month oldest first. Rows carry the fields the contract lists for
+them, `build` among them.
 `since` is exclusive: pass the `next` of the previous page, or the newest `receivedAt` kept. Rows
 are chosen by their `receivedAt`, not by where they sit on the tab, so sorting Events in Sheets
 does not upset paging. Rows that arrived in one upload share a `receivedAt` and are never split
@@ -130,8 +131,8 @@ Received 24 Sep 2026 07:00 to 24 Sep 2026 09:00, local time
 Problems, newest first
   Problem                                           Kind          Times  Installs  Versions        Last seen     Trend
   ────────────────────────────────────────────────  ───────────  ──────  ────────  ──────────────  ────────────  ──────
-  FalconMail stopped responding while showing a l…  Hang              1         1  1.10.0          24 Sep 08:59  New
-  Gmail paused the connection: too many requests    Error             5         2  1.10.1, 1.10.0  24 Sep 08:40  Rising
+  FalconMail stopped responding for a while         Hang              1         1  1.10.0          24 Sep 08:59  New
+  The mail server paused the connection: too many…  Error             5         2  1.10.1, 1.10.0  24 Sep 08:40  Rising
 ```
 
 **Trend** compares with the reports saved before: **New** was never seen, **Back** was seen but

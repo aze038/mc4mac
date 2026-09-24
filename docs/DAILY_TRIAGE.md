@@ -77,14 +77,20 @@ For every crash and hang, read its stack:
 tools/diagnostics/symbolicate.py --event <latestEventId>
 ```
 
+The app sends a crash cut to fit its size limit: the crashed thread and, for an uncaught exception,
+where it was raised, which is shown first. Where frames were left out, a gap says how many; the top
+of each stack and FalconMail's own frames are the last to go.
+
 If it says the symbols are missing, note it under **Needs Kamal** (the dSYM for that version is
-not in `~/Library/Application Support/FalconMail Symbols/`) and work from the signature's file and
-line.
+not in `~/Library/Application Support/FalconMail Symbols/`) and work from the exception's reason,
+the system frames' names and the signature.
 
 ## 4. Fix, one problem at a time
 
-1. **Find the cause.** The signature ends in the source file and line that reported it
-   (`IMAP.throttled@AccountSyncer.swift:131`). Read the code around it and the stack.
+1. **Find the cause.** A logged failure's signature ends in the file and function that reported
+   it (`IMAP.throttled@AccountSyncer.swift:loop`); a crash's names only the binary
+   (`Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail`), so its stack says where. Read the code there and
+   the stack. `docs/DIAGNOSTICS.md` describes every field.
 2. **Make a branch for it** in a fresh worktree from the release branch:
 
    ```sh
@@ -125,24 +131,24 @@ and branches by name, never by link. A section with nothing in it says "None."
 # FalconMail triage, Thursday 24 September 2026
 
 2 new problems, 1 getting worse, 1 fixed and committed (not released).
-Most urgent: FalconMail crashed while opening a message (9 times on 4 installs).
+Most urgent: FalconMail crashed: it used memory it should not have (9 times on 4 installs).
 1 thing needs you: symbols for 1.10.0 are missing.
 
 ## New problems
-- FalconMail crashed while opening a message: 9 times on 4 installs (Aysel, Kamal + 2 more), version 1.10.0. Fixed on branch triage/2026-09-24-reader-crash, commit 1a2b3c4.
-- Checking for new mail took longer than a minute: 3 times on 1 install, version 1.10.0. Not looked at yet.
+- FalconMail crashed: it used memory it should not have: 9 times on 4 installs (Aysel, Kamal + 2 more), version 1.10.0, when opening a message with an empty body. Fixed on branch triage/2026-09-24-reader-crash, commit 1a2b3c4.
+- FalconMail stopped responding for a while: 3 times on 1 install, version 1.10.0. Not looked at yet.
 
 ## Getting worse
-- Gmail paused the connection: too many requests: 41 times on 5 installs today, against about 6 a day last week. Not looked at yet.
+- The mail server paused the connection: too many requests: 41 times on 5 installs today, against about 6 a day last week. Not looked at yet.
 
 ## Fixed today (committed locally, not released)
-- FalconMail crashed while opening a message (9 times on 4 installs): fixed, a message with an empty body now opens. Branch triage/2026-09-24-reader-crash, commit 1a2b3c4; all tests pass, Debug and Release builds succeed.
+- FalconMail crashed: it used memory it should not have (9 times on 4 installs): fixed, a message with an empty body now opens. Branch triage/2026-09-24-reader-crash, commit 1a2b3c4; all tests pass, Debug and Release builds succeed.
 
 ## Needs Kamal
 - Symbols for 1.10.0 are missing from ~/Library/Application Support/FalconMail Symbols/, so crash stacks show offsets only.
 
 ## Technical detail
-- Crash.EXC_BAD_ACCESS@MessageView.swift:88: the reader force-unwrapped the first body part; test MIMETests.testEmptyBodyOpens; worktree /Users/kmuradoff/wt/triage-2026-09-24-reader-crash.
+- Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail, MessageView.swift:88 in the stack: the reader force-unwrapped the first body part; test MIMETests.testEmptyBodyOpens; worktree /Users/kmuradoff/wt/triage-2026-09-24-reader-crash.
 ```
 
 The three lines at the top are always: the counts, the most urgent problem, and how many things
