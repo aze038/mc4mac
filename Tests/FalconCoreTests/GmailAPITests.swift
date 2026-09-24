@@ -253,6 +253,57 @@ final class GmailAPITests: XCTestCase {
         XCTAssertEqual(mailbox.attempts[.profile], 2)
     }
 
+    /// The app's own `TokenStore`, as the search uses it, with its tokens in memory and its
+    /// refreshes answered here rather than by Google.
+    private final class MemoryVault: @unchecked Sendable {
+        private let lock = NSLock()
+        private var tokens: [UUID: OAuthToken]
+        private(set) var saved: [OAuthToken] = []
+
+        init(_ tokens: [UUID: OAuthToken]) { self.tokens = tokens }
+
+        var vault: TokenVault {
+            TokenVault(load: { [self] id in lock.withLock { tokens[id] } },
+                       save: { [self] token, id in lock.withLock { tokens[id] = token; saved.append(token) } },
+                       forget: { [self] id in lock.withLock { tokens[id] = nil } })
+        }
+
+        var allSaved: [OAuthToken] { lock.withLock { saved } }
+    }
+
+    func testUnauthorizedSearchesRefreshThroughTheEngineTokenStoreOnceByTheIssuingClient() async throws {
+        let account = UUID()
+        let current = OAuthClientConfig(clientID: "current.apps.googleusercontent.com", clientSecret: nil)
+        let earlier = OAuthClientConfig(clientID: "earlier.apps.googleusercontent.com", clientSecret: nil)
+        // Revoked early: Google turns it down although it has an hour to run.
+        let revoked = OAuthToken(accessToken: "revoked", refreshToken: "grant", expiresAt: Date().addingTimeInterval(3600),
+                                 scope: GoogleScopes.mail, clientID: earlier.clientID)
+        let vault = MemoryVault([account: revoked])
+        let refreshes = Recorder<String>()
+        let tokens = TokenStore(keychain: KeychainStore(service: "com.falconmail.tests.unused"), vault: vault.vault,
+                                clientConfigProvider: { current }, knownClientConfigs: { [current, earlier] }) { old, client in
+            refreshes.append(client.clientID)
+            try await Task.sleep(nanoseconds: 200_000_000)
+            return OAuthToken(accessToken: "fresh-\(refreshes.all.count)", refreshToken: old.refreshToken,
+                              expiresAt: Date().addingTimeInterval(3600), scope: old.scope, clientID: client.clientID)
+        }
+        let mailbox = FakeGmailMailbox()
+        mailbox.add(subject: "Invoice", from: "a@x.com")
+        mailbox.acceptedTokens = ["fresh-1"]
+        let base = FakeGmailURLProtocol.register(mailbox)
+        let api = GoogleAPI(tokens: tokens, accountID: account, session: FakeGmailURLProtocol.session)
+        let client = GmailAPIClient(api: api, limiter: VirtualClock().limiter(), base: base)
+
+        let found = try await withThrowingTaskGroup(of: Int.self) { group in
+            for _ in 0..<4 { group.addTask { try await client.list(query: "invoice").messages?.count ?? 0 } }
+            return try await group.reduce(into: [Int]()) { $0.append($1) }
+        }
+        XCTAssertEqual(found, [1, 1, 1, 1])
+        XCTAssertEqual(refreshes.all, [earlier.clientID], "one refresh for all four, by the client that issued the token")
+        XCTAssertEqual(vault.allSaved.map(\.accessToken), ["fresh-1"], "nothing but the fresh token is written")
+        XCTAssertTrue(vault.allSaved.allSatisfy { $0.expiresAt > Date() })
+    }
+
     func testUnauthorizedAfterARefreshNeedsSignIn() async throws {
         let mailbox = FakeGmailMailbox()
         mailbox.acceptedTokens = ["never"]

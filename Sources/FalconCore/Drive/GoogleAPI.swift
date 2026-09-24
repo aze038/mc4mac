@@ -14,12 +14,11 @@ extension TokenStore: GoogleAccessTokenSource {
         try await validAccessToken(for: accountID)
     }
 
+    /// Refreshed as the sync engine refreshes a token IMAP turned down: by the client that
+    /// issued it, once however many ask at the same moment, and with nothing written to the
+    /// keychain but the fresh token, so a sign-in saved meanwhile is kept.
     public func refreshedAccessToken(for accountID: UUID) async throws -> String {
-        guard var token = try token(for: accountID) else { throw FalconError.notAuthenticated }
-        // Marking the token as expired is the only way through TokenStore's own refresh path.
-        token.expiresAt = .distantPast
-        try save(token, for: accountID)
-        return try await validAccessToken(for: accountID)
+        try await validAccessToken(for: accountID, forceRefresh: true)
     }
 }
 
