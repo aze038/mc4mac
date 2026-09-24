@@ -267,6 +267,24 @@ final class StoredFileTests: XCTestCase {
         XCTAssertTrue(try setAside(beside: file).isEmpty)
     }
 
+    func testForgettingARecentAddressNeverWritesOverContactsThatCouldNotBeRead() async throws {
+        let account = UUID()
+        let file = layout.contactsDirectory.appendingPathComponent("\(account.uuidString).json")
+        try FileManager.default.createDirectory(at: layout.contactsDirectory, withIntermediateDirectories: true)
+        let original = Data("[{\"the owner's\": \"contacts\"}]".utf8)
+        try original.write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+        let contacts = ContactStore(layout: layout)
+        // Sent to in this session: known in memory, its file still unread.
+        try await contacts.recordUse(accountID: account, addresses: [EmailAddress(name: "Ana", address: "ana@example.com")])
+        try await contacts.forgetRecent("ana@example.com")
+        let left = await contacts.all()
+        XCTAssertTrue(left.isEmpty, "forgotten for this session")
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        XCTAssertEqual(try Data(contentsOf: file), original, "the file that could not be read is left as it was")
+    }
+
     func testRulesAndMutesThatCannotBeDecodedAreKept() async throws {
         try garbage.write(to: layout.rulesFile)
         try garbage.write(to: layout.mutedFile)

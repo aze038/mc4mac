@@ -51,12 +51,13 @@ public actor ContactStore {
 
     /// Takes `address` out of every account's recent addresses, as the suggestion list's remove
     /// button does in Outlook. A contact list's entry for it stays: that is the list's to keep.
+    /// An account's file that could not be read is left as it is, as every save leaves it.
     public func forgetRecent(_ address: String) throws {
         for (accountID, list) in contacts {
             let kept = list.filter { !($0.isRecentAddress && $0.email.caseInsensitiveCompare(address) == .orderedSame) }
             guard kept.count != list.count else { continue }
             contacts[accountID] = kept
-            try AtomicFile.writeJSON(kept, to: directory.appendingPathComponent("\(accountID.uuidString).json"))
+            try save(kept, for: accountID)
         }
     }
 
