@@ -483,6 +483,9 @@ final class EngineSoundTests: XCTestCase {
         listener.check([h.account.id])
         await h.syncer.requestSync(check: true)
         await assertEventually { await self.checkedCount(h) == 1 }
+        // Back in IDLE first: mail stored before INBOX is selected again for it is fetched then,
+        // by what its UIDNEXT says, and would not be the check's to find.
+        await assertEventually { h.server.idlingCount == 1 }
 
         // Mail the idling connection was not told of is found by the check itself.
         h.server.add(fresh("unannounced"), to: "INBOX")
