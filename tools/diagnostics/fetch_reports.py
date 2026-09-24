@@ -110,10 +110,7 @@ def write_cursor(path, value):
 # Fetching
 # ------------------------------------------------------------------------------------------------
 
-def request_page(url, key, since):
-    query = {'op': 'read', 'key': key, 'limit': str(PAGE_LIMIT)}
-    if since:
-        query['since'] = since
+def ask(url, query):
     address = url + ('&' if '?' in url else '?') + urllib.parse.urlencode(query)
     # Apps Script answers with a 302 to script.googleusercontent.com; urllib follows it for GET.
     try:
@@ -130,6 +127,14 @@ def request_page(url, key, since):
         error = answer.get('error') if isinstance(answer, dict) else None
         hint = ' Check readKey in the config.' if error == 'Not accepted' else ''
         raise Problem('The diagnostics service said: ' + str(error or 'no answer') + '.' + hint, 1)
+    return answer
+
+
+def request_page(url, key, since):
+    query = {'op': 'read', 'key': key, 'limit': str(PAGE_LIMIT)}
+    if since:
+        query['since'] = since
+    answer = ask(url, query)
     return answer.get('rows') or [], answer.get('next')
 
 
@@ -343,6 +348,33 @@ def render(summary, verbose, width):
     return '\n'.join(lines) + '\n'
 
 
+def render_issues(answer, verbose, width):
+    """The Issues tab as the team keeps it: open problems first, with their Status."""
+    issues = answer.get('issues') or []
+    lines = ['Issues tab, updated ' + (local(parse_time(answer.get('updatedAt')), True) or 'never') + ', local time', '']
+    if not issues:
+        return '\n'.join(lines + ['No problems listed yet.']) + '\n'
+    title_width = max(20, min(56, width - 72, max(len(issue.get('title') or '') for issue in issues)))
+    status_width = min(20, max(len('Status'), max(len(issue.get('status') or '') for issue in issues)))
+    row_format = '  {:<' + str(title_width) + '}  {:<11}  {:>6}  {:>8}  {:<' + str(status_width) + '}  {}'
+    lines.append(row_format.format('Problem', 'Kind', 'Times', 'Installs', 'Status', 'Last seen'))
+    lines.append(row_format.format('─' * title_width, '─' * 11, '─' * 6, '─' * 8, '─' * status_width, '─' * 12))
+    for issue in issues:
+        lines.append(row_format.format(
+            cut(issue.get('title') or issue.get('signature') or '', title_width),
+            KINDS.get(issue.get('kind'), (str(issue.get('kind') or '').capitalize(), 0))[0],
+            '{:,}'.format(int(issue.get('times') or 0)),
+            int(issue.get('installs') or 0),
+            cut(issue.get('status') or '', status_width),
+            local(parse_time(issue.get('lastSeen')))).rstrip())
+        if verbose:
+            if issue.get('notes'):
+                lines.append('      notes      ' + cut(issue['notes'], max(40, width - 17)))
+            lines.append('      signature  ' + str(issue.get('signature') or ''))
+            lines.append('')
+    return '\n'.join(lines) + '\n'
+
+
 def as_json(summary):
     def iso(when):
         return when.isoformat().replace('+00:00', 'Z') if when else None
@@ -379,10 +411,18 @@ def main(argv=None):
     parser.add_argument('--days', type=int, metavar='N', help='summarise everything saved in the last N days, not just this run')
     parser.add_argument('--no-fetch', action='store_true', help='do not contact the service; summarise saved reports (implies --days 1)')
     parser.add_argument('--json', action='store_true', help='print the summary as JSON, for the daily triage')
+    parser.add_argument('--issues', action='store_true', help='show the Issues tab with the team\'s Status instead; saves nothing')
     args = parser.parse_args(argv)
 
     where = paths()
+    width = shutil.get_terminal_size((120, 24)).columns
     try:
+        if args.issues:
+            url, key = load_config(where['config'], where['home'])
+            answer = ask(url, {'op': 'issues', 'key': key})
+            sys.stdout.write(json.dumps(answer, indent=2, ensure_ascii=False) + '\n' if args.json
+                             else render_issues(answer, args.verbose, width))
+            return 0
         fetched = []
         saved_to = None
         if not args.no_fetch:
@@ -411,7 +451,7 @@ def main(argv=None):
     if args.json:
         sys.stdout.write(as_json(summary))
     else:
-        sys.stdout.write(render(summary, args.verbose, shutil.get_terminal_size((120, 24)).columns))
+        sys.stdout.write(render(summary, args.verbose, width))
         if saved_to:
             sys.stdout.write('\nSaved to ' + tilde(saved_to, where['home']) + '\n')
     return 0

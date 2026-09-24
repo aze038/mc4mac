@@ -36,6 +36,7 @@ class FakeService:
 
     def __init__(self, rows, page_size=2):
         self.rows = list(rows)
+        self.issues = []
         self.page_size = page_size
         self.requests = []
         service = self
@@ -65,8 +66,10 @@ class FakeService:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def answer(self, query):
-        if query.get('op') != 'read' or query.get('key') != READ_KEY:
+        if query.get('op') not in ('read', 'issues') or query.get('key') != READ_KEY:
             return {'ok': False, 'error': 'Not accepted'}
+        if query['op'] == 'issues':
+            return {'ok': True, 'updatedAt': '2026-09-24T08:00:00.000Z', 'issues': self.issues}
         since = query.get('since') or ''
         rows = sorted((r for r in self.rows if r['receivedAt'] > since), key=lambda r: r['receivedAt'])
         page = rows[:self.page_size]
@@ -217,6 +220,29 @@ class FetchReportsTest(unittest.TestCase):
         hang = next(problem for problem in summary['problems'] if problem['kind'] == 'hang')
         self.assertEqual(hang['latestEventId'], 'n3')
         self.assertEqual(hang['installs'], [INSTALL_X])
+
+    def test_issues_shows_the_team_status_and_saves_nothing(self):
+        self.service.issues = [
+            {'title': 'FalconMail crashed while opening a message', 'kind': 'crash', 'times': 9, 'installs': 4,
+             'status': 'Investigating', 'notes': 'Only long threads', 'lastSeen': '2026-09-24T07:55:00.000Z',
+             'signature': 'Crash.EXC_BAD_ACCESS@MessageView.swift:88'},
+            {'title': 'Gmail paused the connection: too many requests', 'kind': 'error', 'times': 1200, 'installs': 12,
+             'status': "Won't fix", 'notes': '', 'lastSeen': '2026-09-24T07:00:00.000Z', 'signature': 'IMAP.throttled'},
+        ]
+        self.write_config()
+        result = self.run_tool('--issues', '-v')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], 'Issues tab, updated 24 Sep 2026 12:00, local time')
+        self.assertRegex(result.stdout, r'FalconMail crashed while opening a message\s+Crash\s+9\s+4\s+Investigating\s+24 Sep 11:55')
+        self.assertRegex(result.stdout, r"Error\s+1,200\s+12\s+Won't fix")
+        self.assertIn('notes      Only long threads', result.stdout)
+        self.assertEqual([request['op'] for request in self.service.requests], ['issues'])
+        self.assertFalse(os.path.exists(self.reports))
+        self.assertFalse(os.path.exists(os.path.join(self.config_dir, 'diagnostics.cursor')))
+
+        as_json = json.loads(self.run_tool('--issues', '--json').stdout)
+        self.assertEqual(as_json['issues'][0]['status'], 'Investigating')
 
     def test_saved_reports_can_be_summarised_offline(self):
         os.makedirs(self.reports)

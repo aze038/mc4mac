@@ -81,6 +81,7 @@ tools/diagnostics/fetch-reports.sh              # what arrived since the last ru
 tools/diagnostics/fetch-reports.sh -v           # the same, with signatures, examples and event IDs
 tools/diagnostics/fetch-reports.sh --days 7     # everything saved in the last week
 tools/diagnostics/fetch-reports.sh --json       # the same summary as JSON, for the daily triage
+tools/diagnostics/fetch-reports.sh --issues     # the Issues tab with the team's Status; read only
 tools/diagnostics/symbolicate.py --event <ID>   # the stack of one crash or hang, with line numbers
 ```
 
