@@ -139,7 +139,7 @@ Most urgent: FalconMail crashed: it used memory it should not have (in its own c
 
 ## New problems
 - FalconMail crashed: it used memory it should not have (in its own code, called from NSTableView.reloadData): 9 times on 4 installs (Aysel, Kamal + 2 more), version 1.10.0, when opening a message with an empty body. Fixed on branch triage/2026-09-24-reader-crash, commit 1a2b3c4.
-- FalconMail stopped responding for a while (in libsqlite.dylib): 3 times on 1 install, version 1.10.0. Not looked at yet.
+- FalconMail stopped responding for a while (in libsqlite3.dylib): 3 times on 1 install, version 1.10.0. Not looked at yet.
 
 ## Getting worse
 - The mail server paused the connection: too many requests: 41 times on 5 installs today, against about 6 a day last week. Not looked at yet.

@@ -346,6 +346,24 @@ test('an invisible character hidden in a web address never leaves a clickable li
   }
 });
 
+// Taking every invisible character out of everything split emoji, ran Persian words together and
+// upset the order of Hebrew and Arabic beside Latin text. Only those inside something defang_
+// would make unclickable go; a direction override, which shows text in an order other than the
+// one it is stored in, never stays.
+test('invisible characters that belong to the text stay, and a direction override goes', () => {
+  const env = service();
+  const title = 'Sync paused for 👩\u200D💻 and ❤\uFE0F users: #\uFE0F⃣ key';
+  const message = 'نمی\u200Cخواهم ذخیره کنم\n'
+    + 'שגיאה בקובץ \u200FACME\u200F.\n'
+    + 'تم حذف \u061CACME\u061C.\n'
+    + 'Name: \u2067דוח\u2069 (see \u202Etxt.exe\u202C)';
+  env.post(upload(env, [event({ title: title, message: message, context: { note: 'مرحبا\u200F FalconMail' } })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, title);
+  assert.equal(row.Message, message.replace('\u202E', ''));
+  assert.equal(JSON.parse(row.Context).note, 'مرحبا\u200F FalconMail');
+});
+
 // Text Sheets would act on at the start of a cell, an apostrophe first included.
 const AWKWARD = ["'=SUM(A1:A9)", "'+44 20 7946 0000", "'-1 folders left", "'@IMAP", "''quoted'' reply",
   "'Sent' folder could not be found", '=SUM(B1:B9)', '+1 more', '-x', '@mention'];

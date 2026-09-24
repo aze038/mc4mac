@@ -80,4 +80,48 @@ final class JSONParserTests: XCTestCase {
             XCTAssertNotNil(summary, "\(depth) levels")
         }
     }
+
+    /// A document written back, as a MetricKit diagnostic is for its event ID, reads exactly as
+    /// JSONEncoder wrote the value JSONDecoder read: keys sorted, the first of a repeated key, the
+    /// same escapes and the same numbers. Checked on documents made at random, the same each run.
+    func testItWritesWhatJSONEncoderWrote() throws {
+        var seed: UInt64 = 0x5EED
+        func next(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(n))
+        }
+        // Written as they stand between the quotation marks of JSON text.
+        let keys = ["a", "A", "b", "B", "_x", "a1", "a10", "a9", "aB", "a_b", "ab", "é", #"e\u0301"#, "ß", "日本", "😀", "Ａ", "a-b", "a.b",
+                    "binaryUUID", "binaryName", "subFrames", "sampleCount", "offsetIntoBinaryTextSegment", "address", "", #"\"q\""#, #"\\"#]
+        let strings = ["", "plain", #"q\"b\\s/"#, #"\/slash"#, #"\b\f\n\r\t"#, #"\u0001\u001f\u007f\u0080"#, #"é😀\u2028"#,
+                       #"\ud83d\ude00"#, #"\u00e9"#, "Ａ", #"tab\there"#]
+        let numbers = ["0", "-0", "1", "-1", "1.0", "1e3", "0.1", "-2.5e-3", "1e21", "1E-7", "123456789.123", "9223372036854775807",
+                       "-9223372036854775808", "9223372036854775808", "12345678901234567890", "5e-324", "0.3333333333333333", "100.5"]
+        func value(_ depth: Int) -> String {
+            switch depth > 5 ? next(4) : next(7) {
+            case 0: return "\"" + strings[next(strings.count)] + "\""
+            case 1: return numbers[next(numbers.count)]
+            case 2: return ["true", "false", "null"][next(3)]
+            case 3: return numbers[next(numbers.count)]
+            case 4, 5: return "[" + (0..<next(4)).map { _ in value(depth + 1) }.joined(separator: ",") + "]"
+            default:
+                return "{" + (0..<next(6)).map { _ in "\"" + keys[next(keys.count)] + "\":" + value(depth + 1) }.joined(separator: ",") + "}"
+            }
+        }
+        for _ in 0..<400 {
+            let text = value(0)
+            let data = Data(text.utf8)
+            let decoded = try XCTUnwrap(try? JSONDecoder().decode(JSONValue.self, from: data), text)
+            XCTAssertEqual(try XCTUnwrap(JSONDocument(data)).serialised(), String(decoding: decoded.serialised, as: UTF8.self), text)
+        }
+    }
+
+    /// A document of any depth is written back whole, with nothing flattened, on the diagnostics
+    /// queue's 512 KB stack.
+    func testADeepDocumentIsWrittenBackWhole() {
+        let depth = 100_000
+        let text = String(repeating: #"{"a":["#, count: depth) + #"1,{"b":"x"}"# + String(repeating: "]}", count: depth)
+        let written = DiagnosticsFixtures.onQueueSizedStack { JSONDocument(Data(text.utf8))?.serialised() }
+        XCTAssertTrue(written == text, "written back as it was read")
+    }
 }

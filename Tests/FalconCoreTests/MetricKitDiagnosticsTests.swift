@@ -96,7 +96,9 @@ final class MetricKitDiagnosticsTests: XCTestCase {
         // FalconMail's frame names nothing in MetricKit, so the binary it called stands in.
         XCTAssertEqual(crash.event.signature,
                        "Crash.EXC_BAD_ACCESS.SIGSEGV.NSInvalidArgumentException.stringByAppendingPathComponent@libobjc.A.dylib")
-        XCTAssertEqual(crash.event.title, "FalconMail crashed on an internal error (NSInvalidArgumentException: stringByAppendingPathComponent)")
+        // An exception with a signal other than the usual SIGABRT, so the title names both, and to
+        // fit it gives up the reason's words, which the signature keeps.
+        XCTAssertEqual(crash.event.title, "FalconMail crashed (NSInvalidArgumentException: …, in libobjc.A.dylib, EXC_BAD_ACCESS/SIGSEGV)")
         XCTAssertEqual(crash.app, DiagnosticsApp(version: "1.9.0", build: "45", channel: "release"))
         XCTAssertEqual(crash.os, "macOS 26.6 (25G5023)")
         XCTAssertTrue(crash.event.message.contains("Segmentation fault"))
@@ -176,7 +178,7 @@ final class MetricKitDiagnosticsTests: XCTestCase {
         XCTAssertEqual(frames.count, 60, "every frame of the crashed thread")
         XCTAssertEqual(frames.first?["offsetIntoBinaryTextSegment"], .int(103_000))
         XCTAssertEqual(crash.event.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV@SystemFramework")
-        XCTAssertEqual(crash.event.title, "FalconMail crashed: it used memory it should not have (in SystemFramework)")
+        XCTAssertEqual(crash.event.title, "FalconMail crashed: it used memory it should not have (in SystemFramework0)")
     }
 
     /// A crashed thread too deep to go whole loses its deepest frames, the start-up code, and
@@ -274,7 +276,8 @@ final class MetricKitDiagnosticsTests: XCTestCase {
         XCTAssertEqual(frames.map { $0["offsetIntoBinaryTextSegment"]?.intValue ?? -1 }, [700, 5_000, 6_000, 800, 7_000, -1, 8_000, 900, 1_000])
         XCTAssertEqual(frames[5], .object(["repeated": .int(5_997), "cycle": .int(3)]), "the rest of the recursion, counted")
         XCTAssertNil(item.event.context["trimmed"], "nothing was left out: every frame is there or counted")
-        XCTAssertEqual(item.event.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV@libsystem_malloc.dylib")
+        XCTAssertEqual(item.event.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV.recursion@libsystem_malloc.dylib")
+        XCTAssertEqual(item.event.title, "FalconMail crashed: it used memory it should not have (runaway recursion, in libsystem_malloc.dylib)")
     }
 
     /// The diagnostics queue runs on a thread with a 512 KB stack. Reading, cutting, identifying
@@ -310,7 +313,7 @@ final class MetricKitDiagnosticsTests: XCTestCase {
         XCTAssertEqual(frames.map { $0["binaryName"] }, [.string("libsystem_kernel.dylib"), .string("libsqlite3.dylib"),
                                                           .string("FalconMail"), .string("CFNetwork")], "the busiest branch first")
         XCTAssertEqual(item.event.signature, "Hang.mainThread@libsqlite.dylib", "the binary FalconMail waited in, without its number")
-        XCTAssertEqual(item.event.title, "FalconMail stopped responding for a while (in libsqlite.dylib)")
+        XCTAssertEqual(item.event.title, "FalconMail stopped responding for a while (in libsqlite3.dylib)", "the title names it as it is")
     }
 
     // MARK: Telling crashes and hangs apart
@@ -332,13 +335,68 @@ final class MetricKitDiagnosticsTests: XCTestCase {
         let other = try crash("NSInternalInconsistencyException", "Invalid parameter not satisfying: row >= 0",
                               build: "70B89F27-1634-3580-A695-57CDB41D7743", shift: 0)
         XCTAssertEqual(range.signature, "Crash.EXC_CRASH.SIGABRT.NSRangeException.NSArrayMObjectAtIndexIndexBeyondBounds@Foundation")
-        XCTAssertEqual(range.title, "FalconMail crashed on an internal error (NSRangeException: NSArrayM objectAtIndex index beyond bounds)")
+        XCTAssertEqual(range.title, "FalconMail crashed on an internal error (NSRangeException: NSArrayM objectAtIndex index beyond bounds, in Foundation)")
         XCTAssertEqual(sameInAnotherBuild.signature, range.signature)
         XCTAssertEqual(sameInAnotherBuild.title, range.title)
         XCTAssertNotEqual(other.signature, range.signature)
         XCTAssertNotEqual(other.title, range.title)
-        XCTAssertEqual(other.title, "FalconMail crashed on an internal error (NSInternalInconsistencyException: Invalid parameter not satisfying row)")
+        XCTAssertEqual(other.title, "FalconMail crashed (NSInternalInconsistencyException: Invalid parameter not satisfying row, in Foundation)")
         for event in [range, other] { XCTAssertFalse(event.signature.contains(where: \.isNumber), event.signature) }
+    }
+
+    /// A stack overflow in FalconMail's own code once had the same signature and title as any
+    /// other bad memory access there with the same caller. The recursion is found, so it is a
+    /// problem of its own.
+    func testARunawayRecursionIsNotTakenForAnotherCrashInTheSamePlace() throws {
+        let turn = [Frame.own(6_000), Frame.own(7_000)]
+        let overflow = try item(Self.payload(frames: Array(repeating: turn, count: 2_500).flatMap { $0 }
+                                                 + [Frame.system("SwiftUI", 300), Frame.system("dyld", 400)])).event
+        let other = try item(Self.payload(frames: [Frame.own(9_000), Frame.own(9_100), Frame.system("SwiftUI", 300),
+                                                   Frame.system("dyld", 400)])).event
+        XCTAssertEqual(overflow.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV.recursion@FalconMail:calledFrom.SwiftUI")
+        XCTAssertEqual(overflow.title, "FalconMail crashed: it used memory it should not have (runaway recursion, in its own code, called from SwiftUI)")
+        XCTAssertEqual(other.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail:calledFrom.SwiftUI")
+        XCTAssertEqual(other.title, "FalconMail crashed: it used memory it should not have (in its own code, called from SwiftUI)")
+        let modest = try item(Self.payload(frames: Array(repeating: turn, count: 20).flatMap { $0 } + [Frame.system("SwiftUI", 300)])).event
+        XCTAssertEqual(modest.signature, other.signature, "a recursion FalconMail means to make, a few dozen calls deep, is not a runaway one")
+    }
+
+    /// A diagnostic's event ID comes from its whole text as JSONDecoder read it and JSONEncoder
+    /// wrote it. Reading stacks flattened below 64 levels changed that text for every stack deeper
+    /// than about 28 frames, so a past payload, which MetricKit hands over again at each launch,
+    /// would have gone out a second time after the update. Its ID stays what it was.
+    func testADiagnosticKeepsTheIDItHadBeforeTheUpdate() throws {
+        for depth in [5, 40, 70] {
+            let payload = Self.payload(frames: (0..<depth).map { $0 % 2 == 0 ? Frame.own(100 + $0) : Frame.system("AppKit", 900 + $0) })
+            let decoded = try JSONDecoder().decode(JSONValue.self, from: payload)
+            let diagnostic = try XCTUnwrap(decoded["crashDiagnostics"]?.arrayValue?.first)
+            let before = DiagnosticsEvent.stableID("metrickit:INSTALL:" + String(decoding: diagnostic.serialised, as: UTF8.self))
+            XCTAssertEqual(try item(payload).event.id, before, "\(depth) frames")
+        }
+    }
+
+    /// A hang's sampled tree can branch deep in the stack. Read flattened below 64 levels, the
+    /// branches under its 28th frame or so ran together into one chain, as if each called the
+    /// next; every frame keeps its place in the tree now.
+    func testABranchDeepInAHangTreeKeepsItsShape() throws {
+        func nested(_ frames: [Frame], then below: [String] = []) -> String {
+            guard let frame = frames.first else { return "" }
+            let rest = frames.dropFirst()
+            let under = rest.isEmpty ? below : [nested(Array(rest), then: below)]
+            return "{" + frame.members + (under.isEmpty ? "" : #","subFrames":["# + under.joined(separator: ",") + "]") + "}"
+        }
+        var trunk = (0..<40).map { Frame.system("AppKit", 1_000 + $0) }
+        for i in trunk.indices { trunk[i].samples = 10 }
+        var busy = [Frame.own(5_000), Frame.system("libsqlite3.dylib", 5_100), Frame.system("libsystem_kernel.dylib", 5_200)]
+        var quiet = [Frame.own(6_000), Frame.system("CFNetwork", 6_100), Frame.system("libsystem_kernel.dylib", 6_200)]
+        for i in busy.indices { busy[i].samples = 7 }
+        for i in quiet.indices { quiet[i].samples = 3 }
+        let tree = nested(trunk, then: [nested(busy), nested(quiet)])
+        let text = #"{"hangDiagnostics":[{"callStackTree":{"callStackPerThread":true,"callStacks":[{"threadAttributed":true,"callStackRootFrames":["#
+            + tree + #"]}]},"diagnosticMetaData":{"hangDuration":"3 sec"}}]}"#
+        let frames = try frames(item(Data(text.utf8)))
+        XCTAssertEqual(frames.map { $0["depth"]?.intValue }, (0..<43).map { Int64($0) } + [40, 41, 42], "the quieter branch under the same frame")
+        XCTAssertEqual(frames.map { $0["offsetIntoBinaryTextSegment"]?.intValue }, (trunk + busy + quiet).map { Int64($0.offset) })
     }
 
     /// A hang in FalconMail's own code, with nothing above it, is placed by what called it.

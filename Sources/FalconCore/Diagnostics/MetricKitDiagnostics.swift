@@ -21,24 +21,28 @@ public enum MetricKitDiagnostics {
     static let appBinary = "FalconMail"
 
     public static func items(from json: Data, install: String, redactor: DiagnosticsRedactor, now: Date) -> [Item] {
-        guard let payload = JSONValue.parse(json) else { return [] }
-        let begin = CrashReportDigest.parseDate(payload["timeStampBegin"]?.stringValue) ?? now
-        let end = CrashReportDigest.parseDate(payload["timeStampEnd"]?.stringValue) ?? begin
+        guard let document = JSONDocument(json) else { return [] }
+        let payload = document.root
+        func time(_ key: String) -> Date? {
+            CrashReportDigest.parseDate(document.member(payload, key).flatMap(document.scalar)?.stringValue)
+        }
+        let begin = time("timeStampBegin") ?? now
+        let end = time("timeStampEnd") ?? begin
         var out: [Item] = []
         for section in sections {
-            for diagnostic in payload[section.key]?.arrayValue ?? [] {
-                out.append(item(diagnostic, kind: section.kind, area: section.area, begin: begin, end: end,
+            for diagnostic in document.member(payload, section.key).flatMap(document.items) ?? [] {
+                out.append(item(document, diagnostic, kind: section.kind, area: section.area, begin: begin, end: end,
                                 install: install, redactor: redactor))
             }
         }
         return out
     }
 
-    private static func item(_ diagnostic: JSONValue, kind: DiagnosticsKind, area: String, begin: Date, end: Date,
+    private static func item(_ document: JSONDocument, _ diagnostic: Int, kind: DiagnosticsKind, area: String, begin: Date, end: Date,
                              install: String, redactor: DiagnosticsRedactor) -> Item {
-        let meta = diagnostic["diagnosticMetaData"] ?? .object([:])
-        let raw = diagnostic["callStackTree"] ?? .null
-        let stacks = threads(raw)
+        let meta = document.member(diagnostic, "diagnosticMetaData").map { document.value($0, maxDepth: JSONValue.maxDepth) } ?? .object([:])
+        let tree = document.member(diagnostic, "callStackTree")
+        let stacks = threads(document, tree)
         let chain = stacks.first.map { thread in thread.tree.busiestChain().map { thread.tree.fields[$0] } } ?? []
         let signature: String
         let title: String
@@ -65,7 +69,7 @@ public enum MetricKitDiagnostics {
             }
             let frames = chain.map { fields -> CrashIdentity.Frame in
                 let binary = fields["binaryName"]?.stringValue ?? "?"
-                return CrashIdentity.Frame(binary: binary, symbol: nil, own: binary == appBinary)
+                return CrashIdentity.Frame(binary: binary, symbol: nil, own: binary == appBinary, address: CallTree.place(of: fields))
             }
             let identity = CrashIdentity(kind: kind, code: code, exception: exception, reason: reason, frames: frames)
             signature = identity.signature
@@ -83,10 +87,13 @@ public enum MetricKitDiagnostics {
             signature = DiagnosticsSignature.make(area: area, code: code, place: place)
             title = DiagnosticsTitle.make(kind: kind, area: area, code: code)
         }
-        let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("metrickit:\(install):\(String(decoding: diagnostic.serialised, as: UTF8.self))"),
+        // The diagnostic's whole text, written as JSONEncoder wrote it when JSONDecoder read the
+        // payload: the same diagnostic MetricKit hands over again at a later launch, or after an
+        // update, keeps its ID however deep its stacks are.
+        let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("metrickit:\(install):\(document.serialised(diagnostic))"),
                                      kind: kind, signature: signature, title: title, area: area.lowercased(),
                                      firstAt: begin, lastAt: end, message: redactor.redactCrashReport(message),
-                                     context: context(tree: raw, threads: stacks, meta: meta, redactor: redactor))
+                                     context: context(document, tree: tree, threads: stacks, meta: meta, redactor: redactor))
         let app = meta["appVersion"]?.stringValue.map {
             DiagnosticsApp(version: $0, build: meta["appBuildVersion"]?.stringValue ?? "", channel: "release")
         }
@@ -112,12 +119,12 @@ public enum MetricKitDiagnostics {
 
     /// The threads of a call-stack tree, the one MetricKit blames first (the crashed thread, or the
     /// main thread of a hang), then the others as MetricKit lists them.
-    static func threads(_ tree: JSONValue) -> [Thread] {
-        let threads = (tree["callStacks"]?.arrayValue ?? []).compactMap { stack -> Thread? in
-            guard case .object(let o) = stack else { return nil }
-            var roots = o["callStackRootFrames"] ?? .array([])
-            if case .object = roots { roots = .array([roots]) }
-            return Thread(shell: o.filter { $0.value.isScalar }, tree: CallTree(roots.arrayValue ?? []))
+    static func threads(_ document: JSONDocument, _ tree: Int?) -> [Thread] {
+        guard let tree, let stacks = document.member(tree, "callStacks").flatMap(document.items) else { return [] }
+        let threads = stacks.compactMap { stack -> Thread? in
+            guard document.isObject(stack) else { return nil }
+            let roots = document.member(stack, "callStackRootFrames").map { document.isObject($0) ? [$0] : document.items($0) ?? [] } ?? []
+            return Thread(shell: document.scalarMembers(stack), tree: CallTree(document, roots: roots))
         }
         return threads.filter(\.blamed) + threads.filter { !$0.blamed }
     }
@@ -137,11 +144,12 @@ public enum MetricKitDiagnostics {
     /// What was left out is counted where it was: `callStacksOmitted` on the tree, `framesOmitted`
     /// on a thread for its other roots and branches, `{"omitted": n}` in a list of frames, and the
     /// context says `"trimmed": true`.
-    static func context(tree raw: JSONValue, threads: [Thread], meta: JSONValue, redactor: DiagnosticsRedactor) -> JSONValue {
+    static func context(_ document: JSONDocument, tree: Int?, threads: [Thread], meta: JSONValue, redactor: DiagnosticsRedactor) -> JSONValue {
         var cut = false
         let metaData = redactor.redactCrashReport(.object((meta.objectValue ?? [:]).filter { $0.key != "pid" }))
             .capped(strings: 600, lists: 8, cut: &cut)
-        guard case .object(let o) = raw, o["callStacks"]?.arrayValue != nil else {
+        guard let tree, document.member(tree, "callStacks").flatMap(document.items) != nil else {
+            let raw = tree.map { document.value($0, maxDepth: JSONValue.maxDepth) } ?? .null
             var context: [String: JSONValue] = ["source": .string("metrickit"), "callStackTree": redactor.redactCrashReport(raw),
                                                 "diagnosticMetaData": metaData]
             if cut { context["trimmed"] = .bool(true) }
@@ -155,7 +163,7 @@ public enum MetricKitDiagnostics {
             strings[s] = clean
             return .string(clean)
         }
-        let shell = o.filter { $0.value.isScalar }.mapValues(redacted)
+        let shell = document.scalarMembers(tree).mapValues(redacted)
         let prepared = threads.map { thread -> (shell: [String: JSONValue], tree: CallTree) in
             var tree = thread.tree
             tree.fields = tree.fields.map { $0.mapValues(redacted) }
@@ -205,21 +213,15 @@ struct CallTree {
     /// How many frames each frame's subtree holds, itself included.
     private(set) var sizes: [Int] = []
 
-    init(_ rootFrames: [JSONValue]) {
-        var work: [(value: JSONValue, parent: Int?)] = rootFrames.reversed().map { ($0, nil) }
+    /// The frames under `roots` in `document`, each with the frames in its `subFrames`, at any depth.
+    init(_ document: JSONDocument, roots: [Int]) {
+        var work: [(value: Int, parent: Int?)] = roots.reversed().map { ($0, nil) }
         while let (value, parent) = work.popLast() {
-            // Frames nested deeper than the parser keeps arrive flattened, in order: a chain.
-            if let flattened = value["flattened"]?.arrayValue {
-                var above = parent
-                for frame in flattened { above = add(frame.objectValue ?? [:], under: above) }
-                continue
-            }
-            guard case .object(let frame) = value else { continue }
-            let node = add(frame.filter { $0.value.isScalar }, under: parent)
-            switch frame["subFrames"] {
-            case .array(let below)?: work.append(contentsOf: below.reversed().map { ($0, node) })
-            case let marker? where marker["flattened"] != nil: work.append((marker, node))
-            default: break
+            guard document.isObject(value) else { continue }
+            let node = add(document.scalarMembers(value), under: parent)
+            if let below = document.member(value, "subFrames") {
+                let frames = document.isObject(below) ? [below] : document.items(below) ?? []
+                work.append(contentsOf: frames.reversed().map { ($0, node) })
             }
         }
         sizes = Array(repeating: 1, count: fields.count)
@@ -322,8 +324,16 @@ struct CallTree {
     /// Two frames at the same place in the same binary, as every frame of a recursion is.
     private func sameFrame(_ a: Int, _ b: Int) -> Bool {
         let x = fields[a], y = fields[b]
-        return x["binaryUUID"] == y["binaryUUID"] && x["binaryName"] == y["binaryName"]
-            && x["offsetIntoBinaryTextSegment"] == y["offsetIntoBinaryTextSegment"] && x["address"] == y["address"]
+        return CallTree.placeFields.allSatisfy { x[$0] == y[$0] }
+    }
+
+    /// What says where a frame is: its binary and the offset into it.
+    static let placeFields = ["binaryUUID", "binaryName", "offsetIntoBinaryTextSegment", "address"]
+
+    /// Where a frame is, as text two frames can be compared by, the same for every frame at the
+    /// same place in one build.
+    static func place(of frame: [String: JSONValue]) -> String {
+        placeFields.map { frame[$0].map(JSONDocument.serialised) ?? "-" }.joined(separator: " ")
     }
 
     enum Folded: Equatable {

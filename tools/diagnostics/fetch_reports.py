@@ -347,30 +347,46 @@ def kind_label(kind):
     return KINDS.get(kind, (cut(str(kind or '').capitalize(), 11), 0))[0]
 
 
+def wrapped(text, width):
+    """The text on lines of at most `width` characters, broken between words where it can be."""
+    text = plain(' '.join(str(text).split()))
+    return textwrap.wrap(text, width, break_on_hyphens=False) or ['']
+
+
 def table(rows, columns, width):
     """A plain-language title first, then its figures, fitted to the terminal. `rows` are
     (title, figures, lines shown under it) and `columns` (heading, width, alignment) for the
     figures. One character is kept free, as some terminals wrap a line that fills them exactly.
-    When a title would get fewer than 30 characters beside its figures, it goes on a line of its
-    own above them instead."""
+    A title is always shown whole: one too long for its column goes on over the lines below it,
+    in that column, and then a blank line keeps each row apart from the next. When a title would
+    get fewer than 30 characters beside its figures, it goes on lines of its own above them."""
     figures = '  '.join('{:' + align + str(size) + '}' for _, size, align in columns)
     beside = width - 1 - 4 - len(figures.format(*[''] * len(columns)))
     headings = [heading for heading, _, _ in columns]
     rules = ['─' * size for _, size, _ in columns]
     lines = []
     if beside >= 30:
-        title_width = min(56, beside, max([20] + [len(cut(title, 200)) for title, _, _ in rows]))
+        title_width = min(beside, max([20] + [len(wrapped(title, 400)[0]) for title, _, _ in rows]))
         row = '  {:<' + str(title_width) + '}  ' + figures
         lines.append(row.format('Problem', *headings).rstrip())
         lines.append(row.format('─' * title_width, *rules))
-        for title, values, below in rows:
-            lines.append(row.format(cut(title, title_width), *values).rstrip())
+        titles = [wrapped(title, title_width) for title, _, _ in rows]
+        spaced = any(len(parts) > 1 for parts in titles)
+        for index, ((_, values, below), parts) in enumerate(zip(rows, titles)):
+            if index and spaced and lines[-1]:
+                lines.append('')
+            lines.append(row.format(parts[0], *values).rstrip())
+            lines.extend('  ' + part for part in parts[1:])
             lines.extend(below)
         return lines
     row = '      ' + figures
     lines.extend(['  Problem', row.format(*headings).rstrip(), row.format(*rules)])
-    for title, values, below in rows:
-        lines.append('  ' + cut(title, max(20, width - 3)))
+    titles = [wrapped(title, max(20, width - 3)) for title, _, _ in rows]
+    spaced = any(len(parts) > 1 for parts in titles)
+    for index, ((_, values, below), parts) in enumerate(zip(rows, titles)):
+        if index and spaced and lines[-1]:
+            lines.append('')
+        lines.extend('  ' + part for part in parts)
         lines.append(row.format(*values).rstrip())
         lines.extend(below)
     return lines

@@ -148,7 +148,9 @@ public enum CrashReportDigest {
         let frames = stack.compactMap { frame -> CrashIdentity.Frame? in
             guard let index = frame["imageIndex"]?.intValue, images.indices.contains(Int(index)),
                   let name = images[Int(index)]["name"]?.stringValue else { return nil }
-            return CrashIdentity.Frame(binary: name, symbol: frame["symbol"]?.stringValue, own: own.contains(Int(index)))
+            let offset = frame["imageOffset"].map(JSONDocument.serialised)
+            return CrashIdentity.Frame(binary: name, symbol: frame["symbol"]?.stringValue, own: own.contains(Int(index)),
+                                       address: offset.map { "\(index)+\($0)" })
         }
         let lines = applicationSpecificInformationLines(body).map(redactor.redactCrashReport)
         let (exception, reason) = CrashIdentity.reason(inApplicationSpecificInformation: lines)

@@ -309,28 +309,70 @@ def stands_for(frame):
     return 1
 
 
+def branches(frames):
+    """How each frame's line starts, so a tree reads as one: a chain of calls stays at the left
+    however deep it goes, and only where the calls branch does each branch start with ├ or, the
+    last, └, its frames going on under │. `frames` are in order, each with its `depth`; a count of
+    frames left out on other branches, which closes a thread, stands apart. A chain of calls, as a
+    crashed thread is, has every depth 0 and no branches."""
+    if all(frame['depth'] == 0 for frame in frames):
+        return [''] * len(frames)
+    parents = []
+    above = []
+    for index, frame in enumerate(frames):
+        depth = 0 if frame.get('elsewhere') else frame['depth']
+        parent = above[min(depth, len(above)) - 1] if depth > 0 and above else None
+        parents.append(parent)
+        del above[depth:]
+        above.append(index)
+    children = [[] for _ in frames]
+    roots = []
+    for index, parent in enumerate(parents):
+        if frames[index].get('elsewhere'):
+            continue
+        (children[parent] if parent is not None else roots).append(index)
+    starts = [''] * len(frames)
+    goes_on = [''] * len(frames)
+
+    def place(siblings, prefix):
+        for position, index in enumerate(siblings):
+            if len(siblings) == 1:
+                starts[index], goes_on[index] = prefix, prefix
+            else:
+                last = position == len(siblings) - 1
+                starts[index] = prefix + ('└ ' if last else '├ ')
+                goes_on[index] = prefix + ('  ' if last else '│ ')
+
+    place(roots, '')
+    for index in range(len(frames)):
+        if children[index]:
+            place(children[index], goes_on[index])
+    return starts
+
+
 def render_thread(thread):
     lines = [thread['name']]
-    width = max([len(frame['binary']) for frame in thread['frames'] if 'binary' in frame] + [6])
+    frames = thread['frames']
+    starts = branches(frames)
+    width = max([len(start) + len(frame['binary']) for frame, start in zip(frames, starts) if 'binary' in frame] + [6])
     # Wide enough for the last frame's number, so the columns line up however deep the stack.
-    digits = max(3, len(str(sum(stands_for(frame) for frame in thread['frames']))))
+    digits = max(3, len(str(sum(stands_for(frame) for frame in frames))))
     gap = ' ' * (digits + 4)
     number = 0
-    for frame in thread['frames']:
-        indent = '  ' * frame['depth']
+    for frame, start in zip(frames, starts):
         # Frames that stand for others are numbered as in the full stack, so the frames after them
         # keep their places.
         if 'repeated' in frame:
             cycle = frame['cycle']
             above = 'the one above' if cycle == 1 else 'the {} above'.format(cycle) if cycle else 'those above'
-            lines.append('{}{}… {} repeating {}'.format(gap, indent, plural(frame['repeated'], 'more frame'), above))
+            lines.append('{}{}… {} repeating {}'.format(gap, start, plural(frame['repeated'], 'more frame'), above))
         elif 'omitted' in frame:
             where = ' on other branches' if frame.get('elsewhere') else ''
-            lines.append('{}{}… {}{} left out'.format(gap, indent, plural(frame['omitted'], 'frame'), where))
+            lines.append('{}{}… {}{} left out'.format(gap, start, plural(frame['omitted'], 'frame'), where))
         else:
             samples = frame.get('samples')
             count = '  ×' + str(samples) if isinstance(samples, int) and samples > 1 else ''
-            lines.append('  {:>{d}}  {}{:<{w}}  {}{}'.format(number, indent, frame['binary'], describe(frame), count, d=digits, w=width))
+            lines.append('  {:>{d}}  {:<{w}}  {}{}'.format(number, start + frame['binary'], describe(frame), count, d=digits, w=width))
         number += stands_for(frame)
     return lines
 

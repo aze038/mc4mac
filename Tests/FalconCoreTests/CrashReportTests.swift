@@ -117,9 +117,11 @@ final class CrashReportTests: XCTestCase {
     /// A small report of one crash. Its images are FalconMail (0), CoreFoundation (1),
     /// libobjc.A.dylib (2), Foundation (3) and AppKit (4), and each frame is an image with, when
     /// the report names it, a symbol. `build` moves every UUID, load address and offset, as another
-    /// build of the same code would; `home` is the Mac's user.
+    /// build of the same code would; `home` is the Mac's user. Each frame is at an offset of its
+    /// own, or the crashed thread's at `offsets`, where a recursion's frames repeat.
     static func crashIPS(type: String = "EXC_CRASH", signal: String = "SIGABRT", asi: [String] = [],
                          backtrace: [(image: Int, symbol: String?)]? = nil, crashed: [(image: Int, symbol: String?)],
+                         offsets: [Int]? = nil,
                          build: Int = 0, home: String = "/Users/kmuradoff", incident: String = UUID().uuidString) -> String {
         let names = ["FalconMail", "CoreFoundation", "libobjc.A.dylib", "Foundation", "AppKit"]
         let images = names.enumerated().map { index, name -> JSONValue in
@@ -128,10 +130,11 @@ final class CrashReportTests: XCTestCase {
                             "base": .int(Int64(4_294_967_296 + index * 16_777_216 + (index == 0 ? build * 65_536 : 0))),
                             "uuid": .string(String(format: "%08X-1634-3580-A695-%012X", index == 0 ? 0x70B8_9F27 + build : index, index))])
         }
-        func frames(_ list: [(image: Int, symbol: String?)]) -> JSONValue {
+        func frames(_ list: [(image: Int, symbol: String?)], offsets: [Int]? = nil) -> JSONValue {
             .array(list.enumerated().map { position, frame in
+                let offset = offsets.map { $0[position] } ?? 10_000 + position * 64
                 var f: [String: JSONValue] = ["imageIndex": .int(Int64(frame.image)),
-                                              "imageOffset": .int(Int64(10_000 + position * 64 + (frame.image == 0 ? build * 4_096 : 0)))]
+                                              "imageOffset": .int(Int64(offset + (frame.image == 0 ? build * 4_096 : 0)))]
                 if let symbol = frame.symbol { f["symbol"] = .string(symbol) }
                 return .object(f)
             })
@@ -143,7 +146,7 @@ final class CrashReportTests: XCTestCase {
             "procName": .string("FalconMail"), "procPath": .string("\(home)/Applications/FalconMail.app/Contents/MacOS/FalconMail"),
             "captureTime": .string("2026-09-20 10:11:12.3456 +0100"), "incident": .string(incident),
             "exception": .object(["type": .string(type), "signal": .string(signal)]), "faultingThread": .int(0),
-            "threads": .array([.object(["triggered": .bool(true), "queue": .string("com.apple.main-thread"), "frames": frames(crashed)])]),
+            "threads": .array([.object(["triggered": .bool(true), "queue": .string("com.apple.main-thread"), "frames": frames(crashed, offsets: offsets)])]),
             "usedImages": .array(images),
         ]
         if !asi.isEmpty { body["asi"] = .object(["CoreFoundation": .array(asi.map(JSONValue.string))]) }
@@ -189,13 +192,14 @@ final class CrashReportTests: XCTestCase {
 
         XCTAssertEqual(assertion.signature, "Crash.EXC_CRASH.SIGABRT.NSInternalInconsistencyException.invalidParameterNotSatisfyingRow"
                        + "@Foundation:NSAssertionHandler.handleFailureInMethod")
-        XCTAssertEqual(assertion.title, "FalconMail crashed on an internal error (NSInternalInconsistencyException: Invalid parameter not satisfying row)")
-        XCTAssertEqual(range.signature, "Crash.EXC_CRASH.SIGABRT.NSRangeException.NSArrayMObjectAtIndexedSubscriptIndexBeyondBounds"
-                       + "@CoreFoundation:NSArrayM.objectAtIndexedSubscript")
-        XCTAssertEqual(range.title, "FalconMail crashed on an internal error (NSRangeException: NSArrayM objectAtIndexedSubscript index beyond bounds)")
-        XCTAssertEqual(layout.signature, "Crash.EXC_CRASH.SIGABRT.NSInternalInconsistencyException.theWindowHasBeenMarked"
+        // Too long to say whole, so said more briefly: "FalconMail crashed", the method without its class.
+        XCTAssertEqual(assertion.title, "FalconMail crashed (NSInternalInconsistencyException: Invalid parameter not satisfying row, in handleFailureInMethod)")
+        // The method in the reason is the place already, so the reason's words start after it.
+        XCTAssertEqual(range.signature, "Crash.EXC_CRASH.SIGABRT.NSRangeException.indexBeyondBounds@CoreFoundation:NSArrayM.objectAtIndexedSubscript")
+        XCTAssertEqual(range.title, "FalconMail crashed on an internal error (NSRangeException: index beyond bounds, in NSArrayM.objectAtIndexedSubscript)")
+        XCTAssertEqual(layout.signature, "Crash.EXC_CRASH.SIGABRT.NSInternalInconsistencyException.theWindowHasBeenMarkedAsNeeding"
                        + "@AppKit:NSWindow._postWindowNeedsUpdateConstraints")
-        XCTAssertEqual(layout.title, "FalconMail crashed on an internal error (NSInternalInconsistencyException: The window has been marked)")
+        XCTAssertEqual(layout.title, "FalconMail crashed (NSInternalInconsistencyException: The window has been marked…, in _postWindowNeedsUpdateConstraints)")
         let events = [assertion, range, layout]
         XCTAssertEqual(Set(events.map(\.signature)).count, 3)
         XCTAssertEqual(Set(events.map(\.title)).count, 3)
@@ -217,11 +221,11 @@ final class CrashReportTests: XCTestCase {
         }
         let first = try report(build: 0, home: "/Users/kmuradoff")
         let later = try report(build: 7, home: "/Users/ana.lima")
-        XCTAssertEqual(first.signature, "Crash.EXC_CRASH.SIGABRT.NSInvalidArgumentException.NSNullLengthUnrecognizedSelectorSent"
+        XCTAssertEqual(first.signature, "Crash.EXC_CRASH.SIGABRT.NSInvalidArgumentException.NSNullLengthUnrecognizedSelectorSentToInstance"
                        + "@CoreFoundation:CF_forwarding_prep")
         XCTAssertEqual(later.signature, first.signature)
         XCTAssertEqual(later.title, first.title)
-        XCTAssertEqual(first.title, "FalconMail crashed on an internal error (NSInvalidArgumentException: NSNull length unrecognized selector sent)")
+        XCTAssertEqual(first.title, "FalconMail crashed (NSInvalidArgumentException: NSNull length unrecognized selector sent…, in CF_forwarding_prep)")
         XCTAssertFalse(first.signature.contains(where: \.isNumber), first.signature)
         XCTAssertFalse(first.signature.contains("kmuradoff"))
     }
@@ -245,6 +249,70 @@ final class CrashReportTests: XCTestCase {
                                             crashed: [(0, nil), (0, nil), (4, "-[NSApplication(NSResponder) sendAction:to:from:]"), (4, "-[NSApplication run]")]))
         XCTAssertEqual(event.signature, "Crash.EXC_BREAKPOINT.SIGTRAP@FalconMail:calledFrom.NSApplication.sendAction")
         XCTAssertEqual(event.title, "FalconMail crashed: a safety check in its code failed (in its own code, called from NSApplication.sendAction)")
+    }
+
+    /// The same exception with the same reason, raised from two AppKit methods FalconMail called,
+    /// is two problems. Their signatures told them apart, but their titles left the place out
+    /// whenever there was a reason, so the Issues tab had two rows with the same text.
+    func testTheSameExceptionFromTwoPlacesHasTwoTitles() throws {
+        func raised(in method: String) throws -> DiagnosticsEvent {
+            try crash(Self.crashIPS(
+                asi: Self.uncaught("NSInternalInconsistencyException", "Invalid parameter not satisfying: row >= 0"),
+                backtrace: [(1, "__exceptionPreprocess"), (2, "objc_exception_throw"),
+                            (3, "-[NSAssertionHandler handleFailureInMethod:object:file:lineNumber:description:]"),
+                            (4, "-[NSTableView \(method):withAnimation:]"), (0, nil), (4, "-[NSApplication run]")],
+                crashed: Self.aborted))
+        }
+        let removing = try raised(in: "removeRowsAtIndexes")
+        let inserting = try raised(in: "insertRowsAtIndexes")
+        XCTAssertNotEqual(removing.signature, inserting.signature)
+        XCTAssertNotEqual(removing.title, inserting.title)
+        XCTAssertEqual(removing.title, "FalconMail crashed (NSInternalInconsistencyException: Invalid parameter not satisfying row, in removeRowsAtIndexes)")
+        XCTAssertEqual(inserting.title, "FalconMail crashed (NSInternalInconsistencyException: Invalid parameter not satisfying row, in insertRowsAtIndexes)")
+        for event in [removing, inserting] { XCTAssertLessThanOrEqual(event.title.count, DiagnosticsEvent.maxTitle, event.title) }
+    }
+
+    /// Five words cut a reason off wherever they ended: `Range out`, `Database schema is newer
+    /// than`. The title reads the reason's first clause, without the method that is the place
+    /// already, and marks a reason that goes on.
+    func testAReasonInATitleReadsAsAPhrase() throws {
+        let range = try crash(Self.crashIPS(
+            asi: Self.uncaught("NSRangeException", "*** -[__NSCFString substringWithRange:]: Range {10, 5} out of bounds; string length 3"),
+            backtrace: [(1, "__exceptionPreprocess"), (2, "objc_exception_throw"), (3, "-[NSString substringWithRange:]"), (0, nil)],
+            crashed: Self.aborted))
+        XCTAssertEqual(range.title, "FalconMail crashed on an internal error (NSRangeException: Range out of bounds, in NSString.substringWithRange)")
+        let schema = try crash(Self.crashIPS(type: "EXC_BREAKPOINT", signal: "SIGTRAP",
+                                             asi: ["Store.swift:88: Fatal error: Database schema is newer than this build supports (v12 > v10)"],
+                                             crashed: [(0, nil), (4, "-[NSApplication(NSResponder) sendAction:to:from:]")]))
+        // A word short of fitting whole, so the reason goes back to a word that ends a phrase.
+        XCTAssertEqual(schema.title, "FalconMail crashed: a safety check in its code failed (Database schema is newer…, called from sendAction)")
+        XCTAssertEqual(schema.signature, "Crash.EXC_BREAKPOINT.SIGTRAP.databaseSchemaIsNewerThanThisBuild@FalconMail:calledFrom.NSApplication.sendAction")
+    }
+
+    /// The plain sentence stands for its usual exception type and signal; another one is added to
+    /// the title, so a bus error and a segmentation fault in the same place read apart as their
+    /// signatures do.
+    func testAnUnusualSignalIsNamedInTheTitle() throws {
+        let stack: [(image: Int, symbol: String?)] = [(2, "objc_msgSend"), (0, nil), (4, "-[NSApplication run]")]
+        let segv = try crash(Self.crashIPS(type: "EXC_BAD_ACCESS", signal: "SIGSEGV", crashed: stack))
+        let bus = try crash(Self.crashIPS(type: "EXC_BAD_ACCESS", signal: "SIGBUS", crashed: stack))
+        XCTAssertEqual(segv.title, "FalconMail crashed: it used memory it should not have (in objc_msgSend)")
+        XCTAssertEqual(bus.title, "FalconMail crashed: it used memory it should not have (in objc_msgSend, EXC_BAD_ACCESS/SIGBUS)")
+        XCTAssertNotEqual(segv.signature, bus.signature)
+    }
+
+    /// A stack overflow: FalconMail's own code calling itself until the stack ran out. Its
+    /// signature and title say so, so it is not taken for any other bad memory access in the same
+    /// place.
+    func testARunawayRecursionIsToldApartFromAnyOtherCrashInThePlace() throws {
+        let recursion = Array(repeating: [(image: 0, symbol: String?.none), (image: 0, symbol: String?.none)], count: 250).flatMap { $0 }
+        let overflow = try crash(Self.crashIPS(type: "EXC_BAD_ACCESS", signal: "SIGSEGV", crashed: recursion + [(4, "-[NSApplication run]")],
+                                               offsets: recursion.indices.map { 2_000 + $0 % 2 * 40 } + [9_000]))
+        let other = try crash(Self.crashIPS(type: "EXC_BAD_ACCESS", signal: "SIGSEGV", crashed: [(0, nil), (0, nil), (4, "-[NSApplication run]")]))
+        XCTAssertEqual(overflow.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV.recursion@FalconMail:calledFrom.NSApplication.run")
+        XCTAssertEqual(overflow.title, "FalconMail crashed: it used memory it should not have (runaway recursion, called from NSApplication.run)")
+        XCTAssertEqual(other.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail:calledFrom.NSApplication.run")
+        XCTAssertNotEqual(other.title, overflow.title)
     }
 
     @discardableResult
@@ -368,7 +436,7 @@ final class CrashReportTests: XCTestCase {
         // FalconMail's frames name nothing, so the Swift runtime function it called, with the
         // first words of the fatal error; the address and the path in it never reach either.
         XCTAssertEqual(crash.signature, "Crash.EXC_BREAKPOINT.SIGTRAP.noAccount@libswiftCore.dylib:swift_unexpectedError")
-        XCTAssertEqual(crash.title, "FalconMail crashed: a safety check in its code failed (no account)")
+        XCTAssertEqual(crash.title, "FalconMail crashed: a safety check in its code failed (no account…, in swift_unexpectedError)")
         XCTAssertTrue(crash.message.contains("Trace/BPT trap: 5"))
 
         let text = String(decoding: crash.context.serialised, as: UTF8.self) + crash.message

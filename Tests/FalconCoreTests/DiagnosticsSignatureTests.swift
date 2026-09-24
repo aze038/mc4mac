@@ -105,15 +105,45 @@ final class DiagnosticsSignatureTests: XCTestCase {
         }
     }
 
-    /// A crash's reason, down to its first words: nothing quoted, numbered or pathed, and no word
-    /// left dangling at the end.
+    /// A Swift closure's symbol writes its own type before the function it is in, and a thunk
+    /// only passes a call on: once `Sendable`, `closure`, `defer` and `callee_guaranteed` stood
+    /// in for the function.
+    func testClosuresAreReadAsTheFunctionTheyAreInAndThunksNameNothing() {
+        let cases: [(String, String?)] = [
+            ("closure #1 @Sendable () -> () in AppModel.refresh()", "AppModel.refresh"),
+            ("closure #1 (Swift.String) -> Swift.Bool in MessageList.filter(_:)", "MessageList.filter"),
+            ("closure #2 @MainActor (Swift.Result<(), Swift.Error>) -> () in closure #1 in Outbox.send(_:)", "Outbox.send"),
+            ("$defer #1 () in Store.save()", "Store.save"),
+            ("(1) suspend resume partial function for closure #1 @Sendable () async -> () in AppModel.refresh()", "AppModel.refresh"),
+            ("__35-[NSWindow _changeKeyAndMainLimitedOK:]_block_invoke", "NSWindow._changeKeyAndMainLimitedOK"),
+            ("thunk for @escaping @callee_guaranteed () -> ()", nil),
+            ("reabstraction thunk helper from @escaping @callee_guaranteed () -> () to @escaping @callee_unowned @convention(block) () -> ()", nil),
+            ("partial apply for thunk for @escaping @callee_guaranteed @Sendable @async () -> ()", nil),
+        ]
+        for (symbol, function) in cases {
+            XCTAssertEqual(CrashIdentity.function(symbol), function, symbol)
+        }
+    }
+
+    /// The words of a reason as a signature and title keep them.
+    private func words(_ reason: String, at function: String? = nil) -> [String] {
+        let place = CrashIdentity.Place(binary: "CoreFoundation", function: function, own: false)
+        return CrashIdentity.words(reason, place: place).words
+    }
+
+    /// A crash's reason, down to the first words of its first clause: nothing quoted, numbered or
+    /// pathed, and no word left dangling at the end.
     func testAReasonIsReadDownToItsFirstWords() {
-        XCTAssertEqual(CrashIdentity.words("Invalid parameter not satisfying: row >= 0"), ["Invalid", "parameter", "not", "satisfying", "row"])
-        XCTAssertEqual(CrashIdentity.words("no account for <addr:1a2b3c4d> in ~/Library/x"), ["no", "account"])
-        XCTAssertEqual(CrashIdentity.words("-[NSNull length]: unrecognized selector sent to instance 0x6000037a4ce0"),
-                       ["NSNull", "length", "unrecognized", "selector", "sent"])
-        XCTAssertEqual(CrashIdentity.words("Could not open 'Invoice ACME.pdf' for 3 seconds"), ["Could", "not", "open", "for", "seconds"])
-        XCTAssertEqual(CrashIdentity.words("12 34 5678"), [])
+        XCTAssertEqual(words("Invalid parameter not satisfying: row >= 0"), ["Invalid", "parameter", "not", "satisfying", "row"])
+        XCTAssertFalse(CrashIdentity.words("Invalid parameter not satisfying: row >= 0").cut)
+        XCTAssertEqual(words("no account for <addr:1a2b3c4d> in ~/Library/x"), ["no", "account"])
+        XCTAssertEqual(words("-[NSNull length]: unrecognized selector sent to instance 0x6000037a4ce0"),
+                       ["NSNull", "length", "unrecognized", "selector", "sent", "to", "instance"])
+        let long = CrashIdentity.words("Could not find the row for the index in the table")
+        XCTAssertEqual(long.words, ["Could", "not", "find", "the", "row"], "seven words at most, none left dangling")
+        XCTAssertTrue(long.cut)
+        XCTAssertEqual(words("Could not open 'Invoice ACME.pdf' for 3 seconds"), ["Could", "not", "open", "for", "seconds"])
+        XCTAssertEqual(words("12 34 5678"), [])
         XCTAssertEqual(CrashIdentity.camelCase(["Invalid", "parameter", "not"]), "invalidParameterNot")
         XCTAssertEqual(CrashIdentity.camelCase(["NSArrayM", "objectAtIndex"]), "NSArrayMObjectAtIndex")
         let (exception, reason) = CrashIdentity.reason(inApplicationSpecificInformation: [
@@ -126,6 +156,22 @@ final class DiagnosticsSignatureTests: XCTestCase {
                        "Index out of range")
         XCTAssertNil(CrashIdentity.reason(inApplicationSpecificInformation: ["Fatal error"]).reason)
         XCTAssertNil(CrashIdentity.reason(inApplicationSpecificInformation: ["abort() called"]).reason)
+    }
+
+    /// Five words cut a reason off wherever they ended, `Range out` and `Database schema is newer
+    /// than`. Its first clause is read now, with the method it names left out when that is the
+    /// crash's place already, and a reason longer than the words kept says so.
+    func testAReasonReadsAsAPhrase() {
+        XCTAssertEqual(words("*** -[__NSCFString substringWithRange:]: Range {10, 5} out of bounds; string length 3", at: "NSString.substringWithRange"),
+                       ["Range", "out", "of", "bounds"])
+        XCTAssertEqual(words("*** -[__NSArrayM objectAtIndexedSubscript:]: index 3 beyond bounds [0 .. 2]", at: "NSArrayM.objectAtIndexedSubscript"),
+                       ["index", "beyond", "bounds"])
+        XCTAssertEqual(words("*** -[__NSArrayM objectAtIndexedSubscript:]: index 3 beyond bounds [0 .. 2]", at: "NSArrayM.removeObject"),
+                       ["NSArrayM", "objectAtIndexedSubscript", "index", "beyond", "bounds"], "another place: the method says where")
+        let schema = CrashIdentity.words("Database schema is newer than this build supports (v12 > v10)")
+        XCTAssertEqual(schema.words, ["Database", "schema", "is", "newer", "than", "this", "build"])
+        XCTAssertTrue(schema.cut, "the reason goes on")
+        XCTAssertEqual(CrashIdentity.words("The operation couldn’t be completed. (Cocoa error 4.)").words, ["The", "operation", "couldn’t", "be", "completed"])
     }
 
     // MARK: Titles

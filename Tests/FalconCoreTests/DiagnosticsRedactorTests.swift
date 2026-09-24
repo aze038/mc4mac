@@ -273,6 +273,17 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertEqual(redactor.redact("שגיאה בדו״ח של בע״מ"), "שגיאה בדו״ח של בע״מ", "no quotation, nothing taken out")
     }
 
+    /// Hebrew joins a one-letter word to the front of the next, and a quotation too: ב״…״ (in
+    /// "…"), ל״…״ (to "…"), ה״…״ (the "…"). Such a quotation went whole once an in-word gershayim
+    /// no longer opened one; a letter or two of those, standing alone, may come before it again.
+    func testAHebrewQuotationWithALetterJoinedToItsFrontGoesWhole() {
+        assertClean("שגיאה ב״Kamal Secret.pdf״", lacks: ["Kamal", "Secret"], keeps: ["שגיאה ב״…״"])
+        assertClean("העברה ל״תיקיית Kamal Secret״ נכשלה", lacks: ["Kamal", "תיקיית"], keeps: ["העברה ל״…״ נכשלה"])
+        assertClean("לא ניתן לפתוח את ה״דוח שנתי ACME.pdf״ כעת", lacks: ["ACME", "שנתי"], keeps: ["לא ניתן לפתוח את ה״…״ כעת"])
+        assertClean("שמירה וב״דו״ח ACME.pdf״ נכשלה", lacks: ["ACME"], keeps: ["שמירה וב״…״ נכשלה"])
+        XCTAssertEqual(redactor.redact("שגיאה בדו״ח של בע״מ וצה״ל"), "שגיאה בדו״ח של בע״מ וצה״ל", "abbreviations are not quotations")
+    }
+
     func testSingleQuotesGoButApostrophesStay() {
         assertClean("The file ‘Invoice ACME.pdf’ couldn’t be opened.", lacks: ["Invoice", "ACME"], keeps: ["couldn’t be opened"])
         assertClean("The file ‘Ana’s notes.txt’ isn’t there", lacks: ["Ana", "notes"], keeps: ["isn’t there"])

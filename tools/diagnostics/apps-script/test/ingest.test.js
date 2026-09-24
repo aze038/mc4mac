@@ -327,6 +327,32 @@ test('a domain written without https:// or www. is made unclickable in the title
   assert.equal(row.Signature, event().signature, 'a signature keeps its file name');
 });
 
+// Any real top-level domain, not only the common ones, and a domain right after a slash, a dash, an
+// underscore or a dot too; but a file whose extension is no domain, and a name that goes on after
+// a dot, as a Swift property does, stay whole.
+test('a bare domain is found by every real top-level domain, and code is not taken for one', () => {
+  const env = service();
+  env.post(upload(env, [event({
+    title: 'See evil.rocks, a.museum, b.ninja, c.run, d.sucks, e.photography, f.goog and g.gle',
+    message: 'Mirrors: x/evil.com _evil.com -evil.com \\evil.com .evil.com\n'
+      + 'Mail.db, (in ComposeModel.to.setter), (in Message.id.getter), ComposeModel.swift',
+  })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, 'See evil[.]rocks, a[.]museum, b[.]ninja, c[.]run, d[.]sucks, e[.]photography, f[.]goog and g[.]gle');
+  assert.equal(row.Message, 'Mirrors: x/evil[.]com _evil[.]com -evil[.]com \\evil[.]com .evil[.]com\n'
+    + 'Mail.db, (in ComposeModel.to.setter), (in Message.id.getter), ComposeModel.swift');
+});
+
+// With no title, the signature stands in for it, and there a domain after @ is made unclickable
+// too, while the signature itself keeps its text.
+test('a title that falls back to the signature has its domains defanged', () => {
+  const env = service();
+  env.post(upload(env, [event({ title: '', signature: 'Update.required@evil.com/get' })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, 'Update.required@evil[.]com/get');
+  assert.equal(row.Signature, 'Update.required@evil.com/get');
+});
+
 test('text starting with an apostrophe keeps it', () => {
   const env = service();
   env.post(upload(env, [event({ title: "'Sent' folder could not be found", message: "'quoted' reply" })]));

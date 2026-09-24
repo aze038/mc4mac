@@ -320,7 +320,7 @@ class SymbolicateWithoutSymbolsTest(unittest.TestCase):
             every = run(self.home, '--all-threads', '-', stdin=json.dumps(row))
             self.assertIn('\nThread 1\n', every.stdout)
 
-    def test_a_branching_tree_is_indented_by_depth_with_its_gaps_where_they_were(self):
+    def test_a_branching_tree_shows_its_branches_with_its_gaps_where_they_were(self):
         row = listed_row('h3', '9.9.9', 'ABCDEF01-2345-6789-ABCD-EF0123456789', [], kind='hang')
         context = json.loads(row['context'])
         context['callStackTree']['callStacks'][0]['frames'] = [
@@ -333,9 +333,38 @@ class SymbolicateWithoutSymbolsTest(unittest.TestCase):
         context['callStackTree']['callStacks'][0]['framesOmitted'] = 12
         result = run(self.home, '-', stdin=json.dumps(with_context(row, context)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(result.stdout, r'\n\s+0  libsystem_kernel\.dylib\s+\+ 0x1  ×10\n\s+1    libsqlite3\.dylib')
-        self.assertRegex(result.stdout, r'\n\s+2      FalconMail\s+\+ 0x3  ×7\n\s+… 4 frames left out\n\s+7    CFNetwork')
-        self.assertIn('… 12 frames on other branches left out', result.stdout)
+        self.assertIn('\n'.join([
+            '    0  libsystem_kernel.dylib  + 0x1  ×10',
+            '    1  ├ libsqlite3.dylib      + 0x2  ×7',
+            '    2  │ FalconMail            + 0x3  ×7',
+            '       │ … 4 frames left out',
+            '    7  └ CFNetwork             + 0x4  ×3',
+            '       … 12 frames on other branches left out',
+        ]), result.stdout)
+
+    def test_a_deep_branching_tree_stays_at_the_left(self):
+        """Every frame of a sampled tree was indented by its depth, so a hang 40 frames deep
+        started its last frames 80 columns in. Only a branch moves a line to the right."""
+        row = listed_row('h4', '9.9.9', 'ABCDEF01-2345-6789-ABCD-EF0123456789', [], kind='hang')
+        context = json.loads(row['context'])
+        trunk = [{'binaryName': 'AppKit', 'offsetIntoBinaryTextSegment': 0x100 + i, 'sampleCount': 10, 'depth': i} for i in range(40)]
+        busy = [{'binaryName': name, 'offsetIntoBinaryTextSegment': 0x200 + i, 'sampleCount': 7, 'depth': 40 + i}
+                for i, name in enumerate(['libsqlite3.dylib', 'libsystem_kernel.dylib'])]
+        quiet = [{'binaryName': name, 'offsetIntoBinaryTextSegment': 0x300 + i, 'sampleCount': 3, 'depth': 40 + i}
+                 for i, name in enumerate(['CFNetwork', 'libsystem_kernel.dylib'])]
+        context['callStackTree']['callStacks'][0]['frames'] = trunk + busy + quiet
+        result = run(self.home, '-', stdin=json.dumps(with_context(row, context)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('\n'.join([
+            '   39  AppKit                    + 0x127  ×10',
+            '   40  ├ libsqlite3.dylib        + 0x200  ×7',
+            '   41  │ libsystem_kernel.dylib  + 0x201  ×7',
+            '   42  └ CFNetwork               + 0x300  ×3',
+            '   43    libsystem_kernel.dylib  + 0x301  ×3',
+        ]), result.stdout)
+        frames = [line for line in result.stdout.splitlines() if '+ 0x' in line]
+        self.assertEqual(len(frames), 44)
+        self.assertLess(max(len(line) for line in frames), 60)
 
     def test_processor_use_sampled_from_every_thread_says_so(self):
         row = listed_row('c1', '9.9.9', 'ABCDEF01-2345-6789-ABCD-EF0123456789', [0x464], kind='cpu')

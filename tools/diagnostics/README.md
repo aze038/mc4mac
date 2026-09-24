@@ -69,19 +69,28 @@ names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMM
     them included. Whether Sheets keeps a leading apostrophe in a plain-text cell is checked once,
     in a new spreadsheet's Events tab, and the answer kept as the script property
     `PLAIN_TEXT_APOSTROPHE`.
-  - Control characters and invisible ones are removed first, so nothing in a report can act on
-    the owner's terminal or hide a web address from the next step. Invisible means every Unicode
+  - Control characters are removed first, so nothing in a report can act on the owner's
+    terminal, and so are the left-to-right and right-to-left overrides, which would show text in
+    an order other than the one it is stored in. Tabs and line breaks in messages stay.
+  - Invisible characters are removed wherever they stand inside a web address, a mail link, an
+    e-mail address or a bare domain, in any field, as the next step finds them in the text read
+    without them, so none can hide an address from it. Invisible means every Unicode
     format character (zero-width spaces and joiners, the word joiner, the soft hyphen, the
     byte-order mark, bidirectional controls, tag characters) and the few that show nothing
     outside that class (the combining grapheme joiner, Hangul fillers, variation selectors).
-    Tabs and line breaks in messages stay.
+    Anywhere else they are part of the text and stay: the joiner inside an emoji, the non-joiner
+    Persian writes inside words, the marks that keep Hebrew or Arabic in order beside Latin text.
   - Web addresses, mail links and e-mail addresses are stored readable but not clickable, as
     `https[:]//example[.]com` and `help@example[.]com`, in every field and in every string of
     the context. A signature keeps its `@`, which there comes before a file name.
   - In the title and message, a domain written without `https://` or `www.` is made unclickable
-    too, as `example[.]com/path`: any name ending in a two-letter country domain or a common
-    longer one such as `.com`, `.org`, `.app` or `.info`. A file name such as
-    `AccountSyncer.swift` or `libsqlite3.dylib` is left as it is.
+    too, as `example[.]com/path`, and so is one in a title that falls back to the signature: any
+    name whose last part is a real top-level domain, from the ICANN section of the Public Suffix
+    List (the list is at the end of `Code.gs`), or an internationalised one (`xn--…`). A file
+    name such as `AccountSyncer.swift`, `libsqlite3.dylib` or `Mail.db` is left as it is, and so
+    is a name that goes on after a dot, such as `Message.id.getter`; a file whose extension is
+    also a country's domain, such as `setup.py`, shows as `setup[.]py`, and a function named
+    like a domain, such as `NSApplication.run`, as `NSApplication[.]run`.
 - **Trimming**: titles to 120 characters, messages to 2,000, context to 16 KB, and every cell under
   Sheets' 50,000-character limit. Context too large to keep whole is stored as
   `{"truncated":true,"size":n,"start":"..."}`, so it is always JSON. Only `provider`, `kind`,
@@ -139,16 +148,27 @@ Received 24 Sep 2026 07:00 to 24 Sep 2026 09:00, local time
 Problems, newest first
   Problem                                           Kind          Times  Installs  Versions        Last seen     Trend
   ────────────────────────────────────────────────  ───────────  ──────  ────────  ──────────────  ────────────  ──────
-  FalconMail stopped responding for a while         Hang              1         1  1.10.0          24 Sep 08:59  New
-  The mail server paused the connection: too many…  Error             5         2  1.10.1, 1.10.0  24 Sep 08:40  Rising
+  FalconMail stopped responding for a while (in     Hang              1         1  1.10.0          24 Sep 08:59  New
+  libsqlite3.dylib)
+
+  FalconMail crashed                                Crash             2         1  1.10.1          24 Sep 08:50  New
+  (NSInternalInconsistencyException: Invalid
+  parameter not satisfying row, in
+  removeRowsAtIndexes)
+
+  The mail server paused the connection: too many   Error             5         2  1.10.1, 1.10.0  24 Sep 08:40  Rising
+  requests
 ```
 
 **Trend** compares with the reports saved before: **New** was never seen, **Back** was seen but
 not in the previous 7 days, and **Rising** happened at least 3 times and more than twice as often
 as its daily average over the previous 7 days.
 
-The table fits the terminal; in one narrower than about 100 columns each title gets a line of its
-own above its figures. Neither tool prints a control character from a report.
+The table fits the terminal and always shows each title whole, as that is where two crashes of
+the same kind differ: a title too long for its column goes on over the lines below it, and a blank
+line then keeps each problem apart from the next. In a terminal narrower than about 100 columns
+each title gets lines of its own above its figures. Neither tool prints a control character from
+a report.
 
 `symbolicate.py` finds a MetricKit call-stack tree or an `.ips` report anywhere in a row's context
 and looks up FalconMail's frames with `atos`, in the dSYM that the release build keeps at
@@ -161,7 +181,9 @@ The app sends a crash cut to fit the contract's 16 KB (see "Crash stacks" in
 which `symbolicate.py` shows first. Where the app had to leave frames or threads out, it says so,
 and each gap in a stack shows how many frames it stands for; the frames after it keep their
 numbers. A runaway recursion shows one turn of it, then `… 5,997 more frames repeating the 3
-above`. The thread shown is the one the report blames: `(crashed)` for a crash, `Main thread
+above`. A hang's sampled tree keeps a chain of calls at the left however deep it goes, and shows
+where the calls branch: each branch starts with `├`, the last with `└`, and its frames go on under
+`│`. The thread shown is the one the report blames: `(crashed)` for a crash, `Main thread
 (hung)` for a hang, and `(using the processor)` or `(writing to disk)` for MetricKit's other
 reports; `--all-threads` shows the rest. `test/fixtures/trimmed-contexts.json` is what the app sends for a full-size crash from
 each source, written by the app's own tests, and the tool's tests read it.

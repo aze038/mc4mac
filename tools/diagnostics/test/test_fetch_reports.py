@@ -31,6 +31,25 @@ def row(event_id, received, **overrides):
     return base
 
 
+def shown_title(output, title):
+    """`title` when the table shows it whole, put back together from its lines: its column on
+    the first line, beside the figures or above them, then the lines that carry it on, indented
+    to its column. Otherwise what it shows of the first row that starts like it."""
+    lines = output.splitlines()
+    header = next(line for line in lines if line.split()[:1] == ['Problem'])
+    beside = 'Kind' in header
+    kind = header.index('Kind') if beside else None
+    shown = []
+    for start in [i for i, line in enumerate(lines) if line.startswith('  ' + title[:30])]:
+        parts = [lines[start][2:kind].strip() if beside else lines[start].strip()]
+        for line in lines[start + 1:]:
+            if not line.strip() or line.startswith('   ') or (beside and len(line) > kind):
+                break
+            parts.append(line.strip())
+        shown.append(' '.join(parts))
+    return title if title in shown else shown[0] if shown else None
+
+
 class FakeService:
     """Answers op=read like the Apps Script web app: a 302 first, then pages of `page_size` rows
     that never split rows sharing a receivedAt, with `since` exclusive."""
@@ -317,6 +336,33 @@ class FetchReportsTest(unittest.TestCase):
                 output = self.run_tool(*args, columns=columns).stdout
                 longest = max(output.splitlines(), key=len)
                 self.assertLess(len(longest), columns, '{} at {} columns: {!r}'.format(args, columns, longest))
+
+
+    def test_long_titles_are_shown_whole(self):
+        """Titles were cut at 56 characters however wide the terminal, so two crashes read
+        'FalconMail crashed: it used memory it should not have (…' and nothing told them apart."""
+        first = 'FalconMail crashed: it used memory it should not have (in its own code, called from NSApplication.run)'
+        second = 'FalconMail crashed: it used memory it should not have (runaway recursion, called from SwiftUI)'
+        self.service.rows = [
+            row('c1', '2026-09-24T03:00:00.000Z', kind='crash', title=first, signature='Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail:x'),
+            row('c2', '2026-09-24T04:00:00.000Z', kind='crash', title=second, signature='Crash.EXC_BAD_ACCESS.SIGSEGV.recursion@FalconMail:y'),
+        ]
+        self.service.issues = [{'title': first, 'kind': 'crash', 'times': 9, 'installs': 4, 'status': 'New',
+                                'lastSeen': '2026-09-24T07:55:00.000Z', 'signature': 'S'}]
+        self.write_config()
+        self.run_tool()
+        for columns in (80, 120, 200):
+            for args in [('--no-fetch', '--days', '36500'), ('--issues',)]:
+                output = self.run_tool(*args, columns=columns).stdout
+                for title in ([first] if args[0] == '--issues' else [first, second]):
+                    self.assertEqual(shown_title(output, title), title, '{} at {} columns'.format(args, columns))
+                self.assertLess(max(len(line) for line in output.splitlines()), columns)
+        wide = self.run_tool('--no-fetch', '--days', '36500', columns=200).stdout
+        self.assertTrue(any(line.startswith('  ' + first) for line in wide.splitlines()), 'on one line when there is room')
+        narrow = self.run_tool('--no-fetch', '--days', '36500', columns=120).stdout.splitlines()
+        start = next(i for i, line in enumerate(narrow) if line.startswith('  FalconMail crashed: it used memory'))
+        self.assertRegex(narrow[start], r'Crash\s+1\s+1\s+1\.10\.0', 'the figures stay on its first line')
+        self.assertTrue(narrow[start + 1].startswith('  ') and not narrow[start + 1].startswith('   '), 'the rest of it below, in its column')
 
 
 if __name__ == '__main__':
