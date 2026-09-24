@@ -23,8 +23,10 @@ struct MessageListView: View {
             if model.isSearching {
                 ProgressView("Searching…").padding()
             }
+            searchNoticeBar
             rowList
             loadOlderBar
+            moreResultsBar
         }
         .background(OLColor.list)
         .onChange(of: model.selectedMessageIDs) { _, _ in model.selectionDidChange() }
@@ -200,6 +202,11 @@ struct MessageListView: View {
     }
 
     @ViewBuilder private func rowView(_ row: ListRow) -> some View {
+        rowContent(row)
+            .onAppear { if row.id == model.rows.last?.id { model.loadMoreSearchResults() } }
+    }
+
+    @ViewBuilder private func rowContent(_ row: ListRow) -> some View {
         switch row {
         case .group(let title):
             Text(title)
@@ -226,7 +233,7 @@ struct MessageListView: View {
 
     @ViewBuilder private func swipeButton(_ raw: String, _ thread: MessageThread) -> some View {
         let action = SwipeAction(rawValue: raw) ?? .none
-        if action != .none {
+        if action != .none, MessageActions.allowsChanges(thread.messages) {
             Button {
                 switch action {
                 case .archive: model.archive(thread.messages)
@@ -266,6 +273,38 @@ struct MessageListView: View {
         }
     }
 
+    /// Why some results come from this Mac instead of Gmail: one sentence, wrapping once in a
+    /// narrow list rather than losing its end.
+    @ViewBuilder private var searchNoticeBar: some View {
+        if let notice = model.searchNotice {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "info.circle")
+                Text(notice).lineLimit(2).truncationMode(.tail).fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.system(size: OL.statusFont))
+            .foregroundStyle(OLColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+            .help(notice)
+        }
+    }
+
+    /// Search results come a page at a time; the next page also loads when the last row scrolls in.
+    @ViewBuilder private var moreResultsBar: some View {
+        if !model.searchText.isEmpty, model.searchHasMore || model.isLoadingMoreResults {
+            Rectangle().fill(OLColor.divider).frame(height: 1)
+            HStack(spacing: 8) {
+                Button("Show more") { model.loadMoreSearchResults() }
+                    .buttonStyle(.link)
+                    .font(.system(size: OL.statusFont))
+                    .disabled(model.isLoadingMoreResults)
+                if model.isLoadingMoreResults { ProgressView().controlSize(.small) }
+            }
+            .padding(6)
+        }
+    }
+
     private var isFolder: Bool {
         if case .folder = model.selection { return true }
         return false
@@ -278,12 +317,15 @@ struct MessageListView: View {
             Button(model.isExpanded(thread) ? "Collapse Conversation" : "Expand Conversation") { model.toggleExpanded(thread) }
         }
         Divider()
-        Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
-        Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
-        Button("Archive") { model.archive(thread.messages) }
-        Button(model.isInJunk(thread.messages) ? "Not Junk" : "Move to Junk") { model.toggleJunk(thread.messages) }
-        Button(model.isMuted(thread) ? "Unmute Conversation" : "Mute Conversation") { model.toggleMute(thread) }
-        Button("Delete", role: .destructive) { model.delete(thread.messages) }
+        Group {
+            Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
+            Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
+            Button("Archive") { model.archive(thread.messages) }
+            Button(model.isInJunk(thread.messages) ? "Not Junk" : "Move to Junk") { model.toggleJunk(thread.messages) }
+            Button(model.isMuted(thread) ? "Unmute Conversation" : "Mute Conversation") { model.toggleMute(thread) }
+            Button("Delete", role: .destructive) { model.delete(thread.messages) }
+        }
+        .disabled(!MessageActions.allowsChanges(thread.messages))
     }
 }
 
@@ -399,6 +441,7 @@ struct ConversationRow: View {
                 .help(Text(action.title))
             }
         }
+        .disabled(!MessageActions.allowsChanges(thread.messages))
         .padding(.trailing, OL.listIconRight - OL.listRightInset)
     }
 

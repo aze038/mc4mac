@@ -238,7 +238,7 @@ final class GmailSearchTests: XCTestCase {
         XCTAssertEqual(page.messages, [local])
         XCTAssertFalse(page.hasMore)
         let notice = try XCTUnwrap(page.fallback?.searchNotice(email: fixture.account.email))
-        XCTAssertTrue(notice.contains("owner@example.com") && notice.contains("kept on this Mac"), notice)
+        XCTAssertTrue(notice.contains("owner@example.com") && notice.contains("on this Mac"), notice)
         XCTAssertFalse(notice.lowercased().contains("error"), notice)
 
         let next = await search.nextPage()

@@ -152,15 +152,15 @@ extension GoogleAPIError: LocalizedError {
     public func searchNotice(email: String, now: Date = Date()) -> String {
         switch kind {
         case .offline: return "Offline — showing the messages kept on this Mac."
-        case .rateLimited: return "Gmail is busy; showing matches kept on this Mac for \(email)."
+        case .rateLimited: return "Gmail is busy; showing matches on this Mac for \(email)."
         case .quotaExhausted:
-            return "Today's Gmail allowance for \(email) is used up; showing matches kept on this Mac until \(GoogleAPIError.timeText(GoogleAPIError.quotaReset(after: now)))."
-        case .apiDisabled: return "Gmail API is off for this build's Google project; showing matches kept on this Mac for \(email)."
-        case .insufficientPermissions: return "FalconMail may not search \(email) through Gmail; showing matches kept on this Mac."
-        case .needsSignIn: return "\(email) needs you to sign in again; showing matches kept on this Mac."
-        case .clientRejected: return "Google didn't accept FalconMail's sign-in for \(email); showing matches kept on this Mac."
-        case .temporary, .notFound: return "Gmail had a temporary problem; showing matches kept on this Mac for \(email)."
-        case .other: return "Gmail refused the search for \(email); showing matches kept on this Mac. Details are in the log."
+            return "Today's Gmail allowance for \(email) is used up until \(GoogleAPIError.timeText(GoogleAPIError.quotaReset(after: now))); showing matches on this Mac."
+        case .apiDisabled: return "Gmail API is off for this build's Google project; showing matches on this Mac."
+        case .insufficientPermissions: return "FalconMail may not search \(email) through Gmail; showing matches on this Mac."
+        case .needsSignIn: return "\(email) needs you to sign in again; showing matches on this Mac."
+        case .clientRejected: return "Google didn't accept FalconMail's sign-in for \(email); showing matches on this Mac."
+        case .temporary, .notFound: return "Gmail had a temporary problem; showing matches on this Mac for \(email)."
+        case .other: return "Gmail refused the search for \(email); showing matches on this Mac. Details are in the log."
         }
     }
 

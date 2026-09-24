@@ -159,6 +159,10 @@ final class AppModel {
     var accountsNeedingSignIn = Set<UUID>()
     @ObservationIgnored var lastMailSelection: SidebarSelection?
     var isSearching = false
+    /// One line under the list when some account's results come from this Mac instead of Gmail.
+    var searchNotice: String?
+    var searchHasMore = false
+    var isLoadingMoreResults = false
     var statusText = "Ready"
     var online: [UUID: Bool] = [:]
     var outboxItems: [OutboxItem] = []
@@ -377,6 +381,15 @@ final class AppModel {
     @ObservationIgnored private var searchDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var liveSearchNeedle = ""
     @ObservationIgnored private var submittedSearchQuery: String?
+    @ObservationIgnored private var serverSearchDebounce: Task<Void, Never>?
+    @ObservationIgnored var serverSearch: ServerSearchRun?
+    @ObservationIgnored var gmailClients: [UUID: GmailAPIClient] = [:]
+    /// Rows found only on the server, by id, so a tab or window can show one after the search moves on.
+    @ObservationIgnored var serverRows: [String: MessageSummary] = [:]
+    /// Messages opened from Gmail, held in memory only and never written to disk.
+    @ObservationIgnored var openedServerMessages: [String: GmailOpenedMessage] = [:]
+    @ObservationIgnored var openedServerOrder: [String] = []
+    @ObservationIgnored var serverAttachmentBytes: [String: Data] = [:]
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored var openMainWindow: (@MainActor () -> Void)?
     @ObservationIgnored var openComposeWindow: (@MainActor (UUID) -> Void)?
@@ -426,6 +439,9 @@ final class AppModel {
         if let s = restoredState {
             selection = s.selection ?? .unified
             searchText = s.searchText
+            // A restored search filters what is here; it does not ask Gmail until the reader does.
+            serverSearchDebounce?.cancel()
+            serverSearchDebounce = nil
         }
         updates.beforeRelaunch = { [weak self] in await self?.prepareForRelaunch() }
         updates.start()
@@ -456,9 +472,16 @@ final class AppModel {
     }
 
     func currentSessionState() -> SessionState {
-        SessionState(selection: selection, selectedMessageIDs: Array(selectedMessageIDs), searchText: searchText,
-                     openMessageWindows: Array(openMessageWindows), openDraftIDs: Array(drafts.keys),
-                     openTabs: tabs, minimizedTabs: minimizedTabs, activeTab: activeTab)
+        // Rows found only on the server exist for this session alone, so none is saved for the next.
+        func stored(_ id: String) -> Bool { GmailServerRow.reference(from: ListRow.childMessageID(id) ?? id) == nil }
+        func storedTab(_ tab: WorkspaceTab) -> Bool {
+            if case .message(let id) = tab { return stored(id) }
+            return true
+        }
+        return SessionState(selection: selection, selectedMessageIDs: selectedMessageIDs.filter(stored), searchText: searchText,
+                            openMessageWindows: openMessageWindows.filter(stored), openDraftIDs: Array(drafts.keys),
+                            openTabs: tabs.filter(storedTab), minimizedTabs: minimizedTabs.filter(storedTab),
+                            activeTab: activeTab.flatMap { storedTab($0) ? $0 : nil })
     }
 
     func saveSession() {
@@ -679,8 +702,9 @@ final class AppModel {
 
     func reloadMessages() async {
         do {
-            if let query = submittedSearchQuery {
-                await runFullSearch(query)
+            if submittedSearchQuery != nil {
+                // Sync reloads come often; asking Gmail again for each would spend the quota.
+                await refreshSearchRows()
                 return
             }
             let window = listWindow
@@ -742,7 +766,7 @@ final class AppModel {
         filtersStorage.allSatisfy { filter in thread.messages.contains { filter.matches($0) } }
     }
 
-    private func rebuildThreads() {
+    func rebuildThreads() {
         let visible = visibleMessages
         let grouped: [MessageThread]
         if groupByThread {
@@ -761,34 +785,29 @@ final class AppModel {
     }
 
     func runSearch() async {
+        serverSearchDebounce?.cancel()
+        serverSearchDebounce = nil
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
         liveSearchNeedle = ""
         let q = searchText.trimmed
         guard !q.isEmpty else {
             submittedSearchQuery = nil
+            cancelServerSearch()
             await reloadMessages()
             return
         }
         submittedSearchQuery = q
-        await runFullSearch(q)
+        await startSearch(q)
     }
 
-    private func runFullSearch(_ query: String) async {
-        isSearching = true
-        defer { isSearching = false }
-        var found = (try? await store.search(query, accountID: nil)) ?? []
-        var seen = Set(found.map { $0.id })
-        for id in await indexer.search(query) where !seen.contains(id) {
-            if let m = try? await store.message(id: id) { found.append(m); seen.insert(id) }
-        }
-        messages = found.sorted { $0.date > $1.date }
-        rebuildThreads()
-    }
-
+    /// Typing filters what is loaded at once; a pause of 600 ms with three or more characters
+    /// then asks the server, as Return does.
     private func searchTextDidChange() {
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
+        serverSearchDebounce?.cancel()
+        serverSearchDebounce = nil
         let needle = searchTextStorage.trimmed
         guard !needle.isEmpty else {
             applyIncrementalSearch("")
@@ -800,6 +819,13 @@ final class AppModel {
             self.searchDebounceTask = nil
             self.applyIncrementalSearch(needle)
         }
+        guard needle.count >= 3 else { return }
+        serverSearchDebounce = Task { [weak self] in
+            _ = try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled, let self, self.searchTextStorage.trimmed == needle else { return }
+            self.serverSearchDebounce = nil
+            await self.runSearch()
+        }
     }
 
     private func applyIncrementalSearch(_ needle: String) {
@@ -808,6 +834,7 @@ final class AppModel {
         liveSearchNeedle = needle
         submittedSearchQuery = nil
         if leavingFullResults {
+            cancelServerSearch()
             Task { await reloadMessages() }
         } else {
             rebuildThreads()
@@ -817,6 +844,9 @@ final class AppModel {
     private func resetSearch() {
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
+        serverSearchDebounce?.cancel()
+        serverSearchDebounce = nil
+        cancelServerSearch()
         liveSearchNeedle = ""
         submittedSearchQuery = nil
         searchTextStorage = ""
@@ -949,7 +979,7 @@ final class AppModel {
     func forwardSelection() {
         guard let thread = currentThread, let account = account(for: thread.latest) else { return }
         Task {
-            let parsed = await parsedBody(for: thread.latest)
+            let parsed = await parsedBodyForForwarding(thread.latest)
             openCompose(.forward(thread.latest, parsed: parsed, account: account, signature: signature(for: account, .replies)))
         }
     }
@@ -996,6 +1026,10 @@ final class AppModel {
 
     func openMovePalette() {
         guard !selectedMessageIDs.isEmpty else { return }
+        guard !selectionIsReadOnly else {
+            statusText = AppModel.readOnlyNotice
+            return
+        }
         guard WindowTray.shared.orderMailboxWindowFront() else { return }
         showsMovePalette = true
     }
@@ -1092,6 +1126,7 @@ final class AppModel {
     }
 
     func parsedBody(for message: MessageSummary) async -> MIMEMessage? {
+        if message.isServerOnly { return await serverBody(for: message) }
         if let cached = bodyCache[message.id] { return cached }
         guard let syncer = await coordinator.syncer(for: message.accountID) else { return nil }
         do {
@@ -1106,12 +1141,14 @@ final class AppModel {
     }
 
     func rawBody(for message: MessageSummary) async -> Data? {
+        guard !message.isServerOnly else { return nil }
         guard let syncer = await coordinator.syncer(for: message.accountID) else { return nil }
         return try? await syncer.body(for: message)
     }
 
     private func perform(_ messages: [MessageSummary], announcing: Bool = true,
                          _ op: @escaping (AccountSyncer, [MessageSummary]) async throws -> [MailActionRecord]) {
+        let messages = MessageActions.actionable(messages)
         guard !messages.isEmpty else { return }
         Task {
             var records: [MailActionRecord] = []
@@ -1198,8 +1235,20 @@ final class AppModel {
     }
 
     func markRead(_ list: [MessageSummary], _ read: Bool) {
-        perform(list.filter { $0.isRead != read }) { try await $0.setFlag(.seen, on: $1, enabled: read) }
+        perform(actionable(list).filter { $0.isRead != read }) { try await $0.setFlag(.seen, on: $1, enabled: read) }
     }
+
+    static let readOnlyNotice = "Messages found only on the server can be read and replied to, not changed."
+
+    /// The messages an action may touch, saying so when the reader picked only ones it may not.
+    func actionable(_ list: [MessageSummary]) -> [MessageSummary] {
+        let kept = MessageActions.actionable(list)
+        if kept.isEmpty, !list.isEmpty { statusText = AppModel.readOnlyNotice }
+        return kept
+    }
+
+    /// Whether anything selected is a row found only on the server, which no action may change.
+    var selectionIsReadOnly: Bool { selectedMessages.contains { $0.isServerOnly } }
 
     private var markAllReadFolders: [FolderInfo] {
         switch selection {
@@ -1277,7 +1326,7 @@ final class AppModel {
     }
 
     func setFlagged(_ list: [MessageSummary], _ flagged: Bool) {
-        perform(list) { try await $0.setFlag(.flagged, on: $1, enabled: flagged) }
+        perform(actionable(list)) { try await $0.setFlag(.flagged, on: $1, enabled: flagged) }
     }
 
     private func rowVanishes(_ row: ListRow, removing ids: Set<String>) -> Bool {
@@ -1310,11 +1359,15 @@ final class AppModel {
     }
 
     func archive(_ list: [MessageSummary]) {
+        let list = actionable(list)
+        guard !list.isEmpty else { return }
         removeFromList(list)
         perform(list) { try await $0.archive($1) }
     }
 
     func delete(_ list: [MessageSummary]) {
+        let list = actionable(list)
+        guard !list.isEmpty else { return }
         removeFromList(list)
         perform(list) { try await $0.delete($1) }
     }
@@ -1324,7 +1377,7 @@ final class AppModel {
     }
 
     private func applyMove(_ list: [MessageSummary], to folder: FolderInfo) {
-        let targets = list.filter { $0.accountID == folder.accountID && $0.folderID != folder.id }
+        let targets = actionable(list).filter { $0.accountID == folder.accountID && $0.folderID != folder.id }
         guard !targets.isEmpty else { return }
         moveTargets.record(folder: folder)
         removeFromList(targets)
@@ -1352,6 +1405,7 @@ final class AppModel {
     }
 
     private func route(_ list: [MessageSummary], to role: FolderRole, missing: String) {
+        let list = actionable(list)
         var found: [UUID: FolderInfo] = [:]
         var moving: [MessageSummary] = []
         for (accountID, group) in Dictionary(grouping: list, by: { $0.accountID }) {
@@ -1381,6 +1435,9 @@ final class AppModel {
     func isMuted(_ thread: MessageThread) -> Bool { mutedRecord(for: thread) != nil }
 
     func mute(_ threads: [MessageThread]) {
+        let editable = threads.filter { MessageActions.allowsChanges($0.messages) }
+        if editable.isEmpty, !threads.isEmpty { statusText = AppModel.readOnlyNotice }
+        let threads = editable
         let records = threads.compactMap { muteRecord(for: $0) }
         guard !records.isEmpty else { return }
         Task {
@@ -1781,6 +1838,9 @@ final class AppModel {
         cancelPendingRead()
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
+        serverSearchDebounce?.cancel()
+        serverSearchDebounce = nil
+        cancelServerSearch()
         await flushPendingActions()
         saveSessionNow()
         signatures.saveNow()
