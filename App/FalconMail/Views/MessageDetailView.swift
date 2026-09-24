@@ -507,11 +507,15 @@ enum MessageRenderer {
 enum WebViewPool {
     private static var free: [WKWebView] = []
     private static let processPool = WKProcessPool()
+    /// Remote images and whatever else a message loads are kept for this session only, in
+    /// memory, rather than in WebKit's disk cache with its browser-sized limit.
+    private static let dataStore = WKWebsiteDataStore.nonPersistent()
 
     static func acquire() -> WKWebView {
         if let v = free.popLast() { return v }
         let config = WKWebViewConfiguration()
         config.processPool = processPool
+        config.websiteDataStore = dataStore
         config.defaultWebpagePreferences.allowsContentJavaScript = false
         let view = WKWebView(frame: .zero, configuration: config)
         view.underPageBackgroundColor = NSColor(name: nil) { appearance in

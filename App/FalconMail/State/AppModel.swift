@@ -426,6 +426,7 @@ final class AppModel {
 
     init() {
         Log.start(in: layout.root)
+        AppModel.keepCachesOffDisk()
         let info = Bundle.main.infoDictionary
         Log.info("app", "launch version=\(info?["CFBundleShortVersionString"] as? String ?? "?") build=\(info?["CFBundleVersion"] as? String ?? "?") data=\(layout.root.path)")
         let store = MailStore(layout: layout)
@@ -445,6 +446,17 @@ final class AppModel {
         self.session = SessionStore(layout: layout)
         self.moveTargets = MoveTargets(layout: layout)
         self.signatures = SignatureLibrary(store: SignatureStore(layout: layout))
+    }
+
+    /// HTTP responses are kept in memory only, and what earlier builds' web and HTTP caches
+    /// left in ~/Library/Caches is removed, once.
+    private static func keepCachesOffDisk() {
+        URLCache.shared = URLCache(memoryCapacity: 8 * 1024 * 1024, diskCapacity: 0, directory: nil)
+        let removed = "legacyCachesRemoved"
+        guard !UserDefaults.standard.bool(forKey: removed),
+              let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        LegacyCaches.remove(from: caches, runningAs: Bundle.main.bundleIdentifier)
+        UserDefaults.standard.set(true, forKey: removed)
     }
 
     func bootstrap() async {
