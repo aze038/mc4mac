@@ -74,9 +74,12 @@ final class FakeIMAPServerTests: XCTestCase {
         _ = try await client.fetchMessage(uid: 1)
         await client.logout()
         // A reply is counted once the server's send of it completes, which can come a moment
-        // after the client has read it.
+        // after the client has read it, and LOGOUT, whose reply the client does not wait for,
+        // once the server has read it: both are in by the time the session has ended.
         let server = server!
+        await assertEventually { server.openConnections == 0 }
         await assertEventually { (server.sessionCounts.first?.bytesOut ?? 0) > FakeIMAPServer.message("one").count }
+        XCTAssertTrue(server.commands.last?.hasSuffix(" LOGOUT") ?? false, "\(server.commands)")
         let session = try XCTUnwrap(server.sessionCounts.first)
         XCTAssertEqual(session.commands, server.commands.count)
         XCTAssertGreaterThan(session.bytesOut, FakeIMAPServer.message("one").count)
