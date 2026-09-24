@@ -153,6 +153,48 @@ extension JSONValue {
         return .object(["truncated": .bool(true)])
     }
 
+    /// The smallest of the cuts `0...cuts` whose value serialises to at most `maxBytes`, found by
+    /// halving, with that value; nil when even the largest cut is too big. `make` must give a
+    /// value no larger for a larger cut.
+    static func smallestCut(upTo cuts: Int, maxBytes: Int, _ make: (Int) -> JSONValue) -> (cut: Int, value: JSONValue)? {
+        let whole = make(0)
+        if whole.serialised.count <= maxBytes { return (0, whole) }
+        var low = 1, high = cuts
+        var best: (cut: Int, value: JSONValue)?
+        while low <= high {
+            let middle = (low + high) / 2
+            let value = make(middle)
+            if value.serialised.count <= maxBytes {
+                best = (middle, value)
+                high = middle - 1
+            } else {
+                low = middle + 1
+            }
+        }
+        return best
+    }
+
+    /// Every string cut to `maxCharacters` and every list to `maxItems`, with `cut` set when
+    /// anything had to go.
+    func capped(strings maxCharacters: Int, lists maxItems: Int = .max, cut: inout Bool) -> JSONValue {
+        switch self {
+        case .string(let s) where s.count > maxCharacters:
+            cut = true
+            return .string(String(s.prefix(maxCharacters - 1)) + "…")
+        case .array(let a):
+            if a.count > maxItems { cut = true }
+            var out: [JSONValue] = []
+            for item in a.prefix(maxItems) { out.append(item.capped(strings: maxCharacters, lists: maxItems, cut: &cut)) }
+            return .array(out)
+        case .object(let o):
+            var out: [String: JSONValue] = [:]
+            for (key, value) in o { out[key] = value.capped(strings: maxCharacters, lists: maxItems, cut: &cut) }
+            return .object(out)
+        default:
+            return self
+        }
+    }
+
     private enum Step: Hashable { case key(String), index(Int) }
 
     private enum Cut { case halveArray, shortenString, emptyArray }

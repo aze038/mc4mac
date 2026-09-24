@@ -118,6 +118,80 @@ final class MetricKitDiagnosticsTests: XCTestCase {
         XCTAssertEqual(items[3].event.signature, "DiskWrite.exceeded@FalconMail")
         XCTAssertTrue(items[3].event.message.contains("2,147.48 MB"))
         for item in items { XCTAssertLessThanOrEqual(item.event.context.serialised.count, DiagnosticsEvent.maxContextBytes) }
+        XCTAssertNil(crash.event.context["trimmed"], "a small tree goes whole")
+    }
+
+    /// A crash diagnostic the size MetricKit gives for a real crash: thirty threads, each a chain
+    /// of sixty frames, the crashed one fourth.
+    static func fullCrashPayload(threads: Int = 30, crashed: Int = 3, depth: Int = 60, crashedDepth: Int = 60) -> Data {
+        func chain(_ thread: Int, _ depth: Int) -> JSONValue {
+            var frame = JSONValue.object(["binaryUUID": .string("11111111-2222-3333-4444-555555555555"), "binaryName": .string("dyld"),
+                                          "offsetIntoBinaryTextSegment": .int(4_000), "sampleCount": .int(1), "address": .int(6_442_454_944)])
+            for level in stride(from: depth - 2, through: 0, by: -1) {
+                let own = level % 4 == 1
+                frame = .object([
+                    "binaryUUID": .string(own ? "70B89F27-1634-3580-A695-57CDB41D7743" : String(format: "%08X-0000-4000-8000-%012X", level, thread)),
+                    "binaryName": .string(own ? "FalconMail" : "SystemFramework\(level)"),
+                    "offsetIntoBinaryTextSegment": .int(Int64(100_000 + thread * 1_000 + level)), "sampleCount": .int(1),
+                    "address": .int(Int64(4_295_000_000 + thread * 1_000 + level)), "subFrames": .array([frame]),
+                ])
+            }
+            return frame
+        }
+        let stacks = (0..<threads).map { thread -> JSONValue in
+            .object(["threadAttributed": .bool(thread == crashed), "callStackRootFrames": .array([chain(thread, thread == crashed ? crashedDepth : depth)])])
+        }
+        let payload = JSONValue.object([
+            "timeStampBegin": .string("2026-09-20 00:00:00 +0000"), "timeStampEnd": .string("2026-09-20 23:59:00 +0000"),
+            "crashDiagnostics": .array([.object([
+                "callStackTree": .object(["callStackPerThread": .bool(true), "callStacks": .array(stacks)]),
+                "diagnosticMetaData": .object(["appVersion": .string("1.9.0"), "appBuildVersion": .string("45"), "exceptionType": .int(1),
+                                               "signal": .int(11), "pid": .int(4242), "osVersion": .string("macOS 26.6 (25G5023)")]),
+            ])]),
+        ])
+        return payload.serialised
+    }
+
+    /// Ten times the contract's 16 KB: the other threads go, from the last, and the crashed
+    /// thread comes first and whole, still valid JSON that says what was left out.
+    func testAFullSizeCrashTreeIsCutToTheCrashedThreadFirst() throws {
+        let payload = Self.fullCrashPayload()
+        XCTAssertGreaterThan(payload.count, 150_000)
+        let crash = try XCTUnwrap(MetricKitDiagnostics.items(from: payload, install: "INSTALL", redactor: redactor, now: now).first)
+        let context = crash.event.context
+        XCTAssertLessThanOrEqual(context.serialised.count, DiagnosticsEvent.maxContextBytes - 1_024)
+        XCTAssertEqual(JSONValue.parse(context.serialised), context, "valid JSON")
+        XCTAssertNil(context["truncated"], "never cut blindly")
+        XCTAssertEqual(context["trimmed"], .bool(true))
+        XCTAssertNil(context["diagnosticMetaData"]?["pid"])
+        let tree = try XCTUnwrap(context["callStackTree"])
+        let stacks = try XCTUnwrap(tree["callStacks"]?.arrayValue)
+        XCTAssertEqual(stacks.first?["threadAttributed"], .bool(true), "the crashed thread first")
+        XCTAssertEqual(Int(tree["callStacksOmitted"]?.intValue ?? 0) + stacks.count, 30, "the threads left out are counted")
+        var frame = stacks.first?["callStackRootFrames"]?.arrayValue?.first
+        var depth = 1
+        while let next = frame?["subFrames"]?.arrayValue?.first { frame = next; depth += 1 }
+        XCTAssertEqual(depth, 60, "every frame of the crashed thread")
+        XCTAssertEqual(stacks.first?["callStackRootFrames"]?.arrayValue?.first?["offsetIntoBinaryTextSegment"], .int(103_000))
+        XCTAssertEqual(crash.event.signature, "Crash.EXC_BAD_ACCESS.SIGSEGV@SystemFramework")
+    }
+
+    /// A crashed thread too deep to go whole loses its deepest frames, the start-up code, and
+    /// says how many where they were.
+    func testACrashedThreadTooDeepToFitLosesItsBottomFrames() throws {
+        let payload = Self.fullCrashPayload(threads: 2, crashed: 1, crashedDepth: 200)
+        let items = MetricKitDiagnostics.items(from: payload, install: "INSTALL", redactor: redactor, now: now)
+        let context = try XCTUnwrap(items.first?.event.context)
+        XCTAssertLessThanOrEqual(context.serialised.count, DiagnosticsEvent.maxContextBytes - 1_024)
+        XCTAssertEqual(context["trimmed"], .bool(true))
+        let stacks = try XCTUnwrap(context["callStackTree"]?["callStacks"]?.arrayValue)
+        XCTAssertEqual(stacks.count, 1, "the other thread went first")
+        var frame = try XCTUnwrap(stacks[0]["callStackRootFrames"]?.arrayValue?.first)
+        XCTAssertEqual(frame["offsetIntoBinaryTextSegment"], .int(101_000), "the top of the stack stays")
+        var kept = 1
+        while let next = frame["subFrames"]?.arrayValue?.first { frame = next; kept += 1 }
+        XCTAssertGreaterThan(kept, 20)
+        XCTAssertEqual(kept + Int(frame["subFramesOmitted"]?.intValue ?? 0), 200, "the frames left out are counted at the cut")
     }
 
     func testTheSamePayloadGivesTheSameIDs() {

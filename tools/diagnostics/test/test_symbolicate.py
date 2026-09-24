@@ -13,6 +13,9 @@ from unittest import mock
 
 TOOLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(TOOLS, 'symbolicate.py')
+# What FalconMail sends for a full-size crash from each source, written by the app's own test
+# (CrashReportTests.testTheTriageToolsReadWhatTheAppSends), so these tests read exactly that.
+FIXTURE = os.path.join(TOOLS, 'test', 'fixtures', 'trimmed-contexts.json')
 SYSTEM_UUID = '11111111-2222-3333-4444-555555555555'
 SOURCE = textwrap.dedent('''\
     #include <stdio.h>
@@ -66,6 +69,19 @@ def ips_row(event_id, version, uuid, offsets):
         'receivedAt': '2026-09-24T08:00:00.000Z',
         'context': json.dumps({'ips': json.dumps(header) + '\n' + json.dumps(body)}),
     }
+
+
+def sent_row(event_id, source, version='9.9.9'):
+    """A crash row whose context is what the app sends for a full-size crash from `source`."""
+    with open(FIXTURE, encoding='utf-8') as handle:
+        context = json.load(handle)[source]
+    return {'eventId': event_id, 'kind': 'crash', 'title': 'FalconMail crashed', 'version': version, 'build': '45',
+            'receivedAt': '2026-09-24T08:00:00.000Z', 'context': context}
+
+
+def with_context(row, context):
+    row['context'] = json.dumps(context)
+    return row
 
 
 @unittest.skipUnless(all(shutil.which(tool) for tool in ('clang', 'dsymutil', 'atos', 'dwarfdump', 'nm')),
@@ -134,6 +150,35 @@ class SymbolicateWithSymbolsTest(unittest.TestCase):
         self.assertIn('do not match this build', result.stdout)
         self.assertNotIn('open_message', result.stdout)
 
+    def test_the_trimmed_ips_the_app_sends_gets_function_names(self):
+        row = sent_row('s1', 'ips', version='1.10.0')
+        context = row['context']
+        own = next(i for i, image in enumerate(context['usedImages']) if image['name'] == 'FalconMail')
+        context['usedImages'][own]['uuid'] = self.uuid
+        frames = [frame for frame in context['lastExceptionBacktrace'] if frame.get('imageIndex') == own]
+        for frame, offset in zip(frames, self.offsets):
+            frame['imageOffset'] = offset
+        result = run(self.home, '-', stdin=json.dumps(with_context(row, context)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r'2  FalconMail\s+open_message \(main\.c:2\)')
+        self.assertRegex(result.stdout, r'7  FalconMail\s+render_reader \(main\.c:3\)')
+        self.assertRegex(result.stdout, r'12  FalconMail\s+main \(main\.c:4\)')
+        self.assertIn('… 3 frames left out', result.stdout)
+        self.assertNotIn('do not match this build', result.stdout)
+
+    def test_a_metrickit_stack_cut_short_by_the_app_gets_function_names_and_its_gap(self):
+        row = metrickit_row('m4', '1.10.0', self.uuid, self.offsets)
+        context = json.loads(row['context'])
+        context['trimmed'] = True
+        stack = context['callStackTree']['callStacks'][0]
+        stack['callStackRootFrames'][0]['subFrames'][0]['subFrames'][0].pop('subFrames')
+        stack['callStackRootFrames'][0]['subFrames'][0]['subFrames'][0]['subFramesOmitted'] = 1
+        result = run(self.home, '-', stdin=json.dumps(with_context(row, context)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r'2  FalconMail\s+main \(main\.c:4\)')
+        self.assertIn('… 1 frame left out', result.stdout)
+        self.assertNotIn('libdyld', result.stdout)
+
     def test_rows_are_found_in_the_saved_reports_by_default(self):
         reports = os.path.join(self.home, 'FalconMailReports')
         os.makedirs(reports)
@@ -201,6 +246,27 @@ class SymbolicateWithoutSymbolsTest(unittest.TestCase):
         result = run(self.home, '-', stdin=json.dumps(row))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Its context was too large and was cut short on arrival, so the stack is missing.', result.stdout)
+
+    def test_the_trimmed_ips_the_app_sends_shows_where_the_exception_was_raised_and_every_gap(self):
+        result = run(self.home, '-', stdin=json.dumps(with_context(sent_row('s2', 'ips'), sent_row('s2', 'ips')['context'])))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout
+        self.assertIn('The app left part of this report out to fit its size limit; a gap in a stack says how many frames.', out)
+        raised = out.index('Where the exception was raised\n')
+        crashed = out.index('Thread 0 com.apple.main-thread (crashed)\n')
+        self.assertLess(raised, crashed, 'the backtrace comes first')
+        self.assertRegex(out[raised:crashed], r'\n\s+0  SystemFramework\d+\s+-\[NSSomeLongSystemClassName')
+        self.assertRegex(out[raised:crashed], r'\n\s+2  FalconMail\s+\+ 0x')
+        # A gap is counted, and the frames after it keep their numbers in the full stack.
+        self.assertRegex(out[crashed:], r'28  SystemFramework\d+  .*\n\s+… 3 frames left out\n\s+32  FalconMail')
+        self.assertNotIn('other thread', out, 'the app sends the crashed thread alone')
+
+    def test_the_trimmed_metrickit_tree_the_app_sends_is_read(self):
+        result = run(self.home, '-', stdin=json.dumps(with_context(sent_row('s3', 'metrickit'), sent_row('s3', 'metrickit')['context'])))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('29 threads MetricKit did not blame were left out.', result.stdout)
+        self.assertIn('Thread 0 (crashed)', result.stdout)
+        self.assertRegex(result.stdout, r'59  dyld\s+\+ 0xfa0')
 
     def test_a_context_kept_as_a_json_string_is_still_read(self):
         row = ips_row('i2', '9.9.9', 'ABCDEF01-2345-6789-ABCD-EF0123456789', [0x464])

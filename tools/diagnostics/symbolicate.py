@@ -6,6 +6,9 @@ frames in FalconMail itself are looked up with atos in the dSYM that the release
 ~/Library/Application Support/FalconMail Symbols/<version>/, matched by the binary's UUID. Frames
 in other binaries, and FalconMail's own when its symbols are missing, are shown as offsets.
 
+The app sends a crash cut to fit its 16 KB: the crashed thread and, for an uncaught exception,
+the backtrace it was raised from. Frames it had to leave out are shown as a gap with their count.
+
     symbolicate.py --event <event ID>      a row from ~/FalconMailReports/*.jsonl
     symbolicate.py rows.jsonl              every row with a stack in a file
     symbolicate.py -                       a row or rows on standard input
@@ -78,6 +81,11 @@ def find_stacks(value, found=None):
     return found
 
 
+def omitted(value):
+    """How many frames a gap the app left stands for, or 0."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 def metrickit_threads(tree):
     threads = []
     for index, stack in enumerate(tree.get('callStacks') or []):
@@ -93,9 +101,13 @@ def metrickit_threads(tree):
             })
             for child in frame.get('subFrames') or []:
                 walk(child, depth + 1)
+            if omitted(frame.get('subFramesOmitted')):
+                frames.append({'omitted': frame['subFramesOmitted'], 'depth': depth + 1})
 
         for root in stack.get('callStackRootFrames') or []:
             walk(root, 0)
+        if omitted(stack.get('framesOmitted')):
+            frames.append({'omitted': stack['framesOmitted'], 'depth': 0})
         # A crash's stack is a chain, one frame under the next; only a sampled hang branches.
         branched = len(stack.get('callStackRootFrames') or []) > 1 or any(
             len(f.get('subFrames') or []) > 1 for f in iter_frames(stack.get('callStackRootFrames') or []))
@@ -114,10 +126,15 @@ def iter_frames(frames):
 
 def ips_threads(body):
     images = body.get('usedImages') or []
-    threads = []
-    for index, thread in enumerate(body.get('threads') or []):
+
+    def frames_of(listing):
         frames = []
-        for frame in thread.get('frames') or []:
+        for frame in listing if isinstance(listing, list) else []:
+            if not isinstance(frame, dict):
+                continue
+            if omitted(frame.get('omitted')):
+                frames.append({'omitted': frame['omitted'], 'depth': 0})
+                continue
             position = frame.get('imageIndex')
             image = images[position] if isinstance(position, int) and 0 <= position < len(images) else {}
             frames.append({
@@ -127,8 +144,18 @@ def ips_threads(body):
                 'symbol': frame.get('symbol'),
                 'depth': 0,
             })
-        name = 'Thread ' + str(index) + (' ' + thread['queue'] if thread.get('queue') else '')
-        threads.append({'name': name, 'crashed': bool(thread.get('triggered')), 'frames': frames})
+        return frames
+
+    threads = []
+    # Where an uncaught exception was raised: what the crashed thread shows is only how it ended the app.
+    if isinstance(body.get('lastExceptionBacktrace'), list):
+        threads.append({'name': 'Where the exception was raised', 'crashed': True, 'backtrace': True,
+                        'frames': frames_of(body['lastExceptionBacktrace'])})
+    for position, thread in enumerate(body.get('threads') or []):
+        # The app sends only the crashed thread, with its number in the report.
+        number = thread['index'] if isinstance(thread.get('index'), int) else position
+        name = 'Thread ' + str(number) + (' ' + thread['queue'] if thread.get('queue') else '')
+        threads.append({'name': name, 'crashed': bool(thread.get('triggered')), 'frames': frames_of(thread.get('frames'))})
     return threads
 
 
@@ -161,6 +188,8 @@ def symbolicate(threads, dwarfs):
     wanted = {}
     for thread in threads:
         for frame in thread['frames']:
+            if 'omitted' in frame:
+                continue
             match = dwarfs.get(normalised_uuid(frame.get('uuid')))
             if match and isinstance(frame.get('offset'), int):
                 wanted.setdefault(match, []).append(frame)
@@ -200,13 +229,21 @@ def describe(frame):
 
 
 def render_thread(thread):
-    lines = [thread['name'] + (' (crashed)' if thread['crashed'] else '')]
-    width = max([len(frame['binary']) for frame in thread['frames']] + [6])
-    for number, frame in enumerate(thread['frames']):
+    lines = [thread['name'] + (' (crashed)' if thread['crashed'] and not thread.get('backtrace') else '')]
+    width = max([len(frame['binary']) for frame in thread['frames'] if 'binary' in frame] + [6])
+    number = 0
+    for frame in thread['frames']:
+        indent = '  ' * frame['depth']
+        if 'omitted' in frame:
+            # Numbered as in the full stack, so the frames after a gap keep their places.
+            count = frame['omitted']
+            lines.append('       {}… {} frame{} left out'.format(indent, count, '' if count == 1 else 's'))
+            number += count
+            continue
         samples = frame.get('samples')
         count = '  ×' + str(samples) if isinstance(samples, int) and samples > 1 else ''
-        lines.append('  {:>3}  {}{:<{w}}  {}{}'.format(
-            number, '  ' * frame['depth'], frame['binary'], describe(frame), count, w=width))
+        lines.append('  {:>3}  {}{:<{w}}  {}{}'.format(number, indent, frame['binary'], describe(frame), count, w=width))
+        number += 1
     return lines
 
 
@@ -226,9 +263,18 @@ def render_row(row, all_threads):
 
     dwarfs, folder = dwarf_files(str(row.get('version') or ''))
     threads = []
+    left_out = 0
     for kind, value in stacks:
         threads.extend(metrickit_threads(value) if kind == 'metrickit' else ips_threads(value))
+        left_out += omitted(value.get('callStacksOmitted'))
     resolved = symbolicate(threads, dwarfs)
+    context = decode(row.get('context'))
+    if isinstance(context, dict) and context.get('trimmed') is True:
+        lines.append('The app left part of this report out to fit its size limit; a gap in a stack says how many frames.')
+        if left_out:
+            lines.append('{} thread{} MetricKit did not blame {} left out.'.format(
+                left_out, '' if left_out == 1 else 's', 'was' if left_out == 1 else 'were'))
+        lines.append('')
     if folder is None:
         lines.append('The report\'s version is not a plain version number, so no symbols were looked for; '
                      'FalconMail\'s frames are shown as offsets.')

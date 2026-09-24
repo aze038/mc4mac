@@ -140,6 +140,13 @@ and looks up FalconMail's frames with `atos`, in the dSYM that the release build
 for that build it says so and shows offsets. The version comes from the report, so only a plain
 version number such as `1.10.0` is ever used as a folder name.
 
+The app sends a crash cut to fit the contract's 16 KB (see "Crash stacks" in
+`docs/DIAGNOSTICS.md`): the crashed thread and, for an uncaught exception, where it was raised,
+which `symbolicate.py` shows first. Where the app had to leave frames or threads out, it says so,
+and each gap in a stack shows how many frames it stands for; the frames after it keep their
+numbers. `test/fixtures/trimmed-contexts.json` is what the app sends for a full-size crash from
+each source, written by the app's own tests, and the tool's tests read it.
+
 ## Quotas this is designed around
 
 From Google's [Apps Script quotas](https://developers.google.com/apps-script/guides/services/quotas)

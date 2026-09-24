@@ -72,6 +72,30 @@ The `account` object:
 | `host` | The IMAP host, for example `mail.your-server.de`, or empty |
 | `ref` | 8 hex characters of HMAC-SHA256(install salt, lower-cased address), so events of one account correlate within one install; never reversible |
 
+### Crash stacks
+
+A crash report macOS writes runs to 50–200 KB, so the app sends a crash's `context` cut to what
+the triage needs, always valid JSON and never over the 16 KB limit (it aims 1 KB below it):
+
+- **From a macOS crash report** (`"source": "ips"`, shaped as an `.ips`): the `exception`
+  (type, codes, signal), its reason (`asi`), `termination`, `faultingThread`, the crashed
+  thread alone in `threads` (with its number in the report as `index`), the uncaught
+  exception's `lastExceptionBacktrace` when there is one, and in `usedImages` only the images
+  those frames use, each with `uuid`, `name`, `base` (load address) and `arch`, renumbered in
+  the order the frames use them.
+- **From MetricKit** (`"source": "metrickit"`): the `callStackTree` with the thread MetricKit
+  blames (the crashed thread, or the main thread of a hang) first, and the
+  `diagnosticMetaData`.
+
+When that is still too large, what matters least goes first until it fits. In an `.ips`: frames
+in other binaries below the top eight, from the bottom of the stack up; then FalconMail's own
+frames below the top eight; then the top eight; the crashed thread's before the backtrace's. In a
+MetricKit tree: the other threads, from the last; then all but the busiest branch of the blamed
+thread; then its deepest frames, a level at a time. Whatever was left out is counted where it
+was, as `{"omitted": n}` in a list of frames, `"subFramesOmitted": n` on a frame,
+`"framesOmitted": n` on a thread or `"callStacksOmitted": n` on the tree, and the context says
+`"trimmed": true`.
+
 ### Read (for the owner's tooling only)
 
 - `GET <url>?op=read&key=<READ key>&since=<ISO>&limit=<n ≤ 5000>` returns

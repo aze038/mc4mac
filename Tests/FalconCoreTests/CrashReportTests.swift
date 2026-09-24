@@ -68,6 +68,52 @@ final class CrashReportTests: XCTestCase {
         return header + "\n" + body.replacingOccurrences(of: "\n", with: "")
     }
 
+    /// A report the size macOS writes for a real crash, about 170 KB: an uncaught exception on the
+    /// main thread with the backtrace it was raised from, thirty threads of symbolicated frames and
+    /// the two hundred and fifty images a Mac app loads, each with its full path.
+    static func fullIPS(backtrace: Bool = true, crashedFrames: Int = 60) -> String {
+        let header = """
+        {"app_name":"FalconMail","timestamp":"2026-09-20 10:11:12.00 +0100","app_version":"1.9.0","slice_uuid":"70B89F27-1634-3580-A695-57CDB41D7743","build_version":"45","platform":1,"bundleID":"com.falconmail.app","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.6 (25G5023)","roots_installed":0,"name":"FalconMail","incident_id":"33333333-3333-3333-3333-333333333333"}
+        """
+        var images = [#"{"source":"P","arch":"arm64","base":4294967296,"size":9437184,"uuid":"70B89F27-1634-3580-A695-57CDB41D7743","path":"/Applications/FalconMail.app/Contents/MacOS/FalconMail","name":"FalconMail","CFBundleIdentifier":"com.falconmail.app","CFBundleShortVersionString":"1.9.0","CFBundleVersion":"45"}"#]
+        for i in 1..<250 {
+            let uuid = String(format: "%08X-0000-4000-8000-%012X", i, i * 7919)
+            let name = i % 3 == 0 ? "libsystem_framework_\(i).dylib" : "SystemFramework\(i)"
+            let path = i % 3 == 0 ? "/usr/lib/system/\(name)" : "/System/Library/PrivateFrameworks/\(name).framework/Versions/A/\(name)"
+            images.append(#"{"source":"P","arch":"arm64e","base":\#(6_442_450_944 + i * 1_048_576),"size":1048576,"uuid":"\#(uuid)","path":"\#(path)","name":"\#(name)","CFBundleIdentifier":"com.apple.\#(name)","CFBundleShortVersionString":"6.9","CFBundleVersion":"2575.40.101"}"#)
+        }
+        func frame(_ i: Int, thread: Int) -> String {
+            // Every fifth frame is FalconMail's own, unsymbolicated as in a release build.
+            if i % 5 == 2 { return #"{"imageOffset":\#(100_000 + i * 64 + thread),"imageIndex":0}"# }
+            let image = 1 + (i * 7 + thread * 13) % 249
+            return #"{"imageOffset":\#(20_000 + i * 32),"symbol":"-[NSSomeLongSystemClassName performSomethingWithObject:context:\#(i)]","symbolLocation":\#(i * 4),"imageIndex":\#(image)}"#
+        }
+        func frames(_ count: Int, thread: Int) -> String { "[" + (0..<count).map { frame($0, thread: thread) }.joined(separator: ",") + "]" }
+        let threads = (0..<30).map { t -> String in
+            let crashed = t == 0
+            let state = crashed ? #","threadState":{"x":[{"value":0},{"value":1},{"value":2}],"pc":{"value":4295012345},"lr":{"value":4295000000},"sp":{"value":6100000000},"fp":{"value":6100000100},"far":{"value":0},"esr":{"value":1442840704,"description":"(Syscall)"},"cpsr":{"value":1073741824},"flavor":"ARM_THREAD_STATE64"}"# : ""
+            return #"{"id":\#(9_000 + t)\#(crashed ? #","triggered":true,"queue":"com.apple.main-thread""# : #","name":"Worker \#(t)""#)\#(state),"frames":\#(frames(crashed ? crashedFrames : 20, thread: t))}"#
+        }.joined(separator: ",")
+        let reason = "*** Terminating app due to uncaught exception 'NSInternalInconsistencyException', reason: 'Invalid parameter not satisfying: row >= 0'"
+        let body = """
+        {"uptime":1200,"procRole":"Foreground","version":2,"userID":501,"deployVersion":210,"modelCode":"MacBookPro18,3",
+         "osVersion":{"train":"macOS 26.6","build":"25G5023","releaseType":"User"},"captureTime":"2026-09-20 10:11:12.3456 +0100",
+         "incident":"33333333-3333-3333-3333-333333333333","pid":4242,"cpuType":"ARM-64","translated":false,"procName":"FalconMail",
+         "procLaunch":"2026-09-20 09:51:12.0000 +0100","procPath":"/Applications/FalconMail.app/Contents/MacOS/FalconMail",
+         "bundleInfo":{"CFBundleShortVersionString":"1.9.0","CFBundleVersion":"45","CFBundleIdentifier":"com.falconmail.app"},
+         "crashReporterKey":"D4F2E1C0-SECRET-KEY","sleepWakeUUID":"ABCDEF","bootSessionUUID":"123456",
+         "exception":{"codes":"0x0000000000000000, 0x0000000000000000","rawCodes":[0,0],"type":"EXC_CRASH","signal":"SIGABRT"},
+         "termination":{"flags":0,"code":6,"namespace":"SIGNAL","indicator":"Abort trap: 6","byProc":"FalconMail","byPid":4242},
+         "asi":{"CoreFoundation":["\(reason)"],"libsystem_c.dylib":["abort() called"]},
+         \(backtrace ? #""lastExceptionBacktrace":\#(frames(45, thread: 99)),"# : "")
+         "faultingThread":0,"threads":[\(threads)],"usedImages":[\(images.joined(separator: ","))],
+         "sharedCache":{"base":6442450944,"size":4000000000,"uuid":"99999999-8888-7777-6666-555555555555"},
+         "vmSummary":"\(String(repeating: "ReadOnly portion of Libraries: Total=1.5G resident=0K(0%) swapped_out_or_unallocated=1.5G(100%) ", count: 40))",
+         "legacyInfo":{"threadTriggered":{"queue":"com.apple.main-thread"}}}
+        """
+        return header + "\n" + body.replacingOccurrences(of: "\n", with: "")
+    }
+
     @discardableResult
     private func write(_ name: String, _ text: String, modified: Date) throws -> URL {
         let url = reports.appendingPathComponent(name)
@@ -200,15 +246,16 @@ final class CrashReportTests: XCTestCase {
         XCTAssertEqual(context["exception"]?["type"], .string("EXC_BREAKPOINT"))
         XCTAssertEqual(context["header"]?["bundleID"], .string("com.falconmail.app"))
         let threads = try XCTUnwrap(context["threads"]?.arrayValue)
-        XCTAssertEqual(threads.count, 3)
-        XCTAssertEqual(threads[1]["frames"]?.arrayValue?.count, 22, "the crashed thread keeps every frame")
-        XCTAssertEqual(threads[1]["threadState"]?["far"]?["value"], .int(0))
-        XCTAssertNil(threads[1]["threadState"]?["x"], "general registers are left out")
-        XCTAssertEqual(threads[0]["frames"]?.arrayValue?.count, 8, "other threads keep their top frames")
+        XCTAssertEqual(threads.count, 1, "only the crashed thread")
+        XCTAssertEqual(threads[0]["index"], .int(1), "numbered as in the report")
+        XCTAssertEqual(threads[0]["frames"]?.arrayValue?.count, 22, "the crashed thread keeps every frame")
+        XCTAssertEqual(threads[0]["threadState"]?["far"]?["value"], .int(0))
+        XCTAssertNil(threads[0]["threadState"]?["x"], "general registers are left out")
+        XCTAssertNil(context["trimmed"], "nothing had to be left out")
         let images = try XCTUnwrap(context["usedImages"]?.arrayValue)
         XCTAssertEqual(Set(images.compactMap { $0["name"]?.stringValue }), ["FalconMail", "AppKit", "libsystem_kernel.dylib", "libswiftCore.dylib"])
-        XCTAssertTrue(images.allSatisfy { $0["uuid"] != nil && $0["base"] != nil && $0["path"] == nil })
-        let first = try XCTUnwrap(threads[1]["frames"]?.arrayValue?.first)
+        XCTAssertTrue(images.allSatisfy { $0["uuid"] != nil && $0["base"] != nil && $0["arch"] != nil && $0["path"] == nil })
+        let first = try XCTUnwrap(threads[0]["frames"]?.arrayValue?.first)
         let image = try XCTUnwrap(first["imageIndex"]?.intValue)
         XCTAssertEqual(images[Int(image)]["name"], .string("libsystem_kernel.dylib"), "frames point at the renumbered images")
     }
@@ -233,13 +280,102 @@ final class CrashReportTests: XCTestCase {
         XCTAssertFalse(text.contains("kmuradoff"))
     }
 
+    /// A real report is ten times the contract's 16 KB for a context. What goes is only what the
+    /// triage needs, still valid JSON that reads as an .ips: the exception, the crashed thread and
+    /// the exception's backtrace, and the images their frames use, with what had to be left out
+    /// marked where it was.
+    func testAFullSizeReportIsCutToWhatTheTriageNeeds() throws {
+        let ips = Self.fullIPS()
+        XCTAssertGreaterThan(ips.utf8.count, 120_000)
+        try write("FalconMail-2026-09-20-101112.ips", ips, modified: now.addingTimeInterval(-60))
+        let center = makeCenter(clock: ManualClock(now))
+        center.start()
+        let crash = try XCTUnwrap(center.pendingRecords.first { $0.event.kind == .crash }?.event)
+        let context = crash.context
+        XCTAssertLessThanOrEqual(context.serialised.count, DiagnosticsEvent.maxContextBytes - 1_024, "room to spare under the contract's 16 KB")
+        XCTAssertEqual(JSONValue.parse(context.serialised), context, "valid JSON")
+        XCTAssertNil(context["truncated"], "never cut blindly")
+        XCTAssertEqual(context["trimmed"], .bool(true), "and it says frames were left out")
+
+        XCTAssertEqual(context["exception"]?["type"], .string("EXC_CRASH"))
+        XCTAssertEqual(context["exception"]?["codes"], .string("0x0000000000000000, 0x0000000000000000"))
+        XCTAssertEqual(context["asi"]?["CoreFoundation"]?.arrayValue?.first?.stringValue?.hasSuffix("reason: 'Invalid parameter not satisfying: row >= 0'"), true)
+        XCTAssertEqual(context["faultingThread"], .int(0))
+
+        let threads = try XCTUnwrap(context["threads"]?.arrayValue)
+        XCTAssertEqual(threads.count, 1, "only the crashed thread")
+        XCTAssertEqual(threads[0]["triggered"], .bool(true))
+        XCTAssertEqual(threads[0]["index"], .int(0))
+        let images = try XCTUnwrap(context["usedImages"]?.arrayValue)
+        XCTAssertTrue(images.allSatisfy { Set($0.objectValue?.keys.map { $0 } ?? []) == ["uuid", "name", "base", "arch"] })
+
+        for (list, total) in [(threads[0]["frames"], 60), (context["lastExceptionBacktrace"], 45)] {
+            let frames = try XCTUnwrap(list?.arrayValue)
+            let omitted = frames.compactMap { $0["omitted"]?.intValue }.reduce(0, +)
+            let kept = frames.filter { $0["omitted"] == nil }
+            XCTAssertEqual(kept.count + Int(omitted), total, "every frame left out is counted where it was")
+            XCTAssertEqual(kept.prefix(8).compactMap { $0["imageOffset"]?.intValue }.count, 8)
+            XCTAssertEqual(frames.prefix(8).filter { $0["omitted"] != nil }.count, 0, "the top of the stack is kept whole")
+            for frame in kept {
+                let index = try XCTUnwrap(frame["imageIndex"]?.intValue)
+                XCTAssertTrue(images.indices.contains(Int(index)), "every frame points at an image that was sent")
+            }
+            let own = kept.filter { $0["imageIndex"]?.intValue.map { images[Int($0)]["name"] } == .string("FalconMail") }
+            XCTAssertEqual(own.count, total / 5 + (total % 5 > 2 ? 1 : 0), "FalconMail's own frames outlast the libraries' ")
+        }
+        let referenced = Set(([threads[0]["frames"], context["lastExceptionBacktrace"]]).flatMap { $0?.arrayValue ?? [] }
+            .compactMap { $0["imageIndex"]?.intValue })
+        XCTAssertEqual(referenced.count, images.count, "no image is sent that no frame uses")
+        for gone in ["vmSummary", "sharedCache", "crashReporterKey", "procPath", "bundleInfo", "legacyInfo", "userID"] {
+            XCTAssertNil(context[gone], gone)
+        }
+    }
+
+    /// The contexts the app sends for a full-size crash from each source, which
+    /// tools/diagnostics/test reads to check that symbolicate.py understands them. After a change
+    /// to what is sent, run the tests once with FALCON_UPDATE_FIXTURES=1 to write them again.
+    func testTheTriageToolsReadWhatTheAppSends() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("tools/diagnostics/test/fixtures/trimmed-contexts.json")
+        let redactor = DiagnosticsRedactor(salt: Data(repeating: 5, count: 32), homePath: "/Users/tester")
+        let text = Self.fullIPS()
+        let newline = try XCTUnwrap(text.firstIndex(of: "\n"))
+        let header = try XCTUnwrap(JSONValue.parse(String(text[..<newline])))
+        let body = try XCTUnwrap(JSONValue.parse(String(text[text.index(after: newline)...])))
+        let metricKit = try XCTUnwrap(MetricKitDiagnostics.items(from: MetricKitDiagnosticsTests.fullCrashPayload(), install: "INSTALL",
+                                                                 redactor: redactor, now: now).first?.event.context)
+        let ips = CrashReportDigest.digest(header: header, body: body, redactor: redactor)
+        let sent = JSONValue.object(["ips": ips, "metrickit": metricKit])
+        if ProcessInfo.processInfo.environment["FALCON_UPDATE_FIXTURES"] == "1" {
+            // The .ips laid out for reading; MetricKit's tree nests a level per frame, so it is kept on one line.
+            let text = "{\n  \"ips\": " + ips.readable(width: 100).replacingOccurrences(of: "\n", with: "\n  ")
+                + ",\n  \"metrickit\": " + String(decoding: metricKit.serialised, as: UTF8.self) + "\n}\n"
+            try Data(text.utf8).write(to: fixture)
+        }
+        let stored = try XCTUnwrap(JSONValue.parse(Data(contentsOf: fixture)), "\(fixture.path) is missing or not JSON")
+        XCTAssertEqual(stored, sent, "what the app sends has changed: run the tests with FALCON_UPDATE_FIXTURES=1 and check the tools' tests")
+    }
+
+    /// A report with room to spare keeps every frame of its crashed thread, and is not marked trimmed.
+    func testASmallReportKeepsEveryFrame() throws {
+        try write("FalconMail-2026-09-20-101112.ips", Self.fullIPS(backtrace: false, crashedFrames: 12), modified: now.addingTimeInterval(-60))
+        let center = makeCenter(clock: ManualClock(now))
+        center.start()
+        let context = try XCTUnwrap(center.pendingRecords.first { $0.event.kind == .crash }?.event.context)
+        XCTAssertNil(context["trimmed"])
+        XCTAssertNil(context["lastExceptionBacktrace"])
+        XCTAssertEqual(context["threads"]?.arrayValue?.first?["frames"]?.arrayValue?.count, 12)
+    }
+
     func testAHugeReportStillFitsAnEvent() throws {
         try write("FalconMail-2026-09-20-101112.ips", Self.ips(threads: 120, framesPerThread: 400), modified: now.addingTimeInterval(-60))
         let center = makeCenter(clock: ManualClock(now))
         center.start()
         let crash = try XCTUnwrap(center.pendingRecords.first { $0.event.kind == .crash }?.event)
         XCTAssertLessThanOrEqual(crash.context.serialised.count, DiagnosticsEvent.maxContextBytes)
-        let crashed = try XCTUnwrap(crash.context["threads"]?.arrayValue?[1])
+        XCTAssertEqual(crash.context["trimmed"], .bool(true))
+        let crashed = try XCTUnwrap(crash.context["threads"]?.arrayValue?.first)
+        XCTAssertEqual(crashed["index"], .int(1))
         XCTAssertGreaterThanOrEqual(crashed["frames"]?.arrayValue?.count ?? 0, 48, "the crashed thread's frames survive the cut")
     }
 }

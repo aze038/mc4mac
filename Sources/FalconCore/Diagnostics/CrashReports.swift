@@ -89,9 +89,24 @@ public struct CrashReportScanner: Sendable {
     }
 }
 
-/// A crash report made into an event: what the triage needs to symbolicate and group it,
-/// the crashed thread's frames above all, with every string redacted.
+/// A crash report made into an event: what the triage needs to symbolicate and group it, with
+/// every string redacted. A report macOS writes runs to 50–200 KB, ten times what an event's
+/// context may hold, so only this goes, still shaped as an .ips so the triage's tools read it:
+///
+/// - the exception, its type, codes and signal, and its reason (`asi`), with how the app ended;
+/// - the crashed thread, its frames and a few registers, and the backtrace an uncaught exception
+///   was raised from (`lastExceptionBacktrace`), when there is one;
+/// - the images those frames are in, with only their UUID, name, load address and architecture,
+///   renumbered in the order the frames use them.
+///
+/// When that is still too large, frames go, least useful first, until it fits (see `dropOrder`).
+/// Each run of frames left out becomes `{"omitted": n}` where it was, and the context says
+/// `"trimmed": true`. Nothing else about the Mac or its user is kept.
 public enum CrashReportDigest {
+    /// What a crash's context may take: the contract's 16 KB, less room for the backend counting
+    /// the same JSON a little differently.
+    static let budget = DiagnosticsEvent.maxContextBytes - 1_024
+
     public static func event(from report: CrashReportScanner.Report, install: String,
                              redactor: DiagnosticsRedactor) -> (DiagnosticsEvent, DiagnosticsApp?, String?) {
         let header = report.header
@@ -104,7 +119,7 @@ public enum CrashReportDigest {
         var message = "FalconMail crashed (\(code.replacingOccurrences(of: ".", with: ", ")))"
         if let indicator = body["termination"]?["indicator"]?.stringValue { message += ": \(indicator)" }
         if let reason = applicationSpecificInformation(body) { message += "\n" + reason }
-        let context = redactor.redactCrashReport(digest(header: header, body: body))
+        let context = digest(header: header, body: body, redactor: redactor)
         let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("ips:\(install):\(incident)"), kind: .crash,
                                      signature: signature, title: DiagnosticsTitle.make(kind: .crash, area: "crash", code: code),
                                      area: "crash", firstAt: when, message: redactor.redactCrashReport(message), context: context)
@@ -141,9 +156,13 @@ public enum CrashReportDigest {
     }
 
     static func crashedThread(_ body: JSONValue) -> JSONValue? {
+        crashedThreadIndex(body).flatMap { body["threads"]?.arrayValue?[$0] }
+    }
+
+    static func crashedThreadIndex(_ body: JSONValue) -> Int? {
         let threads = body["threads"]?.arrayValue ?? []
-        if let index = body["faultingThread"]?.intValue, threads.indices.contains(Int(index)) { return threads[Int(index)] }
-        return threads.first { $0["triggered"]?.boolValue == true }
+        if let index = body["faultingThread"]?.intValue, threads.indices.contains(Int(index)) { return Int(index) }
+        return threads.firstIndex { $0["triggered"]?.boolValue == true }
     }
 
     static func applicationSpecificInformation(_ body: JSONValue) -> String? {
@@ -152,68 +171,158 @@ public enum CrashReportDigest {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
-    static let keptHeader = ["app_version", "build_version", "bug_type", "os_version", "bundleID", "timestamp", "name"]
-    static let keptBody = ["uptime", "procRole", "version", "modelCode", "osVersion", "captureTime", "procLaunch", "cpuType",
-                           "translated", "bundleInfo", "exception", "termination", "asi", "ktriageinfo", "vmRegionInfo",
-                           "legacyInfo", "faultingThread", "os_fault"]
-    static let keptRegisters = ["pc", "lr", "sp", "fp", "far", "esr", "cpsr", "flavor"]
+    static let keptHeader = ["app_version", "build_version", "bug_type", "os_version", "bundleID"]
+    /// The exception and how the app ended, each with how many characters of text it may keep.
+    static let keptBody: [(key: String, characters: Int)] = [
+        ("exception", 300), ("termination", 300), ("ktriageinfo", 600), ("vmRegionInfo", 600),
+        ("faultingThread", 0), ("cpuType", 40), ("translated", 0),
+    ]
+    static let keptFrame: Set<String> = ["imageIndex", "imageOffset", "symbol", "symbolLocation", "inline", "sourceFile", "sourceLine"]
+    static let keptImage: Set<String> = ["uuid", "name", "base", "arch"]
+    static let keptRegisters: Set<String> = ["pc", "lr", "sp", "fp", "far", "esr", "cpsr", "flavor"]
+    /// Where a stack failed: its top frames, which go last of all.
+    static let topFrames = 8
 
-    /// The report cut to what fits an event: the crashed thread with all its frames, the
-    /// first frames of the others, the exception's backtrace, and only the images those
-    /// frames use, renumbered so the report still reads as an .ips. Identifiers of this Mac
-    /// or its user are not kept.
-    static func digest(header: JSONValue, body: JSONValue) -> JSONValue {
-        let crashed = Int(body["faultingThread"]?.intValue ?? -1)
-        let images = body["usedImages"]?.arrayValue ?? []
-        for (crashedFrames, otherFrames, otherThreads) in [(128, 8, 40), (64, 3, 20), (48, 0, 0)] {
-            var used: [Int: Int] = [:]
-            var kept: [JSONValue] = []
-            func frames(_ list: [JSONValue], limit: Int) -> [JSONValue] {
-                list.prefix(limit).map { frame in
-                    guard case .object(var f) = frame else { return frame }
-                    if let index = f["imageIndex"]?.intValue, images.indices.contains(Int(index)) {
-                        let old = Int(index)
-                        if used[old] == nil { used[old] = used.count; kept.append(image(images[old])) }
-                        f["imageIndex"] = .int(Int64(used[old]!))
-                    }
-                    return .object(f.filter { ["imageIndex", "imageOffset", "symbol", "symbolLocation", "inline"].contains($0.key) })
-                }
-            }
-            var threads: [JSONValue] = []
-            for (i, thread) in (body["threads"]?.arrayValue ?? []).enumerated() {
-                let isCrashed = i == crashed || (crashed < 0 && thread["triggered"]?.boolValue == true)
-                guard isCrashed || threads.count < otherThreads || i < crashed else {
-                    if crashed >= 0 { break } else { continue }
-                }
-                var t: [String: JSONValue] = [:]
-                for key in ["triggered", "queue", "name"] { t[key] = thread[key] }
-                t["frames"] = .array(frames(thread["frames"]?.arrayValue ?? [], limit: isCrashed ? crashedFrames : otherFrames))
-                if isCrashed, let state = thread["threadState"]?.objectValue {
-                    t["threadState"] = .object(state.filter { keptRegisters.contains($0.key) })
-                }
-                threads.append(.object(t))
-            }
-            var out: [String: JSONValue] = ["source": .string("ips")]
-            out["header"] = .object((header.objectValue ?? [:]).filter { keptHeader.contains($0.key) })
-            for key in keptBody { out[key] = body[key] }
-            if case .string(let region)? = out["vmRegionInfo"] { out["vmRegionInfo"] = .string(String(region.prefix(600))) }
-            if case .object(let asi)? = out["asi"] {
-                out["asi"] = .object(asi.mapValues { lines in .array((lines.arrayValue ?? []).prefix(4).map { .string(String(($0.stringValue ?? "").prefix(1_000))) }) })
-            }
-            out["threads"] = .array(threads)
-            if let backtrace = body["lastExceptionBacktrace"]?.arrayValue {
-                out["lastExceptionBacktrace"] = .array(frames(backtrace, limit: crashedFrames))
-            }
-            out["usedImages"] = .array(kept)
-            let value = JSONValue.object(out.compactMapValues { $0 })
-            if value.estimatedSize <= DiagnosticsEvent.maxContextBytes - 512 { return value }
-        }
-        return .object(["source": .string("ips"), "exception": body["exception"] ?? .null, "truncated": .bool(true)])
+    /// A frame of one of the stacks sent: 0 the crashed thread, 1 the exception's backtrace.
+    private struct FrameRef: Hashable {
+        var stack: Int
+        var index: Int
     }
 
-    private static func image(_ value: JSONValue) -> JSONValue {
-        guard case .object(let o) = value else { return value }
-        return .object(o.filter { ["uuid", "base", "size", "name", "arch", "CFBundleShortVersionString", "CFBundleIdentifier"].contains($0.key) })
+    /// One stack's frames, already redacted, and which of them are in FalconMail itself.
+    private struct Stack {
+        var frames: [[String: JSONValue]]
+        var own: [Bool]
+    }
+
+    static func digest(header: JSONValue, body: JSONValue, redactor: DiagnosticsRedactor) -> JSONValue {
+        let images = (body["usedImages"]?.arrayValue ?? []).map { image -> JSONValue in
+            redactor.redactCrashReport(.object((image.objectValue ?? [:]).filter { keptImage.contains($0.key) }))
+        }
+        let appName = body["procName"]?.stringValue ?? header["app_name"]?.stringValue ?? "FalconMail"
+        let ownImages = Set((body["usedImages"]?.arrayValue ?? []).enumerated().compactMap { index, image -> Int? in
+            image["name"]?.stringValue == appName || image["CFBundleIdentifier"]?.stringValue == CrashReportScanner.bundleIdentifier ? index : nil
+        })
+        func stack(_ list: [JSONValue]) -> Stack {
+            let frames = list.map { frame -> [String: JSONValue] in
+                redactor.redactCrashReport(.object((frame.objectValue ?? [:]).filter { keptFrame.contains($0.key) })).objectValue ?? [:]
+            }
+            return Stack(frames: frames, own: frames.map { $0["imageIndex"]?.intValue.map { ownImages.contains(Int($0)) } ?? false })
+        }
+
+        // Redacted before anything is cut, so a cut never leaves half of something the redactor
+        // would have recognised whole.
+        var cut = false
+        var base: [String: JSONValue] = ["source": .string("ips")]
+        base["header"] = redactor.redactCrashReport(.object((header.objectValue ?? [:]).filter { keptHeader.contains($0.key) }))
+            .capped(strings: 100, cut: &cut)
+        for (key, characters) in keptBody {
+            base[key] = body[key].map { redactor.redactCrashReport($0).capped(strings: max(characters, 1), lists: 8, cut: &cut) }
+        }
+        if let asi = body["asi"]?.objectValue {
+            let kept = asi.keys.sorted().prefix(4)
+            if kept.count < asi.count { cut = true }
+            base["asi"] = .object(Dictionary(uniqueKeysWithValues: kept.map { key in
+                (key, redactor.redactCrashReport(asi[key] ?? .null).capped(strings: 500, lists: 3, cut: &cut))
+            }))
+        }
+
+        let threads = body["threads"]?.arrayValue ?? []
+        let crashedIndex = crashedThreadIndex(body)
+        var shell: [String: JSONValue]?
+        var stacks: [Stack] = []
+        if let crashedIndex {
+            let thread = threads[crashedIndex]
+            var t: [String: JSONValue] = ["triggered": .bool(true), "index": .int(Int64(crashedIndex))]
+            for key in ["queue", "name"] { t[key] = thread[key].map { redactor.redactCrashReport($0).capped(strings: 100, cut: &cut) } }
+            if let state = thread["threadState"]?.objectValue {
+                t["threadState"] = redactor.redactCrashReport(.object(state.filter { keptRegisters.contains($0.key) })).capped(strings: 100, cut: &cut)
+            }
+            shell = t
+            stacks.append(stack(thread["frames"]?.arrayValue ?? []))
+        } else {
+            stacks.append(Stack(frames: [], own: []))
+        }
+        let backtrace = body["lastExceptionBacktrace"]?.arrayValue
+        if let backtrace { stacks.append(stack(backtrace)) }
+
+        let order = dropOrder(stacks)
+        let fitted = JSONValue.smallestCut(upTo: order.count, maxBytes: budget) { count in
+            assemble(base: base, shell: shell, stacks: stacks, hasBacktrace: backtrace != nil, images: images,
+                     dropped: Set(order.prefix(count)), cut: cut)
+        }
+        if let fitted { return fitted.value }
+        // Only an exception with pages of text could get here; its type and signal still go.
+        var minimal = cut
+        let exception = redactor.redactCrashReport(body["exception"] ?? .null).capped(strings: 100, lists: 4, cut: &minimal)
+        return .object(["source": .string("ips"), "exception": exception, "trimmed": .bool(true)])
+    }
+
+    /// Frames in the order they go when the report is too large, least useful first:
+    ///
+    /// 1. frames in other binaries below the top eight, from the bottom of the stack up: the run
+    ///    loop and start-up code every stack passes through;
+    /// 2. FalconMail's own frames below the top eight, from the bottom up;
+    /// 3. the top eight, where the stack failed, from the bottom up.
+    ///
+    /// At each step the crashed thread's frames go before the backtrace's: when an exception was
+    /// raised, the backtrace shows where, and the crashed thread only how it ended the app.
+    private static func dropOrder(_ stacks: [Stack]) -> [FrameRef] {
+        var order: [FrameRef] = []
+        for step in 0..<3 {
+            for (s, stack) in stacks.enumerated() {
+                for i in stack.frames.indices.reversed() {
+                    let rank = i < topFrames ? 2 : stack.own[i] ? 1 : 0
+                    if rank == step { order.append(FrameRef(stack: s, index: i)) }
+                }
+            }
+        }
+        return order
+    }
+
+    /// The context with the frames in `dropped` left out, each run of them counted where it was,
+    /// and the images renumbered to those the remaining frames use.
+    private static func assemble(base: [String: JSONValue], shell: [String: JSONValue]?, stacks: [Stack], hasBacktrace: Bool,
+                                 images: [JSONValue], dropped: Set<FrameRef>, cut: Bool) -> JSONValue {
+        var renumbered: [Int: Int] = [:]
+        var used: [JSONValue] = []
+        func frames(_ s: Int) -> JSONValue {
+            var out: [JSONValue] = []
+            var gap = 0
+            for (i, frame) in stacks[s].frames.enumerated() {
+                if dropped.contains(FrameRef(stack: s, index: i)) {
+                    gap += 1
+                    continue
+                }
+                if gap > 0 { out.append(.object(["omitted": .int(Int64(gap))])) }
+                gap = 0
+                var f = frame
+                if let index = f["imageIndex"]?.intValue, images.indices.contains(Int(index)) {
+                    let old = Int(index)
+                    if renumbered[old] == nil {
+                        renumbered[old] = used.count
+                        used.append(images[old])
+                    }
+                    f["imageIndex"] = .int(Int64(renumbered[old]!))
+                } else {
+                    f["imageIndex"] = nil
+                }
+                out.append(.object(f))
+            }
+            if gap > 0 { out.append(.object(["omitted": .int(Int64(gap))])) }
+            return .array(out)
+        }
+        var out = base
+        if var thread = shell {
+            thread["frames"] = frames(0)
+            out["threads"] = .array([.object(thread)])
+        } else {
+            out["threads"] = .array([])
+        }
+        if hasBacktrace { out["lastExceptionBacktrace"] = frames(1) }
+        out["usedImages"] = .array(used)
+        if cut || !dropped.isEmpty { out["trimmed"] = .bool(true) }
+        return .object(out)
     }
 
     static func parseDate(_ text: String?) -> Date? {

@@ -55,43 +55,113 @@ public enum MetricKitDiagnostics {
             code = "exceeded"
             message = "FalconMail wrote \(meta["writesCaused"]?.stringValue ?? "a lot") to disk"
         }
-        var context: [String: JSONValue] = ["source": .string("metrickit"), "callStackTree": tree]
-        context["diagnosticMetaData"] = .object((meta.objectValue ?? [:]).filter { $0.key != "pid" })
         let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("metrickit:\(install):\(String(decoding: diagnostic.serialised, as: UTF8.self))"),
                                      kind: kind, signature: DiagnosticsSignature.make(area: area, code: code, place: place(in: tree)),
                                      title: DiagnosticsTitle.make(kind: kind, area: area, code: code), area: area.lowercased(),
                                      firstAt: begin, lastAt: end, message: redactor.redactCrashReport(message),
-                                     context: redactor.redactCrashReport(.object(context)))
+                                     context: context(tree: diagnostic["callStackTree"] ?? .null, meta: meta, redactor: redactor))
         let app = meta["appVersion"]?.stringValue.map {
             DiagnosticsApp(version: $0, build: meta["appBuildVersion"]?.stringValue ?? "", channel: "release")
         }
         return Item(event: event, app: app, os: meta["osVersion"]?.stringValue)
     }
 
-    /// The thread MetricKit blames first, then the others; each tree cut to a depth and
-    /// breadth that fits, keeping the frames nearest the top of the stack.
-    static func attributedFirst(_ tree: JSONValue) -> JSONValue {
+    /// What a diagnostic's context may take: the contract's 16 KB, less room for the backend
+    /// counting the same JSON a little differently.
+    static let budget = DiagnosticsEvent.maxContextBytes - 1_024
+    /// How much of each thread's tree goes when there is room: its first four root frames, the
+    /// three busiest branches under each frame and sixty-four levels below the root, the frames
+    /// nearest the top of the stack. Past that a thread in a crash is start-up code.
+    static let maxRoots = 4
+    static let maxBranches = 3
+    static let maxLevel = 64
+
+    /// The diagnostic's call-stack tree and metadata, redacted, cut until they fit: first the
+    /// threads MetricKit did not blame, from the last; then all but the busiest branch of the
+    /// blamed thread; then its deepest frames, a level at a time, down to its root frames. What
+    /// was left out is counted where it was, `callStacksOmitted` in the tree, `framesOmitted` on
+    /// a thread and `subFramesOmitted` on a frame, and the context says `"trimmed": true`.
+    static func context(tree raw: JSONValue, meta: JSONValue, redactor: DiagnosticsRedactor) -> JSONValue {
+        var cut = false
+        let metaData = redactor.redactCrashReport(.object((meta.objectValue ?? [:]).filter { $0.key != "pid" }))
+            .capped(strings: 600, lists: 8, cut: &cut)
+        let tree = redactor.redactCrashReport(ordered(raw))
+        guard case .object(let shell) = tree, let stacks = shell["callStacks"]?.arrayValue else {
+            var context: [String: JSONValue] = ["source": .string("metrickit"), "callStackTree": tree, "diagnosticMetaData": metaData]
+            if cut { context["trimmed"] = .bool(true) }
+            return .object(context)
+        }
+        let blamed = stacks.prefix { $0["threadAttributed"]?.boolValue == true }.count
+        let others = stacks.count - blamed
+        func make(_ step: Int) -> JSONValue {
+            let dropped = min(step, others)
+            let tighter = step - others
+            let limits = Limits(roots: tighter >= 1 ? 1 : maxRoots, branches: tighter >= 1 ? 1 : maxBranches,
+                                level: tighter >= 2 ? maxLevel - (tighter - 1) : maxLevel)
+            var trimmed = cut || dropped > 0
+            var t = shell
+            t["callStacks"] = .array(stacks.prefix(stacks.count - dropped).map { pruned(stack: $0, limits, &trimmed) })
+            if dropped > 0 { t["callStacksOmitted"] = .int(Int64(dropped)) }
+            var context: [String: JSONValue] = ["source": .string("metrickit"), "callStackTree": .object(t), "diagnosticMetaData": metaData]
+            if trimmed { context["trimmed"] = .bool(true) }
+            return .object(context)
+        }
+        if let fitted = JSONValue.smallestCut(upTo: others + 1 + maxLevel, maxBytes: budget, make) { return fitted.value }
+        return .object(["source": .string("metrickit"), "trimmed": .bool(true),
+                        "diagnosticMetaData": metaData.capped(strings: 100, lists: 4, cut: &cut)])
+    }
+
+    /// The thread MetricKit blames first, the crashed thread or the main thread of a hang, then
+    /// the others as MetricKit lists them.
+    static func ordered(_ tree: JSONValue) -> JSONValue {
         guard case .object(var o) = tree, let stacks = o["callStacks"]?.arrayValue else { return tree }
-        let ordered = stacks.filter { $0["threadAttributed"]?.boolValue == true } + stacks.filter { $0["threadAttributed"]?.boolValue != true }
-        o["callStacks"] = .array(ordered.map { stack in
-            guard case .object(var s) = stack, let roots = s["callStackRootFrames"]?.arrayValue else { return stack }
-            s["callStackRootFrames"] = .array(roots.prefix(4).map { pruned($0, depth: 0) })
-            return .object(s)
-        })
+        o["callStacks"] = .array(stacks.filter { $0["threadAttributed"]?.boolValue == true } + stacks.filter { $0["threadAttributed"]?.boolValue != true })
         return .object(o)
     }
 
-    private static func pruned(_ frame: JSONValue, depth: Int) -> JSONValue {
-        guard case .object(var f) = frame else { return frame }
-        if let children = f["subFrames"]?.arrayValue {
-            if depth >= 64 {
-                f["subFrames"] = nil
-            } else {
-                let busiest = children.sorted { ($0["sampleCount"]?.intValue ?? 0) > ($1["sampleCount"]?.intValue ?? 0) }.prefix(3)
-                f["subFrames"] = .array(busiest.map { pruned($0, depth: depth + 1) })
-            }
+    /// The tree ordered and cut to the most that ever goes, keeping the frames nearest the top of
+    /// each stack.
+    static func attributedFirst(_ tree: JSONValue) -> JSONValue {
+        guard case .object(var o) = ordered(tree), let stacks = o["callStacks"]?.arrayValue else { return tree }
+        var trimmed = false
+        o["callStacks"] = .array(stacks.map { pruned(stack: $0, Limits(roots: maxRoots, branches: maxBranches, level: maxLevel), &trimmed) })
+        return .object(o)
+    }
+
+    private struct Limits {
+        var roots: Int
+        var branches: Int
+        /// The deepest level kept, the root frames being level 0.
+        var level: Int
+    }
+
+    private static func pruned(stack: JSONValue, _ limits: Limits, _ trimmed: inout Bool) -> JSONValue {
+        guard case .object(var s) = stack, let roots = s["callStackRootFrames"]?.arrayValue else { return stack }
+        let omitted = roots.dropFirst(limits.roots).reduce(0) { $0 + frameCount($1) }
+        s["callStackRootFrames"] = .array(roots.prefix(limits.roots).map { pruned(frame: $0, level: 0, limits, &trimmed) })
+        if omitted > 0 {
+            s["framesOmitted"] = .int(Int64(omitted))
+            trimmed = true
+        }
+        return .object(s)
+    }
+
+    private static func pruned(frame: JSONValue, level: Int, _ limits: Limits, _ trimmed: inout Bool) -> JSONValue {
+        guard case .object(var f) = frame, let children = f["subFrames"]?.arrayValue, !children.isEmpty else { return frame }
+        let kept = level >= limits.level ? [] : Array(children.sorted { ($0["sampleCount"]?.intValue ?? 0) > ($1["sampleCount"]?.intValue ?? 0) }
+            .prefix(limits.branches))
+        let omitted = children.reduce(0) { $0 + frameCount($1) } - kept.reduce(0) { $0 + frameCount($1) }
+        f["subFrames"] = kept.isEmpty ? nil : .array(kept.map { pruned(frame: $0, level: level + 1, limits, &trimmed) })
+        if omitted > 0 {
+            f["subFramesOmitted"] = .int(Int64(omitted))
+            trimmed = true
         }
         return .object(f)
+    }
+
+    /// The frame and every frame below it.
+    private static func frameCount(_ frame: JSONValue) -> Int {
+        1 + (frame["subFrames"]?.arrayValue ?? []).reduce(0) { $0 + frameCount($1) }
     }
 
     /// The binary of the top frame of the blamed thread that is not crash machinery.
