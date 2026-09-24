@@ -166,10 +166,10 @@ final class CatchUpTests: XCTestCase {
         await h.settled()
     }
 
-    /// Thirty old messages stored in INBOX, the loop idling, and then 105 more that another
-    /// program files there at once: a pass takes the newest 35 and holds the other 70 back
-    /// for the catch-up interval, an hour here.
-    private func heldBack() async throws -> (h: EngineHarness, old: Set<UInt32>, taken: Set<UInt32>, held: [UInt32]) {
+    /// Thirty old messages stored in INBOX, the loop idling, and then `bulk` more that another
+    /// program files there at once: a pass takes the newest 35 and holds the rest back for the
+    /// catch-up interval, an hour here.
+    private func heldBack(bulk count: Int = 105) async throws -> (h: EngineHarness, old: Set<UInt32>, taken: Set<UInt32>, held: [UInt32]) {
         var pacing = SyncPacing()
         pacing.catchUpWindow = 35
         pacing.catchUpInterval = 3600
@@ -182,11 +182,11 @@ final class CatchUpTests: XCTestCase {
         harness = h
         await h.syncer.start()
         await assertEventually { await self.finishedCount(h) == 1 && server.idlingCount == 1 }
-        let bulk = server.addMany(105, to: "INBOX") { FakeIMAPServer.message("bulk-\($0)") }
+        let bulk = server.addMany(count, to: "INBOX") { FakeIMAPServer.message("bulk-\($0)") }
         await passRuns(h)
         let stored = try await h.uids(in: "INBOX")
-        XCTAssertEqual(stored, Set(old + bulk.suffix(35)), "the newest 35 are taken and 70 held back")
-        return (h, Set(old), Set(bulk.suffix(35)), Array(bulk.prefix(70)))
+        XCTAssertEqual(stored, Set(old + bulk.suffix(35)), "the newest 35 are taken and the rest held back")
+        return (h, Set(old), Set(bulk.suffix(35)), Array(bulk.dropLast(35)))
     }
 
     func testABacklogThatLeavesTheInboxDuringItsHoldTakesNoRowsForAFlagReplyThatListsNothing() async throws {
@@ -241,6 +241,31 @@ final class CatchUpTests: XCTestCase {
         let answers = await checkAnswers(h)
         XCTAssertEqual(answers, [true])
         XCTAssertEqual(h.server.messages(in: "INBOX").count, 66, "and nothing on the server was touched")
+    }
+
+    func testACheckThatTakesTheWholeBacklogEndsTheHold() async throws {
+        let (h, old, taken, held) = try await heldBack(bulk: 45)
+        XCTAssertEqual(held.count, 10)
+        // The 35 taken leave INBOX and a pass drops them: the newest stored is now below the ten
+        // held back.
+        for uid in taken { h.server.remove(uid: uid, from: "INBOX") }
+        await passRuns(h)
+        var stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored, old)
+
+        // Send & Receive takes the ten with the message asked for, all in one window.
+        let urgent = h.server.add(FakeIMAPServer.message("urgent", date: Date()), to: "INBOX")
+        await passRuns(h, check: true)
+        stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored, old.union(held).union([urgent]))
+        let answers = await checkAnswers(h)
+        XCTAssertEqual(answers, [true])
+
+        // Nothing is held back any more, so mail that arrives now is fetched at once.
+        let next = h.server.deliver(FakeIMAPServer.message("next", date: Date()), to: "INBOX")
+        await assertEventually("a hold with nothing left to fetch was ended") {
+            ((try? await h.uids(in: "INBOX")) ?? []).contains(next)
+        }
     }
 
     func testASearchDuringAHoldThatListsNothingTakesNoRowsAndLosesNoBacklog() async throws {

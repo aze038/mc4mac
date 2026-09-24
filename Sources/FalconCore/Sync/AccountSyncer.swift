@@ -1153,9 +1153,10 @@ public actor AccountSyncer {
             // stored gone from INBOX part of it lay above where the window began: what the
             // window took is stored or gone. Only what the server holds and FalconMail does not
             // may count as still to fetch, or the count that keeps a reply listing nothing from
-            // removing rows would reckon on messages that are not there.
+            // removing rows would reckon on messages that are not there. A window that took the
+            // whole backlog ends the hold, so that what IDLE tells of next is fetched at once.
             result.unfetched = Set(backlog + later).subtracting(have).subtracting(taking).sorted()
-            catchUps[folder.id] = (held.notBefore, result.unfetched)
+            catchUps[folder.id] = result.unfetched.isEmpty ? nil : (held.notBefore, result.unfetched)
             return result
         }
         if folder.oldestSyncedUID == 0 { folder.oldestSyncedUID = candidates.first ?? folder.lastSyncedUID }
