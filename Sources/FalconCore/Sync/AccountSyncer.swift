@@ -842,8 +842,11 @@ public actor AccountSyncer {
         folder.uidValidity = status.uidValidity
         folder.uidNext = status.uidNext
         // Mail found in a folder listed before is news; a folder listed from scratch, the first
-        // time, after a renumbering or with its index set aside, brings none.
-        let listedBefore = folder.lastSyncedUID > 0
+        // time, after a renumbering or with its index set aside, brings none. One listed afresh
+        // after the server reported it empty brings as news only what came above its old cursor.
+        let newAbove = extras.folder(folder).newAbove
+        let listedBefore = folder.lastSyncedUID > 0 || newAbove != nil
+        let isNews = { (m: MessageSummary) in newAbove.map { m.uid > $0 } ?? true }
 
         var arrived = NewMail(unfetched: [])
         if status.exists > 0 {
@@ -854,8 +857,8 @@ public actor AccountSyncer {
         var newMessages = arrived.messages
 
         // Old mail arriving now, as an import brings, is left as it is: rules and mutes act only
-        // on what was sent lately.
-        let recent = newMessages.filter { $0.date > Date().addingTimeInterval(-pacing.ruleWindow) }
+        // on what was sent lately, and on none that was listed here before.
+        let recent = newMessages.filter { $0.date > Date().addingTimeInterval(-pacing.ruleWindow) && isNews($0) }
         if folder.role == .inbox, !recent.isEmpty {
             let kept = Set(await withoutMuted(recent, folder: folder, fs: fs, client: client).map(\.uid))
             let muted = Set(recent.map(\.uid)).subtracting(kept)
@@ -874,6 +877,10 @@ public actor AccountSyncer {
         }
 
         folder.lastSyncDate = Date()
+        if let newAbove, folder.lastSyncedUID >= newAbove {
+            // Listed again past where it was: from here on news is found as for any folder.
+            extras.updateFolder(folder.id, uidValidity: folder.uidValidity) { $0.newAbove = nil }
+        }
         let passed = folder
         try await store.updateFolder(folder.id) { current in
             // A pass that met a newer numbering owns the record now.
@@ -893,7 +900,7 @@ public actor AccountSyncer {
 
         try await prefetchBodies(folder: folder, fs: fs, client: client, preferred: newMessages)
 
-        let stillRecent = newMessages.filter { $0.date > Date().addingTimeInterval(-pacing.ruleWindow) }
+        let stillRecent = newMessages.filter { $0.date > Date().addingTimeInterval(-pacing.ruleWindow) && isNews($0) }
         var survivors = stillRecent
         if folder.role == .inbox, listedBefore, !stillRecent.isEmpty {
             let relocated = await applyRules(to: stillRecent, folder: folder, fs: fs) { work in try await work(client) }
@@ -911,9 +918,10 @@ public actor AccountSyncer {
 
     /// Takes every row off a folder the server says is empty. A few go at once; more only when
     /// a pass `emptyFolderConfirmation` later finds it empty too, since a server can report
-    /// none for a moment, and nothing would list rows below the cursor again. Once they go, the
-    /// oldest listed UID moves just above the cursor, so that Load older lists whatever the
-    /// server shows below it again.
+    /// none for a moment. Once they go, the folder's cursors start again from nothing under the
+    /// same UIDVALIDITY, so that whatever the server shows there later, the same messages again
+    /// or new ones, is listed as a first pass lists a folder, its newest messages first, with no
+    /// Load older needed; mail above the old cursor still counts as news.
     private func empty(_ folder: inout FolderInfo, fs: FolderStore) async throws {
         let known = await fs.uids()
         guard !known.isEmpty else {
@@ -931,17 +939,22 @@ public actor AccountSyncer {
         reportedEmpty[folder.id] = nil
         try await fs.remove(uids: Array(known))
         await indexer?.remove(ids: known.map { MessageSummary.makeID(accountID: account.id, folderID: folder.id, uid: $0) })
-        // A folder never listed to the end starts again from scratch.
-        let raised = folder.lastSyncedUID > 0 ? folder.lastSyncedUID + 1 : 0
+        let listedUpTo = folder.lastSyncedUID
         let validity = folder.uidValidity
-        folder.oldestSyncedUID = raised
+        folder.lastSyncedUID = 0
+        folder.oldestSyncedUID = 0
+        // Only under the numbering the rows were listed in: one renumbered meanwhile starts
+        // again from nothing by itself.
         try await store.updateFolder(folder.id) { current in
             guard current.uidValidity == validity else { return }
-            current.oldestSyncedUID = raised
+            current.lastSyncedUID = 0
+            current.oldestSyncedUID = 0
         }
-        extras.updateFolder(folder.id, uidValidity: validity) {
-            $0.belowWindow = 0
-            $0.flagSliceBelow = nil
+        extras.updateFolder(folder.id, uidValidity: validity) { state in
+            // Emptied again before it was listed past its old cursor, that cursor still holds.
+            let above = max(state.newAbove ?? 0, listedUpTo)
+            state = FolderSyncExtras(uidValidity: validity)
+            state.newAbove = above > 0 ? above : nil
         }
     }
 

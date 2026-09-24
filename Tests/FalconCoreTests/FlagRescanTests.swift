@@ -252,7 +252,8 @@ final class FlagRescanTests: XCTestCase {
         let rows = try await h.uids(in: "INBOX")
         XCTAssertTrue(rows.isEmpty, "a later pass confirms it")
         let inbox = try await h.folder("INBOX")
-        XCTAssertEqual(inbox.oldestSyncedUID, inbox.lastSyncedUID + 1, "Load older looks below the cursor for anything shown again")
+        XCTAssertEqual(inbox.lastSyncedUID, 0, "the cursors start again, so that whatever is shown there later is listed afresh")
+        XCTAssertEqual(inbox.oldestSyncedUID, 0)
 
         let few = try await listed(5)
         for m in few.server.messages(in: "INBOX") { few.server.remove(uid: m.uid, from: "INBOX") }
@@ -260,6 +261,104 @@ final class FlagRescanTests: XCTestCase {
         let none = try await few.uids(in: "INBOX")
         XCTAssertTrue(none.isEmpty, "a few rows go at once")
         await h.finish()
+    }
+
+    /// INBOX with 50 messages, of which a first pass lists the newest 20.
+    private func windowOfTwenty(emptyFolderConfirmation: TimeInterval = 0.3) async throws -> EngineHarness {
+        let server = try EngineHarness.gmailServer()
+        server.addMany(50, to: "INBOX") { FakeIMAPServer.message("m\($0 + 1)", date: Date()) }
+        var pacing = SyncPacing()
+        pacing.initialWindow = 20
+        pacing.emptyFolderConfirmation = emptyFolderConfirmation
+        let h = try await EngineHarness(server: server, pacing: pacing)
+        harness = h
+        try await h.syncOnce()
+        let first = try await h.uids(in: "INBOX")
+        XCTAssertEqual(first, Set(UInt32(31)...50))
+        return h
+    }
+
+    func testAFolderEmptiedAndShownAgainListsItsNewestMessagesWithoutLoadOlder() async throws {
+        let h = try await windowOfTwenty()
+        let server = h.server
+        try await h.rules.save([RuleDefinition(name: "Flag everything", conditions: [RuleCondition(field: .subject, op: .contains, value: "Message")],
+                                               actions: [RuleAction(kind: .flag)])])
+        let shown = server.messages(in: "INBOX")
+        for m in shown { server.remove(uid: m.uid, from: "INBOX") }
+        try await h.syncOnce()
+        try await Task.sleep(nanoseconds: 350_000_000)
+        try await h.syncOnce()
+        let emptied = try await h.uids(in: "INBOX")
+        XCTAssertTrue(emptied.isEmpty, "a later pass agreed the folder is empty")
+
+        // The server shows its messages again, as one that lost track of the folder for a while
+        // does, and new mail has come meanwhile.
+        for m in shown { server.add(m.data, to: "INBOX", uid: m.uid) }
+        server.add(FakeIMAPServer.message("m51", date: Date()), to: "INBOX", uid: 51)
+        server.resetCounters()
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows, Set(UInt32(32)...51), "the newest twenty, as a first pass lists them, with nothing asked of Load older")
+        let inbox = try await h.folder("INBOX")
+        XCTAssertEqual(inbox.lastSyncedUID, 51)
+        XCTAssertEqual(inbox.oldestSyncedUID, 32)
+        await h.settled()
+        let told = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(told, ["<m51@example.com>"], "only mail above the old cursor is news; what was listed before comes back quietly")
+        XCTAssertEqual(server.commands.filter { $0.contains("UID STORE") }.count, 1, "and the rules run on the new message alone")
+
+        // From here the folder is synced as any other: older mail through Load older, news above the cursor.
+        try await h.syncer.loadOlder(folder: inbox, count: 5)
+        let older = try await h.uids(in: "INBOX")
+        XCTAssertEqual(older, Set(UInt32(27)...51))
+        server.add(FakeIMAPServer.message("m52", date: Date()), to: "INBOX", uid: 52)
+        try await h.syncOnce()
+        await h.settled()
+        let later = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(later, ["<m51@example.com>", "<m52@example.com>"])
+        let stored = AtomicFile.readJSON(SyncExtras.self, from: h.layout.syncExtrasFile(h.account.id))
+        XCTAssertNil(stored?.folders?[inbox.id.uuidString]?.newAbove, "listed past its old cursor, the folder keeps no mark of it")
+    }
+
+    func testAFewRowsEmptiedAtOnceComeBackWhenTheServerShowsThemAgain() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.addMany(5, to: "INBOX") { FakeIMAPServer.message("m\($0 + 1)", date: Date()) }
+        let h = try await EngineHarness(server: server)
+        harness = h
+        try await h.syncOnce()
+        let shown = server.messages(in: "INBOX")
+        for m in shown { server.remove(uid: m.uid, from: "INBOX") }
+        try await h.syncOnce()
+        let emptied = try await h.uids(in: "INBOX")
+        XCTAssertTrue(emptied.isEmpty, "a few rows go at once")
+        for m in shown { server.add(m.data, to: "INBOX", uid: m.uid) }
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows, Set(shown.map(\.uid)), "shown again, they are listed again at the next pass")
+        await h.settled()
+        let told = await h.events.announced
+        XCTAssertTrue(told.isEmpty, "and they are not new mail")
+    }
+
+    func testAFolderRenumberedWhileEmptyIsListedAfreshWithNoNews() async throws {
+        let h = try await windowOfTwenty(emptyFolderConfirmation: 0)
+        let server = h.server
+        let shown = server.messages(in: "INBOX")
+        for m in shown { server.remove(uid: m.uid, from: "INBOX") }
+        try await h.syncOnce()
+        let emptied = try await h.uids(in: "INBOX")
+        XCTAssertTrue(emptied.isEmpty)
+        // Rebuilt on the server with its messages numbered afresh: the old cursor means nothing.
+        for m in shown { server.add(m.data, to: "INBOX", uid: m.uid) }
+        server.renumber("INBOX")
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows, Set(UInt32(31)...50), "the newest twenty of the new numbering")
+        let inbox = try await h.folder("INBOX")
+        XCTAssertEqual(inbox.uidValidity, server.uidValidity(of: "INBOX"))
+        await h.settled()
+        let told = await h.events.announced
+        XCTAssertTrue(told.isEmpty, "nothing in a renumbered folder is news, whatever its UIDs")
     }
 
     func testIdleWakesFetchOnlyNewMessages() async throws {

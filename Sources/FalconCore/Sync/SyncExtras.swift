@@ -30,6 +30,10 @@ struct FolderSyncExtras: Codable, Equatable {
     /// How many messages the server held that are neither stored nor waiting to be fetched,
     /// below the oldest one listed or in a gap above it, when last counted.
     var belowWindow: Int?
+    /// Set when the folder was emptied because the server reported it empty and its cursors
+    /// started again: the highest UID listed before. Whatever the server shows there later is
+    /// listed afresh, and only mail above this is news, until the cursor passes it.
+    var newAbove: UInt32?
 
     init(uidValidity: UInt32) {
         self.uidValidity = uidValidity
