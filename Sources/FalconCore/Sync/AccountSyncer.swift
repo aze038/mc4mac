@@ -834,9 +834,9 @@ public actor AccountSyncer {
     private var wantsSync: Bool { syncRequested || !requestedFolders.isEmpty }
 
     private func idleLoop(_ client: IMAPClient) async throws {
-        guard let inbox = await store.folder(accountID: account.id, role: .inbox) else { return }
         // The loop is entered after a whole pass.
         var passed = true
+        var idlingOn: UUID?
         while !Task.isCancelled {
             if pauseRemaining() == nil, !meter.allows(.download, for: account.id) {
                 let until = pauseIMAP(for: .overBudget)
@@ -849,9 +849,20 @@ public actor AccountSyncer {
                 await client.logout()
                 return
             }
+            // The inbox as the store holds it now: a pass may have listed it anew under another
+            // id, and a catch-up is news only for the inbox that is there.
+            let inbox = await store.folder(accountID: account.id, role: .inbox)
+            if inbox?.id != idlingOn {
+                idlingOn = inbox?.id
+                passed = true
+            }
             var changed = false
             let dueIn = pacing.fullSyncInterval - Date().timeIntervalSince(lastFullSync)
-            if !wantsSync, dueIn > 0 {
+            if !wantsSync, dueIn > 0, inbox == nil {
+                // Nothing to idle on, as on a server that lists no INBOX: the next whole pass, or
+                // one asked for, comes after a wait, not straight after the last.
+                await rest(min(dueIn, pacing.idleRefresh), wakesEarly: true)
+            } else if !wantsSync, dueIn > 0, let inbox {
                 let catchUp = catchUps[inbox.id]
                 let quietFor = catchUp.map { $0.notBefore.timeIntervalSinceNow } ?? 0
                 // A catch-up already due, as after a pass that took longer than the catch-up
@@ -896,14 +907,19 @@ public actor AccountSyncer {
             }
             let targets = requestedFolders
             requestedFolders.removeAll()
-            let catchUpDue = catchUps[inbox.id].map { $0.notBefore <= Date() } ?? false
+            let catchUpDue = inbox.flatMap { catchUps[$0.id] }.map { $0.notBefore <= Date() } ?? false
             // News in INBOX brings its new messages only; a folder asked for by name is brought
             // wholly up to date.
-            let inboxNews = (changed || catchUpDue) && !targets.contains(inbox.id)
+            let inboxNews = inbox.map { (changed || catchUpDue) && !targets.contains($0.id) } ?? false
             guard inboxNews || !targets.isEmpty else { continue }
             passed = true
-            if inboxNews, let fresh = await store.folder(inbox.id) {
-                try await syncFolder(fresh, client: client, pass: .newOnly)
+            if inboxNews, let inbox {
+                if let fresh = await store.folder(inbox.id) {
+                    try await syncFolder(fresh, client: client, pass: .newOnly)
+                } else {
+                    // Gone since this turn began: its catch-up goes with it.
+                    catchUps[inbox.id] = nil
+                }
             }
             for id in targets {
                 guard let fresh = await store.folder(id), fresh.isSelectable else { continue }
@@ -924,7 +940,12 @@ public actor AccountSyncer {
         let fs = try await store.folderStore(input)
         // The record as it is now the store is loaded, not the copy passed in: loading a store
         // whose index was set aside resets the cursors, so that its messages are listed again.
-        guard var folder = await store.folder(input.id) else { return 0 }
+        // A folder no longer stored takes what was kept for it along.
+        guard var folder = await store.folder(input.id) else {
+            catchUps[input.id] = nil
+            unannounced[input.id] = nil
+            return 0
+        }
         if folder.uidValidity != status.uidValidity {
             let renumbered = folder.uidValidity != 0
             if renumbered {
