@@ -903,6 +903,13 @@ public actor AccountSyncer {
         let newest = Array(known.suffix(pacing.flagWindow))
         let older = known.dropLast(pacing.flagWindow)
         var removed = Set<UInt32>()
+        // With actions on their way the server still holds rows taken out here, and the counts
+        // cannot agree; the pass after they finish looks again.
+        let settled = suppressedUIDs[folder.id]?.isEmpty ?? true
+        // How many messages the server's count says it no longer has. A reply that would take
+        // far more rows than that is not believed: nothing brings back a row below the cursor.
+        let missingOnServer = settled ? state.belowWindow.map { known.count + $0 + unfetched.count - status.exists } : nil
+        let slack = max(10, status.exists / 100)
 
         func apply(_ flags: [(uid: UInt32, flags: [String])]) async throws {
             let live = flags.filter { !isSuppressed(folderID: folder.id, uid: $0.uid) }
@@ -911,6 +918,10 @@ public actor AccountSyncer {
         func remove(_ gone: [UInt32]) async throws {
             let fresh = gone.filter { !removed.contains($0) }
             guard !fresh.isEmpty else { return }
+            if let missingOnServer, removed.count + fresh.count > max(0, missingOnServer) + slack {
+                Log.info("sync", "\(account.email) \(folder.path): a reply would remove \(fresh.count) rows where the count is short by \(missingOnServer); left alone")
+                return
+            }
             try await fs.remove(uids: fresh)
             removed.formUnion(fresh)
             await indexer?.remove(ids: fresh.map { MessageSummary.makeID(accountID: account.id, folderID: folder.id, uid: $0) })
@@ -942,9 +953,7 @@ public actor AccountSyncer {
         }
         state.highestModSeq = status.highestModSeq
 
-        // With actions on their way the server still holds rows taken out here, and the counts
-        // cannot agree; the pass after they finish looks again.
-        if suppressedUIDs[folder.id]?.isEmpty ?? true {
+        if settled {
             func expected() async -> Int? {
                 guard let below = state.belowWindow else { return nil }
                 return await fs.count + below + unfetched.count
@@ -957,10 +966,14 @@ public actor AccountSyncer {
             let count = await expected()
             if count == nil || status.exists < count! {
                 let all = try await client.uidSearch("ALL")
-                let present = Set(all)
-                try await remove(known.filter { !present.contains($0) })
-                let oldest = await store.folder(folder.id)?.oldestSyncedUID ?? lowest
-                state.belowWindow = all.filter { $0 < max(oldest, 1) }.count
+                if all.count + slack >= status.exists {
+                    let present = Set(all)
+                    try await remove(known.filter { !present.contains($0) })
+                    let oldest = await store.folder(folder.id)?.oldestSyncedUID ?? lowest
+                    state.belowWindow = all.filter { $0 < max(oldest, 1) }.count
+                } else {
+                    Log.info("sync", "\(account.email) \(folder.path): a search listed \(all.count) of \(status.exists) messages; left alone")
+                }
             }
         }
         let checked = state

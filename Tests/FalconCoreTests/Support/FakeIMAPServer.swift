@@ -78,6 +78,7 @@ final class FakeIMAPServer: @unchecked Sendable {
     private var silenceLimit: TimeInterval?
     private var queuedForIdle: [(mailbox: String, message: Message)] = []
     private var cutAfter: (verb: String, remaining: Int)?
+    private var searchesToEmpty = 0
     private var exchangeLog: [Exchange] = []
 
     init(capabilities: [String] = ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE"],
@@ -210,6 +211,12 @@ final class FakeIMAPServer: @unchecked Sendable {
     /// until `blackHole(false)`, when commands are answered again.
     func blackHole(_ on: Bool = true) {
         lock.withLock { holeOpen = on }
+    }
+
+    /// The next `count` searches find nothing, as a server that has lost track of a mailbox for
+    /// a moment might say.
+    func emptyNextSearches(_ count: Int) {
+        lock.withLock { searchesToEmpty = count }
     }
 
     /// The connection that sends the `count`th command whose name starts with `verb`, from now
@@ -386,6 +393,14 @@ final class FakeIMAPServer: @unchecked Sendable {
             }
             cutAfter = (rule.verb, rule.remaining - 1)
             return false
+        }
+    }
+
+    fileprivate func takeEmptySearch() -> Bool {
+        lock.withLock {
+            guard searchesToEmpty > 0 else { return false }
+            searchesToEmpty -= 1
+            return true
         }
     }
 
@@ -595,7 +610,7 @@ private final class Session: @unchecked Sendable {
             extended = true
             criteria = String(criteria[criteria.index(after: close)...]).trimmingCharacters(in: .whitespaces)
         }
-        var hits = box.messages
+        var hits = server.takeEmptySearch() ? [] : box.messages
         var words = criteria.split(separator: " ").map(String.init)[...]
         while let word = words.popFirst() {
             switch word.uppercased() {

@@ -84,6 +84,21 @@ final class FlagRescanTests: XCTestCase {
         XCTAssertFalse(h.server.commands.contains { $0.contains("SEARCH ALL") }, "the newest were looked at, so the counts agree")
     }
 
+    func testASearchThatFindsNothingTakesNoRows() async throws {
+        let h = try await listed(3_000)
+        // Outside the slices this pass looks at, so only a search can find it.
+        h.server.remove(uid: 1_500, from: "INBOX")
+        h.server.emptyNextSearches(5)
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 3_000, "a reply that would empty the folder is not believed")
+        XCTAssertTrue(h.logText().contains("a search listed 0 of 2999 messages; left alone"))
+        try await h.syncOnce()
+        let later = try await h.uids(in: "INBOX")
+        XCTAssertFalse(later.contains(1_500), "the next pass finds the one deletion")
+        XCTAssertEqual(later.count, 2_999)
+    }
+
     func testWithCondstoreOnlyChangedFlagsComeBack() async throws {
         let h = try await listed(3_000, capabilities: ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE", "CONDSTORE", "ESEARCH"])
         try await h.syncOnce()
