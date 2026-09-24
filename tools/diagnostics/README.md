@@ -63,10 +63,11 @@ names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMM
 - **Text safety**: report text is untrusted, and the Overview says so.
   - Text that starts with `=`, `+`, `-`, `@`, `'`, a tab or a carriage return is stored as plain
     text, never as a formula, and comes back exactly as sent.
-  - Control characters are removed (tabs and line breaks in messages stay), so nothing in a
-    report can act on the owner's terminal.
-  - Web addresses in titles and messages are stored readable but not clickable, as
-    `https[:]//example[.]com`.
+  - Control characters are removed first (tabs and line breaks in messages stay), so nothing in
+    a report can act on the owner's terminal or hide a web address from the next step.
+  - Web addresses, mail links and e-mail addresses are stored readable but not clickable, as
+    `https[:]//example[.]com` and `help@example[.]com`, in every field and in every string of
+    the context. A signature keeps its `@`, which there comes before a file name.
 - **Trimming**: titles to 120 characters, messages to 2,000, context to 16 KB, and every cell under
   Sheets' 50,000-character limit. Context too large to keep whole is stored as
   `{"truncated":true,"size":n,"start":"..."}`, so it is always JSON. Only `provider`, `kind`,

@@ -554,18 +554,19 @@ function cleanEvent_(event) {
   if (!event || typeof event !== 'object') return null;
   const id = typeof event.id === 'string' && EVENT_ID_PATTERN.test(event.id) ? event.id : '';
   const kind = typeof event.kind === 'string' ? event.kind.trim().toLowerCase() : '';
-  const signature = oneLine_(event.signature, MAX_SIGNATURE_CHARS);
+  // A signature is Area.code@File.swift:function, which must not be read as an address.
+  const signature = oneLine_(event.signature, MAX_SIGNATURE_CHARS, true);
   if (!id || !KIND_PATTERN.test(kind) || !signature) return null;
   return {
     id: id,
     kind: kind,
     signature: signature,
-    title: oneLine_(defang_(event.title), MAX_TITLE_CHARS) || signature,
+    title: oneLine_(event.title, MAX_TITLE_CHARS) || signature,
     area: oneLine_(event.area, 60),
     count: Math.min(Math.max(Math.floor(Number(event.count)) || 1, 1), MAX_COUNT),
     firstAt: parseTime_(event.firstAt),
     lastAt: parseTime_(event.lastAt),
-    message: lines_(defang_(event.message), MAX_MESSAGE_CHARS),
+    message: lines_(event.message, MAX_MESSAGE_CHARS),
     context: contextText_(event.context),
     account: accountText_(event.account),
   };
@@ -573,10 +574,16 @@ function cleanEvent_(event) {
 
 // Always valid JSON, so readers can parse it: text that is not JSON is kept as a JSON string, and
 // context too large to keep whole becomes {"truncated":true,...} with as much of its start as fits.
+// Every string in it is cleaned as report text is, key by key and value by value: done to the JSON
+// text instead, a web address's host could run on past the end of its string and change a number.
 function contextText_(context) {
   if (context === null || context === undefined) return '';
-  let text = typeof context === 'string' ? lines_(context, Infinity) : JSON.stringify(context);
-  if (typeof context === 'string' && !isJson_(text)) text = JSON.stringify(text);
+  let value = context;
+  if (typeof context === 'string') {
+    const text = context.replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTERS, '').trim();
+    value = isJson_(text) ? JSON.parse(text) : text;
+  }
+  const text = JSON.stringify(cleanJson_(value));
   if (text.length <= MAX_CONTEXT_CHARS) return text;
   const cut = { truncated: true, size: text.length, start: text.slice(0, MAX_CONTEXT_CHARS) };
   let json = JSON.stringify(cut);
@@ -585,6 +592,17 @@ function contextText_(context) {
     json = JSON.stringify(cut);
   }
   return json;
+}
+
+function cleanJson_(value) {
+  if (typeof value === 'string') return defang_(value.replace(CONTROL_CHARACTERS, ''));
+  if (Array.isArray(value)) return value.map(cleanJson_);
+  if (value && typeof value === 'object') {
+    const out = {};
+    Object.keys(value).forEach(key => { out[cleanJson_(key)] = cleanJson_(value[key]); });
+    return out;
+  }
+  return value;
 }
 
 function isJson_(text) {
@@ -598,12 +616,19 @@ function isJson_(text) {
 
 // Web addresses in report text are kept readable but never clickable: Sheets turns them into
 // links, and anyone holding the public ingest key could put one in front of the whole company.
-function defang_(value) {
+// Control characters must already be out, or one inside "https" would hide the address from these
+// patterns and vanish afterwards. No word boundary is needed before a match: "xhttps://" is
+// defanged too, harmlessly. The app never sends an e-mail address, so one here was typed by
+// whoever holds the key, and its domain is defanged as well.
+function defang_(value, keepAddresses) {
   if (typeof value !== 'string') return value;
   const host = name => name.replace(/\./g, '[.]');
-  return value
-    .replace(/\b(https?|ftp):\/\/([^\s\/?#]*)/gi, (url, scheme, name) => scheme + '[:]//' + host(name))
-    .replace(/\bwww\.([^\s\/?#]*)/gi, (url, name) => 'www[.]' + host(name));
+  const text = value
+    .replace(/(https?|ftp):\/\/([^\s\/?#]*)/gi, (url, scheme, name) => scheme + '[:]//' + host(name))
+    .replace(/(www)\.([^\s\/?#]*)/gi, (url, www, name) => www + '[.]' + host(name))
+    .replace(/(mailto):/gi, (url, scheme) => scheme + '[:]');
+  if (keepAddresses) return text;
+  return text.replace(/([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g, (address, local, domain) => local + '@' + host(domain));
 }
 
 // Keeps only the four fields the contract defines, so nothing else about an account is stored.
@@ -1611,15 +1636,18 @@ function truncate_(text, max) {
 // where an escape sequence could rename the window or rewrite what is on screen.
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 
-function oneLine_(value, max) {
+// Report text on one line, as every field of an upload but the message and context is stored:
+// control characters out first, then web addresses made unclickable, then cut to length.
+function oneLine_(value, max, keepAddresses) {
   if (typeof value !== 'string') return '';
-  return truncate_(value.replace(CONTROL_CHARACTERS, '').replace(/\s+/g, ' ').trim(), max);
+  return truncate_(defang_(value.replace(CONTROL_CHARACTERS, '').replace(/\s+/g, ' ').trim(), keepAddresses), max);
 }
 
-// Text that may run over several lines, such as a message, with every line break made \n.
+// Text that may run over several lines, such as a message, with every line break made \n, cleaned
+// in the same order.
 function lines_(value, max) {
   if (typeof value !== 'string') return '';
-  return truncate_(value.replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTERS, '').trim(), max);
+  return truncate_(defang_(value.replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTERS, '').trim()), max);
 }
 
 function parseTime_(value) {

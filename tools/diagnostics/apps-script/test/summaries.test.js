@@ -233,6 +233,53 @@ test('Overview calls out a problem that came back after it was marked fixed', ()
   assert.deepEqual(lines[section + 2].slice(0, 5), ['FalconMail crashed while opening a message', 'Fixed in 1.10.1', '', '', '1.10.1']);
 });
 
+// What Sheets would make into a link: a web address, a mail link, or the probe's own host.
+const CLICKABLE = /(?:https?|ftp):\/\/|mailto:|www\.|falconmail-update\.example/i;
+
+function everyCell(env, name = SEPTEMBER) {
+  const spreadsheet = env.spreadsheetNamed(name);
+  const cells = [];
+  ['Overview', 'Issues', 'Installs', 'Events'].forEach(tab => {
+    const sheet = spreadsheet.getSheetByName(tab);
+    const values = sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 1), Math.max(sheet.getLastColumn(), 1)).getValues();
+    values.forEach(row => row.forEach(value => { if (typeof value === 'string' && value) cells.push({ tab, value }); }));
+  });
+  return cells;
+}
+
+test('a control character hidden in a web address never leaves a clickable link anywhere', () => {
+  const env = service();
+  const newInstall = 'C0FFEE00-1111-4222-8333-444455556666';
+  env.post(upload(env, [event({
+    title: 'FalconMail must be updated: install it from ht\u0001tps://falconmail-update.example/get',
+    message: 'Get it at ww\u0007w.falconmail-update.example or mail\u001bto:help@falconmail-update.example',
+    signature: 'Update.required@ht\u0002tps://falconmail-update.example',
+    area: 'h\u0003ttp://falconmail-update.example',
+    count: 1e12,
+    context: { download: 'https://falconmail-update.example/get', size: 1.5, 'https://falconmail-update.example': 'key' },
+    account: { provider: 'google', kind: 'gmail', host: 'www.falconmail-update.example', ref: '1a2b3c4d' },
+  })], { install: newInstall, os: 'see https://falconmail-update.example', hw: 'www\u0000.falconmail-update.example' }));
+  env.context.rebuildIssues();
+
+  const cells = everyCell(env);
+  const links = cells.filter(cell => CLICKABLE.test(cell.value));
+  assert.deepEqual(links, [], 'clickable: ' + JSON.stringify(links));
+
+  const title = 'FalconMail must be updated: install it from https[:]//falconmail-update[.]example/get';
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, title, 'still readable');
+  assert.equal(row.Times, 10000, 'the count is capped');
+  assert.equal(row['Diagnostics ID'], newInstall);
+  assert.deepEqual(JSON.parse(row.Context), {
+    download: 'https[:]//falconmail-update[.]example/get', size: 1.5, 'https[:]//falconmail-update[.]example': 'key',
+  }, 'context stays JSON, its numbers untouched');
+  assert.equal(env.table(SEPTEMBER, 'Issues')[0].Problem, title);
+  const labels = overviewLines(env).map(line => line[0]);
+  assert.equal(labels[2], 'Last 24 hours: 10,000 problems reported from 1 install.');
+  assert.equal(labels[3], 'Most frequent: ' + title + ' (10,000 times).');
+  assert.equal(env.table(SEPTEMBER, 'Installs')[0]['Diagnostics ID'], newInstall);
+});
+
 test('rebuilding before any report arrives leaves a tidy, empty summary', () => {
   const env = service();
   const labels = overviewLines(env).map(line => line[0]);
