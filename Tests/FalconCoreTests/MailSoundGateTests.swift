@@ -113,6 +113,34 @@ final class MailSoundGateTests: XCTestCase {
         XCTAssertNil(gate.syncFailed(office, uptime: 200))
     }
 
+    func testAPauseEndsAnEpisodeThatHasNotSounded() {
+        var gate = gate()
+        let now = start
+        // A drop begins an episode quietly; the server then asks for a pause of ten minutes.
+        XCTAssertNil(gate.hear(.health(accountID: alex, .online), uptime: 0, now: now))
+        XCTAssertNil(gate.hear(.health(accountID: alex, .connecting), uptime: 10, now: now))
+        XCTAssertNil(gate.hear(.health(accountID: alex, .imapPaused(until: now)), uptime: 20, now: now))
+        // The first attempt after it fails: an episode of its own, not one begun at the drop.
+        XCTAssertNil(gate.hear(.health(accountID: alex, .offline(since: now)), uptime: 620, now: now))
+        XCTAssertNil(gate.hear(.error(accountID: alex, message: "Gmail had a temporary problem. Retrying."), uptime: 620, now: now))
+        XCTAssertNil(gate.failureLasted(alex, uptime: 660))
+        XCTAssertEqual(gate.failureLasted(alex, uptime: 681), .syncError, "once it has lasted a minute of its own")
+    }
+
+    func testAPauseInAnEpisodeThatHasSoundedSoundsNothingTwice() {
+        var gate = gate()
+        let now = start
+        XCTAssertNil(gate.hear(.health(accountID: alex, .online), uptime: 0, now: now))
+        XCTAssertNil(gate.hear(.health(accountID: alex, .offline(since: now)), uptime: 10, now: now))
+        XCTAssertEqual(gate.failureLasted(alex, uptime: 71), .syncError)
+        XCTAssertNil(gate.hear(.health(accountID: alex, .imapPaused(until: now)), uptime: 100, now: now))
+        XCTAssertNil(gate.hear(.health(accountID: alex, .offline(since: now)), uptime: 700, now: now))
+        XCTAssertNil(gate.failureLasted(alex, uptime: 761), "the same failure, heard of once")
+        XCTAssertNil(gate.hear(.finished(accountID: alex), uptime: 800, now: now))
+        XCTAssertNil(gate.hear(.health(accountID: alex, .offline(since: now)), uptime: 900, now: now))
+        XCTAssertEqual(gate.failureLasted(alex, uptime: 961), .syncError, "a finished sync ended it; this is a new one")
+    }
+
     func testAFailureThatLastsWhileTheSoundIsOffIsNotReplayedWhenItIsTurnedOn() {
         var off: Set<MailSoundEvent> = [.syncError]
         var gate = MailSoundGate { !off.contains($0) }

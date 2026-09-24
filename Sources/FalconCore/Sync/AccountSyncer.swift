@@ -119,6 +119,10 @@ public actor AccountSyncer {
     /// Set when the server refused a new connection because other programs hold all it
     /// allows: until then no connection is opened, while those already open go on working.
     private var connectionLimit: Date?
+    /// When the account last stopped syncing: its first failure since a pass last finished. A
+    /// connection that opens and is lost again before its pass finishes does not end it, so an
+    /// account whose every pass is cut part of the way is said to be offline once the quiet
+    /// retries are over, as one that cannot connect at all is. A pause kept on purpose ends it.
     private var downSince: Date?
     private var isStopped = false
     /// Attempts to connect that failed since the account last synced.
@@ -309,10 +313,10 @@ public actor AccountSyncer {
                 let client = try await connectedSyncClient()
                 reconnecting = false
                 setHealth(.online)
-                downSince = nil
                 await replayPendingOperations()
                 try await syncAll(client)
                 failures = 0
+                downSince = nil
                 lastFullSync = Date()
                 events.yield(.finished(accountID: account.id))
                 try await idleLoop(client)
@@ -442,6 +446,8 @@ public actor AccountSyncer {
             $0.imapPausedUntil = until
             $0.imapPauseReason = kind.rawValue
         }
+        // Kept on purpose: a failure after it is counted from then, not from before it.
+        downSince = nil
         setHealth(.imapPaused(until: until))
         return until
     }
@@ -455,6 +461,7 @@ public actor AccountSyncer {
         if connectionLimitRemaining() != nil, let until = connectionLimit { return until }
         let until = Date().addingTimeInterval(TimeInterval.random(in: pacing.connectionLimitWait))
         connectionLimit = until
+        downSince = nil
         Log.info("sync", "\(account.email): the server allows no more connections; opening none until \(ISO8601DateFormatter.archive.string(from: until))")
         // Kept for a relaunch too, unless a pause is, which lasts longer and stops more.
         if pauseRemaining() == nil {

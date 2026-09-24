@@ -28,8 +28,10 @@ public enum MailSoundEvent: String, CaseIterable, Sendable, Identifiable {
 /// conversation that fails inside a pass (`SyncEvent.problem`). So the sound plays only for an
 /// account the engine says cannot sync (`AccountHealth.isFailing`), once its episode has lasted
 /// `lastingFailure`: counted from the episode's first failure, a quiet one included, and heard at
-/// a failure then or asked for by `failureLasted`. It sounds once per episode, and the episode
-/// lasts until that account next finishes a sync. No new messages is played only for a check
+/// a failure then or asked for by `failureLasted`. The engine says an account whose every pass is
+/// cut part of the way is offline once its quiet retries are over, as it does one that cannot
+/// connect. It sounds once per episode, and the episode lasts until that account next finishes a
+/// sync; a pause before it has sounded ends it, so the time paused counts towards no failure. No new messages is played only for a check
 /// the reader asked for, once every account in it has finished without new mail; a check in
 /// which an account failed or paused, or that runs past `checkTimeout`, stays quiet, and a sync
 /// the app runs by itself, or the engine's own sync of one folder, never plays it.
@@ -95,7 +97,11 @@ public struct MailSoundGate {
                 if before != nil, failing[account] == nil { failing[account] = FailureEpisode(started: uptime) }
                 return nil
             case .imapPaused:
-                // Kept on purpose, so no failure; but the account cannot answer a check in time.
+                // Kept on purpose, so no failure, and no part of one: a failure after it begins
+                // an episode of its own, which must last a minute of its own. One that has
+                // already sounded goes on, so a pause in the middle of it sounds nothing twice.
+                // The account cannot answer a check in time either way.
+                if failing[account]?.sounded == false { failing[account] = nil }
                 leaveCheck(account)
                 return nil
             case .offline, .needsSignIn, .blocked:

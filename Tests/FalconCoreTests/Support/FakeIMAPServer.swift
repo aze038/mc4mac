@@ -79,6 +79,7 @@ final class FakeIMAPServer: @unchecked Sendable {
     private var silenceLimit: TimeInterval?
     private var queuedForIdle: [(mailbox: String, message: Message)] = []
     private var cutAfter: (verb: String, remaining: Int)?
+    private var cutEvery: String?
     private var searchesToEmpty = 0
     private var flagFetchesToEmpty = 0
     private var appendRepliesToLose = 0
@@ -241,6 +242,13 @@ final class FakeIMAPServer: @unchecked Sendable {
         lock.withLock { cutAfter = (verb.uppercased(), count) }
     }
 
+    /// Every connection that sends a command whose name starts with `verb` is closed once it
+    /// has been answered, until this is called again with nil: a pass cut at the same point
+    /// every time, as one whose connection some middlebox drops at the same reply.
+    func cutEveryAfter(_ verb: String?) {
+        lock.withLock { cutEvery = verb?.uppercased() }
+    }
+
     /// A connection that hears nothing from its client for `seconds` is closed without a word,
     /// as something between FalconMail and Gmail does to a quiet IDLE.
     func closeAfterSilence(_ seconds: TimeInterval?) {
@@ -401,6 +409,7 @@ final class FakeIMAPServer: @unchecked Sendable {
     /// True when the connection that sent `command` is to be cut now it has been answered.
     fileprivate func cutsAfter(_ command: String) -> Bool {
         lock.withLock {
+            if let every = cutEvery, command.hasPrefix(every) { return true }
             guard let rule = cutAfter, command.hasPrefix(rule.verb) else { return false }
             if rule.remaining <= 1 {
                 cutAfter = nil

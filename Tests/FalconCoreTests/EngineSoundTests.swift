@@ -256,6 +256,77 @@ final class EngineSoundTests: XCTestCase {
         XCTAssertEqual(later.sounds, [.syncError], "once, a minute on")
     }
 
+    func testASyncWhosePassesAreAllCutPartOfTheWaySoundsOnceAnEpisode() async throws {
+        let (h, clock) = try await started()
+        let before = await finishedCount(h)
+        let logins = h.server.loginCount
+        // Each sign-in works, and each pass loses its connection at its first SELECT, as when
+        // something on the way drops the connection at the same reply every time.
+        h.server.cutEveryAfter("SELECT")
+        let cut = Date()
+        await h.syncer.requestSync()
+        try await wait(400)
+        let finishedWhileCut = await finishedCount(h)
+        h.server.cutEveryAfter(nil)
+        await h.syncer.requestSync()
+        await assertEventually(within: 10) { await self.finishedCount(h) > before && h.server.idlingCount == 1 }
+        await h.settled()
+
+        XCTAssertEqual(finishedWhileCut, before, "no pass finished while every one was cut")
+        XCTAssertGreaterThanOrEqual(h.server.loginCount, logins + 4, "each attempt signed in")
+        let healths = await h.events.healths
+        XCTAssertTrue(healths.contains { self.isOffline($0) }, "said to be offline once the quiet retries were over: \(healths)")
+        let listener = Listener(start: clock)
+        listener.hear(await h.events.timed)
+        XCTAssertEqual(listener.sounds, [.syncError], "once, however many passes were cut")
+        if let at = listener.played.first?.at {
+            XCTAssertGreaterThanOrEqual(at, listener.uptime(cut) + MailSoundGate.lastingFailure, "only once it had lasted a minute")
+        }
+    }
+
+    func testAFailureJustAfterAConnectionLimitWaitMustLastAMinuteOfItsOwn() async throws {
+        let (h, clock) = try await started()
+        let before = await finishedCount(h)
+        // The idle connection is dropped and the server, asked again, allows no more.
+        h.server.greetWithBye(tooMany)
+        h.server.sendToIdling("* BYE Session expired", close: true)
+        await assertEventually { await !h.events.pauses.isEmpty }
+        // After the wait of 100 seconds, one sign-in is turned down; the next gets in.
+        h.server.refuseLogins(code: "UNAVAILABLE", text: unavailable)
+        await assertEventually(within: 10) { self.isOffline(await h.events.healths.last) }
+        h.server.acceptLogins()
+        await assertEventually(within: 10) { await self.finishedCount(h) > before && h.server.idlingCount == 1 }
+        await h.settled()
+
+        let timed = await h.events.timed
+        let paused = try XCTUnwrap(timed.first { if case .health(_, .imapPaused) = $0.event { return true }; return false }?.at)
+        let since = timed.compactMap { item -> Date? in if case .health(_, .offline(let since)) = item.event { return since }; return nil }
+        XCTAssertEqual(since.count, 1)
+        XCTAssertTrue(since.allSatisfy { $0 > paused }, "offline from the failure after the wait, not from the drop before it")
+        let listener = Listener(start: clock)
+        listener.hear(timed, until: Date().addingTimeInterval(2 * MailSoundGate.lastingFailure / Self.scale))
+        XCTAssertEqual(listener.sounds, [], "the drop and the wait, well over a minute, count towards no failure")
+    }
+
+    func testAConnectionDroppedJustAfterAThrottlePauseIsRetriedQuietly() async throws {
+        let (h, clock) = try await started()
+        let before = await finishedCount(h)
+        // The idle connection is dropped and the server throttles the next at its greeting.
+        h.server.greetWithBye(String(throttle.dropFirst("* BYE ".count)))
+        h.server.sendToIdling("* BYE Session expired", close: true)
+        await assertEventually { await !h.events.pauses.isEmpty }
+        // The first connection after the pause of 150 seconds is dropped at once; the next gets in.
+        h.server.greetWithBye("Session expired")
+        await assertEventually(within: 10) { await self.finishedCount(h) > before && h.server.idlingCount == 1 }
+        await h.settled()
+
+        let healths = await h.events.healths
+        XCTAssertFalse(healths.contains { $0.isFailing }, "the drop after the pause was a quiet retry of its own: \(healths)")
+        let listener = Listener(start: clock)
+        listener.hear(await h.events.timed, until: Date().addingTimeInterval(2 * MailSoundGate.lastingFailure / Self.scale))
+        XCTAssertEqual(listener.sounds, [])
+    }
+
     func testARuleThatFailsInsideAPassNeverSounds() async throws {
         let (h, clock) = try await started()
         try await h.rules.save([RuleDefinition(name: "Flag news", conditions: [RuleCondition(field: .subject, op: .contains, value: "Message")],
