@@ -159,7 +159,7 @@ struct StatusBar: View {
                 if account.usesPassword {
                     // Its password is changed in Settings → Accounts, which restarts its sync.
                     Button("Update the password for \(account.email)") {
-                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                        SettingsWindows.shared.show(.accounts)
                     }
                     .buttonStyle(.borderedProminent).controlSize(.small)
                 } else {
