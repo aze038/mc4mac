@@ -29,7 +29,10 @@ final class OutboxCrashTests: XCTestCase {
 
         // What a crash at this moment leaves on disk.
         let onDisk = AtomicFile.readJSON(OutboxItem.self, from: itemFile(item.id))
-        XCTAssertEqual(onDisk?.status, .sending, "the attempt is recorded before anything is sent")
+        XCTAssertEqual(onDisk?.sendBegan, true, "the attempt is recorded before anything is sent")
+        XCTAssertEqual(onDisk?.isHeld, true)
+        let inMemory = await first.snapshot().first?.status
+        XCTAssertEqual(inMemory, .sending, "this build shows it as going out")
 
         let counting = RecordingSender(hangs: false)
         let relaunched = Outbox(layout: layout, sender: counting, undoWindow: 0)
@@ -40,6 +43,7 @@ final class OutboxCrashTests: XCTestCase {
         let held = try XCTUnwrap(items.first)
         XCTAssertTrue(held.isHeld)
         XCTAssertEqual(held.error, Outbox.interruptedText)
+        XCTAssertNil(AtomicFile.readJSON(OutboxItem.self, from: itemFile(item.id))?.sendBegan, "found and held once")
 
         // Sending again is the owner's decision, and then it goes once.
         try await relaunched.retry(held.id)
@@ -54,14 +58,36 @@ final class OutboxCrashTests: XCTestCase {
         let first = Outbox(layout: layout, sender: stuck, undoWindow: 0)
         let item = try await first.enqueue(accountID: UUID(), from: "owner@example.com", message: SendTests.outgoing(), sendAt: Date())
         await assertEventually { stuck.calls == 1 }
-        _ = Outbox(layout: layout, sender: RecordingSender(hangs: false), undoWindow: 0)
 
-        let data = try Data(contentsOf: itemFile(item.id))
+        // Both the file a crash mid-send leaves and the one this build writes on finding it:
+        // the previous release must never be handed "sending", which it has no way out of.
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let previous = try decoder.decode(PreviousReleaseOutboxItem.self, from: data)
-        XCTAssertEqual(previous.status, .failed, "the previous release offers Retry and never sends it by itself")
-        XCTAssertEqual(previous.error, Outbox.interruptedText)
+        let inFlight = try decoder.decode(PreviousReleaseOutboxItem.self, from: try Data(contentsOf: itemFile(item.id)))
+        XCTAssertEqual(inFlight.status, .failed, "the previous release offers Retry and Remove and never sends it by itself")
+        XCTAssertEqual(inFlight.error, Outbox.interruptedText)
+        _ = Outbox(layout: layout, sender: RecordingSender(hangs: false), undoWindow: 0)
+        let found = try decoder.decode(PreviousReleaseOutboxItem.self, from: try Data(contentsOf: itemFile(item.id)))
+        XCTAssertEqual(found.status, .failed)
+        XCTAssertEqual(found.error, Outbox.interruptedText)
+    }
+
+    func testAnItemLeftSendingByAnEarlierBuildIsHeld() async throws {
+        let layout = FileLayout(root: root)
+        try FileManager.default.createDirectory(at: layout.outboxDirectory, withIntermediateDirectories: true)
+        let id = UUID()
+        let fixture = """
+            {"accountID":"\(UUID().uuidString)","createdAt":"2026-09-20T10:00:00Z","id":"\(id.uuidString)","recipients":["ana@example.com"],\
+            "sendAt":"2026-09-20T10:05:00Z","sender":"owner@example.com","status":"sending","subject":"Quarterly report","undoUntil":"2026-09-20T10:00:10Z"}
+            """
+        try Data(fixture.utf8).write(to: itemFile(id))
+        let counting = RecordingSender(hangs: false)
+        let outbox = Outbox(layout: layout, sender: counting, undoWindow: 0)
+        await outbox.startPump()
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        let items = await outbox.snapshot()
+        XCTAssertEqual(items.first?.isHeld, true)
+        XCTAssertEqual(counting.calls, 0)
     }
 
     func testAnItemFromThePreviousReleaseStillLoads() async throws {

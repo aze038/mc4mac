@@ -18,6 +18,10 @@ public struct OutboxItem: Codable, Sendable, Hashable, Identifiable {
     /// daily sending limit was reached. Stored under the status `failed`, which the previous
     /// release reads and, like this one, never sends by itself.
     public var heldBack: Bool?
+    /// Set only on disk, while the message is going out. The file then already says what it
+    /// must say if FalconMail stops before the send ends: held, and under the status `failed`,
+    /// since the previous release has no way out of "Sending…" for one it finds after a crash.
+    public var sendBegan: Bool?
 
     public init(accountID: UUID, subject: String, recipients: [String], sender: String, sendAt: Date, undoWindow: TimeInterval) {
         self.id = UUID()
@@ -33,6 +37,15 @@ public struct OutboxItem: Codable, Sendable, Hashable, Identifiable {
     }
 
     public var canUndo: Bool { status == .queued && Date() < undoUntil }
+
+    /// Held, as one whose send may or may not have finished.
+    var interrupted: OutboxItem {
+        var held = self
+        held.status = .failed
+        held.heldBack = true
+        held.error = Outbox.interruptedText
+        return held
+    }
 
     /// Waiting for the owner to decide, and never sent again by itself.
     public var isHeld: Bool { status == .failed && heldBack == true }
@@ -67,12 +80,11 @@ public actor Outbox {
         if let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
             for f in files where f.pathExtension == "json" && !f.lastPathComponent.hasSuffix(".draft.json") {
                 guard var item = AtomicFile.loadJSON(OutboxItem.self, from: f, what: "a message in the Outbox").value else { continue }
-                if item.status == .sending {
+                if item.sendBegan == true || item.status == .sending {
                     // FalconMail stopped while this was going out, so it may already have been
                     // delivered. Sending it again by itself could send it twice.
-                    item.status = .failed
-                    item.heldBack = true
-                    item.error = Outbox.interruptedText
+                    item = item.interrupted
+                    item.sendBegan = nil
                     Log.info("send", "\(item.sender): Outbox item \(item.id) was being sent when FalconMail stopped; held")
                     try? Outbox.write(item, in: directory)
                 }
@@ -172,7 +184,7 @@ public actor Outbox {
             item.status = .sending
             do {
                 // On disk before the first byte goes out: after a crash the item must be found
-                // "sending", never "queued", or it would go out a second time.
+                // held, never "queued", or it would go out a second time.
                 try persist(item)
             } catch {
                 Log.info("send", "\(item.sender): not sending Outbox item \(item.id), its state could not be saved: \(error.localizedDescription)")
@@ -222,7 +234,10 @@ public actor Outbox {
     }
 
     private func persist(_ item: OutboxItem) throws {
-        try Outbox.write(item, in: directory)
+        guard item.status == .sending else { return try Outbox.write(item, in: directory) }
+        var stored = item.interrupted
+        stored.sendBegan = true
+        try Outbox.write(stored, in: directory)
     }
 
     private static func write(_ item: OutboxItem, in directory: URL) throws {
