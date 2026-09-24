@@ -312,6 +312,7 @@ struct RibbonQuickButton: View {
     let symbol: String
     let title: String
     var enabled = true
+    var ink = OLColor.ribbonLabel
     let action: () -> Void
     @State private var hovering = false
 
@@ -319,7 +320,7 @@ struct RibbonQuickButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: OL.quickIcon, weight: .regular))
-                .foregroundStyle(OLColor.ribbonLabel)
+                .foregroundStyle(ink)
                 .frame(width: 20, height: 20)
                 .opacity(enabled ? 1 : 0.35)
                 .background(hovering && enabled ? OLColor.hover : Color.clear, in: RoundedRectangle(cornerRadius: 4))

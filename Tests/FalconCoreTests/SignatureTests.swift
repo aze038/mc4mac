@@ -208,6 +208,15 @@ final class SignatureTests: XCTestCase {
         XCTAssertEqual(book.sorted.first?.name, "Untitled")
     }
 
+    func testANewSignatureStartsWithTheWritersNameAsPlainText() {
+        var book = SignatureBook()
+        let signature = book.add(startingWith: "Kamal Muradov")
+        XCTAssertEqual(signature.name, "Untitled")
+        XCTAssertEqual(book.signature(signature.id)?.plain, "Kamal Muradov")
+        XCTAssertNil(book.signature(signature.id)?.rich, "plain, so it takes the formatting of the message it goes into")
+        XCTAssertEqual(book.add().plain, "", "a signature can still start empty")
+    }
+
     func testRenamingTakesATrimmedNameAndNeverAnEmptyOne() {
         var book = SignatureBook()
         let signature = book.add()

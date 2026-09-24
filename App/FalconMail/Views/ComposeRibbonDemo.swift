@@ -10,7 +10,7 @@ import FalconCore
 /// `-FalconMailDemoSelection YES` selects a word, so Cut and Copy light up;
 /// `-FalconMailDemoSignature YES` inserts a stand-in signature at the end, through
 /// the Signature menu's own path, and `-FalconMailDemoUndo YES` then undoes the last insertion;
-/// `-FalconMailDemoSignatures YES` does what the menu's Signatures… does.
+/// `-FalconMailDemoSignatures YES` does what the menu's Edit Signatures… does.
 enum ComposeRibbonDemo {
     static var isRequested: Bool { UserDefaults.standard.bool(forKey: "FalconMailDemoComposeRibbon") }
     static var tablePicker: TableSize? { isRequested ? size("FalconMailDemoTablePicker") : nil }

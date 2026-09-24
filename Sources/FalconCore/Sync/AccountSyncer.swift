@@ -9,6 +9,9 @@ public enum SyncEvent: Sendable {
     case actionFailed(accountID: UUID, message: String)
     case online(accountID: UUID, Bool)
     case finished(accountID: UUID)
+    /// A pass the reader asked for (see requestSync(check:)) is done, and whether any inbox got
+    /// new mail in it. A pass that fails says so with error instead.
+    case checked(accountID: UUID, foundNewMail: Bool)
 }
 
 public actor AccountSyncer {
@@ -24,6 +27,10 @@ public actor AccountSyncer {
     private var opClient: IMAPClient?
     private var loopTask: Task<Void, Never>?
     private var syncRequested = false
+    /// The reader asked for new mail, so the next full pass says how it went.
+    private var checkRequested = false
+    /// New messages the inboxes got in the current full pass.
+    private var arrivals = 0
     private var backoff: TimeInterval = 5
     public var initialWindow = 1000
     public var catchUpWindow = 2000
@@ -94,8 +101,11 @@ public actor AccountSyncer {
         opClient = nil
     }
 
-    public func requestSync() async {
+    /// With `check`, the pass this starts ends with `checked`, as Send & Receive needs to know
+    /// that it found nothing.
+    public func requestSync(check: Bool = false) async {
         syncRequested = true
+        if check { checkRequested = true }
         try? await syncClient?.finishIdle()
     }
 
@@ -168,6 +178,11 @@ public actor AccountSyncer {
     private func syncAll(_ client: IMAPClient) async throws {
         events.yield(.started(accountID: account.id))
         syncRequested = false
+        // Taken now: a check asked for while this pass runs is answered by the next one, which
+        // sees everything that arrived up to the question.
+        let checking = checkRequested
+        checkRequested = false
+        arrivals = 0
         let listed = try await client.listFolders()
         let folders = try await store.reconcileFolders(accountID: account.id, listed: listed)
         for f in folders where f.isSelectable && f.role != .all {
@@ -175,6 +190,7 @@ public actor AccountSyncer {
             events.yield(.progress(accountID: account.id, text: "Checking \(f.name) in \(account.email)"))
             try await syncFolder(f, client: client)
         }
+        if checking { events.yield(.checked(accountID: account.id, foundNewMail: arrivals > 0)) }
     }
 
     public var fullSyncInterval: TimeInterval = 5 * 60
@@ -183,9 +199,16 @@ public actor AccountSyncer {
     private func idleLoop(_ client: IMAPClient) async throws {
         guard let inbox = await store.folder(accountID: account.id, role: .inbox) else { return }
         while !Task.isCancelled {
-            _ = try await client.select(inbox.path)
-            let wait = max(30, fullSyncInterval - Date().timeIntervalSince(lastFullSync))
-            let changed = try await client.idle(maxWait: min(wait, 20 * 60))
+            // A sync asked for while the last pass ran found no idle to end, so it is taken up
+            // here rather than after the next idle, which can last many minutes.
+            var changed = false
+            if !syncRequested {
+                _ = try await client.select(inbox.path)
+                if !syncRequested {
+                    let wait = max(30, fullSyncInterval - Date().timeIntervalSince(lastFullSync))
+                    changed = try await client.idle(maxWait: min(wait, 20 * 60))
+                }
+            }
             let due = Date().timeIntervalSince(lastFullSync) >= fullSyncInterval
             if syncRequested || due {
                 try await syncAll(client)
@@ -245,6 +268,8 @@ public actor AccountSyncer {
         }
 
         if folder.role == .inbox, !newMessages.isEmpty {
+            // Mail that arrives muted or is filed by a rule still arrived.
+            if input.lastSyncedUID > 0 { arrivals += newMessages.count }
             newMessages = await withoutMuted(newMessages, folder: folder, fs: fs, client: client)
         }
 

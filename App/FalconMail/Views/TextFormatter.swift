@@ -20,6 +20,8 @@ final class TextFormatter {
     var canPaintFormat: Bool { editor != nil }
     var fontName = "System"
     var fontSize: CGFloat = 14
+    /// The paragraph's alignment at the caret; natural is left in a left-to-right text.
+    private(set) var alignment = NSTextAlignment.natural
     var textColour = Color.primary
     var highlight = Color.yellow
 
@@ -62,6 +64,19 @@ final class TextFormatter {
         if selected != hasSelection { hasSelection = selected }
         let focused = editor.window?.firstResponder === editor
         if focused != editorHasFocus { editorHasFocus = focused }
+        followTypingAttributes(of: editor)
+    }
+
+    /// The font boxes and the alignment buttons show what the caret would type, as Outlook's do.
+    private func followTypingAttributes(of editor: NSTextView) {
+        let attributes = editor.typingAttributes
+        if let font = attributes[.font] as? NSFont {
+            let family = font.familyName.map { $0.hasPrefix(".") ? "System" : $0 } ?? "System"
+            if family != fontName { fontName = family }
+            if font.pointSize != fontSize { fontSize = font.pointSize }
+        }
+        let aligned = (attributes[.paragraphStyle] as? NSParagraphStyle)?.alignment ?? .natural
+        if aligned != alignment { alignment = aligned }
     }
 
     // MARK: - clipboard
@@ -227,6 +242,7 @@ final class TextFormatter {
         case .justified: editor?.alignJustified(nil)
         default: editor?.alignLeft(nil)
         }
+        if let editor { followTypingAttributes(of: editor) }
     }
 
     // MARK: - insert

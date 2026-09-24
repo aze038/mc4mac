@@ -175,10 +175,12 @@ public struct SignatureBook: Codable, Hashable, Sendable {
         }
     }
 
-    /// A new, empty signature called Untitled, or Untitled 2 and on when that is taken.
+    /// A new signature called Untitled, or Untitled 2 and on when that is taken. Outlook starts
+    /// one with the writer's name; as plain text it takes the formatting of the message it goes
+    /// into, as the composer's own text does.
     @discardableResult
-    public mutating func add() -> Signature {
-        let signature = Signature(name: uniqueName("Untitled"))
+    public mutating func add(startingWith text: String = "") -> Signature {
+        let signature = Signature(name: uniqueName("Untitled"), plain: text)
         signatures.append(signature)
         return signature
     }
