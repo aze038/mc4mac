@@ -174,14 +174,7 @@ public actor Outbox {
     }
 
     static func isTransient(_ error: Error) -> Bool {
-        if let f = error as? FalconError {
-            switch f {
-            case .network: return true
-            case .http(let code, _): return code >= 500 || code == 429
-            default: return false
-            }
-        }
-        return (error as? URLError) != nil
+        MailServiceError.classify(error, email: "", isGoogle: false).isTransient
     }
 
     private func persist(_ item: OutboxItem) throws {

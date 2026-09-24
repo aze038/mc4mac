@@ -27,6 +27,13 @@ public actor BandwidthMeter {
         return f.string(from: Date())
     }
 
+    /// When today's count starts again from nothing: the next midnight UTC.
+    public static var nextDay: Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date())) ?? Date().addingTimeInterval(86_400)
+    }
+
     public func record(_ bytes: Int, for account: UUID) {
         guard bytes > 0 else { return }
         let key = account.uuidString

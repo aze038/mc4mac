@@ -61,11 +61,13 @@ final class IMAPTests: XCTestCase {
     }
 
     func testGoogleThrottleIsRecognisedSoSyncWaitsInsteadOfHammering() {
-        XCTAssertTrue(AccountSyncer.isThrottled(FalconError.network("server closed session: Account exceeded command or bandwidth limits.")))
-        XCTAssertTrue(AccountSyncer.isThrottled(FalconError.protocolError("Too many simultaneous connections")))
-        XCTAssertTrue(AccountSyncer.isThrottled(FalconError.protocolError("[LIMIT] Please try again later")))
-        XCTAssertFalse(AccountSyncer.isThrottled(FalconError.network("connection closed by peer")))
-        XCTAssertFalse(AccountSyncer.isThrottled(FalconError.notAuthenticated))
+        func kind(_ e: Error) -> MailServiceError.Kind { MailServiceError.classify(e, email: "owner@example.com", isGoogle: true).kind }
+        XCTAssertEqual(kind(IMAPBye(code: nil, text: "Account exceeded command or bandwidth limits.")), .throttled)
+        XCTAssertEqual(kind(IMAPServerError(status: .no, code: "THROTTLED", text: "Slow down (Failure)", command: "UID FETCH")), .throttled)
+        XCTAssertEqual(kind(IMAPServerError(status: .no, code: "ALERT", text: "Too many simultaneous connections. (Failure)", command: "AUTHENTICATE")),
+                       .tooManyConnections)
+        XCTAssertEqual(kind(FalconError.network("connection closed by peer")), .connectionDropped)
+        XCTAssertEqual(kind(FalconError.notAuthenticated), .needsSignIn)
     }
 
     func testBandwidthMeterStopsRunawayDownloads() async {

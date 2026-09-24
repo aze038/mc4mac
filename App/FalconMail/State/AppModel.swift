@@ -161,6 +161,7 @@ final class AppModel {
     var isSearching = false
     var statusText = "Ready"
     var online: [UUID: Bool] = [:]
+    var health: [UUID: AccountHealth] = [:]
     var outboxItems: [OutboxItem] = []
     var archiveRecords: [ArchiveRecord] = []
     var errorMessage: String?
@@ -209,9 +210,14 @@ final class AppModel {
         downloadedToday = out
     }
 
+    /// Accounts to offer a retry for: ones that cannot be reached. One Gmail asked to slow down
+    /// or that waits for the owner already says so in the status line, and a retry would not help.
     var offlineAccounts: [AccountInfo] {
         guard accountsNeedingSignIn.isEmpty else { return [] }
-        return accounts.filter { $0.isEnabled && online[$0.id] == false }
+        return accounts.filter { account in
+            guard account.isEnabled, case .offline = health[account.id] else { return false }
+            return true
+        }
     }
 
     var syncingSummary: String? {
@@ -521,14 +527,12 @@ final class AppModel {
                     await self.refreshBandwidth()
                 case .error(let id, let message):
                     self.syncingAccounts.remove(id)
-                    if message == FalconError.notAuthenticated.localizedDescription {
-                        self.accountsNeedingSignIn.insert(id)
-                        self.statusText = "\(self.accountName(id)) needs to sign in again"
-                    } else {
-                        self.statusText = "\(self.accountName(id)): \(message)"
-                    }
+                    self.statusText = message
                 case .actionFailed(_, let message): self.showActionError(message)
-                case .online(let id, let on): self.online[id] = on
+                case .health(let id, let health):
+                    self.health[id] = health
+                    self.online[id] = health.isReachable
+                    if health == .needsSignIn { self.accountsNeedingSignIn.insert(id) } else { self.accountsNeedingSignIn.remove(id) }
                 case .newMessages(let id, let folderID, let list):
                     self.announce(list, accountID: id, folderID: folderID)
                 case .folderSynced: break
@@ -1124,6 +1128,7 @@ final class AppModel {
                 do {
                     records.append(contentsOf: try await op(syncer, group))
                 } catch {
+                    Log.info("action", "\(self.accountName(accountID)): \(error.localizedDescription)")
                     failure = error.localizedDescription
                 }
             }

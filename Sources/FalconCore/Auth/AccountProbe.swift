@@ -47,7 +47,7 @@ public enum AccountProbe {
             try await imap.login(user: s.username, password: s.password)
             await imap.logout()
         } catch {
-            throw FalconError.invalidInput("Incoming mail (IMAP \(s.imapHost):\(s.imapPort)): \(error.localizedDescription)")
+            throw FalconError.invalidInput("Incoming mail (IMAP \(s.imapHost):\(s.imapPort)): \(probeSentence(error, settings: s))")
         }
         let smtp = SMTPClient(host: s.smtpHost, port: s.smtpPort)
         do {
@@ -55,7 +55,19 @@ public enum AccountProbe {
             try await smtp.authenticatePlain(user: s.username, password: s.password)
             await smtp.quit()
         } catch {
-            throw FalconError.invalidInput("Outgoing mail (SMTP \(s.smtpHost):\(s.smtpPort)): \(error.localizedDescription)")
+            throw FalconError.invalidInput("Outgoing mail (SMTP \(s.smtpHost):\(s.smtpPort)): \(probeSentence(error, settings: s))")
+        }
+    }
+
+    /// Setting up an account, a refused sign-in is a wrong name or password rather than one to
+    /// sign in again, and the server's own words help put it right.
+    static func probeSentence(_ error: Error, settings s: CustomServerSettings) -> String {
+        let failure = MailServiceError.classify(error, email: s.username, isGoogle: false)
+        Log.info("probe", "\(s.imapHost): \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: s.username))")
+        switch failure.kind {
+        case .needsSignIn: return "the server did not accept the user name or password."
+        case .connectionDropped: return "the server could not be reached."
+        default: return failure.sentence
         }
     }
 }
