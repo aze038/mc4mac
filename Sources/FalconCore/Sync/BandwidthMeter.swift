@@ -11,10 +11,13 @@ public actor BandwidthMeter {
     private var usage: [String: Usage] = [:]
     private let url: URL
     private var dirty = false
+    private let writable: Bool
 
     public init(layout: FileLayout = FileLayout()) {
         url = layout.root.appendingPathComponent("bandwidth.json")
-        usage = AtomicFile.readJSON([String: Usage].self, from: url) ?? [:]
+        let stored = AtomicFile.loadJSON([String: Usage].self, from: url, what: "today's download count")
+        usage = stored.value ?? [:]
+        writable = stored.canSave
     }
 
     public static let shared = BandwidthMeter()
@@ -56,7 +59,7 @@ public actor BandwidthMeter {
     }
 
     public func persist() {
-        guard dirty else { return }
+        guard dirty, writable else { return }
         try? AtomicFile.writeJSON(usage, to: url)
         dirty = false
     }

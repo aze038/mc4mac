@@ -3,16 +3,18 @@ import Foundation
 public actor ContactStore {
     private let directory: URL
     private var contacts: [UUID: [ContactInfo]] = [:]
+    /// Accounts whose file is there but could not be read, and so is never written over.
+    private var unwritable: Set<UUID> = []
 
     public init(layout: FileLayout) {
         directory = layout.contactsDirectory
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         if let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
             for f in files where f.pathExtension == "json" {
-                if let id = UUID(uuidString: f.deletingPathExtension().lastPathComponent),
-                   let list = AtomicFile.readJSON([ContactInfo].self, from: f) {
-                    contacts[id] = list
-                }
+                guard let id = UUID(uuidString: f.deletingPathExtension().lastPathComponent) else { continue }
+                let stored = AtomicFile.loadJSON([ContactInfo].self, from: f, what: "the saved contacts")
+                if let list = stored.value { contacts[id] = list }
+                if !stored.canSave { unwritable.insert(id) }
             }
         }
     }
@@ -23,7 +25,7 @@ public actor ContactStore {
         var current = (contacts[accountID] ?? []).filter { $0.source != source }
         current.append(contentsOf: list)
         contacts[accountID] = current
-        try AtomicFile.writeJSON(current, to: directory.appendingPathComponent("\(accountID.uuidString).json"))
+        try save(current, for: accountID)
     }
 
     public func recordUse(accountID: UUID, addresses: [EmailAddress]) throws {
@@ -38,7 +40,12 @@ public actor ContactStore {
             }
         }
         contacts[accountID] = current
-        try AtomicFile.writeJSON(current, to: directory.appendingPathComponent("\(accountID.uuidString).json"))
+        try save(current, for: accountID)
+    }
+
+    private func save(_ list: [ContactInfo], for accountID: UUID) throws {
+        guard !unwritable.contains(accountID) else { return }
+        try AtomicFile.writeJSON(list, to: directory.appendingPathComponent("\(accountID.uuidString).json"))
     }
 
     public func suggest(_ prefix: String, limit: Int = 8) -> [ContactInfo] {

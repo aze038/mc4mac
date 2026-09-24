@@ -105,21 +105,30 @@ public actor ArchiveReader {
 public actor ArchiveRecordStore {
     private let url: URL
     private var records: [ArchiveRecord] = []
+    private let writable: Bool
 
     public init(layout: FileLayout) {
         url = layout.archivesFile
-        records = AtomicFile.readJSON([ArchiveRecord].self, from: url) ?? []
+        let stored = AtomicFile.loadJSON([ArchiveRecord].self, from: url, what: "the list of archives")
+        records = stored.value ?? []
+        writable = stored.canSave
+    }
+
+    private func refuseIfUnread() throws {
+        guard writable else { throw FalconError.storage("The list of archives could not be read, so it is left as it is.") }
     }
 
     public func all() -> [ArchiveRecord] { records.sorted { $0.createdAt > $1.createdAt } }
 
     public func add(_ r: ArchiveRecord) throws {
+        try refuseIfUnread()
         records.removeAll { $0.rootID == r.rootID && $0.storageKind == r.storageKind }
         records.append(r)
         try AtomicFile.writeJSON(records, to: url)
     }
 
     public func remove(_ id: UUID) throws {
+        try refuseIfUnread()
         records.removeAll { $0.id == id }
         try AtomicFile.writeJSON(records, to: url)
     }

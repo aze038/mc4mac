@@ -22,11 +22,22 @@ public enum StoreChange: Sendable {
     case contactsChanged
 }
 
+/// Why an account's folder list could not be used. Its folders and their messages are kept on
+/// disk under ids only that list knows, so the account is left alone rather than given a new
+/// list that would orphan them.
+public struct FolderListProblem: Sendable, Equatable {
+    public var detail: String
+    public var fileName: String
+}
+
 public actor MailStore {
     public let layout: FileLayout
     private var accounts: [AccountInfo] = []
+    private var accountsWritable = true
     private var folders: [UUID: [FolderInfo]] = [:]
+    private var folderListProblems: [UUID: FolderListProblem] = [:]
     private var folderStores: [UUID: FolderStore] = [:]
+    private var folderStoreLoads: [UUID: Task<FolderStore, Error>] = [:]
     private var changeContinuations: [UUID: AsyncStream<StoreChange>.Continuation] = [:]
 
     public init(layout: FileLayout = FileLayout()) {
@@ -35,10 +46,29 @@ public actor MailStore {
 
     public func load() throws {
         try layout.ensureDirectory(layout.root)
-        accounts = AtomicFile.readJSON([AccountInfo].self, from: layout.accountsFile) ?? []
+        let stored = AtomicFile.loadJSON([AccountInfo].self, from: layout.accountsFile, what: "the account list")
+        accounts = stored.value ?? []
+        accountsWritable = stored.canSave
         for a in accounts {
-            folders[a.id] = AtomicFile.readJSON([FolderInfo].self, from: layout.foldersFile(a.id)) ?? []
+            let file = layout.foldersFile(a.id)
+            switch AtomicFile.loadJSON([FolderInfo].self, from: file, what: "the folder list for \(a.email)") {
+            case .loaded(let list):
+                folders[a.id] = list
+            case .missing:
+                folders[a.id] = []
+            case .setAside(let aside, let detail):
+                folders[a.id] = []
+                folderListProblems[a.id] = FolderListProblem(detail: detail, fileName: aside.lastPathComponent)
+            case .unreadable(let detail):
+                folders[a.id] = []
+                folderListProblems[a.id] = FolderListProblem(detail: detail, fileName: file.lastPathComponent)
+            }
         }
+    }
+
+    /// Set when the account's folder list could not be read at launch; nothing writes a new one.
+    public func folderListProblem(_ accountID: UUID) -> FolderListProblem? {
+        folderListProblems[accountID]
     }
 
     public func changes() -> AsyncStream<StoreChange> {
@@ -64,6 +94,7 @@ public actor MailStore {
     public func account(_ id: UUID) -> AccountInfo? { accounts.first { $0.id == id } }
 
     public func saveAccount(_ account: AccountInfo) throws {
+        guard accountsWritable else { throw FalconError.storage("The account list could not be read, so it is left as it is.") }
         if let i = accounts.firstIndex(where: { $0.id == account.id }) { accounts[i] = account } else { accounts.append(account) }
         try AtomicFile.writeJSON(accounts, to: layout.accountsFile)
         if folders[account.id] == nil { folders[account.id] = [] }
@@ -71,6 +102,7 @@ public actor MailStore {
     }
 
     public func removeAccount(_ id: UUID) throws {
+        guard accountsWritable else { throw FalconError.storage("The account list could not be read, so it is left as it is.") }
         accounts.removeAll { $0.id == id }
         try AtomicFile.writeJSON(accounts, to: layout.accountsFile)
         for f in folders[id] ?? [] { folderStores[f.id] = nil }
@@ -102,6 +134,7 @@ public actor MailStore {
     }
 
     public func reconcileFolders(accountID: UUID, listed: [IMAPFolderInfo]) throws -> [FolderInfo] {
+        try refuseIfFolderListUnread(accountID)
         var existing = folders[accountID] ?? []
         var result: [FolderInfo] = []
         for l in listed {
@@ -129,6 +162,7 @@ public actor MailStore {
     }
 
     public func updateFolder(_ folder: FolderInfo) throws {
+        try refuseIfFolderListUnread(folder.accountID)
         guard var list = folders[folder.accountID], let i = list.firstIndex(where: { $0.id == folder.id }) else { return }
         list[i] = folder
         folders[folder.accountID] = list
@@ -136,12 +170,31 @@ public actor MailStore {
         emit(.foldersChanged(accountID: folder.accountID))
     }
 
+    private func refuseIfFolderListUnread(_ accountID: UUID) throws {
+        guard let problem = folderListProblems[accountID] else { return }
+        throw FalconError.storage("The folder list could not be read and was kept as \(problem.fileName), so it is not written again.")
+    }
+
+    /// The folder's message store, loaded once however many callers ask at the same moment: two
+    /// stores on one folder would each append to its journal and write over each other.
     public func folderStore(_ folder: FolderInfo) async throws -> FolderStore {
         if let s = folderStores[folder.id] { return s }
+        if let loading = folderStoreLoads[folder.id] { return try await loading.value }
         let s = FolderStore(accountID: folder.accountID, folderID: folder.id,
-                            directory: layout.folderDirectory(accountID: folder.accountID, folderID: folder.id))
-        try await s.load()
+                            directory: layout.folderDirectory(accountID: folder.accountID, folderID: folder.id),
+                            name: "\(folder.path) of \(account(folder.accountID)?.email ?? "an account")")
+        let loading = Task { try await s.load(); return s }
+        folderStoreLoads[folder.id] = loading
+        defer { folderStoreLoads[folder.id] = nil }
+        _ = try await loading.value
         folderStores[folder.id] = s
+        if await s.snapshotSetAside != nil, var current = self.folder(folder.id) {
+            // The messages it listed are fetched again from the server rather than left missing:
+            // with the cursors kept, the next sync would look only for mail newer than them.
+            current.lastSyncedUID = 0
+            current.oldestSyncedUID = 0
+            try updateFolder(current)
+        }
         return s
     }
 

@@ -455,6 +455,16 @@ final class AppModel {
             await restoreTabs(s.openTabs, minimized: s.minimizedTabs, active: s.activeTab)
         }
         Task { await syncContacts() }
+        noteUnreadableFiles()
+    }
+
+    /// Says once which stored files could not be read. Each was kept, untouched, for the owner
+    /// or a later build to recover, rather than being quietly replaced.
+    private func noteUnreadableFiles() {
+        let names = StoredFileNotices.take()
+        guard !names.isEmpty else { return }
+        errorMessage = "FalconMail could not read \(ListFormatter.localizedString(byJoining: names)). "
+            + "Nothing was written over: each was left as it was or kept under a name ending in “unreadable”. Details are in the log."
     }
 
     var windowsToRestore: [String] {

@@ -50,6 +50,7 @@ public actor PendingActionStore {
     private let url: URL
     private var operations: [PendingServerOperation] = []
     private var loaded = false
+    private var writable = true
 
     public init(layout: FileLayout = FileLayout()) {
         self.url = layout.pendingActionsFile
@@ -77,11 +78,18 @@ public actor PendingActionStore {
     private func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
-        operations = AtomicFile.readJSON([PendingServerOperation].self, from: url) ?? []
+        let stored = AtomicFile.loadJSON([PendingServerOperation].self, from: url, what: "the actions waiting to reach the server")
+        operations = stored.value ?? []
+        writable = stored.canSave
     }
 
     private func save() {
-        try? AtomicFile.writeJSON(operations, to: url)
+        guard writable else { return }
+        do {
+            try AtomicFile.writeJSON(operations, to: url)
+        } catch {
+            Log.info("store", "could not save the actions waiting to reach the server: \(error.localizedDescription)")
+        }
     }
 }
 

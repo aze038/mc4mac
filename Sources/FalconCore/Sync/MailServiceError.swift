@@ -8,7 +8,7 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
     public enum Kind: String, Sendable, CaseIterable {
         case throttled, overBudget, tooManyConnections, webSignInRequired, connectionDropped, needsSignIn
         case messageGone, folderGone, mailboxRenumbered, expungeRefused, temporary
-        case sendingLimit, recipientRefused, local, refused
+        case sendingLimit, recipientRefused, folderListUnreadable, local, refused
     }
 
     public var kind: Kind
@@ -67,6 +67,8 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
             return "\(isGoogle ? "Gmail's daily sending limit" : "The daily sending limit") for \(email) was reached. The message stays in the Outbox."
         case .recipientRefused:
             return "\(service) refused the address \(name ?? "of a recipient")."
+        case .folderListUnreadable:
+            return "FalconMail could not read the folder list for \(email) and kept it as \(name ?? "a copy"). The account is paused so that nothing is lost."
         case .local:
             return detail
         case .refused:

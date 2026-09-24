@@ -130,6 +130,14 @@ public actor AccountSyncer {
 
     private func loop() async {
         while !Task.isCancelled {
+            if let problem = await store.folderListProblem(account.id) {
+                // Syncing would write a new folder list and orphan every folder stored under the old one.
+                let failure = MailServiceError(kind: .folderListUnreadable, account: account, detail: problem.detail, name: problem.fileName)
+                Log.info("sync", "\(account.email): not syncing, \(problem.detail)")
+                setHealth(.blocked(reason: failure.sentence))
+                events.yield(.error(accountID: account.id, message: failure.sentence))
+                return
+            }
             do {
                 if syncClient == nil, health == nil { setHealth(.connecting) }
                 let client = try await connectedSyncClient()
