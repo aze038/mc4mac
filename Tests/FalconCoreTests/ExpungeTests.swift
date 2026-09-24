@@ -70,6 +70,26 @@ final class ExpungeTests: XCTestCase {
         server.stop()
     }
 
+    func testWithoutMOVEOrUIDPlusADeleteIsRefusedBeforeAnythingIsCopied() async throws {
+        let server = try EngineHarness.gmailServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "IDLE"])
+        for n in 1...3 { server.add(FakeIMAPServer.message("inbox-\(n)"), to: "INBOX") }
+        let h = try await EngineHarness(server: server)
+        harness = h
+        try await h.syncOnce()
+        await h.syncer.setUndoWindow(0)
+        // Another program has marked message 3 for deletion but not purged it.
+        server.setFlags(["\\Deleted"], uid: 3, in: "INBOX")
+        for attempt in 1...2 {
+            _ = try await h.syncer.delete([try await h.message(uid: 1, in: "INBOX")])
+            await assertEventually { await h.events.actionFailures.count == attempt }
+            let failure = await h.events.actionFailures.last ?? ""
+            XCTAssertTrue(failure.contains("another message there is marked for deletion"), failure)
+            XCTAssertEqual(server.messages(in: "INBOX").map(\.uid), [1, 2, 3])
+            XCTAssertTrue(server.messages(in: "[Gmail]/Trash").isEmpty, "attempt \(attempt): no copy left behind in Trash")
+        }
+        XCTAssertFalse(server.commands.contains { $0.contains("UID COPY") })
+    }
+
     func testArchiveJobRemovesOnlyWhatItArchived() async throws {
         let server = try EngineHarness.gmailServer(capabilities: Self.withoutUIDPlus)
         let longAgo = Date(timeIntervalSince1970: 1_600_000_000)

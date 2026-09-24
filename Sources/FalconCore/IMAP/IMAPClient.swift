@@ -246,10 +246,14 @@ public actor IMAPClient {
         try await locked {
             if hasCapability("MOVE") {
                 _ = try await run("UID MOVE \(set) \(quote(mailbox))", mailbox: mailbox)
-            } else {
-                _ = try await run("UID COPY \(set) \(quote(mailbox))", mailbox: mailbox)
-                try await expunge(uids: uids)
+                return
             }
+            // Without UIDPLUS the originals could not be removed while another message is
+            // marked, so that is found out before copying: a copy made first would stay behind
+            // in the destination, and another with every retry.
+            if !hasCapability("UIDPLUS") { try await refuseIfOthersMarked(uids) }
+            _ = try await run("UID COPY \(set) \(quote(mailbox))", mailbox: mailbox)
+            try await expunge(uids: uids)
         }
     }
 
@@ -271,11 +275,16 @@ public actor IMAPClient {
                 _ = try await run("UID EXPUNGE \(set)", mailbox: selectedMailbox)
                 return
             }
-            let others = Set(try await uidSearch("DELETED")).subtracting(uids)
-            guard others.isEmpty else { throw IMAPExpungeRefused(mailbox: selectedMailbox, others: others.sorted()) }
+            try await refuseIfOthersMarked(uids)
             try await store(uids: uids, add: true, flags: ["\\Deleted"])
             _ = try await run("EXPUNGE", mailbox: selectedMailbox)
         }
+    }
+
+    /// Throws `IMAPExpungeRefused` when a plain EXPUNGE would take messages besides these.
+    private func refuseIfOthersMarked(_ uids: [UInt32]) async throws {
+        let others = Set(try await uidSearch("DELETED")).subtracting(uids)
+        guard others.isEmpty else { throw IMAPExpungeRefused(mailbox: selectedMailbox, others: others.sorted()) }
     }
 
     @discardableResult
