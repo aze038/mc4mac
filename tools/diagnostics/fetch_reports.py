@@ -16,9 +16,11 @@ import datetime
 import glob
 import json
 import os
+import re
 import shutil
 import stat
 import sys
+import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +40,10 @@ KINDS = {
 }
 INFO_KINDS = ('launch', 'health')
 STACK_KINDS = ('crash', 'hang', 'cpu', 'diskwrite')
+# Report text comes from anyone holding the ingest key that ships in public releases. A terminal
+# acts on control characters, so none reach the screen: an escape sequence could rename the
+# window, hide a column or rewrite the lines above it.
+CONTROL = re.compile('[\x00-\x1f\x7f-\x9f]')
 
 
 class Problem(Exception):
@@ -126,7 +132,7 @@ def ask(url, query):
     if not isinstance(answer, dict) or answer.get('ok') is not True:
         error = answer.get('error') if isinstance(answer, dict) else None
         hint = ' Check readKey in the config.' if error == 'Not accepted' else ''
-        raise Problem('The diagnostics service said: ' + str(error or 'no answer') + '.' + hint, 1)
+        raise Problem('The diagnostics service said: ' + plain(error or 'no answer') + '.' + hint, 1)
     return answer
 
 
@@ -138,21 +144,40 @@ def request_page(url, key, since):
     return answer.get('rows') or [], answer.get('next')
 
 
-def fetch_new_rows(url, key, cursor, keep):
-    """Pages through everything after the cursor. Each page is kept, with the cursor moved past it,
-    before the next is asked for, so an interrupted run loses nothing and repeats nothing."""
+def later(value, than):
+    """Whether one ISO time is after another; no time at all is before every other."""
+    moment, before = parse_time(value), parse_time(than)
+    return moment is not None and (before is None or moment > before)
+
+
+def fetch_new_rows(url, key, cursor, keep, known):
+    """Pages through everything after the cursor. Each page is kept, with the cursor moved to the
+    newest row in it, before the next is asked for, so an interrupted run loses nothing. Rows whose
+    event ID is already saved are left out, and a next page that does not move forward is refused
+    rather than followed, so a service answering out of order can never loop or go backwards."""
     fetched = []
     since = cursor
     for _ in range(MAX_PAGES):
         rows, following = request_page(url, key, since)
-        if rows:
-            since = rows[-1].get('receivedAt') or since
-            keep(rows, since)
-            fetched.extend(rows)
+        newest = since
+        fresh = []
+        for row in rows:
+            if later(row.get('receivedAt'), newest):
+                newest = row['receivedAt']
+            event_id = row.get('eventId')
+            if event_id and event_id in known:
+                continue
+            if event_id:
+                known.add(event_id)
+            fresh.append(row)
+        if fresh or newest != since:
+            keep(fresh, newest)
+            fetched.extend(fresh)
         if not following:
             return fetched
-        if not rows and following == since:
-            raise Problem('The diagnostics service kept answering the same page; stopping.', 1)
+        if not later(following, since):
+            raise Problem('The diagnostics service offered a next page that is not after this one; stopping. '
+                          'What was fetched is saved.', 1)
         since = following
     raise Problem('Stopped after ' + str(MAX_PAGES) + ' pages; run again to carry on.', 1)
 
@@ -167,16 +192,24 @@ def append_rows(directory, rows, today):
 
 
 def saved_rows(directory):
+    """Every saved row once, even if an earlier run saved one twice."""
     rows = []
+    seen = set()
     for path in sorted(glob.glob(os.path.join(directory, '*.jsonl'))):
         with open(path, encoding='utf-8') as handle:
             for line in handle:
                 line = line.strip()
-                if line:
-                    try:
-                        rows.append(json.loads(line))
-                    except ValueError:
-                        continue
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                event_id = row.get('eventId') if isinstance(row, dict) else None
+                if not isinstance(row, dict) or (event_id and event_id in seen):
+                    continue
+                seen.add(event_id)
+                rows.append(row)
     return rows
 
 
@@ -283,15 +316,64 @@ def local(when, with_year=False):
     return text + (moment.strftime(' %Y') if with_year else '') + moment.strftime(' %H:%M')
 
 
+def plain(text):
+    return CONTROL.sub('', str(text))
+
+
 def cut(text, width):
-    text = ' '.join(str(text).split())
+    text = plain(' '.join(str(text).split()))
     return text if len(text) <= width else text[:width - 1] + '…'
+
+
+def screen(lines):
+    """The lines as one text for the terminal, with nothing in them a terminal would act on."""
+    return '\n'.join(plain(line) for line in lines) + '\n'
+
+
+def dump_json(value):
+    """JSON as the tools print it: readable text, with DEL and C1 control characters escaped
+    (json escapes the others), so it is safe on a terminal and still the same data."""
+    text = json.dumps(value, indent=2, ensure_ascii=False)
+    return re.sub('[\x7f-\x9f]', lambda match: '\\u{:04x}'.format(ord(match.group())), text) + '\n'
 
 
 def join_versions(versions, limit=3):
     ordered = sorted(versions, key=version_key, reverse=True)
     shown = ', '.join(ordered[:limit])
     return shown + (' +' + str(len(ordered) - limit) if len(ordered) > limit else '')
+
+
+def kind_label(kind):
+    return KINDS.get(kind, (cut(str(kind or '').capitalize(), 11), 0))[0]
+
+
+def table(rows, columns, width):
+    """A plain-language title first, then its figures, fitted to the terminal. `rows` are
+    (title, figures, lines shown under it) and `columns` (heading, width, alignment) for the
+    figures. One character is kept free, as some terminals wrap a line that fills them exactly.
+    When a title would get fewer than 30 characters beside its figures, it goes on a line of its
+    own above them instead."""
+    figures = '  '.join('{:' + align + str(size) + '}' for _, size, align in columns)
+    beside = width - 1 - 4 - len(figures.format(*[''] * len(columns)))
+    headings = [heading for heading, _, _ in columns]
+    rules = ['─' * size for _, size, _ in columns]
+    lines = []
+    if beside >= 30:
+        title_width = min(56, beside, max([20] + [len(cut(title, 200)) for title, _, _ in rows]))
+        row = '  {:<' + str(title_width) + '}  ' + figures
+        lines.append(row.format('Problem', *headings).rstrip())
+        lines.append(row.format('─' * title_width, *rules))
+        for title, values, below in rows:
+            lines.append(row.format(cut(title, title_width), *values).rstrip())
+            lines.extend(below)
+        return lines
+    row = '      ' + figures
+    lines.extend(['  Problem', row.format(*headings).rstrip(), row.format(*rules)])
+    for title, values, below in rows:
+        lines.append('  ' + cut(title, max(20, width - 3)))
+        lines.append(row.format(*values).rstrip())
+        lines.extend(below)
+    return lines
 
 
 def render(summary, verbose, width):
@@ -306,30 +388,30 @@ def render(summary, verbose, width):
 
     problems = summary['problems']
     if problems:
-        title_width = max(20, min(56, width - 70, max(len(p['latest'].get('title') or '') for p in problems)))
         version_width = min(18, max(len('Versions'), max(len(join_versions(p['versions'])) for p in problems)))
-        row_format = '  {:<' + str(title_width) + '}  {:<11}  {:>6}  {:>8}  {:<' + str(version_width) + '}  {:<12}  {}'
-        lines.append('Problems, newest first')
-        lines.append(row_format.format('Problem', 'Kind', 'Times', 'Installs', 'Versions', 'Last seen', 'Trend').rstrip())
-        lines.append(row_format.format('─' * title_width, '─' * 11, '─' * 6, '─' * 8, '─' * version_width, '─' * 12, '─' * 6))
+        rows = []
         for problem in problems:
             latest = problem['latest']
-            lines.append(row_format.format(
-                cut(latest.get('title') or problem['signature'], title_width),
-                KINDS.get(problem['kind'], (str(problem['kind']).capitalize(), 0))[0],
+            below = []
+            if verbose:
+                indent = ' ' * 6
+                below.append(indent + 'signature  ' + problem['signature'] + ('   (area ' + latest['area'] + ')' if latest.get('area') else ''))
+                if latest.get('message'):
+                    below.append(indent + 'example    ' + cut(latest['message'], max(40, width - 18)))
+                below.append(indent + 'installs   ' + ', '.join(sorted(i for i in problem['installs'] if i)))
+                below.append(indent + 'latest     event ' + str(latest.get('eventId')))
+                below.append('')
+            rows.append((latest.get('title') or problem['signature'], [
+                kind_label(problem['kind']),
                 '{:,}'.format(problem['times']),
                 len(problem['installs']),
                 cut(join_versions(problem['versions']), version_width),
                 local(problem['lastSeen']),
-                problem['trend']).rstrip())
-            if verbose:
-                indent = ' ' * 6
-                lines.append(indent + 'signature  ' + problem['signature'] + ('   (area ' + latest['area'] + ')' if latest.get('area') else ''))
-                if latest.get('message'):
-                    lines.append(indent + 'example    ' + cut(latest['message'], max(40, width - 17)))
-                lines.append(indent + 'installs   ' + ', '.join(sorted(i for i in problem['installs'] if i)))
-                lines.append(indent + 'latest     event ' + str(latest.get('eventId')))
-                lines.append('')
+                problem['trend'],
+            ], below))
+        lines.append('Problems, newest first')
+        lines.extend(table(rows, [('Kind', 11, '<'), ('Times', 6, '>'), ('Installs', 8, '>'),
+                                  ('Versions', version_width, '<'), ('Last seen', 12, '<'), ('Trend', 6, '<')], width))
         stacks = [p for p in problems if p['kind'] in STACK_KINDS]
         if stacks and not verbose:
             lines.append('')
@@ -343,9 +425,9 @@ def render(summary, verbose, width):
         total = sum(summary['info'].values())
         if lines[-1]:
             lines.append('')
-        lines.append('Also received {} report{}. Launch and health reports only show that FalconMail is running.'.format(
-            ' and '.join(parts), '' if total == 1 else 's'))
-    return '\n'.join(lines) + '\n'
+        lines.extend(textwrap.wrap('Also received {} report{}. Launch and health reports only show that FalconMail is running.'.format(
+            ' and '.join(parts), '' if total == 1 else 's'), max(40, width - 1)))
+    return screen(lines)
 
 
 def render_issues(answer, verbose, width):
@@ -353,32 +435,32 @@ def render_issues(answer, verbose, width):
     issues = answer.get('issues') or []
     lines = ['Issues tab, updated ' + (local(parse_time(answer.get('updatedAt')), True) or 'never') + ', local time', '']
     if not issues:
-        return '\n'.join(lines + ['No problems listed yet.']) + '\n'
-    title_width = max(20, min(56, width - 72, max(len(issue.get('title') or '') for issue in issues)))
-    status_width = min(20, max(len('Status'), max(len(issue.get('status') or '') for issue in issues)))
-    row_format = '  {:<' + str(title_width) + '}  {:<11}  {:>6}  {:>8}  {:<' + str(status_width) + '}  {}'
-    lines.append(row_format.format('Problem', 'Kind', 'Times', 'Installs', 'Status', 'Last seen'))
-    lines.append(row_format.format('─' * title_width, '─' * 11, '─' * 6, '─' * 8, '─' * status_width, '─' * 12))
+        return screen(lines + ['No problems listed yet.'])
+    status_width = min(20, max(len('Status'), max(len(cut(issue.get('status') or '', 200)) for issue in issues)))
+    rows = []
     for issue in issues:
-        lines.append(row_format.format(
-            cut(issue.get('title') or issue.get('signature') or '', title_width),
-            KINDS.get(issue.get('kind'), (str(issue.get('kind') or '').capitalize(), 0))[0],
+        below = []
+        if verbose:
+            if issue.get('notes'):
+                below.append('      notes      ' + cut(issue['notes'], max(40, width - 18)))
+            below.append('      signature  ' + str(issue.get('signature') or ''))
+            below.append('')
+        rows.append((issue.get('title') or issue.get('signature') or '', [
+            kind_label(issue.get('kind')),
             '{:,}'.format(int(issue.get('times') or 0)),
             int(issue.get('installs') or 0),
             cut(issue.get('status') or '', status_width),
-            local(parse_time(issue.get('lastSeen')))).rstrip())
-        if verbose:
-            if issue.get('notes'):
-                lines.append('      notes      ' + cut(issue['notes'], max(40, width - 17)))
-            lines.append('      signature  ' + str(issue.get('signature') or ''))
-            lines.append('')
-    return '\n'.join(lines) + '\n'
+            local(parse_time(issue.get('lastSeen'))),
+        ], below))
+    lines.extend(table(rows, [('Kind', 11, '<'), ('Times', 6, '>'), ('Installs', 8, '>'),
+                              ('Status', status_width, '<'), ('Last seen', 12, '<')], width))
+    return screen(lines)
 
 
 def as_json(summary):
     def iso(when):
         return when.isoformat().replace('+00:00', 'Z') if when else None
-    return json.dumps({
+    return dump_json({
         'reports': summary['reports'],
         'installs': summary['installs'],
         'from': iso(summary['from']),
@@ -398,7 +480,7 @@ def as_json(summary):
             'example': p['latest'].get('message'),
             'latestEventId': p['latest'].get('eventId'),
         } for p in summary['problems']],
-    }, indent=2, ensure_ascii=False) + '\n'
+    })
 
 
 # ------------------------------------------------------------------------------------------------
@@ -420,23 +502,26 @@ def main(argv=None):
         if args.issues:
             url, key = load_config(where['config'], where['home'])
             answer = ask(url, {'op': 'issues', 'key': key})
-            sys.stdout.write(json.dumps(answer, indent=2, ensure_ascii=False) + '\n' if args.json
-                             else render_issues(answer, args.verbose, width))
+            sys.stdout.write(dump_json(answer) if args.json else render_issues(answer, args.verbose, width))
             return 0
         fetched = []
         saved_to = None
+        history = saved_rows(where['reports'])
         if not args.no_fetch:
             url, key = load_config(where['config'], where['home'])
             today = datetime.date.today().isoformat()
 
             def keep(rows, cursor):
                 nonlocal saved_to
-                saved_to = append_rows(where['reports'], rows, today)
-                write_cursor(where['cursor'], cursor)
+                if rows:
+                    saved_to = append_rows(where['reports'], rows, today)
+                if cursor:
+                    write_cursor(where['cursor'], cursor)
 
-            fetched = fetch_new_rows(url, key, read_cursor(where['cursor']), keep)
+            known = {row.get('eventId') for row in history if row.get('eventId')}
+            fetched = fetch_new_rows(url, key, read_cursor(where['cursor']), keep, known)
+            history = history + fetched
 
-        history = saved_rows(where['reports'])
         days = args.days or (1 if args.no_fetch else None)
         if days:
             since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)

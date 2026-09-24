@@ -5,9 +5,11 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 TOOLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(TOOLS, 'symbolicate.py')
@@ -164,6 +166,48 @@ class SymbolicateWithoutSymbolsTest(unittest.TestCase):
         result = run(self.home, '--event', 'nope')
         self.assertEqual(result.returncode, 1)
         self.assertIn('No saved report has event ID nope', result.stderr)
+
+    def test_a_version_that_is_not_a_plain_number_is_never_used_as_a_path(self):
+        sys.path.insert(0, TOOLS)
+        self.addCleanup(sys.path.remove, TOOLS)
+        import symbolicate
+        searched = []
+        with mock.patch.object(symbolicate.glob, 'glob', side_effect=lambda *a, **k: searched.append(a) or []), \
+                mock.patch.dict(os.environ, {'HOME': self.home}):
+            for version in ('/', '..', '../../..', '1.10/../..', '.hidden', 'x' * 31, ''):
+                self.assertEqual(symbolicate.dwarf_files(version), ({}, None), version)
+        self.assertEqual(searched, [])
+
+        result = run(self.home, '-', stdin=json.dumps(metrickit_row('m1', '/', 'ABCDEF01-2345-6789-ABCD-EF0123456789', [0x464])))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("The report's version is not a plain version number, so no symbols were looked for", result.stdout)
+        self.assertRegex(result.stdout, r'0  FalconMail\s+\+ 0x464')
+
+    def test_control_characters_in_a_report_never_reach_the_terminal(self):
+        row = metrickit_row('m1', '1.10\x1b[5m', 'ABCDEF01-2345-6789-ABCD-EF0123456789', [0x464])
+        row['title'] = '\x1b]0;owned\x07\x1b[2KFalconMail crashed\nNo stack found'
+        tree = json.loads(row['context'])
+        tree['callStackTree']['callStacks'][0]['callStackRootFrames'][0]['binaryName'] = 'Falcon\x1b[8mMail'
+        row['context'] = json.dumps(tree)
+        result = run(self.home, '-', stdin=json.dumps(row))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(re.search('[\x00-\x09\x0b-\x1f\x7f-\x9f]', result.stdout))
+        self.assertEqual(result.stdout.splitlines()[0], ']0;owned[2KFalconMail crashedNo stack found')
+        self.assertIn('Falcon[8mMail', result.stdout)
+
+    def test_a_context_cut_short_on_arrival_says_so(self):
+        row = {'eventId': 't1', 'kind': 'crash', 'title': 'FalconMail crashed', 'version': '1.10.0',
+               'context': json.dumps({'truncated': True, 'size': 70000, 'start': '{"callStackTree":{"callSt'})}
+        result = run(self.home, '-', stdin=json.dumps(row))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Its context was too large and was cut short on arrival, so the stack is missing.', result.stdout)
+
+    def test_a_context_kept_as_a_json_string_is_still_read(self):
+        row = ips_row('i2', '9.9.9', 'ABCDEF01-2345-6789-ABCD-EF0123456789', [0x464])
+        row['context'] = json.dumps(json.loads(row['context'])['ips'])
+        result = run(self.home, '-', stdin=json.dumps(row))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Thread 1 com.apple.main-thread (crashed)', result.stdout)
 
 
 if __name__ == '__main__':

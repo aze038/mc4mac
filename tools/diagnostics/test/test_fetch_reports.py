@@ -4,6 +4,7 @@ import datetime
 import http.server
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -38,6 +39,8 @@ class FakeService:
         self.rows = list(rows)
         self.issues = []
         self.page_size = page_size
+        # When set, every read is answered with this page, as a service paging out of order would.
+        self.fixed_page = None
         self.requests = []
         service = self
 
@@ -70,6 +73,8 @@ class FakeService:
             return {'ok': False, 'error': 'Not accepted'}
         if query['op'] == 'issues':
             return {'ok': True, 'updatedAt': '2026-09-24T08:00:00.000Z', 'issues': self.issues}
+        if self.fixed_page:
+            return self.fixed_page
         since = query.get('since') or ''
         rows = sorted((r for r in self.rows if r['receivedAt'] > since), key=lambda r: r['receivedAt'])
         page = rows[:self.page_size]
@@ -106,9 +111,9 @@ class FetchReportsTest(unittest.TestCase):
             json.dump({'url': url or self.service.url, 'readKey': key}, handle)
         os.chmod(path, mode)
 
-    def run_tool(self, *args):
+    def run_tool(self, *args, columns=140):
         env = {key: value for key, value in os.environ.items() if 'proxy' not in key.lower()}
-        env.update({'HOME': self.home, 'TZ': 'Asia/Baku', 'COLUMNS': '140', 'no_proxy': '*'})
+        env.update({'HOME': self.home, 'TZ': 'Asia/Baku', 'COLUMNS': str(columns), 'no_proxy': '*'})
         return subprocess.run(['bash', SCRIPT] + list(args), capture_output=True, text=True, env=env, timeout=60)
 
     def saved_lines(self):
@@ -252,6 +257,66 @@ class FetchReportsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('FalconMail diagnostics: 1 report from 1 install', result.stdout)
         self.assertEqual(self.service.requests, [])
+
+    def test_a_next_page_that_does_not_move_forward_is_refused_not_followed(self):
+        self.write_config()
+        with open(os.path.join(self.config_dir, 'diagnostics.cursor'), 'w') as handle:
+            handle.write('2026-09-24T08:00:30.000Z\n')
+        # What a tab sorted by Kind gave before the service chose rows by time: older rows, and a
+        # next page earlier than the cursor.
+        self.service.fixed_page = {'ok': True, 'next': '2026-09-24T08:00:00.000Z', 'rows': [
+            row('n7', '2026-09-24T08:07:00.000Z'), row('n1', '2026-09-24T08:01:00.000Z'),
+            row('old', '2026-09-24T08:00:00.000Z')]}
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('not after this one; stopping. What was fetched is saved.', result.stderr)
+        self.assertEqual(len(self.service.requests), 1)
+        self.assertEqual([saved['eventId'] for saved in self.saved_lines()], ['n7', 'n1', 'old'])
+        self.assertEqual(self.cursor(), '2026-09-24T08:07:00.000Z', 'the newest row, not the last one listed')
+
+        again = self.run_tool()
+        self.assertEqual(again.returncode, 1)
+        self.assertEqual(len(self.saved_lines()), 3, 'rows already saved are not saved again')
+
+    def test_a_row_saved_twice_is_counted_once(self):
+        os.makedirs(self.reports)
+        with open(os.path.join(self.reports, '2026-09-23.jsonl'), 'w') as handle:
+            handle.write(json.dumps(row('s1', '2026-09-23T10:00:00.000Z', count=4)) + '\n')
+            handle.write(json.dumps(row('s1', '2026-09-23T10:00:00.000Z', count=4)) + '\n')
+        summary = json.loads(self.run_tool('--no-fetch', '--days', '36500', '--json').stdout)
+        self.assertEqual(summary['reports'], 1)
+        self.assertEqual(summary['problems'][0]['times'], 4)
+
+    def test_control_characters_in_reports_never_reach_the_terminal(self):
+        hostile = '\x1b]0;owned\x07\x1b[2KGmail paused\x9b2J'
+        self.service.rows = [row('x1', '2026-09-24T03:00:00.000Z', title=hostile, version='1.10\x1b[5m',
+                                 message='\x1b[1A\x1b[2KNo new reports.', signature='IMAP.x\x1b[8m@A.swift:1')]
+        self.service.issues = [{'title': hostile, 'kind': 'error', 'times': 1, 'installs': 1, 'status': 'New\x1b[8m',
+                                'notes': '\x07bell', 'lastSeen': '2026-09-24T03:00:00.000Z', 'signature': 'IMAP.x\x1b[8m'}]
+        self.write_config()
+        control = re.compile('[\x00-\x09\x0b-\x1f\x7f-\x9f]')
+        for args in [(), ('--no-fetch', '-v', '--days', '36500'), ('--issues', '-v'), ('--issues', '--json'),
+                     ('--no-fetch', '--days', '36500', '--json')]:
+            result = self.run_tool(*args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIsNone(control.search(result.stdout), args)
+        table = self.run_tool('--no-fetch', '--days', '36500').stdout
+        self.assertIn(']0;owned[2KGmail paused2J', table)
+        issues = json.loads(self.run_tool('--issues', '--json').stdout)
+        self.assertEqual(issues['issues'][0]['title'], hostile, 'JSON escapes them and keeps the data')
+
+    def test_the_table_fits_the_terminal(self):
+        self.service.rows.append(row('e5', '2026-09-24T06:00:00.000Z', version='1.9.9', title='A' * 90))
+        self.service.rows.append(row('e6', '2026-09-24T06:00:00.000Z', version='1.10.2'))
+        self.service.issues = [{'title': 'B' * 90, 'kind': 'crash', 'times': 9, 'installs': 4, 'status': "Won't fix",
+                                'lastSeen': '2026-09-24T07:55:00.000Z', 'signature': 'S'}]
+        self.write_config()
+        self.run_tool()
+        for columns in (80, 100, 120):
+            for args in [('--no-fetch', '--days', '36500'), ('--issues',)]:
+                output = self.run_tool(*args, columns=columns).stdout
+                longest = max(output.splitlines(), key=len)
+                self.assertLess(len(longest), columns, '{} at {} columns: {!r}'.format(args, columns, longest))
 
 
 if __name__ == '__main__':

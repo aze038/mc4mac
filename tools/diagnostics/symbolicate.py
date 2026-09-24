@@ -22,6 +22,11 @@ import subprocess
 import sys
 
 SYMBOLS_DIR = os.path.join('~', 'Library', 'Application Support', 'FalconMail Symbols')
+# The version names a folder, and it comes from the report, which anyone holding the public ingest
+# key can send: '/' or '..' would point the search at the whole disk.
+VERSION = re.compile('[0-9A-Za-z][0-9A-Za-z._-]{0,29}')
+# Report text is shown on a terminal, which acts on control characters.
+CONTROL = re.compile('[\x00-\x1f\x7f-\x9f]')
 
 
 # ------------------------------------------------------------------------------------------------
@@ -34,6 +39,13 @@ def decode(value):
     if not isinstance(value, str):
         return value
     text = value.strip()
+    if text.startswith('"'):
+        # Context the service kept as a JSON string because it was not JSON itself.
+        try:
+            inner = json.loads(text)
+        except ValueError:
+            return value
+        return decode(inner) if isinstance(inner, str) else inner
     if not text.startswith('{'):
         return value
     try:
@@ -129,10 +141,13 @@ def normalised_uuid(value):
 
 
 def dwarf_files(version):
-    """UUID -> (DWARF file, architecture) for every dSYM kept for this version."""
-    folder = os.path.join(os.path.expanduser(SYMBOLS_DIR), version)
+    """UUID -> (DWARF file, architecture) for every dSYM kept for this version, and the folder
+    looked in: None when the version is not a plain version number, and nothing was looked at."""
     found = {}
-    if not version or not os.path.isdir(folder) or not shutil.which('dwarfdump'):
+    if not VERSION.fullmatch(version or ''):
+        return found, None
+    folder = os.path.join(os.path.expanduser(SYMBOLS_DIR), version)
+    if not os.path.isdir(folder) or not shutil.which('dwarfdump'):
         return found, folder
     for path in glob.glob(os.path.join(folder, '**', '*.dSYM', 'Contents', 'Resources', 'DWARF', '*'), recursive=True):
         result = subprocess.run(['dwarfdump', '--uuid', path], capture_output=True, text=True, check=False)
@@ -196,21 +211,29 @@ def render_thread(thread):
 
 
 def render_row(row, all_threads):
-    stacks = find_stacks(row.get('context'))
-    if not stacks:
-        return None
     title = row.get('title') or row.get('signature') or 'Untitled report'
     facts = [str(row.get('kind') or '').capitalize(), 'FalconMail ' + str(row.get('version') or '?')
              + (' (' + str(row['build']) + ')' if row.get('build') else ''), str(row.get('os') or ''),
              'received ' + local_time(row.get('receivedAt')), 'event ' + str(row.get('eventId') or '?')]
     lines = [title, ' · '.join(fact for fact in facts if fact), '']
+    stacks = find_stacks(row.get('context'))
+    if not stacks:
+        context = decode(row.get('context'))
+        if isinstance(context, dict) and context.get('truncated') is True:
+            lines.append('Its context was too large and was cut short on arrival, so the stack is missing.')
+            return screen(lines)
+        return None
 
     dwarfs, folder = dwarf_files(str(row.get('version') or ''))
     threads = []
     for kind, value in stacks:
         threads.extend(metrickit_threads(value) if kind == 'metrickit' else ips_threads(value))
     resolved = symbolicate(threads, dwarfs)
-    if not dwarfs:
+    if folder is None:
+        lines.append('The report\'s version is not a plain version number, so no symbols were looked for; '
+                     'FalconMail\'s frames are shown as offsets.')
+        lines.append('')
+    elif not dwarfs:
         lines.append('No symbols for this version in ' + folder.replace(os.path.expanduser('~'), '~', 1)
                      + '; FalconMail\'s frames are shown as offsets.')
         lines.append('')
@@ -227,7 +250,12 @@ def render_row(row, all_threads):
     if hidden:
         lines.append('{} other thread{} not shown; add --all-threads to see them.'.format(hidden, '' if hidden == 1 else 's'))
         lines.append('')
-    return '\n'.join(lines)
+    return screen(lines)
+
+
+def screen(lines):
+    """The lines as one text, with nothing in them a terminal would act on."""
+    return '\n'.join(CONTROL.sub('', line.replace('\t', ' ')) for line in lines)
 
 
 # ------------------------------------------------------------------------------------------------
