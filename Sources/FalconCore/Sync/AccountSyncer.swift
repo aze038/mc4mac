@@ -751,9 +751,13 @@ public actor AccountSyncer {
         syncRequested = false
         requestedFolders.removeAll()
         // Taken now: a check asked for while this pass runs is answered by the next one, which
-        // sees everything that arrived up to the question.
+        // sees everything that arrived up to the question. A pass cut short, by a dropped
+        // connection or a pause, leaves its check to the pass after it, so that a quiet
+        // reconnect still answers the owner.
         let checking = checkRequested
         checkRequested = false
+        var answered = false
+        defer { if checking, !answered { checkRequested = true } }
         var arrivals = 0
         let listed = try await client.listFolders()
         let folders = try await store.reconcileFolders(accountID: account.id, listed: listed)
@@ -761,13 +765,14 @@ public actor AccountSyncer {
         for f in folders where f.isSelectable && f.role != .all {
             try Task.checkCancellation()
             // Paused by a throttle met on the op connection: the rest waits for the pass after.
-            // A check this pass took goes unanswered, as for a pass that fails; the pause's
-            // error has told the owner why.
             guard pauseRemaining() == nil else { return }
             events.yield(.progress(accountID: account.id, text: "Checking \(f.name) in \(account.email)"))
             arrivals += try await syncFolder(f, client: client)
         }
-        if checking { events.yield(.checked(accountID: account.id, foundNewMail: arrivals > 0)) }
+        if checking {
+            events.yield(.checked(accountID: account.id, foundNewMail: arrivals > 0))
+            answered = true
+        }
     }
 
     private var lastFullSync = Date()

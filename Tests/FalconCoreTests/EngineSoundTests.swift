@@ -416,4 +416,22 @@ final class EngineSoundTests: XCTestCase {
         listener.hear(await h.events.timed)
         XCTAssertEqual(listener.sounds, [.noNewMessages])
     }
+
+    func testACheckWhosePassIsCutIsAnsweredAfterTheQuietReconnect() async throws {
+        let (h, clock) = try await started()
+        let listener = Listener(start: clock)
+        let logins = h.server.loginCount
+        // The connection drops just after the check's pass selects INBOX.
+        h.server.cutAfter("SELECT", count: 1)
+        listener.check([h.account.id])
+        await h.syncer.requestSync(check: true)
+        await assertEventually(within: 5) { await self.checkedCount(h) == 1 }
+        await h.settled()
+
+        XCTAssertGreaterThan(h.server.loginCount, logins, "the pass was cut and the engine connected again")
+        let healths = await h.events.healths
+        XCTAssertFalse(healths.contains { $0.isFailing }, "quietly: \(healths)")
+        listener.hear(await h.events.timed)
+        XCTAssertEqual(listener.sounds, [.noNewMessages])
+    }
 }
