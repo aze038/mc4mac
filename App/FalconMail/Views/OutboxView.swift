@@ -11,7 +11,7 @@ struct OutboxView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.subject.isEmpty ? "(no subject)" : item.subject).font(.system(size: 13, weight: .medium))
                     Text(item.recipients.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Text(statusText(item)).font(.caption).foregroundStyle(item.status == .failed ? .red : .secondary)
+                    Text(statusText(item)).font(.caption).foregroundStyle(statusStyle(item))
                 }
                 Spacer()
                 actions(item)
@@ -27,7 +27,9 @@ struct OutboxView: View {
         } else if item.status == .queued {
             Button("Edit") { reopen(item) }.help("Stops the message and reopens it as a draft")
         }
-        if item.status == .failed { Button("Retry") { Task { try? await model.outbox.retry(item.id) } } }
+        if item.status == .failed {
+            Button(item.isHeld ? "Send Again" : "Retry") { Task { try? await model.outbox.retry(item.id) } }
+        }
         if item.status == .sent || item.status == .cancelled || item.status == .failed {
             Button { Task { await model.outbox.remove(item.id) } } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain)
         }
@@ -41,7 +43,13 @@ struct OutboxView: View {
         model.cancelAndReopen(item) { openWindow(value: $0) }
     }
 
+    private func statusStyle(_ item: OutboxItem) -> Color {
+        if item.isHeld { return .orange }
+        return item.status == .failed ? .red : .secondary
+    }
+
     private func statusText(_ item: OutboxItem) -> String {
+        if item.isHeld { return "Held: \(item.error ?? "not sent again by itself")" }
         switch item.status {
         case .queued:
             if let e = item.error { return "Waiting for connection, retrying at \(item.sendAt.formatted(date: .omitted, time: .shortened)) (\(e))" }
