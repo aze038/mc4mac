@@ -195,6 +195,37 @@ final class EngineDiagnosticsTests: XCTestCase {
         XCTAssertFalse(event.message.contains("owner@example.com"))
     }
 
+    /// Importing files, a message the server refuses is reported once, by the engine that met
+    /// it, and a file that cannot be read once, by the import, never under two signatures.
+    func testEachImportFailureIsReportedOnce() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.addMailbox("Imported")
+        let h = try await started(server)
+        try await h.syncOnce()
+        let folder = try await h.folder("Imported")
+        let files = DiagnosticsFixtures.temporaryDirectory("import-files")
+        defer { try? FileManager.default.removeItem(at: files) }
+        let refused = files.appendingPathComponent("Board minutes.eml")
+        try FakeIMAPServer.message("old").write(to: refused)
+        let fine = files.appendingPathComponent("fine.eml")
+        try FakeIMAPServer.message("fine").write(to: fine)
+        let missing = files.appendingPathComponent("Salary review.mbox")
+        startCenter()
+        server.refuseNext("APPEND", code: "OVERQUOTA", text: "Quota exceeded for owner@example.com")
+
+        let outcome = await FileImport.run([refused, missing, fine], into: folder, syncer: h.syncer)
+        XCTAssertEqual(outcome.imported, 1)
+        XCTAssertEqual(outcome.failures.count, 2)
+        let signatures = events(area: "Import").map(\.signature).sorted()
+        XCTAssertEqual(signatures.count, 2, "\(signatures)")
+        XCTAssertEqual(signatures.filter { $0.hasPrefix("Import.serverRefused@") }, ["Import.serverRefused@AccountSyncer.swift:importMessage"])
+        XCTAssertTrue(signatures.contains { $0.hasSuffix("@MailImport.swift:run") }, "\(signatures)")
+        let upload = try await uploaded()
+        for word in ["Board minutes", "Salary", "owner@example.com"] {
+            XCTAssertFalse(upload.contains(word), "\(word) reached the upload")
+        }
+    }
+
     func testMailKeptOnTheServerByAnArchiveIsAWarningWithoutItsFolder() async throws {
         let server = try EngineHarness.gmailServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "SPECIAL-USE"])
         server.addMailbox("Clients/ACME Contracts")

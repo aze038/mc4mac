@@ -1945,22 +1945,10 @@ final class AppModel {
     func importFiles(_ urls: [URL], into folder: FolderInfo) {
         Task {
             guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }
-            var count = 0
-            for url in urls {
-                do {
-                    let messages = url.pathExtension.lowercased() == "mbox"
-                        ? MboxReader.messages(in: try Data(contentsOf: url))
-                        : [try EMLImport.message(at: url)]
-                    for m in messages {
-                        try await syncer.importMessage(m, into: folder)
-                        count += 1
-                    }
-                } catch {
-                    Log.error("Import", "Importing a .\(url.pathExtension.lowercased()) file failed: \(error.localizedDescription)", error: error)
-                    errorMessage = error.localizedDescription
-                }
-            }
-            statusText = "Imported \(count) messages into \(folder.name)"
+            // Each failure has reached diagnostics once already, from the engine or the import.
+            let outcome = await FileImport.run(urls, into: folder, syncer: syncer)
+            for failure in outcome.failures { errorMessage = failure.localizedDescription }
+            statusText = "Imported \(outcome.imported) messages into \(folder.name)"
         }
     }
 

@@ -72,6 +72,43 @@ public enum EMLImport {
     }
 }
 
+/// Imports .eml and .mbox files into a folder, as File → Import does.
+public enum FileImport {
+    /// What an import did: how many messages went in, and what went wrong with each file that
+    /// failed, for the owner.
+    public struct Outcome: Sendable {
+        public var imported = 0
+        public var failures: [Error] = []
+    }
+
+    /// Imports each file's messages into `folder`, one at a time; a file stops at its first
+    /// failure and the next is tried. Each failure reaches diagnostics once: a file that could
+    /// not be read is reported here, under Import, while a message the server refused is
+    /// reported by the engine, which met it.
+    public static func run(_ urls: [URL], into folder: FolderInfo, syncer: AccountSyncer) async -> Outcome {
+        var outcome = Outcome()
+        for url in urls {
+            let kind = url.pathExtension.lowercased()
+            do {
+                let messages = kind == "mbox" ? MboxReader.messages(in: try Data(contentsOf: url)) : [try EMLImport.message(at: url)]
+                for m in messages {
+                    try await syncer.importMessage(m, into: folder)
+                    outcome.imported += 1
+                }
+            } catch is CancellationError {
+                return outcome
+            } catch {
+                if !(error is MailServiceError) {
+                    Log.error("Import", "Reading a .\(kind) file to import failed: \(error.localizedDescription)", error: error,
+                              names: [url.lastPathComponent, url.deletingPathExtension().lastPathComponent])
+                }
+                outcome.failures.append(error)
+            }
+        }
+        return outcome
+    }
+}
+
 public enum MailExport {
     public static func mbox(messages: [Data]) -> Data {
         var out = Data()
