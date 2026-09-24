@@ -263,6 +263,16 @@ final class DiagnosticsRedactorTests: XCTestCase {
                     keeps: ["לא ניתן לפתוח את הקובץ ״…״ מכיוון שהוא לא קיים."])
     }
 
+    /// Hebrew writes the same mark inside abbreviations, דו״ח (report) and בע״מ (Ltd), where it
+    /// neither opens nor closes a quotation, so a file named with one goes whole.
+    func testHebrewGershayimInsideAWordNeitherOpensNorClosesAQuotation() {
+        assertClean("לא ניתן לפתוח את הקובץ ״דו״ח שנתי ACME.pdf״ מכיוון שהוא לא קיים.", lacks: ["דו״ח", "שנתי", "ACME"],
+                    keeps: ["לא ניתן לפתוח את הקובץ ״…״ מכיוון שהוא לא קיים."])
+        assertClean("הקובץ ״חוזה בע״מ.pdf״ והקובץ ״דו״ח.xlsx״ חסרים", lacks: ["חוזה", "pdf", "xlsx"],
+                    keeps: ["הקובץ ״…״ והקובץ ״…״ חסרים"])
+        XCTAssertEqual(redactor.redact("שגיאה בדו״ח של בע״מ"), "שגיאה בדו״ח של בע״מ", "no quotation, nothing taken out")
+    }
+
     func testSingleQuotesGoButApostrophesStay() {
         assertClean("The file ‘Invoice ACME.pdf’ couldn’t be opened.", lacks: ["Invoice", "ACME"], keeps: ["couldn’t be opened"])
         assertClean("The file ‘Ana’s notes.txt’ isn’t there", lacks: ["Ana", "notes"], keeps: ["isn’t there"])

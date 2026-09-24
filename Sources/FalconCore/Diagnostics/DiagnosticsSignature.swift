@@ -2,9 +2,9 @@ import Foundation
 
 /// Grouping keys. A signature names where and how something failed, never with what: the
 /// same failure at the same place reads the same on every Mac and every run, so the triage
-/// can count it. It is `Area.code@File.swift:function` for a logged failure, and
-/// `Area.code@Binary` for a crash or a MetricKit report, whose place is only known after
-/// symbolication.
+/// can count it. It is `Area.code@File.swift:function` for a logged failure,
+/// `Area.code@Binary:function` for a crash or hang (see `CrashIdentity`), and `Area.code@Binary`
+/// for MetricKit's CPU and disk-write reports.
 ///
 /// The place is the function rather than the line: lines move whenever code above them
 /// changes, nearly every release and above all in the one that fixes the failure, which would
@@ -234,7 +234,7 @@ public enum DiagnosticsTitle {
     public static func make(kind: DiagnosticsKind, area: String, code: String) -> String {
         let title: String
         switch kind {
-        case .crash: title = crashTitle(code)
+        case .crash: title = crashSentence(code)
         case .hang: title = "FalconMail stopped responding for a while"
         case .cpu: title = "FalconMail kept the processor busy for a long time"
         case .diskwrite: title = "FalconMail wrote an unusually large amount to disk"
@@ -335,7 +335,8 @@ public enum DiagnosticsTitle {
         "invalidInput": "a setting or value was not accepted",
     ]
 
-    private static func crashTitle(_ code: String) -> String {
+    /// The plain sentence for a crash of this code, which `CrashIdentity` adds its details to.
+    static func crashSentence(_ code: String) -> String {
         let parts = Set(code.split(separator: ".").map(String.init))
         if parts.contains("EXC_BAD_ACCESS") || parts.contains("SIGSEGV") || parts.contains("SIGBUS") {
             return "FalconMail crashed: it used memory it should not have"

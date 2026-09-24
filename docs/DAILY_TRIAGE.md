@@ -88,9 +88,12 @@ the system frames' names and the signature.
 ## 4. Fix, one problem at a time
 
 1. **Find the cause.** A logged failure's signature ends in the file and function that reported
-   it (`IMAP.throttled@AccountSyncer.swift:loop`); a crash's names only the binary
-   (`Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail`), so its stack says where. Read the code there and
-   the stack. `docs/DIAGNOSTICS.md` describes every field.
+   it (`IMAP.throttled@AccountSyncer.swift:loop`). A crash's or hang's ends in FalconMail's own
+   function when the report names it, and otherwise, as in a release build, in the system
+   function next to FalconMail's frame
+   (`Crash.EXC_CRASH.SIGABRT.NSRangeException.NSArrayMObjectAtIndexedSubscriptIndexBeyondBounds@CoreFoundation:NSArrayM.objectAtIndexedSubscript`),
+   so the symbolicated stack says where in FalconMail. Read the code there and the stack.
+   `docs/DIAGNOSTICS.md` describes every field.
 2. **Make a branch for it** in a fresh worktree from the release branch:
 
    ```sh
@@ -131,24 +134,24 @@ and branches by name, never by link. A section with nothing in it says "None."
 # FalconMail triage, Thursday 24 September 2026
 
 2 new problems, 1 getting worse, 1 fixed and committed (not released).
-Most urgent: FalconMail crashed: it used memory it should not have (9 times on 4 installs).
+Most urgent: FalconMail crashed: it used memory it should not have (in its own code, called from NSTableView.reloadData), 9 times on 4 installs.
 1 thing needs you: symbols for 1.10.0 are missing.
 
 ## New problems
-- FalconMail crashed: it used memory it should not have: 9 times on 4 installs (Aysel, Kamal + 2 more), version 1.10.0, when opening a message with an empty body. Fixed on branch triage/2026-09-24-reader-crash, commit 1a2b3c4.
-- FalconMail stopped responding for a while: 3 times on 1 install, version 1.10.0. Not looked at yet.
+- FalconMail crashed: it used memory it should not have (in its own code, called from NSTableView.reloadData): 9 times on 4 installs (Aysel, Kamal + 2 more), version 1.10.0, when opening a message with an empty body. Fixed on branch triage/2026-09-24-reader-crash, commit 1a2b3c4.
+- FalconMail stopped responding for a while (in libsqlite.dylib): 3 times on 1 install, version 1.10.0. Not looked at yet.
 
 ## Getting worse
 - The mail server paused the connection: too many requests: 41 times on 5 installs today, against about 6 a day last week. Not looked at yet.
 
 ## Fixed today (committed locally, not released)
-- FalconMail crashed: it used memory it should not have (9 times on 4 installs): fixed, a message with an empty body now opens. Branch triage/2026-09-24-reader-crash, commit 1a2b3c4; all tests pass, Debug and Release builds succeed.
+- FalconMail crashed: it used memory it should not have (in its own code, called from NSTableView.reloadData), 9 times on 4 installs: fixed, a message with an empty body now opens. Branch triage/2026-09-24-reader-crash, commit 1a2b3c4; all tests pass, Debug and Release builds succeed.
 
 ## Needs Kamal
 - Symbols for 1.10.0 are missing from ~/Library/Application Support/FalconMail Symbols/, so crash stacks show offsets only.
 
 ## Technical detail
-- Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail, MessageView.swift:88 in the stack: the reader force-unwrapped the first body part; test MIMETests.testEmptyBodyOpens; worktree /Users/kmuradoff/wt/triage-2026-09-24-reader-crash.
+- Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail:calledFrom.NSTableView.reloadData, MessageView.swift:88 in the stack: the reader force-unwrapped the first body part; test MIMETests.testEmptyBodyOpens; worktree /Users/kmuradoff/wt/triage-2026-09-24-reader-crash.
 ```
 
 The three lines at the top are always: the counts, the most urgent problem, and how many things

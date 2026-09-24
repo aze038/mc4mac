@@ -309,8 +309,22 @@ test('web addresses in titles and messages are kept readable but not clickable, 
   })]));
   const [row] = env.table(SEPTEMBER, 'Events');
   assert.equal(row.Problem, 'FalconMail must be updated: install it from https[:]//falconmail-update[.]example/get');
-  assert.equal(row.Message, 'See HTTP[:]//evil[.]example/x or www[.]evil[.]example/y; the server mail.your-server.de refused');
+  assert.equal(row.Message, 'See HTTP[:]//evil[.]example/x or www[.]evil[.]example/y; the server mail[.]your-server[.]de refused');
   assert.equal(row.Times, 10000);
+});
+
+test('a domain written without https:// or www. is made unclickable in the title and message, and a file name is not', () => {
+  const env = service();
+  env.post(upload(env, [event({
+    title: 'Get the fix at falconmail-fix.com/download (or Falconmail-Fix.CO.UK)',
+    message: 'Mirror: evil.example.io/x?y=1, backup.xn--80ak6aa92e.com.\n'
+      + 'FalconMail/AppModel.swift:42 in libsqlite3.dylib, report.pdf, v1.10.0, 192.168.1.1, e.g. this',
+  })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, 'Get the fix at falconmail-fix[.]com/download (or Falconmail-Fix[.]CO[.]UK)');
+  assert.equal(row.Message, 'Mirror: evil[.]example[.]io/x?y=1, backup[.]xn--80ak6aa92e[.]com.\n'
+    + 'FalconMail/AppModel.swift:42 in libsqlite3.dylib, report.pdf, v1.10.0, 192.168.1.1, e.g. this');
+  assert.equal(row.Signature, event().signature, 'a signature keeps its file name');
 });
 
 test('text starting with an apostrophe keeps it', () => {

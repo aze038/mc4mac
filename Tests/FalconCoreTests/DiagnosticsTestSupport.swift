@@ -131,6 +131,11 @@ final class ManualClock: DiagnosticsClock, @unchecked Sendable {
     }
 }
 
+/// What a closure run on another thread gave back.
+final class ResultBox<T>: @unchecked Sendable {
+    var value: T?
+}
+
 enum DiagnosticsFixtures {
     static let endpoint = URL(string: "https://script.example.invalid/macros/s/test/exec")!
     static let app = DiagnosticsApp(version: "1.10.0", build: "123", channel: "release")
@@ -142,6 +147,22 @@ enum DiagnosticsFixtures {
     static func gate(endpoint: URL? = DiagnosticsFixtures.endpoint, key: String = "ingest-key", release: Bool = true,
                      bundle: String? = "com.falconmail.app", enabled: Bool = true) -> DiagnosticsGate {
         DiagnosticsGate(endpoint: endpoint, key: key, isReleaseBuild: release, bundleIdentifier: bundle, userEnabled: enabled)
+    }
+
+    /// Runs `body` on a thread with the 512 KB stack a Dispatch queue's thread has, as the
+    /// diagnostics queue's does, rather than the test runner's 8 MB main thread: code that goes a
+    /// call deeper for each level of its input runs out of stack here.
+    static func onQueueSizedStack<T>(_ body: @escaping () -> T) -> T {
+        let box = ResultBox<T>()
+        let done = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            box.value = body()
+            done.signal()
+        }
+        thread.stackSize = 512 * 1024
+        thread.start()
+        done.wait()
+        return box.value!
     }
 
     static func temporaryDirectory(_ name: String = "diag") -> URL {

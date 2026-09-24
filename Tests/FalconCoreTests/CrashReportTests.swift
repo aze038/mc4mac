@@ -114,6 +114,139 @@ final class CrashReportTests: XCTestCase {
         return header + "\n" + body.replacingOccurrences(of: "\n", with: "")
     }
 
+    /// A small report of one crash. Its images are FalconMail (0), CoreFoundation (1),
+    /// libobjc.A.dylib (2), Foundation (3) and AppKit (4), and each frame is an image with, when
+    /// the report names it, a symbol. `build` moves every UUID, load address and offset, as another
+    /// build of the same code would; `home` is the Mac's user.
+    static func crashIPS(type: String = "EXC_CRASH", signal: String = "SIGABRT", asi: [String] = [],
+                         backtrace: [(image: Int, symbol: String?)]? = nil, crashed: [(image: Int, symbol: String?)],
+                         build: Int = 0, home: String = "/Users/kmuradoff", incident: String = UUID().uuidString) -> String {
+        let names = ["FalconMail", "CoreFoundation", "libobjc.A.dylib", "Foundation", "AppKit"]
+        let images = names.enumerated().map { index, name -> JSONValue in
+            let path = index == 0 ? "\(home)/Applications/FalconMail.app/Contents/MacOS/FalconMail" : "/System/Library/\(name)"
+            return .object(["name": .string(name), "path": .string(path), "arch": .string("arm64e"),
+                            "base": .int(Int64(4_294_967_296 + index * 16_777_216 + (index == 0 ? build * 65_536 : 0))),
+                            "uuid": .string(String(format: "%08X-1634-3580-A695-%012X", index == 0 ? 0x70B8_9F27 + build : index, index))])
+        }
+        func frames(_ list: [(image: Int, symbol: String?)]) -> JSONValue {
+            .array(list.enumerated().map { position, frame in
+                var f: [String: JSONValue] = ["imageIndex": .int(Int64(frame.image)),
+                                              "imageOffset": .int(Int64(10_000 + position * 64 + (frame.image == 0 ? build * 4_096 : 0)))]
+                if let symbol = frame.symbol { f["symbol"] = .string(symbol) }
+                return .object(f)
+            })
+        }
+        let header: JSONValue = .object(["app_name": .string("FalconMail"), "app_version": .string("1.9.\(build)"), "build_version": .string("\(45 + build)"),
+                                         "bundleID": .string("com.falconmail.app"), "bug_type": .string("309"), "incident_id": .string(incident),
+                                         "os_version": .string("macOS 26.6 (25G5023)"), "timestamp": .string("2026-09-20 10:11:12.00 +0100")])
+        var body: [String: JSONValue] = [
+            "procName": .string("FalconMail"), "procPath": .string("\(home)/Applications/FalconMail.app/Contents/MacOS/FalconMail"),
+            "captureTime": .string("2026-09-20 10:11:12.3456 +0100"), "incident": .string(incident),
+            "exception": .object(["type": .string(type), "signal": .string(signal)]), "faultingThread": .int(0),
+            "threads": .array([.object(["triggered": .bool(true), "queue": .string("com.apple.main-thread"), "frames": frames(crashed)])]),
+            "usedImages": .array(images),
+        ]
+        if !asi.isEmpty { body["asi"] = .object(["CoreFoundation": .array(asi.map(JSONValue.string))]) }
+        if let backtrace { body["lastExceptionBacktrace"] = frames(backtrace) }
+        return String(decoding: header.serialised, as: UTF8.self) + "\n" + String(decoding: JSONValue.object(body).serialised, as: UTF8.self)
+    }
+
+    /// How an uncaught exception reaches the crashed thread: abort, called from the runtime's
+    /// handler for exceptions nobody caught.
+    static let aborted: [(image: Int, symbol: String?)] = [(1, "__pthread_kill"), (1, "abort"), (2, "_objc_terminate()"), (4, "-[NSApplication run]")]
+
+    static func uncaught(_ name: String, _ reason: String) -> [String] {
+        ["*** Terminating app due to uncaught exception '\(name)', reason: '\(reason)'"]
+    }
+
+    /// The crash the report describes, as it would be queued.
+    private func crash(_ text: String) throws -> DiagnosticsEvent {
+        let newline = try XCTUnwrap(text.firstIndex(of: "\n"))
+        let report = CrashReportScanner.Report(url: reports.appendingPathComponent("FalconMail-2026-09-20-101112.ips"), modified: now,
+                                               header: try XCTUnwrap(JSONValue.parse(String(text[..<newline]))),
+                                               body: try XCTUnwrap(JSONValue.parse(String(text[text.index(after: newline)...]))))
+        let redactor = DiagnosticsRedactor(salt: Data(repeating: 5, count: 32), homePath: "/Users/kmuradoff")
+        return CrashReportDigest.event(from: report, install: "INSTALL", redactor: redactor).0
+    }
+
+    /// Every uncaught exception once went under one signature ending `@Foundation` and one
+    /// title, so different crashes shared a row. Each is now told apart by its exception, the
+    /// system function FalconMail called that raised it and the first words of its reason.
+    func testCrashesAreToldApartByTheirExceptionAndWhereItWasRaised() throws {
+        let assertion = try crash(Self.crashIPS(
+            asi: Self.uncaught("NSInternalInconsistencyException", "Invalid parameter not satisfying: row >= 0"),
+            backtrace: [(1, "__exceptionPreprocess"), (2, "objc_exception_throw"),
+                        (3, "-[NSAssertionHandler handleFailureInMethod:object:file:lineNumber:description:]"), (0, nil), (4, "-[NSTableView reloadData]")],
+            crashed: Self.aborted))
+        let range = try crash(Self.crashIPS(
+            asi: Self.uncaught("NSRangeException", "*** -[__NSArrayM objectAtIndexedSubscript:]: index 3 beyond bounds [0 .. 2]"),
+            backtrace: [(1, "__exceptionPreprocess"), (2, "objc_exception_throw"), (1, "-[__NSArrayM objectAtIndexedSubscript:]"), (0, nil), (0, nil)],
+            crashed: Self.aborted))
+        let layout = try crash(Self.crashIPS(
+            asi: Self.uncaught("NSInternalInconsistencyException", "The window has been marked as needing another Update Constraints in Window pass"),
+            backtrace: [(1, "__exceptionPreprocess"), (2, "objc_exception_throw"), (4, "-[NSWindow(NSConstraintBasedLayout) _postWindowNeedsUpdateConstraints]"), (0, nil)],
+            crashed: Self.aborted))
+
+        XCTAssertEqual(assertion.signature, "Crash.EXC_CRASH.SIGABRT.NSInternalInconsistencyException.invalidParameterNotSatisfyingRow"
+                       + "@Foundation:NSAssertionHandler.handleFailureInMethod")
+        XCTAssertEqual(assertion.title, "FalconMail crashed on an internal error (NSInternalInconsistencyException: Invalid parameter not satisfying row)")
+        XCTAssertEqual(range.signature, "Crash.EXC_CRASH.SIGABRT.NSRangeException.NSArrayMObjectAtIndexedSubscriptIndexBeyondBounds"
+                       + "@CoreFoundation:NSArrayM.objectAtIndexedSubscript")
+        XCTAssertEqual(range.title, "FalconMail crashed on an internal error (NSRangeException: NSArrayM objectAtIndexedSubscript index beyond bounds)")
+        XCTAssertEqual(layout.signature, "Crash.EXC_CRASH.SIGABRT.NSInternalInconsistencyException.theWindowHasBeenMarked"
+                       + "@AppKit:NSWindow._postWindowNeedsUpdateConstraints")
+        XCTAssertEqual(layout.title, "FalconMail crashed on an internal error (NSInternalInconsistencyException: The window has been marked)")
+        let events = [assertion, range, layout]
+        XCTAssertEqual(Set(events.map(\.signature)).count, 3)
+        XCTAssertEqual(Set(events.map(\.title)).count, 3)
+        for event in events {
+            XCTAssertLessThanOrEqual(event.title.count, DiagnosticsEvent.maxTitle, event.title)
+            XCTAssertFalse(event.title.contains(where: \.isNumber), event.title)
+        }
+    }
+
+    /// Another build moves every offset, UUID and load address, and another Mac has another user:
+    /// none of it may split one crash into two problems.
+    func testTheSameCrashReadsTheSameInEveryBuildAndOnEveryMac() throws {
+        func report(build: Int, home: String) throws -> DiagnosticsEvent {
+            try crash(Self.crashIPS(
+                asi: Self.uncaught("NSInvalidArgumentException", "-[NSNull length]: unrecognized selector sent to instance 0x6000037a4ce0"),
+                backtrace: [(1, "__exceptionPreprocess"), (2, "objc_exception_throw"), (1, "-[NSObject(NSObject) doesNotRecognizeSelector:]"),
+                            (1, "___forwarding___"), (1, "_CF_forwarding_prep_0"), (0, nil), (4, "-[NSApplication sendAction:to:from:]")],
+                crashed: Self.aborted, build: build, home: home))
+        }
+        let first = try report(build: 0, home: "/Users/kmuradoff")
+        let later = try report(build: 7, home: "/Users/ana.lima")
+        XCTAssertEqual(first.signature, "Crash.EXC_CRASH.SIGABRT.NSInvalidArgumentException.NSNullLengthUnrecognizedSelectorSent"
+                       + "@CoreFoundation:CF_forwarding_prep")
+        XCTAssertEqual(later.signature, first.signature)
+        XCTAssertEqual(later.title, first.title)
+        XCTAssertEqual(first.title, "FalconMail crashed on an internal error (NSInvalidArgumentException: NSNull length unrecognized selector sent)")
+        XCTAssertFalse(first.signature.contains(where: \.isNumber), first.signature)
+        XCTAssertFalse(first.signature.contains("kmuradoff"))
+    }
+
+    /// When the report names FalconMail's own function, that is the place, and the reason's words,
+    /// which could vary, are not needed.
+    func testAFunctionTheReportNamesPlacesTheCrash() throws {
+        let event = try crash(Self.crashIPS(
+            asi: Self.uncaught("NSRangeException", "*** -[__NSArrayM objectAtIndexedSubscript:]: index 3 beyond bounds [0 .. 2]"),
+            backtrace: [(1, "__exceptionPreprocess"), (2, "objc_exception_throw"), (1, "-[__NSArrayM objectAtIndexedSubscript:]"),
+                        (0, "closure #1 in MessageList.select(_:)"), (0, nil)],
+            crashed: Self.aborted))
+        XCTAssertEqual(event.signature, "Crash.EXC_CRASH.SIGABRT.NSRangeException@FalconMail:MessageList.select")
+        XCTAssertEqual(event.title, "FalconMail crashed on an internal error (NSRangeException, in MessageList.select)")
+    }
+
+    /// A trap in FalconMail's own code, a force-unwrapped nil in a release build say, is at the top
+    /// of the stack with no name and nothing above it: what called it is the nearest named place.
+    func testATrapInFalconMailsOwnCodeIsPlacedByWhatCalledIt() throws {
+        let event = try crash(Self.crashIPS(type: "EXC_BREAKPOINT", signal: "SIGTRAP",
+                                            crashed: [(0, nil), (0, nil), (4, "-[NSApplication(NSResponder) sendAction:to:from:]"), (4, "-[NSApplication run]")]))
+        XCTAssertEqual(event.signature, "Crash.EXC_BREAKPOINT.SIGTRAP@FalconMail:calledFrom.NSApplication.sendAction")
+        XCTAssertEqual(event.title, "FalconMail crashed: a safety check in its code failed (in its own code, called from NSApplication.sendAction)")
+    }
+
     @discardableResult
     private func write(_ name: String, _ text: String, modified: Date) throws -> URL {
         let url = reports.appendingPathComponent(name)
@@ -232,8 +365,10 @@ final class CrashReportTests: XCTestCase {
         let center = makeCenter(clock: ManualClock(now))
         center.start()
         let crash = try XCTUnwrap(center.pendingRecords.first { $0.event.kind == .crash }?.event)
-        XCTAssertEqual(crash.signature, "Crash.EXC_BREAKPOINT.SIGTRAP@AppKit", "past the kernel and Swift runtime frames")
-        XCTAssertEqual(crash.title, "FalconMail crashed: a safety check in its code failed")
+        // FalconMail's frames name nothing, so the Swift runtime function it called, with the
+        // first words of the fatal error; the address and the path in it never reach either.
+        XCTAssertEqual(crash.signature, "Crash.EXC_BREAKPOINT.SIGTRAP.noAccount@libswiftCore.dylib:swift_unexpectedError")
+        XCTAssertEqual(crash.title, "FalconMail crashed: a safety check in its code failed (no account)")
         XCTAssertTrue(crash.message.contains("Trace/BPT trap: 5"))
 
         let text = String(decoding: crash.context.serialised, as: UTF8.self) + crash.message
@@ -347,9 +482,9 @@ final class CrashReportTests: XCTestCase {
         let ips = CrashReportDigest.digest(header: header, body: body, redactor: redactor)
         let sent = JSONValue.object(["ips": ips, "metrickit": metricKit])
         if ProcessInfo.processInfo.environment["FALCON_UPDATE_FIXTURES"] == "1" {
-            // The .ips laid out for reading; MetricKit's tree nests a level per frame, so it is kept on one line.
-            let text = "{\n  \"ips\": " + ips.readable(width: 100).replacingOccurrences(of: "\n", with: "\n  ")
-                + ",\n  \"metrickit\": " + String(decoding: metricKit.serialised, as: UTF8.self) + "\n}\n"
+            // Both laid out for reading, each MetricKit frame on a line of its own.
+            func laidOut(_ value: JSONValue, width: Int) -> String { value.readable(width: width).replacingOccurrences(of: "\n", with: "\n  ") }
+            let text = "{\n  \"ips\": " + laidOut(ips, width: 100) + ",\n  \"metrickit\": " + laidOut(metricKit, width: 200) + "\n}\n"
             try Data(text.utf8).write(to: fixture)
         }
         let stored = try XCTUnwrap(JSONValue.parse(Data(contentsOf: fixture)), "\(fixture.path) is missing or not JSON")

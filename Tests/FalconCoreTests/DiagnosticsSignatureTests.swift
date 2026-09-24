@@ -76,6 +76,58 @@ final class DiagnosticsSignatureTests: XCTestCase {
                        "Crash.EXC_CRASH.SIGABRT@libcabi.dylib")
     }
 
+    /// A crash report's symbols, down to the type and function every build shares.
+    func testSymbolsAreReadDownToTheirTypeAndFunction() {
+        let cases: [(String?, String?)] = [
+            ("-[NSAssertionHandler handleFailureInMethod:object:file:lineNumber:description:]", "NSAssertionHandler.handleFailureInMethod"),
+            ("+[NSException raise:format:]", "NSException.raise"),
+            ("-[NSView(NSConstraintBasedLayout) _layoutSubtreeWithOldSize:]", "NSView._layoutSubtreeWithOldSize"),
+            ("-[_TtC10FalconMail11AppDelegate applicationDidFinishLaunching:]", "AppDelegate.applicationDidFinishLaunching"),
+            ("-[__NSArrayM objectAtIndexedSubscript:]", "NSArrayM.objectAtIndexedSubscript"),
+            ("closure #1 in AppModel.openMessage(id:)", "AppModel.openMessage"),
+            ("implicit closure #2 in closure #1 in MessageList.body.getter", "MessageList.body.getter"),
+            ("specialized Array.subscript.getter", "Array.subscript.getter"),
+            ("partial apply for closure #3 in Store.save(_:)", "Store.save"),
+            ("protocol witness for View.body.getter in conformance MessageList", "MessageList.body.getter"),
+            ("generic specialization <Swift.Int> of Swift._ArrayBuffer._checkInoutAndNativeTypeCheckedBounds(_:wasNativeTypeChecked:)",
+             "Swift._ArrayBuffer._checkInoutAndNativeTypeCheckedBounds"),
+            ("Swift._assertionFailure(_: Swift.StaticString, _: Swift.String, file: Swift.StaticString, line: Swift.UInt, flags: Swift.UInt32) -> Swift.Never",
+             "Swift._assertionFailure"),
+            ("@objc AppDelegate.application(_:open:)", "AppDelegate.application"),
+            ("static FalconCore.AccountStore.shared.getter", "AccountStore.shared.getter"),
+            ("WebCore::Document::updateStyleIfNeeded()", "WebCore.Document.updateStyleIfNeeded"),
+            ("__exceptionPreprocess", "exceptionPreprocess"),
+            ("_CF_forwarding_prep_0", "CF_forwarding_prep"),
+            ("???", nil), ("", nil), (nil, nil),
+        ]
+        for (symbol, function) in cases {
+            XCTAssertEqual(CrashIdentity.function(symbol), function, symbol ?? "nil")
+        }
+    }
+
+    /// A crash's reason, down to its first words: nothing quoted, numbered or pathed, and no word
+    /// left dangling at the end.
+    func testAReasonIsReadDownToItsFirstWords() {
+        XCTAssertEqual(CrashIdentity.words("Invalid parameter not satisfying: row >= 0"), ["Invalid", "parameter", "not", "satisfying", "row"])
+        XCTAssertEqual(CrashIdentity.words("no account for <addr:1a2b3c4d> in ~/Library/x"), ["no", "account"])
+        XCTAssertEqual(CrashIdentity.words("-[NSNull length]: unrecognized selector sent to instance 0x6000037a4ce0"),
+                       ["NSNull", "length", "unrecognized", "selector", "sent"])
+        XCTAssertEqual(CrashIdentity.words("Could not open 'Invoice ACME.pdf' for 3 seconds"), ["Could", "not", "open", "for", "seconds"])
+        XCTAssertEqual(CrashIdentity.words("12 34 5678"), [])
+        XCTAssertEqual(CrashIdentity.camelCase(["Invalid", "parameter", "not"]), "invalidParameterNot")
+        XCTAssertEqual(CrashIdentity.camelCase(["NSArrayM", "objectAtIndex"]), "NSArrayMObjectAtIndex")
+        let (exception, reason) = CrashIdentity.reason(inApplicationSpecificInformation: [
+            "abort() called",
+            "*** Terminating app due to uncaught exception 'NSRangeException', reason: 'index 3 beyond bounds'",
+        ])
+        XCTAssertEqual(exception, "NSRangeException")
+        XCTAssertEqual(reason, "index 3 beyond bounds")
+        XCTAssertEqual(CrashIdentity.reason(inApplicationSpecificInformation: ["Swift/ContiguousArrayBuffer.swift:600: Fatal error: Index out of range"]).reason,
+                       "Index out of range")
+        XCTAssertNil(CrashIdentity.reason(inApplicationSpecificInformation: ["Fatal error"]).reason)
+        XCTAssertNil(CrashIdentity.reason(inApplicationSpecificInformation: ["abort() called"]).reason)
+    }
+
     // MARK: Titles
 
     func testTitlesForTheContractExamples() {

@@ -308,6 +308,44 @@ test('a control character hidden in a web address never leaves a clickable link 
   assert.equal(env.table(SEPTEMBER, 'Installs')[0]['Diagnostics ID'], newInstall);
 });
 
+// Characters that show nothing, each hidden in turn inside a web address: zero-width space,
+// non-joiner and joiner, word joiner, soft hyphen, byte-order mark, left-to-right and right-to-left
+// marks, a right-to-left override, an isolate and its end, the Arabic letter mark, the Mongolian
+// vowel separator, an interlinear annotation anchor, a tag character, the combining grapheme
+// joiner, a variation selector and a Hangul filler.
+const INVISIBLE = ['\u200B', '\u200C', '\u200D', '\u2060', '\u00AD', '\uFEFF', '\u200E', '\u200F', '\u202E', '\u2066',
+  '\u2069', '\u061C', '\u180E', '\uFFF9', '\u{E0041}', '\u034F', '\uFE0F', '\u3164'];
+const SHOWS_NOTHING = /[\p{Cf}\u034F\uFE0F\u3164]/u;
+
+test('an invisible character hidden in a web address never leaves a clickable link anywhere', () => {
+  const env = service();
+  const events = INVISIBLE.map((mark, i) => event({
+    id: 'EEEEEEEE-0000-4000-8000-' + String(i).padStart(12, '0'),
+    title: 'FalconMail must be updated: install it from ht' + mark + 'tps://falconmail-update.example/get',
+    message: 'Get it at w' + mark + 'ww.falconmail-update.example, mail' + mark + 'to:help@falconmail-update.example or '
+      + 'falconmail-update' + mark + '.example.com/get',
+    signature: 'Update.required' + i + '@ht' + mark + 'tps://falconmail-update.example',
+    area: 'www' + mark + '.falconmail-update.example',
+    context: { download: 'https:' + mark + '//falconmail-update.example/get', ['ww' + mark + 'w.falconmail-update.example']: 'key' },
+    account: { provider: 'google', kind: 'gmail', host: 'w' + mark + 'ww.falconmail-update.example', ref: '1a2b3c4d' },
+  }));
+  env.post(upload(env, events, { os: 'see ht\u200Btps://falconmail-update.example', hw: 'www\u2060.falconmail-update.example' }));
+  env.context.rebuildIssues();
+
+  const cells = everyCell(env);
+  const links = cells.filter(cell => CLICKABLE.test(cell.value) || /falconmail-update\.example\.com/.test(cell.value));
+  assert.deepEqual(links, [], 'clickable: ' + JSON.stringify(links.slice(0, 3)));
+  const hidden = cells.filter(cell => SHOWS_NOTHING.test(cell.value));
+  assert.deepEqual(hidden, [], 'invisible characters kept: ' + JSON.stringify(hidden.slice(0, 3)));
+  const rows = env.table(SEPTEMBER, 'Events');
+  assert.equal(rows.length, INVISIBLE.length);
+  for (const row of rows) {
+    assert.equal(row.Problem, 'FalconMail must be updated: install it from https[:]//falconmail-update[.]example/get', 'still readable');
+    assert.equal(row.Message, 'Get it at www[.]falconmail-update[.]example, mailto[:]help@falconmail-update[.]example or '
+      + 'falconmail-update[.]example[.]com/get');
+  }
+});
+
 // Text Sheets would act on at the start of a cell, an apostrophe first included.
 const AWKWARD = ["'=SUM(A1:A9)", "'+44 20 7946 0000", "'-1 folders left", "'@IMAP", "''quoted'' reply",
   "'Sent' folder could not be found", '=SUM(B1:B9)', '+1 more', '-x', '@mention'];

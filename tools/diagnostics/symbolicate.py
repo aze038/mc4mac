@@ -7,7 +7,8 @@ frames in FalconMail itself are looked up with atos in the dSYM that the release
 in other binaries, and FalconMail's own when its symbols are missing, are shown as offsets.
 
 The app sends a crash cut to fit its 16 KB: the crashed thread and, for an uncaught exception,
-the backtrace it was raised from. Frames it had to leave out are shown as a gap with their count.
+the backtrace it was raised from. Frames it had to leave out are shown as a gap with their count,
+and a runaway recursion as one turn of it and how many frames repeat it.
 
     symbolicate.py --event <event ID>      a row from ~/FalconMailReports/*.jsonl
     symbolicate.py rows.jsonl              every row with a stack in a file
@@ -86,42 +87,100 @@ def omitted(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
-def metrickit_threads(tree):
+def is_gap(frame):
+    """Whether a listed frame stands for others: frames left out, or frames repeating those above."""
+    return 'omitted' in frame or 'repeated' in frame
+
+
+# What the thread MetricKit blames was doing, by the kind of report.
+BLAMED = {'crash': 'crashed', 'hang': 'hung', 'cpu': 'using the processor', 'diskwrite': 'writing to disk'}
+
+
+def metrickit_threads(tree, kind='crash'):
+    """The threads of a MetricKit call-stack tree: listed top first under `frames`, as the app sends
+    them, or nested a level per frame, as MetricKit writes them and earlier versions of the app
+    sent them."""
     threads = []
+    per_thread = tree.get('callStackPerThread') is not False
     for index, stack in enumerate(tree.get('callStacks') or []):
-        frames = []
-
-        def walk(frame, depth):
-            frames.append({
-                'binary': frame.get('binaryName') or '?',
-                'uuid': frame.get('binaryUUID'),
-                'offset': frame.get('offsetIntoBinaryTextSegment'),
-                'samples': frame.get('sampleCount'),
-                'depth': depth,
-            })
-            for child in frame.get('subFrames') or []:
-                walk(child, depth + 1)
-            if omitted(frame.get('subFramesOmitted')):
-                frames.append({'omitted': frame['subFramesOmitted'], 'depth': depth + 1})
-
-        for root in stack.get('callStackRootFrames') or []:
-            walk(root, 0)
+        if not isinstance(stack, dict):
+            continue
+        frames = listed_frames(stack['frames']) if isinstance(stack.get('frames'), list) else nested_frames(stack)
         if omitted(stack.get('framesOmitted')):
-            frames.append({'omitted': stack['framesOmitted'], 'depth': 0})
-        # A crash's stack is a chain, one frame under the next; only a sampled hang branches.
-        branched = len(stack.get('callStackRootFrames') or []) > 1 or any(
-            len(f.get('subFrames') or []) > 1 for f in iter_frames(stack.get('callStackRootFrames') or []))
-        if not branched:
-            for frame in frames:
-                frame['depth'] = 0
-        threads.append({'name': 'Thread ' + str(index), 'crashed': bool(stack.get('threadAttributed')), 'frames': frames})
+            frames.append({'omitted': stack['framesOmitted'], 'depth': 0, 'elsewhere': True})
+        blamed = bool(stack.get('threadAttributed'))
+        if not per_thread:
+            name = 'Every thread, sampled together'
+        elif blamed and kind == 'hang':
+            name = 'Main thread'
+        else:
+            name = 'Thread ' + str(index)
+        if blamed or not per_thread:
+            name += ' (' + BLAMED.get(kind, 'blamed') + ')'
+        threads.append({'name': name, 'blamed': blamed or not per_thread, 'frames': frames})
     return threads
 
 
+def listed_frames(items):
+    frames = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        depth = item.get('depth')
+        depth = depth if isinstance(depth, int) and not isinstance(depth, bool) and 0 <= depth < 1000 else 0
+        if omitted(item.get('repeated')):
+            frames.append({'repeated': item['repeated'], 'cycle': omitted(item.get('cycle')), 'depth': depth})
+        elif omitted(item.get('omitted')):
+            frames.append({'omitted': item['omitted'], 'depth': depth})
+        else:
+            frames.append({
+                'binary': item.get('binaryName') or '?',
+                'uuid': item.get('binaryUUID'),
+                'offset': item.get('offsetIntoBinaryTextSegment'),
+                'samples': item.get('sampleCount'),
+                'depth': depth,
+            })
+    return frames
+
+
+def nested_frames(stack):
+    """Walked with a list of its own rather than recursion, so no depth runs Python out of stack."""
+    frames = []
+    work = [(root, 0) for root in reversed(stack.get('callStackRootFrames') or [])]
+    while work:
+        frame, depth = work.pop()
+        if not isinstance(frame, dict):
+            continue
+        if 'gap' in frame:
+            frames.append({'omitted': frame['gap'], 'depth': depth})
+            continue
+        frames.append({
+            'binary': frame.get('binaryName') or '?',
+            'uuid': frame.get('binaryUUID'),
+            'offset': frame.get('offsetIntoBinaryTextSegment'),
+            'samples': frame.get('sampleCount'),
+            'depth': depth,
+        })
+        # What the app left out under a frame is shown after the frames it kept there.
+        if omitted(frame.get('subFramesOmitted')):
+            work.append(({'gap': frame['subFramesOmitted']}, depth + 1))
+        work.extend((child, depth + 1) for child in reversed(frame.get('subFrames') or []))
+    # A crash's stack is a chain, one frame under the next; only a sampled hang branches.
+    roots = stack.get('callStackRootFrames') or []
+    branched = len(roots) > 1 or any(len(f.get('subFrames') or []) > 1 for f in iter_frames(roots))
+    if not branched:
+        for frame in frames:
+            frame['depth'] = 0
+    return frames
+
+
 def iter_frames(frames):
-    for frame in frames:
-        yield frame
-        yield from iter_frames(frame.get('subFrames') or [])
+    work = list(reversed(frames))
+    while work:
+        frame = work.pop()
+        if isinstance(frame, dict):
+            yield frame
+            work.extend(reversed(frame.get('subFrames') or []))
 
 
 def ips_threads(body):
@@ -149,13 +208,21 @@ def ips_threads(body):
     threads = []
     # Where an uncaught exception was raised: what the crashed thread shows is only how it ended the app.
     if isinstance(body.get('lastExceptionBacktrace'), list):
-        threads.append({'name': 'Where the exception was raised', 'crashed': True, 'backtrace': True,
+        threads.append({'name': 'Where the exception was raised', 'blamed': True,
                         'frames': frames_of(body['lastExceptionBacktrace'])})
     for position, thread in enumerate(body.get('threads') or []):
+        if not isinstance(thread, dict):
+            continue
         # The app sends only the crashed thread, with its number in the report.
         number = thread['index'] if isinstance(thread.get('index'), int) else position
-        name = 'Thread ' + str(number) + (' ' + thread['queue'] if thread.get('queue') else '')
-        threads.append({'name': name, 'crashed': bool(thread.get('triggered')), 'frames': frames_of(thread.get('frames'))})
+        name = 'Thread ' + str(number)
+        if thread.get('queue') == 'com.apple.main-thread':
+            name += ', main thread'
+        elif thread.get('name') or thread.get('queue'):
+            name += ', ' + str(thread.get('name') or thread.get('queue'))
+        if thread.get('triggered'):
+            name += ' (crashed)'
+        threads.append({'name': name, 'blamed': bool(thread.get('triggered')), 'frames': frames_of(thread.get('frames'))})
     return threads
 
 
@@ -188,7 +255,7 @@ def symbolicate(threads, dwarfs):
     wanted = {}
     for thread in threads:
         for frame in thread['frames']:
-            if 'omitted' in frame:
+            if is_gap(frame):
                 continue
             match = dwarfs.get(normalised_uuid(frame.get('uuid')))
             if match and isinstance(frame.get('offset'), int):
@@ -228,28 +295,53 @@ def describe(frame):
     return '+ ' + hex(offset) if isinstance(offset, int) else '(no offset)'
 
 
+def plural(count, word):
+    return '{:,} {}{}'.format(count, word, '' if count == 1 else 's')
+
+
+def stands_for(frame):
+    """How many frames of the full stack a listed frame takes: a gap or a repeated run all of its
+    count, a gap on other branches none."""
+    if 'repeated' in frame:
+        return frame['repeated']
+    if 'omitted' in frame:
+        return 0 if frame.get('elsewhere') else frame['omitted']
+    return 1
+
+
 def render_thread(thread):
-    lines = [thread['name'] + (' (crashed)' if thread['crashed'] and not thread.get('backtrace') else '')]
+    lines = [thread['name']]
     width = max([len(frame['binary']) for frame in thread['frames'] if 'binary' in frame] + [6])
+    # Wide enough for the last frame's number, so the columns line up however deep the stack.
+    digits = max(3, len(str(sum(stands_for(frame) for frame in thread['frames']))))
+    gap = ' ' * (digits + 4)
     number = 0
     for frame in thread['frames']:
         indent = '  ' * frame['depth']
-        if 'omitted' in frame:
-            # Numbered as in the full stack, so the frames after a gap keep their places.
-            count = frame['omitted']
-            lines.append('       {}… {} frame{} left out'.format(indent, count, '' if count == 1 else 's'))
-            number += count
-            continue
-        samples = frame.get('samples')
-        count = '  ×' + str(samples) if isinstance(samples, int) and samples > 1 else ''
-        lines.append('  {:>3}  {}{:<{w}}  {}{}'.format(number, indent, frame['binary'], describe(frame), count, w=width))
-        number += 1
+        # Frames that stand for others are numbered as in the full stack, so the frames after them
+        # keep their places.
+        if 'repeated' in frame:
+            cycle = frame['cycle']
+            above = 'the one above' if cycle == 1 else 'the {} above'.format(cycle) if cycle else 'those above'
+            lines.append('{}{}… {} repeating {}'.format(gap, indent, plural(frame['repeated'], 'more frame'), above))
+        elif 'omitted' in frame:
+            where = ' on other branches' if frame.get('elsewhere') else ''
+            lines.append('{}{}… {}{} left out'.format(gap, indent, plural(frame['omitted'], 'frame'), where))
+        else:
+            samples = frame.get('samples')
+            count = '  ×' + str(samples) if isinstance(samples, int) and samples > 1 else ''
+            lines.append('  {:>{d}}  {}{:<{w}}  {}{}'.format(number, indent, frame['binary'], describe(frame), count, d=digits, w=width))
+        number += stands_for(frame)
     return lines
+
+
+KINDS = {'crash': 'Crash', 'hang': 'Hang', 'cpu': 'Processor use', 'diskwrite': 'Disk writes'}
 
 
 def render_row(row, all_threads):
     title = row.get('title') or row.get('signature') or 'Untitled report'
-    facts = [str(row.get('kind') or '').capitalize(), 'FalconMail ' + str(row.get('version') or '?')
+    kind = str(row.get('kind') or '')
+    facts = [KINDS.get(kind, kind.capitalize()), 'FalconMail ' + str(row.get('version') or '?')
              + (' (' + str(row['build']) + ')' if row.get('build') else ''), str(row.get('os') or ''),
              'received ' + local_time(row.get('receivedAt')), 'event ' + str(row.get('eventId') or '?')]
     lines = [title, ' · '.join(fact for fact in facts if fact), '']
@@ -264,8 +356,8 @@ def render_row(row, all_threads):
     dwarfs, folder = dwarf_files(str(row.get('version') or ''))
     threads = []
     left_out = 0
-    for kind, value in stacks:
-        threads.extend(metrickit_threads(value) if kind == 'metrickit' else ips_threads(value))
+    for source, value in stacks:
+        threads.extend(metrickit_threads(value, kind or 'crash') if source == 'metrickit' else ips_threads(value))
         left_out += omitted(value.get('callStacksOmitted'))
     resolved = symbolicate(threads, dwarfs)
     context = decode(row.get('context'))
@@ -287,8 +379,8 @@ def render_row(row, all_threads):
         lines.append('The symbols kept for this version do not match this build; frames are shown as offsets.')
         lines.append('')
 
-    crashed = [thread for thread in threads if thread['crashed']] or threads[:1]
-    shown = threads if all_threads else crashed
+    blamed = [thread for thread in threads if thread['blamed']] or threads[:1]
+    shown = threads if all_threads else blamed
     for thread in shown:
         lines.extend(render_thread(thread))
         lines.append('')
@@ -327,7 +419,7 @@ def main(argv=None):
     parser.add_argument('sources', nargs='*', help='JSON or JSONL files of rows, or - for standard input '
                         '(default: every file in ~/FalconMailReports)')
     parser.add_argument('--event', metavar='ID', help='only the row with this event ID')
-    parser.add_argument('--all-threads', action='store_true', help='show every thread, not just the one that crashed')
+    parser.add_argument('--all-threads', action='store_true', help='show every thread, not just the one that crashed or hung')
     args = parser.parse_args(argv)
 
     sources = args.sources or sorted(glob.glob(os.path.join(os.path.expanduser('~'), 'FalconMailReports', '*.jsonl')))

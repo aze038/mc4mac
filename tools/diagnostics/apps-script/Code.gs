@@ -555,18 +555,20 @@ function cleanEvent_(event) {
   const id = typeof event.id === 'string' && EVENT_ID_PATTERN.test(event.id) ? event.id : '';
   const kind = typeof event.kind === 'string' ? event.kind.trim().toLowerCase() : '';
   // A signature is Area.code@File.swift:function, which must not be read as an address.
-  const signature = oneLine_(event.signature, MAX_SIGNATURE_CHARS, true);
+  const signature = oneLine_(event.signature, MAX_SIGNATURE_CHARS, { keepAddresses: true });
   if (!id || !KIND_PATTERN.test(kind) || !signature) return null;
   return {
     id: id,
     kind: kind,
     signature: signature,
-    title: oneLine_(event.title, MAX_TITLE_CHARS) || signature,
+    // What people read first, so a bare domain in it is made unclickable too.
+    title: oneLine_(event.title, MAX_TITLE_CHARS, { bareDomains: true })
+      || oneLine_(event.signature, MAX_TITLE_CHARS, { keepAddresses: true, bareDomains: true }),
     area: oneLine_(event.area, 60),
     count: Math.min(Math.max(Math.floor(Number(event.count)) || 1, 1), MAX_COUNT),
     firstAt: parseTime_(event.firstAt),
     lastAt: parseTime_(event.lastAt),
-    message: lines_(event.message, MAX_MESSAGE_CHARS),
+    message: lines_(event.message, MAX_MESSAGE_CHARS, { bareDomains: true }),
     context: contextText_(event.context),
     account: accountText_(event.account),
   };
@@ -580,7 +582,7 @@ function contextText_(context) {
   if (context === null || context === undefined) return '';
   let value = context;
   if (typeof context === 'string') {
-    const text = context.replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTERS, '').trim();
+    const text = unseen_(context.replace(/\r\n?/g, '\n')).trim();
     value = isJson_(text) ? JSON.parse(text) : text;
   }
   const text = JSON.stringify(cleanJson_(value));
@@ -595,7 +597,7 @@ function contextText_(context) {
 }
 
 function cleanJson_(value) {
-  if (typeof value === 'string') return defang_(value.replace(CONTROL_CHARACTERS, ''));
+  if (typeof value === 'string') return defang_(unseen_(value));
   if (Array.isArray(value)) return value.map(cleanJson_);
   if (value && typeof value === 'object') {
     const out = {};
@@ -616,20 +618,38 @@ function isJson_(text) {
 
 // Web addresses in report text are kept readable but never clickable: Sheets turns them into
 // links, and anyone holding the public ingest key could put one in front of the whole company.
-// Control characters must already be out, or one inside "https" would hide the address from these
-// patterns and vanish afterwards. No word boundary is needed before a match: "xhttps://" is
-// defanged too, harmlessly. The app never sends an e-mail address, so one here was typed by
-// whoever holds the key, and its domain is defanged as well.
-function defang_(value, keepAddresses) {
+// Control and invisible characters must already be out (see unseen_), or one inside "https"
+// would hide the address from these patterns. No word boundary is needed before a match:
+// "xhttps://" is defanged too, harmlessly. The app never sends an e-mail address, so one here was
+// typed by whoever holds the key, and its domain is defanged as well. `options.keepAddresses`
+// leaves an @ alone, as a signature needs; `options.bareDomains` also defangs a domain written
+// without https:// or www., as in example.com/path, which the title and message need.
+function defang_(value, options) {
   if (typeof value !== 'string') return value;
+  const keepAddresses = Boolean(options && options.keepAddresses);
   const host = name => name.replace(/\./g, '[.]');
-  const text = value
+  let text = value
     .replace(/(https?|ftp):\/\/([^\s\/?#]*)/gi, (url, scheme, name) => scheme + '[:]//' + host(name))
     .replace(/(www)\.([^\s\/?#]*)/gi, (url, www, name) => www + '[.]' + host(name))
     .replace(/(mailto):/gi, (url, scheme) => scheme + '[:]');
-  if (keepAddresses) return text;
-  return text.replace(/([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g, (address, local, domain) => local + '@' + host(domain));
+  if (!keepAddresses) {
+    text = text.replace(/([A-Za-z0-9._%+-]+)@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g, (address, local, domain) => local + '@' + host(domain));
+  }
+  if (options && options.bareDomains) text = text.replace(BARE_DOMAIN, (match, before, name) => before + host(name));
+  return text;
 }
+
+// A domain written without https:// or www., example.com or mail.example.co.uk/path, which Sheets
+// may link all the same: names joined by dots, ending in a top-level domain people register
+// addresses under, any two letters or one of the common longer ones. A file's extension, such as
+// .swift, .dylib or .pdf, is none of them, so AccountSyncer.swift stays as it is. Nothing that
+// is part of a longer name counts: not after a letter, a dot, @, a slash or a dash.
+const BARE_DOMAIN = new RegExp('(^|[^A-Za-z0-9_@./\\\\-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+'
+  + '(?:[a-z]{2}|xn--[a-z0-9-]+|com|net|org|info|biz|edu|gov|mil|app|dev|page|zip|mov|xyz|top|online|site|website'
+  + '|shop|store|club|tech|cloud|live|link|click|email|work|life|world|news|blog|space|fun|icu|vip|win|bid|loan'
+  + '|download|stream|host|press|pro|name|mobi|asia|today|company|solutions|services|support|digital|network'
+  + '|systems|agency|group|media|studio|design|one|ltd|inc|llc|bank|pay|money|finance|exchange|trade|market'
+  + '|business|center|global|google|microsoft|apple|amazon))(?![A-Za-z0-9_-])', 'gi');
 
 // Keeps only the four fields the contract defines, so nothing else about an account is stored.
 function accountText_(account) {
@@ -1705,18 +1725,32 @@ function truncate_(text, max) {
 // where an escape sequence could rename the window or rewrite what is on screen.
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
 
+// Characters that show nothing: every Unicode format character (Cf), which takes in zero-width
+// spaces and joiners, the word joiner, the soft hyphen, the byte-order mark, bidirectional
+// controls and tag characters, and the few invisible ones outside it: the combining grapheme
+// joiner, Hangul fillers, Khmer's inherent vowels, Mongolian's variation selectors and the
+// variation selectors. One inside "https://" or "www." would hide the address from defang_
+// while the reader, and perhaps Sheets, still sees it whole.
+const INVISIBLE_CHARACTERS = /[\p{Cf}\u034F\u115F\u1160\u17B4\u17B5\u180B-\u180F\u3164\uFE00-\uFE0F\uFFA0\u{E0100}-\u{E01EF}]/gu;
+
+// Report text with nothing in it that acts or hides: control and invisible characters out.
+function unseen_(text) {
+  return text.replace(CONTROL_CHARACTERS, '').replace(INVISIBLE_CHARACTERS, '');
+}
+
 // Report text on one line, as every field of an upload but the message and context is stored:
-// control characters out first, then web addresses made unclickable, then cut to length.
-function oneLine_(value, max, keepAddresses) {
+// control and invisible characters out first, then web addresses made unclickable (see defang_
+// for `options`), then cut to length.
+function oneLine_(value, max, options) {
   if (typeof value !== 'string') return '';
-  return truncate_(defang_(value.replace(CONTROL_CHARACTERS, '').replace(/\s+/g, ' ').trim(), keepAddresses), max);
+  return truncate_(defang_(unseen_(value).replace(/\s+/g, ' ').trim(), options), max);
 }
 
 // Text that may run over several lines, such as a message, with every line break made \n, cleaned
 // in the same order.
-function lines_(value, max) {
+function lines_(value, max, options) {
   if (typeof value !== 'string') return '';
-  return truncate_(defang_(value.replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTERS, '').trim()), max);
+  return truncate_(defang_(unseen_(value.replace(/\r\n?/g, '\n')).trim(), options), max);
 }
 
 function parseTime_(value) {

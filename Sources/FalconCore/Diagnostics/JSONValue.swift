@@ -48,13 +48,25 @@ public enum JSONValue: Hashable, Sendable {
         return nil
     }
 
+    /// The value `data` holds, or nil when it is not JSON. Any depth parses: see `maxDepth`.
     public static func parse(_ data: Data) -> JSONValue? {
-        try? JSONDecoder().decode(JSONValue.self, from: data)
+        var parser = JSONParser(bytes: [UInt8](data), maxDepth: maxDepth)
+        return parser.document()
     }
 
     public static func parse(_ text: String) -> JSONValue? {
         parse(Data(text.utf8))
     }
+
+    /// The deepest a parsed value nests. Everything done with a value afterwards (redacting it,
+    /// measuring it, encoding it with JSONEncoder, even freeing it) goes one call deeper for each
+    /// level, and on the diagnostics queue's thread, whose stack is 512 KB, JSONEncoder runs out
+    /// of stack at about 160 levels. So `parse` reads without recursion, and a list or object that
+    /// would sit deeper than this is flattened: it becomes `{"flattened": [...]}`, every object
+    /// inside it in the order they appear, each keeping only its members that are neither lists
+    /// nor objects. A MetricKit call stack nests two levels a frame, so a deep one (a stack
+    /// overflow's, say) arrives with its first frames nested and the rest in order in that list.
+    public static let maxDepth = 64
 
     /// Compact UTF-8 JSON, keys sorted so the same value always reads the same.
     public var serialised: Data {

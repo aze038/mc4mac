@@ -81,7 +81,7 @@ update still goes out under the version it happened in.
 | `id` | A UUID, unique per event. A resend carries the same one, so the backend files it once |
 | `kind` | `error`, `warning`, `crash`, `hang`, `cpu`, `diskwrite`, `health` or `launch`. Health and launch reports only say an install is alive; they are never counted as problems |
 | `signature` | A stable grouping key; see below |
-| `title` | A short plain-language description anyone understands, the same for every event of one signature, at most 120 characters. For example *The mail server paused the connection: too many requests*, *FalconMail crashed: it used memory it should not have*, *Sending a message failed: the server refused the password* |
+| `title` | A short plain-language description anyone understands, the same for every event of one signature, at most 120 characters. For example *The mail server paused the connection: too many requests*, *Sending a message failed: the server refused the password*, *FalconMail crashed on an internal error (NSRangeException: index beyond bounds)*. A crash's or hang's title ends with what tells it apart, in brackets (see below) |
 | `area` | The part of the app it came from, such as `IMAP`, `Sync` or `crash` |
 | `count` | How many times it happened, from 1 to 10,000. Repeats within an hour are folded into one event, and the app starts a new event once one reaches 10,000 |
 | `firstAt`, `lastAt` | ISO 8601, UTC |
@@ -102,19 +102,47 @@ The `account` object:
 
 A signature names where and how something failed, never with what, so the same failure reads the
 same on every Mac and every run. It never holds a number, a name or any other value that changes:
-its area, code and function are cut down to letters, dots, dashes and underscores.
+each of its parts is cut down to letters, dots, dashes and underscores, so `libsqlite3.dylib`
+reads `libsqlite.dylib`.
 
 | Event | Form | Example |
 | --- | --- | --- |
 | A logged error or warning | `Area.code@File.swift:function` | `IMAP.throttled@AccountSyncer.swift:loop` |
-| A crash, hang, CPU or disk-write report | `Area.code@Binary` | `Crash.EXC_BAD_ACCESS.SIGSEGV@FalconMail`, `Hang.mainThread@AppKit` |
+| A crash or hang | `Area.code@Binary:function` | `Crash.EXC_CRASH.SIGABRT.NSRangeException@FalconMail:MessageList.select`, `Hang.mainThread@libsqlite.dylib` |
+| A CPU or disk-write report | `Area.code@Binary` | `CPU.exceeded@FalconMail`, `DiskWrite.exceeded@FalconMail` |
 | A health or launch report | `Area.code@FalconMail` | `Health.daily@FalconMail`, `Launch.unclean@FalconMail` |
 
 A logged failure is placed by its file and function, not its line: lines move whenever code
 above them changes, nearly every release and above all in the one that fixes the failure, which
-would make a fixed problem look new and lose the team's notes on it. A crash is placed by the
-first binary in the crashed thread that is not the system's crash machinery; its function is
-known only once the stack is symbolicated.
+would make a fixed problem look new and lose the team's notes on it.
+
+A crash or hang is grouped by what went wrong and where, from its own report, and never by an
+address or an offset, which change with every build:
+
+- **What**: the exception type and signal, `EXC_CRASH.SIGABRT`, or `mainThread` for a hang; then
+  an uncaught exception's name, `NSRangeException`, when the report gives one.
+- **Where**: FalconMail's first frame in the stack that failed, which is the uncaught exception's
+  backtrace when there is one, otherwise the crashed thread, and for a hang the main thread.
+
+  | When | The place is | Example |
+  | --- | --- | --- |
+  | The report names that frame's function | FalconMail and that function | `FalconMail:MessageList.select` |
+  | It does not, as in a release build, which carries no names | The nearest named system function above it: the one FalconMail called | `Foundation:NSAssertionHandler.handleFailureInMethod` |
+  | Nothing above it is named | The nearest named system function below it: the one that called FalconMail | `FalconMail:calledFrom.NSApplication.sendAction` |
+  | The report is MetricKit's, which names no functions | The binary FalconMail called, or for FalconMail's own code at the top of the stack, the binary that called it | `libsqlite.dylib`, `FalconMail:calledFrom.AppKit` |
+  | No frame in the stack is FalconMail's own | Its first frame outside the machinery every crash passes through (the kernel, threads, malloc, the C, C++, Objective-C and Swift runtimes, CoreFoundation, dispatch and dyld) | `WebCore:WebCore.Document.updateStyle` |
+
+- **Why**, only when FalconMail's own function is not known: the first five words of the crash's
+  reason, after the exception's name, as in
+  `Crash.EXC_CRASH.SIGABRT.NSInternalInconsistencyException.invalidParameterNotSatisfyingRow@Foundation:NSAssertionHandler.handleFailureInMethod`.
+  Anything quoted, anything holding a digit or a slash (addresses, IDs, sizes, paths) and
+  placeholders such as `<addr:…>` go first, and so does a small word such as "for" left at the end.
+
+A crash's or hang's title is its plain sentence with what tells it apart in brackets, in the words
+its signature holds: *FalconMail crashed on an internal error (NSInternalInconsistencyException:
+Invalid parameter not satisfying row)*, *FalconMail crashed: a safety check in its code failed (in
+its own code, called from NSApplication.sendAction)*, *FalconMail stopped responding for a while
+(in libsqlite.dylib)*.
 
 ### Crash stacks
 
@@ -129,7 +157,14 @@ the triage needs, always valid JSON and never over the 16 KB limit (it aims 1 KB
   the order the frames use them.
 - **From MetricKit** (`"source": "metrickit"`): the `callStackTree` with the thread MetricKit
   blames (the crashed thread, or the main thread of a hang) first, and the
-  `diagnosticMetaData`.
+  `diagnosticMetaData`. MetricKit nests each frame inside the one above it; the app lists each
+  thread's frames instead, top first, under `frames`, so a stack of any depth, a stack
+  overflow's included, is read and sent without nesting:
+  - a thread that is one chain of calls, as a crashed thread always is, lists its frames as they
+    are, and a run repeating the frames above it, as a runaway recursion leaves, becomes
+    `{"repeated": n, "cycle": k}`: n more frames, repeating the k above;
+  - a sampled tree that branches, as a hang's may, gives each frame its `depth`, the root frames
+    being 0.
 
 When that is still too large, what matters least goes first until it fits:
 
@@ -137,12 +172,14 @@ When that is still too large, what matters least goes first until it fits:
   then FalconMail's own frames below the top eight; then the top eight. At each step the crashed
   thread's frames go before the backtrace's, which shows where the exception was raised.
 - In a MetricKit tree: the other threads, from the last; then all but the busiest branch of the
-  blamed thread; then its deepest frames, a level at a time.
+  blamed thread; then its deepest frames, a level at a time. A stack keeps as many frames as the
+  16 KB has room for, not a fixed number.
 
-Whatever was left out is counted where it was, as `{"omitted": n}` in a list of frames,
-`"subFramesOmitted": n` on a frame, `"framesOmitted": n` on a thread or `"callStacksOmitted": n`
-on the tree, and the context says `"trimmed": true`. When macOS and MetricKit both report the
-same crash, it is sent once, from the `.ips` report, which says more.
+Whatever was left out is counted where it was, as `{"omitted": n}` in a list of frames (with its
+`depth` in a branching tree), `"framesOmitted": n` on a MetricKit thread for its other roots and
+branches, or `"callStacksOmitted": n` on the tree, and the context says `"trimmed": true`. When
+macOS and MetricKit both report the same crash, it is sent once, from the `.ips` report, which
+says more.
 
 ### Backend limits
 
@@ -166,8 +203,9 @@ from a misbehaving build or a replayed key. What happens past each limit:
 | `os`, each account field | 100 characters | Cut |
 | Event IDs | Remembered for 6 hours | A repeat is counted in `duplicates`, not filed |
 
-Report text is untrusted, so the backend also removes control characters, makes web addresses
-and e-mail addresses unclickable and never lets Sheets run text as a formula; the details are in
+Report text is untrusted, so the backend also removes control and invisible characters, makes
+web addresses and e-mail addresses unclickable (in the title and message, a bare domain such as
+`example.com/path` too) and never lets Sheets run text as a formula; the details are in
 `tools/diagnostics/README.md`.
 
 ### Reading (the owner's tooling only)
@@ -209,7 +247,7 @@ written to its queue or sent. Each rule is tested in `DiagnosticsRedactorTests`.
 | Message subjects, bodies, snippets, attachment names and contact names | Never included. A `Subject:` or similar header line becomes `Subject: <text>`, an encoded word `<text>` |
 | Folder and label names | Standard ones stay: Inbox, Sent, Drafts, Trash, Junk or Spam, Archive, All Mail, Starred, Important, with or without `[Gmail]/` or `INBOX.`. Any other becomes `<label:ref>`: in IMAP commands and Gmail labels, wherever one of the account's own folder names stands as a word, and, for a short name such as HR or 2024, wherever a server or FalconMail names a folder |
 | IMAP literals, and quoted strings and search terms after `FETCH`, `SEARCH` and `APPEND` | `{n}<literal>` and `"…"` |
-| Text between quotation marks | Between double quotes, kept only when it reads like a code, such as `"invalid_grant"`. Between any language's typographic marks (“…”, „…“, «…», 「…」, ״…״ and the rest) always `…`. Between single quotes, kept when it reads like code, such as `'NSInvalidArgumentException'` or `'try!'`, otherwise `'…'` |
+| Text between quotation marks | Between double quotes, kept only when it reads like a code, such as `"invalid_grant"`. Between any language's typographic marks (“…”, „…“, «…», 「…」, ״…״ and the rest) always `…`; a Hebrew gershayim inside a word, as in דו״ח, neither opens nor closes a quotation. Between single quotes, kept when it reads like code, such as `'NSInvalidArgumentException'` or `'try!'`, otherwise `'…'` |
 | An uncaught exception's name and reason in a crash report | Kept between their single quotes, as the runtime writes them, with every other rule still applied inside them |
 | OAuth tokens, `Bearer` and `Basic` credentials, XOAUTH2 strings, `AUTHENTICATE` and `LOGIN` arguments, passwords, client secrets (`GOCSPX-…`, `AIza…`), GitHub tokens, `Authorization` headers and long base64 blobs | `<token>`, `<secret>`, `<redacted>` or `<base64>` |
 | Web addresses | Their query string, fragment and any `user:password@` removed; an HTTP request line loses its query |

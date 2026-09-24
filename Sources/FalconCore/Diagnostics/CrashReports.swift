@@ -113,15 +113,15 @@ public enum CrashReportDigest {
         let body = report.body
         let exception = body["exception"]
         let code = DiagnosticsSignature.crashCode(exception: exception?["type"]?.stringValue, signal: exception?["signal"]?.stringValue)
-        let signature = DiagnosticsSignature.make(area: "Crash", code: code, place: place(in: body))
         let incident = header["incident_id"]?.stringValue ?? body["incident"]?.stringValue ?? report.url.lastPathComponent
         let when = time(of: report)
         var message = "FalconMail crashed (\(code.replacingOccurrences(of: ".", with: ", ")))"
         if let indicator = body["termination"]?["indicator"]?.stringValue { message += ": \(indicator)" }
         if let reason = applicationSpecificInformation(body) { message += "\n" + reason }
+        let identity = self.identity(header: header, body: body, code: code, redactor: redactor)
         let context = digest(header: header, body: body, redactor: redactor)
         let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("ips:\(install):\(incident)"), kind: .crash,
-                                     signature: signature, title: DiagnosticsTitle.make(kind: .crash, area: "crash", code: code),
+                                     signature: identity.signature, title: identity.title,
                                      area: "crash", firstAt: when, message: redactor.redactCrashReport(message), context: context)
         return (event, app(of: report), header["os_version"]?.stringValue)
     }
@@ -138,21 +138,29 @@ public enum CrashReportDigest {
         }
     }
 
-    /// The image of the first frame of the crashed thread that is not the machinery every
-    /// crash goes through.
-    static func place(in body: JSONValue) -> String {
+    /// What went wrong and where, from the stack that failed: the backtrace an uncaught exception
+    /// was raised from, or else the crashed thread. The exception's name and reason come from the
+    /// report's application-specific information, redacted first.
+    static func identity(header: JSONValue, body: JSONValue, code: String, redactor: DiagnosticsRedactor) -> CrashIdentity {
         let images = body["usedImages"]?.arrayValue ?? []
-        let backtrace = body["lastExceptionBacktrace"]?.arrayValue
-        let thread = crashedThread(body)
-        let frames = backtrace ?? thread?["frames"]?.arrayValue ?? []
-        var first: String?
-        for frame in frames {
+        let own = ownImages(header: header, body: body)
+        let stack = body["lastExceptionBacktrace"]?.arrayValue ?? crashedThread(body)?["frames"]?.arrayValue ?? []
+        let frames = stack.compactMap { frame -> CrashIdentity.Frame? in
             guard let index = frame["imageIndex"]?.intValue, images.indices.contains(Int(index)),
-                  let name = images[Int(index)]["name"]?.stringValue else { continue }
-            if first == nil { first = name }
-            if !DiagnosticsSignature.machineryImages.contains(name) { return name }
+                  let name = images[Int(index)]["name"]?.stringValue else { return nil }
+            return CrashIdentity.Frame(binary: name, symbol: frame["symbol"]?.stringValue, own: own.contains(Int(index)))
         }
-        return first ?? "FalconMail"
+        let lines = applicationSpecificInformationLines(body).map(redactor.redactCrashReport)
+        let (exception, reason) = CrashIdentity.reason(inApplicationSpecificInformation: lines)
+        return CrashIdentity(kind: .crash, code: code, exception: exception, reason: reason, frames: frames)
+    }
+
+    /// Where FalconMail itself is among the report's images.
+    static func ownImages(header: JSONValue, body: JSONValue) -> Set<Int> {
+        let appName = body["procName"]?.stringValue ?? header["app_name"]?.stringValue ?? "FalconMail"
+        return Set((body["usedImages"]?.arrayValue ?? []).enumerated().compactMap { index, image -> Int? in
+            image["name"]?.stringValue == appName || image["CFBundleIdentifier"]?.stringValue == CrashReportScanner.bundleIdentifier ? index : nil
+        })
     }
 
     static func crashedThread(_ body: JSONValue) -> JSONValue? {
@@ -166,9 +174,13 @@ public enum CrashReportDigest {
     }
 
     static func applicationSpecificInformation(_ body: JSONValue) -> String? {
-        guard let asi = body["asi"]?.objectValue else { return nil }
-        let lines = asi.keys.sorted().flatMap { key in (asi[key]?.arrayValue ?? []).compactMap(\.stringValue) }
+        let lines = applicationSpecificInformationLines(body)
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    static func applicationSpecificInformationLines(_ body: JSONValue) -> [String] {
+        guard let asi = body["asi"]?.objectValue else { return [] }
+        return asi.keys.sorted().flatMap { key in (asi[key]?.arrayValue ?? []).compactMap(\.stringValue) }
     }
 
     static let keptHeader = ["app_version", "build_version", "bug_type", "os_version", "bundleID"]
@@ -199,10 +211,7 @@ public enum CrashReportDigest {
         let images = (body["usedImages"]?.arrayValue ?? []).map { image -> JSONValue in
             redactor.redactCrashReport(.object((image.objectValue ?? [:]).filter { keptImage.contains($0.key) }))
         }
-        let appName = body["procName"]?.stringValue ?? header["app_name"]?.stringValue ?? "FalconMail"
-        let ownImages = Set((body["usedImages"]?.arrayValue ?? []).enumerated().compactMap { index, image -> Int? in
-            image["name"]?.stringValue == appName || image["CFBundleIdentifier"]?.stringValue == CrashReportScanner.bundleIdentifier ? index : nil
-        })
+        let ownImages = ownImages(header: header, body: body)
         func stack(_ list: [JSONValue]) -> Stack {
             let frames = list.map { frame -> [String: JSONValue] in
                 redactor.redactCrashReport(.object((frame.objectValue ?? [:]).filter { keptFrame.contains($0.key) })).objectValue ?? [:]

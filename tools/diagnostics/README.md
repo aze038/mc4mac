@@ -69,11 +69,19 @@ names. Change it at the top of `Code.gs` to `DriveApp.Permission.EDIT` (or `COMM
     them included. Whether Sheets keeps a leading apostrophe in a plain-text cell is checked once,
     in a new spreadsheet's Events tab, and the answer kept as the script property
     `PLAIN_TEXT_APOSTROPHE`.
-  - Control characters are removed first (tabs and line breaks in messages stay), so nothing in
-    a report can act on the owner's terminal or hide a web address from the next step.
+  - Control characters and invisible ones are removed first, so nothing in a report can act on
+    the owner's terminal or hide a web address from the next step. Invisible means every Unicode
+    format character (zero-width spaces and joiners, the word joiner, the soft hyphen, the
+    byte-order mark, bidirectional controls, tag characters) and the few that show nothing
+    outside that class (the combining grapheme joiner, Hangul fillers, variation selectors).
+    Tabs and line breaks in messages stay.
   - Web addresses, mail links and e-mail addresses are stored readable but not clickable, as
     `https[:]//example[.]com` and `help@example[.]com`, in every field and in every string of
     the context. A signature keeps its `@`, which there comes before a file name.
+  - In the title and message, a domain written without `https://` or `www.` is made unclickable
+    too, as `example[.]com/path`: any name ending in a two-letter country domain or a common
+    longer one such as `.com`, `.org`, `.app` or `.info`. A file name such as
+    `AccountSyncer.swift` or `libsqlite3.dylib` is left as it is.
 - **Trimming**: titles to 120 characters, messages to 2,000, context to 16 KB, and every cell under
   Sheets' 50,000-character limit. Context too large to keep whole is stored as
   `{"truncated":true,"size":n,"start":"..."}`, so it is always JSON. Only `provider`, `kind`,
@@ -152,7 +160,10 @@ The app sends a crash cut to fit the contract's 16 KB (see "Crash stacks" in
 `docs/DIAGNOSTICS.md`): the crashed thread and, for an uncaught exception, where it was raised,
 which `symbolicate.py` shows first. Where the app had to leave frames or threads out, it says so,
 and each gap in a stack shows how many frames it stands for; the frames after it keep their
-numbers. `test/fixtures/trimmed-contexts.json` is what the app sends for a full-size crash from
+numbers. A runaway recursion shows one turn of it, then `… 5,997 more frames repeating the 3
+above`. The thread shown is the one the report blames: `(crashed)` for a crash, `Main thread
+(hung)` for a hang, and `(using the processor)` or `(writing to disk)` for MetricKit's other
+reports; `--all-threads` shows the rest. `test/fixtures/trimmed-contexts.json` is what the app sends for a full-size crash from
 each source, written by the app's own tests, and the tool's tests read it.
 
 ## Quotas this is designed around

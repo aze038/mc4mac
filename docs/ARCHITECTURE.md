@@ -117,6 +117,8 @@ The contract with the backend is in `DIAGNOSTICS.md`. On the app's side:
 | `DiagnosticsCenter` | `FalconCore/Diagnostics` | Collects, redacts, queues and uploads, on a queue of its own so no caller waits |
 | `DiagnosticsRedactor` | `FalconCore/Diagnostics` | The redaction rules, tested against a corpus of awkward inputs |
 | `DiagnosticsSignature`, `DiagnosticsTitle` | `FalconCore/Diagnostics` | Grouping keys and plain-language titles |
+| `CrashIdentity` | `FalconCore/Diagnostics` | What went wrong in a crash or hang and where, from which its signature and title are both made |
+| `JSONValue`, `JSONParser` | `FalconCore/Diagnostics` | JSON of any shape, read without recursion so no depth can run a thread out of stack |
 | `DiagnosticsQueue` | `FalconCore/Diagnostics` | `Diagnostics/queue.jsonl` in Application Support: 1 MB at most, repeats within an hour folded into a count of at most 10,000 |
 | `DiagnosticsUploader` | `FalconCore/Diagnostics` | Batches of at most 200 events and 256 KB over a session that keeps nothing |
 | `CrashReports`, `MetricKitDiagnostics` | `FalconCore/Diagnostics` | The app's own `.ips` crash reports and MetricKit payloads, made into events |

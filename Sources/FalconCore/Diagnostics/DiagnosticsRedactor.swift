@@ -549,7 +549,10 @@ private enum Rx {
     static let typographicQuoted = rx([
         #"“[^”\r\n]{0,500}”"#, #"„[^“”\r\n]{0,500}[“”]"#, #"”[^”\r\n]{0,500}”"#, #"«[^»\r\n]{0,500}»"#, #"»[^«\r\n]{0,500}«"#,
         #"‹[^›\r\n]{0,500}›"#, #"›[^‹\r\n]{0,500}‹"#, #"「[^」\r\n]{0,500}」"#, #"『[^』\r\n]{0,500}』"#,
-        #"״[^״\r\n]{0,500}״"#,
+        // Hebrew also writes gershayim inside a word, as in דו״ח and בע״מ, so the mark opens a
+        // quotation only where no letter stands before it, and closes one only where none
+        // follows: ״דו״ח שנתי.pdf״ goes whole.
+        #"(?<![\p{L}\p{N}])״[^\r\n]{0,500}?״(?![\p{L}\p{N}])"#,
         // ‘…’ and ‚…‘ end with the mark an apostrophe also uses, so a closing one is one that
         // no letter follows: ‘Ana’s notes.txt’ goes whole and couldn’t stays.
         #"(?<![\p{L}\p{N}])[‘‚][^\r\n]{0,500}?[‘’](?![\p{L}\p{N}])"#,
