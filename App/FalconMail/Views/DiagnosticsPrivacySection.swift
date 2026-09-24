@@ -12,7 +12,7 @@ struct DiagnosticsPrivacySection: View {
     static let explanation = "When something goes wrong, FalconMail tells the FalconMail team so it can be fixed quickly. "
         + "It sends errors, crashes, moments when the app stopped responding, counts such as how many accounts and "
         + "messages it keeps, and the versions of FalconMail and macOS. It never sends your messages, subjects, "
-        + "contacts, e-mail addresses or passwords."
+        + "contacts, e-mail addresses, folder names or passwords."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {

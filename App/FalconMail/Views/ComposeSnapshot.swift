@@ -88,9 +88,9 @@ enum ComposeSnapshot {
     }
 
     /// As a release build shows it. The waiting data is what a real diagnostics centre makes of
-    /// a few warnings, kept in a temporary folder and never started on the network: it reads no
-    /// crash reports, its session refuses every request, and it is stopped before its first
-    /// upload is due a minute later.
+    /// a few of the engine's failures and an alert, given as the engine gives them, kept in a
+    /// temporary folder and never started on the network: it reads no crash reports, its session
+    /// refuses every request, and it is stopped before its first upload is due a minute later.
     @MainActor private static func privacy(_ model: AppModel, to directory: String) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FalconMailSnapshot-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -107,10 +107,14 @@ enum ComposeSnapshot {
         Log.isEnabled = false
         center.start()
         let account = AccountInfo.google(email: "alex@example.com", displayName: "Alex Example")
-        let throttled = FalconError.network("server closed session: Account exceeded command or bandwidth limits.")
+        let throttled = MailServiceError(kind: .throttled, account: account, detail: "BYE [THROTTLED] Account exceeded command or bandwidth limits.")
         for _ in 0..<3 {
-            Log.warning("IMAP", "alex@example.com: \(throttled.localizedDescription)", error: throttled, account: account)
+            Log.failure("IMAP", throttled, "alex@example.com: throttled: \(throttled.detail)", account: account, logAs: "sync",
+                        keeping: account.email)
         }
+        let gone = MailServiceError(kind: .messageGone, account: account, detail: "UID 4127 not returned")
+        Log.failure("Open", gone, "alex@example.com: opening a message in Clients/ACME failed: messageGone: \(gone.detail)",
+                    account: account, names: ["Clients/ACME", "ACME"], logAs: "sync", keeping: account.email)
         Log.error("Alert", "The file “Invoice ACME.pdf” couldn’t be opened because there is no such file.")
         center.waitUntilIdle()
         let waiting = center.pendingDescription()
