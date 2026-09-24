@@ -13,6 +13,24 @@ Google Workspace and are tired of Outlook's archiving.
 - Rules, signatures, scheduled send, undo send, offline mode, notifications
 - Tokens in the Keychain, optional archive encryption
 
+## Diagnostics
+
+FalconMail sends redacted diagnostic reports to the FalconMail team by default, so
+problems are found and fixed quickly.
+
+- **Sent:** errors, crashes, moments when the app stopped responding, a daily health
+  summary (how many accounts, folders and messages, disk used, sync and error counts),
+  and the versions of FalconMail and macOS.
+- **Never sent:** messages, subjects, contacts, e-mail addresses, the names of your own
+  folders, attachment names or passwords. Addresses and folder names are replaced by
+  short codes that cannot be turned back.
+- **Switching it off:** Settings → Privacy → untick *Send diagnostic data to the
+  FalconMail team*. Anything waiting is deleted at once, and *Show Data Waiting to Be
+  Sent…* shows exactly what would go.
+
+Only release builds send; a build from source never does. The full contract is in
+`docs/DIAGNOSTICS.md`.
+
 ## Layout
 
 | Path | What it is |

@@ -39,6 +39,7 @@ Sources/FalconCore
   Import     MboxReader, EMLImporter
   Contacts   GooglePeopleClient
   Calendar   GoogleCalendarClient (events, Google Meet links)
+  Diagnostics DiagnosticsCenter  Redaction, on-disk queue, uploads (docs/DIAGNOSTICS.md)
 ```
 
 ## Data flow
@@ -106,6 +107,41 @@ costs the size of that message, not the size of the archive. See
 - Archive encryption is AES-256-GCM per entry with a PBKDF2 derived key. The
   password is never stored; losing it means losing the archive.
 - App sandbox and hardened runtime are on.
+
+## Diagnostics
+
+The contract with the backend is in `DIAGNOSTICS.md`. On the app's side:
+
+| Piece | Where | What it does |
+| --- | --- | --- |
+| `DiagnosticsCenter` | `FalconCore/Diagnostics` | Collects, redacts, queues and uploads, on a queue of its own so no caller waits |
+| `DiagnosticsRedactor` | `FalconCore/Diagnostics` | The redaction rules, tested against a corpus of awkward inputs |
+| `DiagnosticsSignature`, `DiagnosticsTitle` | `FalconCore/Diagnostics` | Grouping keys and plain-language titles |
+| `DiagnosticsQueue` | `FalconCore/Diagnostics` | `Diagnostics/queue.jsonl` in Application Support: 1 MB at most, repeats within an hour folded into a count |
+| `DiagnosticsUploader` | `FalconCore/Diagnostics` | Batches of at most 200 events and 256 KB over a session that keeps nothing |
+| `CrashReports`, `MetricKitDiagnostics` | `FalconCore/Diagnostics` | The app's own `.ips` crash reports and MetricKit payloads, made into events |
+| `DiagnosticsService` | `App/FalconMail/Services` | Reads the Info.plist and the Settings switch, subscribes to MetricKit, counts for the health report |
+| `DiagnosticsPrivacySection` | `App/FalconMail/Views` | The switch, the diagnostics ID and the data waiting, in Settings → Privacy |
+
+What becomes an event:
+
+- Every `Log.warning` and `Log.error` line, never `Log.info`. Each error alert and banner
+  the app shows is one, under the area `Alert`.
+- Crashes, from the app's own reports in `~/Library/Logs/DiagnosticReports` at launch and
+  from MetricKit, which also reports hangs, heavy CPU use and heavy disk writes.
+- A `launch` event at each start, saying whether the last session quit normally, and a
+  `health` event once a day.
+
+When it is sent: a minute after launch, then hourly; within a minute of a crash or hang;
+after a failure, two minutes later, doubling with jitter up to six hours; when offline,
+again in ten minutes. An event leaves the queue only once the server has confirmed it.
+
+Who sends: only a Release build with the bundle identifier `com.falconmail.app`, an
+endpoint and key in its Info.plist (the release workflow fills them from the
+`FALCON_DIAGNOSTICS_URL` and `FALCON_DIAGNOSTICS_KEY` secrets), and the switch on.
+Switching it off deletes the queue. The release workflow keeps each release's dSYM in
+`~/Library/Application Support/FalconMail Symbols/<version>/` on the runner, where the
+daily triage symbolicates crashes; dSYMs are never uploaded.
 
 ## Gmail specifics
 

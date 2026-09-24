@@ -11,7 +11,13 @@ FalconMail is a desktop email client. It runs entirely on your Mac.
   password that is never stored.
 - FalconMail contacts GitHub to check for new versions. That request contains
   no personal data.
-- FalconMail collects no analytics and has no servers of its own.
+- Release builds send diagnostic reports to the FalconMail team: errors, crashes,
+  hangs, daily counts (accounts, folders, messages, disk used) and the versions of
+  FalconMail and macOS. They never contain messages, subjects, contacts, e-mail
+  addresses, the names of your own folders, attachment names or passwords. This is on
+  by default and can be switched off in Settings → Privacy, which also deletes
+  anything not yet sent. See docs/DIAGNOSTICS.md.
+- FalconMail collects no analytics.
 
 Google user data obtained through Google APIs is used only to display and
 manage your mailbox, contacts, calendar and archive files inside FalconMail,

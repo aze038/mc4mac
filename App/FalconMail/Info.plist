@@ -33,6 +33,10 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>FalconDiagnosticsKey</key>
+	<string></string>
+	<key>FalconDiagnosticsURL</key>
+	<string></string>
 	<key>FalconGoogleClientID</key>
 	<string></string>
 	<key>FalconGoogleClientSecret</key>
