@@ -826,9 +826,14 @@ public actor AccountSyncer {
             var changed = false
             let dueIn = pacing.fullSyncInterval - Date().timeIntervalSince(lastFullSync)
             if !wantsSync, dueIn > 0 {
-                let quietFor = catchUps[inbox.id].map { $0.notBefore.timeIntervalSinceNow } ?? 0
+                let catchUp = catchUps[inbox.id]
+                let quietFor = catchUp.map { $0.notBefore.timeIntervalSinceNow } ?? 0
+                // A catch-up already due, as after a pass that took longer than the catch-up
+                // interval, is news: its next pass runs now, where an IDLE begun instead would
+                // keep the rest of a flood waiting for new mail or the IDLE's refresh.
+                changed = catchUp != nil && quietFor <= 0
                 let selected = await client.selectedMailbox
-                if passed || selected != inbox.path {
+                if !changed, passed || selected != inbox.path {
                     // IDLE tells only of what arrives once it has begun. Mail that reached INBOX
                     // while another folder was selected, or while a pass was busy, shows as a
                     // UIDNEXT past the one the last pass of INBOX saw, and is fetched now

@@ -63,23 +63,53 @@ final class CatchUpTests: XCTestCase {
         XCTAssertEqual(inbox.lastSyncedUID, 25_010)
     }
 
-    func testAPassCutShortFetchesNothingStoredAgain() async throws {
+    func testACatchUpAlreadyDueWhenAPassEndsGoesOnAtOnce() async throws {
         let server = try EngineHarness.gmailServer()
         for n in 1...10 { server.add(FakeIMAPServer.message("before-\(n)"), to: "INBOX") }
-        let h = try await started(server, pacing: catchingUp)
+        // Every pass takes longer than the catch-up interval, so each ends with the next due;
+        // nothing else would end the IDLE in between, neither new mail nor its refresh.
+        var pacing = catchingUp
+        pacing.catchUpInterval = 0.001
+        pacing.idleRefresh = 3600
+        let h = try await started(server, pacing: pacing)
+        server.addMany(5_000, to: "INBOX") { FakeIMAPServer.message("flood-\($0)", body: "Flood \($0).") }
+        server.resetCounters()
+        await h.syncer.start()
+        await assertEventually("the rest of the flood did not wait for new mail", within: 30) {
+            ((try? await h.uids(in: "INBOX")) ?? []).count == 5_010
+        }
+        let fetched = FakeIMAPServer.headerFetchUIDs(server.exchanges)
+        XCTAssertEqual(fetched.count, 5_000, "every new message fetched once")
+        XCTAssertEqual(Set(fetched).count, 5_000, "and none twice")
+    }
+
+    func testAPassCutShortFetchesNothingStoredAgain() async throws {
+        try await passCutShort(catchUpInterval: catchingUp.catchUpInterval)
+    }
+
+    func testAPassCutShortWithItsCatchUpDueAtOnceFetchesNothingStoredAgain() async throws {
+        try await passCutShort(catchUpInterval: 0.001)
+    }
+
+    private func passCutShort(catchUpInterval: TimeInterval, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let server = try EngineHarness.gmailServer()
+        for n in 1...10 { server.add(FakeIMAPServer.message("before-\(n)"), to: "INBOX") }
+        var pacing = catchingUp
+        pacing.catchUpInterval = catchUpInterval
+        let h = try await started(server, pacing: pacing)
         server.addMany(3_000, to: "INBOX") { FakeIMAPServer.message("new-\($0)", body: "New \($0).") }
         server.resetCounters()
         // The eighth header fetch of the first pass is its last: the link drops after it.
         server.cutAfter("UID FETCH", count: 8)
         await h.syncer.start()
-        await assertEventually(within: 30) { ((try? await h.uids(in: "INBOX")) ?? []).count == 3_010 }
+        await assertEventually(within: 30, file: file, line: line) { ((try? await h.uids(in: "INBOX")) ?? []).count == 3_010 }
 
         let fetched = FakeIMAPServer.headerFetchUIDs(server.exchanges)
-        XCTAssertEqual(Set(fetched).count, 3_000)
-        XCTAssertEqual(fetched.count, 3_000, "nothing stored before the drop was fetched again")
-        XCTAssertGreaterThanOrEqual(server.loginCount, 3, "the pass was cut and the loop connected again")
+        XCTAssertEqual(Set(fetched).count, 3_000, file: file, line: line)
+        XCTAssertEqual(fetched.count, 3_000, "nothing stored before the drop was fetched again", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(server.loginCount, 3, "the pass was cut and the loop connected again", file: file, line: line)
         let inbox = try await h.folder("INBOX")
-        XCTAssertEqual(inbox.lastSyncedUID, 3_010)
+        XCTAssertEqual(inbox.lastSyncedUID, 3_010, file: file, line: line)
     }
 
     func testTheCursorMovesOnlyOverStoredMessagesAndIsSavedEachBatch() async throws {
