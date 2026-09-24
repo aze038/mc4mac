@@ -67,7 +67,8 @@ struct CommandBar: View {
 struct HomeRibbon: View {
     @Environment(AppModel.self) private var model
 
-    private var hasSelection: Bool { !model.selectedMessageIDs.isEmpty }
+    /// Actions need a selection with nothing in it that was found only on the server.
+    private var canChange: Bool { !model.selectedMessageIDs.isEmpty && !model.selectionIsReadOnly }
 
     var body: some View {
         let thread = model.currentThread
@@ -87,8 +88,8 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Delete", symbol: "trash", enabled: hasSelection) { model.delete(model.selectedMessages) }
-            RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: hasSelection) { model.archive(model.selectedMessages) }
+            RibbonTile(title: "Delete", symbol: "trash", enabled: canChange) { model.delete(model.selectedMessages) }
+            RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: canChange) { model.archive(model.selectedMessages) }
             RibbonSeparator()
 
             RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple, enabled: hasSingle) { model.replyToSelection(all: false) }
@@ -99,17 +100,17 @@ struct HomeRibbon: View {
                     model.showModule(.calendar)
                     NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
                 }
-                RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: hasSingle) { model.forwardAsAttachment(model.selectedMessages) }
+                RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: hasSingle && !model.selectionIsReadOnly) { model.forwardAsAttachment(model.selectedMessages) }
             }
             RibbonSeparator()
 
             RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
             RibbonSeparator()
 
-            RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: hasSelection, action: { model.openMovePalette() }) {
+            RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: canChange, action: { model.openMovePalette() }) {
                 MoveMenuItems()
             }
-            RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: hasSelection, action: { model.toggleJunkOnSelection() }) {
+            RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: canChange, action: { model.toggleJunkOnSelection() }) {
                 Button(model.selectionIsAllInJunk ? "Not Junk" : "Move to Junk") { model.toggleJunkOnSelection() }
                 Button("Mute Conversation") { model.muteSelection() }
             }
@@ -119,11 +120,11 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Read/Unread", symbol: first?.isRead == false ? "envelope.open" : "envelope", enabled: hasSelection) { model.toggleReadOnSelection() }
-            RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: hasSelection) {
+            RibbonTile(title: "Read/Unread", symbol: first?.isRead == false ? "envelope.open" : "envelope", enabled: canChange) { model.toggleReadOnSelection() }
+            RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
                 CategoryMenuItems()
             }
-            RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: hasSelection, action: { model.toggleFlagOnSelection() }) {
+            RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: canChange, action: { model.toggleFlagOnSelection() }) {
                 Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.toggleFlagOnSelection() }
                 Button("Mark All as Read") { model.markAllReadInSelection() }
             }

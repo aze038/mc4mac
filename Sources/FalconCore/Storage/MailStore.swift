@@ -198,6 +198,18 @@ public actor MailStore {
         return try await folderStore(f).message(uid: uid)
     }
 
+    /// Stored copies of messages in one account, by Message-ID, so a hit from a server search
+    /// can be shown as the row the reader already has. A folder that cannot be loaded is skipped.
+    public func storedMessages(withMessageIDs ids: Set<String>, accountID: UUID) async -> [String: [MessageSummary]] {
+        guard !ids.isEmpty else { return [:] }
+        var out: [String: [MessageSummary]] = [:]
+        for f in folders(for: accountID) where f.isSelectable {
+            guard let fs = try? await folderStore(f) else { continue }
+            for m in await fs.messages(withMessageIDs: ids) { out[m.messageID, default: []].append(m) }
+        }
+        return out
+    }
+
     public func notifyMessagesChanged(folderID: UUID) {
         emit(.messagesChanged(folderID: folderID))
     }

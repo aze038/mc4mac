@@ -188,6 +188,7 @@ extension AppModel {
     }
 
     func toggleCategory(_ category: MailCategory, on messages: [MessageSummary]) {
+        let messages = actionable(messages)
         guard !messages.isEmpty else { return }
         var map = categoryAssignments
         let adding = !messages.allSatisfy { (map[$0.id] ?? []).contains(category.name) }
@@ -200,6 +201,8 @@ extension AppModel {
     }
 
     func clearCategories(on messages: [MessageSummary]) {
+        let messages = actionable(messages)
+        guard !messages.isEmpty else { return }
         var map = categoryAssignments
         for message in messages { map[message.id] = nil }
         categoryAssignments = map

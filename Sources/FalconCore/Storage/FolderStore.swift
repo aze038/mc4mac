@@ -192,6 +192,11 @@ public actor FolderStore {
 
     public func uid(forMessageID id: String) -> UInt32? { byMessageID[id] }
 
+    /// The stored messages carrying any of these Message-IDs.
+    public func messages(withMessageIDs ids: Set<String>) -> [MessageSummary] {
+        ids.compactMap { byMessageID[$0] }.compactMap { messages[$0] }
+    }
+
     public func threadKey(forMessageID id: String) -> String? {
         guard let uid = byMessageID[id] else { return nil }
         return messages[uid]?.threadKey

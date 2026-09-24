@@ -22,9 +22,12 @@ struct MessageReaderView: View {
     @State private var hasRemote = false
     @State private var showDetails = false
     @State private var originalColours = false
+    /// Why a message found only on the server could not be fetched, shown in place of its text.
+    @State private var serverProblem: String?
+    @State private var attempt = 0
     @Environment(\.colorScheme) private var colorScheme
 
-    private var renderKey: String { "\(message.id)|\(allowRemoteImages)|\(model.loadRemoteImages)|\(originalColours)|\(colorScheme == .dark)" }
+    private var renderKey: String { "\(message.id)|\(allowRemoteImages)|\(model.loadRemoteImages)|\(originalColours)|\(colorScheme == .dark)|\(attempt)" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -77,7 +80,13 @@ struct MessageReaderView: View {
                     .padding(.trailing, OL.readingRightInset)
             }
             conversationHint
-            if let parsed, !parsed.attachments.isEmpty {
+            if message.isServerOnly {
+                if !serverAttachments.isEmpty {
+                    ServerAttachmentStrip(message: message, stubs: serverAttachments)
+                        .padding(.horizontal, OL.readingBodyX)
+                        .padding(.top, 10)
+                }
+            } else if let parsed, !parsed.attachments.isEmpty {
                 AttachmentStrip(attachments: parsed.attachments, html: parsed.textHTML, accountID: message.accountID)
                     .padding(.horizontal, OL.readingBodyX)
                     .padding(.top, 10)
@@ -89,6 +98,11 @@ struct MessageReaderView: View {
             }
         }
         .padding(.bottom, 12)
+    }
+
+    /// Known once the text has been fetched; each downloads only when it is opened or saved.
+    private var serverAttachments: [GmailAttachmentStub] {
+        parsed == nil ? [] : model.serverAttachments(for: message)
     }
 
     private var senderLine: String {
@@ -152,6 +166,7 @@ struct MessageReaderView: View {
             ReaderActionButton("Reply All", "arrowshape.turn.up.left.2") { reply(all: true) }
             ReaderActionButton("Forward", "arrowshape.turn.up.right") { forward() }
             ReaderActionButton(message.isFlagged ? "Unflag" : "Flag", message.isFlagged ? "flag.fill" : "flag") { model.setFlagged([message], !message.isFlagged) }
+                .disabled(message.isServerOnly)
             Menu { moreMenu } label: { Image(systemName: "ellipsis.circle").font(.system(size: 15)) }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -164,22 +179,28 @@ struct MessageReaderView: View {
         Toggle("Show original colours", isOn: $originalColours)
             .help("Render this message on its own white background instead of FalconMail's")
         Divider()
+        // A message found only on the server has no stored original to attach or save.
         Button("Forward as Attachment") { model.forwardAsAttachment([message]) }
+            .disabled(message.isServerOnly)
         Divider()
-        Button("Archive") { model.archive([message]); onDidAct?() }
-        Button("Delete") { model.delete([message]); onDidAct?() }
-        Button(message.isFlagged ? "Unflag" : "Flag") { model.setFlagged([message], !message.isFlagged) }
-        Button(message.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead([message], !message.isRead) }
-        if context == .pane {
-            Button("Move to Folder…") { model.openMovePalette() }
+        Group {
+            Button("Archive") { model.archive([message]); onDidAct?() }
+            Button("Delete") { model.delete([message]); onDidAct?() }
+            Button(message.isFlagged ? "Unflag" : "Flag") { model.setFlagged([message], !message.isFlagged) }
+            Button(message.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead([message], !message.isRead) }
+            if context == .pane {
+                Button("Move to Folder…") { model.openMovePalette() }
+            }
+            Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { model.toggleJunk([message]) }
+            Button(model.isMuted(thread) ? "Unmute Conversation" : "Mute Conversation") { model.toggleMute(thread) }
         }
-        Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { model.toggleJunk([message]) }
-        Button(model.isMuted(thread) ? "Unmute Conversation" : "Mute Conversation") { model.toggleMute(thread) }
+        .disabled(message.isServerOnly)
         Divider()
         if context != .tab { Button("Open in Tab") { model.openMessageTab(message) } }
         if context != .window { Button("Open in Separate Window") { openWindow(value: message.id) } }
         Divider()
         Button("Save as .eml…") { saveAsEML() }
+            .disabled(message.isServerOnly)
     }
 
     private var thread: MessageThread { conversation ?? MessageThread(messages: [message]) }
@@ -227,7 +248,24 @@ struct MessageReaderView: View {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                Text(message.snippet).foregroundStyle(.secondary).padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 12) {
+                    if let serverProblem {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "exclamationmark.circle")
+                            Text(serverProblem).fixedSize(horizontal: false, vertical: true)
+                            Button("Try Again") {
+                                self.serverProblem = nil
+                                attempt += 1
+                            }
+                            .buttonStyle(.link)
+                        }
+                        .font(.system(size: OL.statusFont))
+                        .foregroundStyle(OLColor.textMuted)
+                    }
+                    Text(message.snippet).foregroundStyle(.secondary)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -235,10 +273,34 @@ struct MessageReaderView: View {
     private func load() async {
         if parsed == nil {
             loading = true
-            parsed = await model.parsedBody(for: message)
+            parsed = message.isServerOnly ? await openFromServer() : await model.parsedBody(for: message)
             loading = false
         }
         guard let parsed else { return }
+        await render(parsed)
+        // A message opened from the server shows its text first; small inline pictures follow.
+        if message.isServerOnly, let richer = await model.serverBodyWithInlineImages(message) {
+            self.parsed = richer
+            await render(richer)
+        }
+    }
+
+    /// Gmail's refusal shows as a line in the pane instead of an alert, so moving through results
+    /// while Gmail is busy never stacks up alerts.
+    private func openFromServer() async -> MIMEMessage? {
+        do {
+            let body = try await model.openServerMessage(message)
+            serverProblem = nil
+            return body
+        } catch let error as GoogleAPIError {
+            serverProblem = error.localizedDescription
+        } catch {
+            // Cancelled: the reader moved on before the fetch began or ended.
+        }
+        return nil
+    }
+
+    private func render(_ parsed: MIMEMessage) async {
         let allow = model.loadRemoteImages || allowRemoteImages
         let dark = colorScheme == .dark
         let original = originalColours
@@ -262,7 +324,7 @@ struct MessageReaderView: View {
     private func forward() {
         guard let account = model.account(for: message) else { return }
         Task {
-            let parsed = await model.parsedBody(for: message)
+            let parsed = await model.parsedBodyForForwarding(message)
             model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
         }
     }
@@ -330,7 +392,7 @@ struct MessageWindowView: View {
         }
         .frame(minWidth: 560, minHeight: 480)
         .background(PopupWindowAccessor())
-        .task { message = try? await model.store.message(id: messageID) }
+        .task { message = await model.message(id: messageID) }
         .onAppear { model.openMessageWindows.insert(messageID) }
         .onDisappear { model.openMessageWindows.remove(messageID) }
         .ignoresSafeArea(.container, edges: .top)
@@ -369,13 +431,16 @@ struct MessageWindowRibbon: View {
     let close: () -> Void
     @State private var tab = 0
 
+    /// A message found only on the server can be read and replied to, not changed.
+    private var canChange: Bool { !message.isServerOnly }
+
     var body: some View {
         VStack(spacing: 0) {
             RibbonTabStrip(tabs: [(0, "Message")], selection: $tab)
                 .padding(.horizontal, OL.tabInset)
             RibbonBody {
-                RibbonTile(title: "Delete", symbol: "trash") { model.delete([message]); close() }
-                RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen) { model.archive([message]); close() }
+                RibbonTile(title: "Delete", symbol: "trash", enabled: canChange) { model.delete([message]); close() }
+                RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: canChange) { model.archive([message]); close() }
                 RibbonSeparator()
                 RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple) { reply(all: false) }
                 RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: OLColor.replyPurple) { reply(all: true) }
@@ -385,27 +450,27 @@ struct MessageWindowRibbon: View {
                         model.showModule(.calendar)
                         NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
                     }
-                    RibbonMiniItem(title: "Attachment", symbol: "paperclip") { model.forwardAsAttachment([message]) }
+                    RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: canChange) { model.forwardAsAttachment([message]) }
                 }
                 RibbonSeparator()
-                RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, action: { model.openMovePalette() }) {
+                RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: canChange, action: { model.openMovePalette() }) {
                     Button("Move to Folder…") { model.openMovePalette() }
                     Button("Archive") { model.archive([message]); close() }
                 }
-                RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, action: { model.toggleJunk([message]) }) {
+                RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: canChange, action: { model.toggleJunk([message]) }) {
                     Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { model.toggleJunk([message]) }
                 }
                 RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
                     Button("Run Rules Now") { model.runRulesNow() }
                 }
                 RibbonSeparator()
-                RibbonTile(title: "Read/Unread", symbol: message.isRead ? "envelope" : "envelope.open") { model.markRead([message], !message.isRead) }
-                RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange) {
+                RibbonTile(title: "Read/Unread", symbol: message.isRead ? "envelope" : "envelope.open", enabled: canChange) { model.markRead([message], !message.isRead) }
+                RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
                     ForEach(model.categories) { category in
                         Button(category.name) { model.toggleCategory(category, on: [message]) }
                     }
                 }
-                RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, action: { model.setFlagged([message], !message.isFlagged) }) {
+                RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: canChange, action: { model.setFlagged([message], !message.isFlagged) }) {
                     Button(message.isFlagged ? "Clear Flag" : "Flag Message") { model.setFlagged([message], !message.isFlagged) }
                 }
             }
@@ -425,7 +490,7 @@ struct MessageWindowRibbon: View {
     private func forward() {
         guard let account = model.account(for: message) else { return }
         Task {
-            let parsed = await model.parsedBody(for: message)
+            let parsed = await model.parsedBodyForForwarding(message)
             model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
         }
     }
@@ -507,11 +572,14 @@ enum MessageRenderer {
 enum WebViewPool {
     private static var free: [WKWebView] = []
     private static let processPool = WKProcessPool()
+    /// Remote images a message loads are cached for this session only, never under ~/Library.
+    private static let dataStore = WKWebsiteDataStore.nonPersistent()
 
     static func acquire() -> WKWebView {
         if let v = free.popLast() { return v }
         let config = WKWebViewConfiguration()
         config.processPool = processPool
+        config.websiteDataStore = dataStore
         config.defaultWebpagePreferences.allowsContentJavaScript = false
         let view = WKWebView(frame: .zero, configuration: config)
         view.underPageBackgroundColor = NSColor(name: nil) { appearance in
