@@ -161,7 +161,7 @@ final class AppModel {
     var isSearching = false
     var statusText = "Ready"
     var online: [UUID: Bool] = [:]
-    var health: [UUID: AccountHealth] = [:]
+    var accountStatus = AccountStatusBoard()
     var outboxItems: [OutboxItem] = []
     var archiveRecords: [ArchiveRecord] = []
     var errorMessage: String?
@@ -215,9 +215,27 @@ final class AppModel {
     var offlineAccounts: [AccountInfo] {
         guard accountsNeedingSignIn.isEmpty else { return [] }
         return accounts.filter { account in
-            guard account.isEnabled, case .offline = health[account.id] else { return false }
+            guard account.isEnabled, case .offline = accountStatus.health[account.id] else { return false }
             return true
         }
+    }
+
+    /// Why each account that is paused or blocked is not syncing, in the words the engine gave,
+    /// kept on show until it syncs again. Offline accounts and ones to sign in again have a
+    /// button of their own instead.
+    var pausedAccountNotices: [(account: AccountInfo, text: String)] {
+        accounts.compactMap { account in
+            guard account.isEnabled, let text = accountStatus.problems[account.id] else { return nil }
+            switch accountStatus.health[account.id] {
+            case .imapPaused, .blocked: return (account, text)
+            default: return nil
+            }
+        }
+    }
+
+    /// False while an account cannot sync, when "All folders are up to date" would not be true.
+    var everyAccountReachable: Bool {
+        accountStatus.allReachable(accounts.filter(\.isEnabled).map(\.id))
     }
 
     var syncingSummary: String? {
@@ -459,12 +477,15 @@ final class AppModel {
     }
 
     /// Says once which stored files could not be read. Each was kept, untouched, for the owner
-    /// or a later build to recover, rather than being quietly replaced.
+    /// or a later build to recover, rather than being quietly replaced. Called at launch and
+    /// again after each pass of the engine, which reads some files only when it first needs
+    /// them: the actions waiting for the server, and the index of a folder not yet opened.
     private func noteUnreadableFiles() {
         let names = StoredFileNotices.take()
         guard !names.isEmpty else { return }
-        errorMessage = "FalconMail could not read \(ListFormatter.localizedString(byJoining: names)). "
+        let notice = "FalconMail could not read \(ListFormatter.localizedString(byJoining: names)). "
             + "Nothing was written over: each was left as it was or kept under a name ending in “unreadable”. Details are in the log."
+        errorMessage = errorMessage.map { $0 + "\n\n" + notice } ?? notice
     }
 
     var windowsToRestore: [String] {
@@ -534,13 +555,16 @@ final class AppModel {
                 case .finished(let id):
                     self.syncingAccounts.remove(id)
                     self.statusText = "Up to date"
+                    self.noteUnreadableFiles()
                     await self.refreshBandwidth()
                 case .error(let id, let message):
                     self.syncingAccounts.remove(id)
                     self.statusText = message
+                    self.accountStatus.apply(event)
+                    self.noteUnreadableFiles()
                 case .actionFailed(_, let message): self.showActionError(message)
                 case .health(let id, let health):
-                    self.health[id] = health
+                    self.accountStatus.apply(event)
                     self.online[id] = health.isReachable
                     if health == .needsSignIn { self.accountsNeedingSignIn.insert(id) } else { self.accountsNeedingSignIn.remove(id) }
                 case .newMessages(let id, let folderID, let list):

@@ -80,7 +80,9 @@ struct SidebarView: View {
             if !account.isEnabled {
                 Image(systemName: "pause.circle").foregroundStyle(OLColor.textDim).help("Paused in Settings → Accounts")
             } else if model.online[account.id] == false {
-                Image(systemName: "wifi.slash").foregroundStyle(Color.orange)
+                Image(systemName: SidebarView.statusSymbol(model.accountStatus.health[account.id]))
+                    .foregroundStyle(Color.orange)
+                    .help(model.accountStatus.problems[account.id] ?? "Not connected")
             }
             if !expanded, hiddenUnread > 0 {
                 Text("\(hiddenUnread)").font(.system(size: OL.sidebarCountFont)).foregroundStyle(OLColor.unread)
@@ -135,6 +137,15 @@ struct SidebarView: View {
     static func hasChildren(_ folder: FolderInfo, in folders: [FolderInfo]) -> Bool {
         let prefix = folder.path + (folder.delimiter.isEmpty ? "/" : folder.delimiter)
         return folders.contains { $0.id != folder.id && $0.path.hasPrefix(prefix) }
+    }
+
+    /// Beside an account that is not syncing: why, at a glance, with the sentence as its tip.
+    static func statusSymbol(_ health: AccountHealth?) -> String {
+        switch health {
+        case .imapPaused: return "hourglass"
+        case .needsSignIn, .blocked: return "exclamationmark.triangle"
+        default: return "wifi.slash"
+        }
     }
 
     static func icon(for folder: FolderInfo) -> String {
