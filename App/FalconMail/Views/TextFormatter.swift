@@ -22,8 +22,10 @@ final class TextFormatter {
     var fontSize: CGFloat = 14
     /// The paragraph's alignment at the caret; natural is left in a left-to-right text.
     private(set) var alignment = NSTextAlignment.natural
-    var textColour = Color.primary
-    var highlight = Color.yellow
+    /// The colours the Text colour and Highlight buttons show and apply with a click on their
+    /// face; they start, as Outlook's do, on its pure red and yellow.
+    var textColour = TextFormatter.firstTextColour
+    var highlight = TextFormatter.firstHighlight
     /// ¶ is on. The marks are only drawn over the body, so the text that is saved and sent
     /// never holds them.
     private(set) var showsFormattingMarks = false
@@ -36,16 +38,26 @@ final class TextFormatter {
 
     static let sizes: [CGFloat] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48]
 
+    /// Outlook's pure red and yellow. Its Display P3 capture holds them as 0xEB3323 and
+    /// 0xFFFF53, which read as sRGB would be a duller red and a paler yellow than it applies.
+    static let firstTextColour = sRGB(0xFF0000)
+    static let firstHighlight = sRGB(0xFFFF00)
+
+    // Word's highlight colours and Outlook's standard font colours, in the sRGB they are sent
+    // in. SwiftUI's named colours follow the appearance, so one picked in dark would be sent in
+    // its dark shade, and most are not the colour Outlook's name stands for.
     static let highlightPalette: [(String, Color)] = [
-        ("Yellow", .yellow), ("Bright Green", Color(red: 0.4, green: 1, blue: 0.2)), ("Turquoise", .cyan), ("Pink", .pink),
-        ("Blue", .blue), ("Red", .red), ("Dark Blue", Color(red: 0, green: 0.2, blue: 0.5)), ("Teal", .teal),
-        ("Green", .green), ("Violet", .purple), ("Dark Red", Color(red: 0.55, green: 0, blue: 0)), ("Grey", .gray),
+        ("Yellow", sRGB(0xFFFF00)), ("Bright Green", sRGB(0x00FF00)), ("Turquoise", sRGB(0x00FFFF)), ("Pink", sRGB(0xFF00FF)),
+        ("Blue", sRGB(0x0000FF)), ("Red", sRGB(0xFF0000)), ("Dark Blue", sRGB(0x000080)), ("Teal", sRGB(0x008080)),
+        ("Green", sRGB(0x008000)), ("Violet", sRGB(0x800080)), ("Dark Red", sRGB(0x800000)), ("Grey", sRGB(0x808080)),
     ]
     static let textPalette: [(String, Color)] = [
-        ("Automatic", .primary), ("Black", .black), ("Dark Red", Color(red: 0.55, green: 0, blue: 0)), ("Red", .red),
-        ("Orange", .orange), ("Yellow", .yellow), ("Green", .green), ("Blue", .blue), ("Dark Blue", Color(red: 0, green: 0.2, blue: 0.5)),
-        ("Purple", .purple), ("Grey", .gray), ("White", .white),
+        ("Automatic", .primary), ("Black", sRGB(0x000000)), ("Dark Red", sRGB(0xC00000)), ("Red", sRGB(0xFF0000)),
+        ("Orange", sRGB(0xFFC000)), ("Yellow", sRGB(0xFFFF00)), ("Green", sRGB(0x00B050)), ("Blue", sRGB(0x0070C0)),
+        ("Dark Blue", sRGB(0x002060)), ("Purple", sRGB(0x7030A0)), ("Grey", sRGB(0x808080)), ("White", sRGB(0xFFFFFF)),
     ]
+
+    private static func sRGB(_ hex: Int) -> Color { Color(nsColor: NSColor(hex: hex)) }
 
     private var composeView: ComposeTextView? { editor as? ComposeTextView }
 

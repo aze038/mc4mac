@@ -139,6 +139,13 @@ final class ComposeTextView: NSTextView {
     /// (the signature editor, as Outlook's).
     var onInsertLink: (() -> Void)?
 
+    /// An empty body has no glyphs, so its layout manager is never asked to draw any; with ¶ on,
+    /// the ¶ of its one empty paragraph is still drawn, as Word draws it.
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        (layoutManager as? FormattingMarksLayoutManager)?.drawMarksOfEmptyText(at: textContainerOrigin)
+    }
+
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { onFocusChange?(true) }

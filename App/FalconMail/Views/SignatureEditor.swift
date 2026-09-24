@@ -88,11 +88,6 @@ enum SignatureEditorLook {
     static let overflow = Classic.colour(light: 0xDCDCDC, dark: 0x0A0A0A)
     static let overflowEdge = Classic.colour(light: 0xC8C8C8, dark: 0x333333)
     static let overflowArrow = Classic.colour(light: 0x6E6E6E, dark: 0x9D9D9D)
-    /// The colours Text colour and Highlight start with, Outlook's pure red and yellow. Its
-    /// Display P3 capture holds them as 0xEB3323 and 0xFFFF53, which read as sRGB would be a
-    /// duller red and a paler yellow than it applies.
-    static let firstTextColour = Color(.sRGB, red: 1, green: 0, blue: 0)
-    static let firstHighlight = Color(.sRGB, red: 1, green: 1, blue: 0)
 
     static let titleRow: CGFloat = 28
 }
@@ -105,12 +100,7 @@ struct SignatureEditorView: View {
     let library: SignatureLibrary
     let retitle: (String) -> Void
     @State private var name: String
-    @State private var formatter: TextFormatter = {
-        let formatter = TextFormatter()
-        formatter.textColour = SignatureEditorLook.firstTextColour
-        formatter.highlight = SignatureEditorLook.firstHighlight
-        return formatter
-    }()
+    @State private var formatter = TextFormatter()
     @State private var initialText: NSAttributedString
     @State private var tab = 0
     @State private var canUndo = false

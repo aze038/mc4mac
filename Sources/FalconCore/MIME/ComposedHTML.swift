@@ -6,7 +6,8 @@ import AppKit
 /// colour so both read in either appearance. AppKit's HTML writer would put that colour down as
 /// a translucent near-black. What goes out instead is what Outlook sends: text in the automatic
 /// colour carries no colour, so the reader's default applies, and table lines in a colour that
-/// follows the appearance become Table Grid's solid black. Colours chosen by hand are kept.
+/// follows the appearance become Table Grid's solid black. Colours chosen by hand go out as
+/// exactly the sRGB colour that was chosen (see `SentColour`).
 public enum ComposedHTML {
     /// The HTML part of a message from the composer: its rich text when it has any, else its
     /// plain text. A reply or forward whose body still ends with the quoted original sends the
@@ -58,34 +59,90 @@ public enum ComposedHTML {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// A copy with automatic text colours removed and appearance-dependent table lines made
-    /// black. The text's own blocks are left alone: every block is copied once, so paragraphs
-    /// that shared a cell still share it.
+    /// A copy with automatic text colours removed, appearance-dependent table lines made black
+    /// and every other colour, of the characters, their blocks and tables, made one the writer
+    /// puts down as its exact sRGB value. The text's own attributes and blocks are left alone.
     static func forSending(_ text: NSAttributedString) -> NSAttributedString {
         let output = NSMutableAttributedString(attributedString: text)
         let whole = NSRange(location: 0, length: output.length)
-        var copies: [ObjectIdentifier: NSTextBlock] = [:]
         output.beginEditing()
         output.enumerateAttribute(.foregroundColor, in: whole) { value, range, _ in
-            if let colour = value as? NSColor, isAutomatic(colour) { output.removeAttribute(.foregroundColor, range: range) }
-        }
-        output.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
-            guard let style = value as? NSParagraphStyle, style.textBlocks.contains(where: hasAppearanceBorder),
-                  let sent = style.mutableCopy() as? NSMutableParagraphStyle else { return }
-            sent.textBlocks = style.textBlocks.map { block in
-                guard hasAppearanceBorder(block) else { return block }
-                if let copy = copies[ObjectIdentifier(block)] { return copy }
-                let copy = (block.copy() as? NSTextBlock) ?? block
-                for edge in edges where copy.borderColor(for: edge).map(followsAppearance) == true {
-                    copy.setBorderColor(.black, for: edge)
-                }
-                copies[ObjectIdentifier(block)] = copy
-                return copy
+            guard let colour = value as? NSColor else { return }
+            if isAutomatic(colour) {
+                output.removeAttribute(.foregroundColor, range: range)
+            } else {
+                output.addAttribute(.foregroundColor, value: SentColour.forWriter(colour), range: range)
             }
-            output.addAttribute(.paragraphStyle, value: sent, range: range)
+        }
+        // The writer leaves underline and strikethrough colours out, so a reader draws those
+        // lines in the text's colour; they are made exact all the same, as nothing else is sent
+        // shifted.
+        for key: NSAttributedString.Key in [.backgroundColor, .underlineColor, .strikethroughColor, .strokeColor] {
+            output.enumerateAttribute(key, in: whole) { value, range, _ in
+                guard let colour = value as? NSColor else { return }
+                output.addAttribute(key, value: SentColour.forWriter(colour), range: range)
+            }
+        }
+        output.enumerateAttribute(.shadow, in: whole) { value, range, _ in
+            guard let shadow = value as? NSShadow, let colour = shadow.shadowColor,
+                  let sent = shadow.copy() as? NSShadow else { return }
+            sent.shadowColor = SentColour.forWriter(colour)
+            output.addAttribute(.shadow, value: sent, range: range)
+        }
+        let blocks = sentBlocks(in: output)
+        if !blocks.isEmpty {
+            output.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
+                guard let style = value as? NSParagraphStyle, !style.textBlocks.isEmpty,
+                      let sent = style.mutableCopy() as? NSMutableParagraphStyle else { return }
+                sent.textBlocks = style.textBlocks.map { blocks[ObjectIdentifier($0)] ?? $0 }
+                output.addAttribute(.paragraphStyle, value: sent, range: range)
+            }
         }
         output.endEditing()
         return output
+    }
+
+    /// A recoloured copy of every block in `text`, and of every table its cells belong to, by the
+    /// block it replaces.
+    ///
+    /// A cell's table cannot be swapped for another, and it carries colours of its own, the
+    /// table's background and outer lines, so the blocks are copied through one keyed archive:
+    /// that copies each cell with its table, keeping the paragraphs that share a cell and the
+    /// cells that share a table sharing their copies, as the writer needs them to lay the table
+    /// out, and changes nothing else about them.
+    private static func sentBlocks(in text: NSAttributedString) -> [ObjectIdentifier: NSTextBlock] {
+        var originals: [NSTextBlock] = []
+        var seen = Set<ObjectIdentifier>()
+        text.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            for block in (value as? NSParagraphStyle)?.textBlocks ?? [] where seen.insert(ObjectIdentifier(block)).inserted {
+                originals.append(block)
+            }
+        }
+        // The archive is made and read here and nowhere else, so it is read without the checks
+        // an archive from outside would need.
+        guard !originals.isEmpty,
+              let archive = try? NSKeyedArchiver.archivedData(withRootObject: originals as NSArray, requiringSecureCoding: false),
+              let reader = try? NSKeyedUnarchiver(forReadingFrom: archive) else { return [:] }
+        reader.requiresSecureCoding = false
+        let decoded = reader.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? [NSTextBlock]
+        reader.finishDecoding()
+        guard let copies = decoded, copies.count == originals.count else { return [:] }
+        var tables = Set<ObjectIdentifier>()
+        for copy in copies {
+            recolour(copy)
+            if let cell = copy as? NSTextTableBlock, tables.insert(ObjectIdentifier(cell.table)).inserted { recolour(cell.table) }
+        }
+        return Dictionary(uniqueKeysWithValues: zip(originals.map(ObjectIdentifier.init), copies))
+    }
+
+    /// A block's, or a table's, background and lines in their exact sRGB, and lines in a colour
+    /// that follows the appearance in Table Grid's black.
+    private static func recolour(_ block: NSTextBlock) {
+        if let background = block.backgroundColor { block.backgroundColor = SentColour.forWriter(background) }
+        for edge in edges {
+            guard let colour = block.borderColor(for: edge) else { continue }
+            block.setBorderColor(SentColour.forWriter(followsAppearance(colour) ? .black : colour), for: edge)
+        }
     }
 
     private static let edges: [NSRectEdge] = [.minX, .minY, .maxX, .maxY]
@@ -99,9 +156,5 @@ public enum ComposedHTML {
     /// System and dynamic colours are catalogue colours; a colour picked by hand is not.
     static func followsAppearance(_ colour: NSColor) -> Bool {
         colour.type == .catalog
-    }
-
-    private static func hasAppearanceBorder(_ block: NSTextBlock) -> Bool {
-        edges.contains { edge in block.borderColor(for: edge).map(followsAppearance) == true }
     }
 }

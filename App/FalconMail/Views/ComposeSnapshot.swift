@@ -182,7 +182,8 @@ enum ComposeSnapshot {
 
     /// The ribbon over the body a compose window writes in, ¶ turned on through the formatter
     /// before the body is attached to it, as when SwiftUI makes a body again: the button lit and
-    /// the body's paragraph ends, spaces and tabs marked.
+    /// the body's paragraph ends, spaces and tabs marked, down to the empty line after its last
+    /// line break.
     @MainActor private static func composeWithMarks() -> some View {
         let formatter = TextFormatter()
         formatter.toggleFormattingMarks()
@@ -191,7 +192,7 @@ enum ComposeSnapshot {
         body.append(NSAttributedString(string: "The full report is at ", attributes: RichText.bodyAttributes))
         body.append(NSAttributedString(string: "example.com", attributes: RichText.bodyAttributes.merging([
             .link: URL(string: "https://example.com")!]) { $1 }))
-        body.append(NSAttributedString(string: ".\n\nBest wishes,\nAlex", attributes: RichText.bodyAttributes))
+        body.append(NSAttributedString(string: ".\n\nBest wishes,\nAlex\n", attributes: RichText.bodyAttributes))
         return VStack(spacing: 0) {
             OLColor.chrome.frame(height: OL.titleRow)
             ComposeRibbon(tab: .constant(.message), formatter: formatter, showsBcc: .constant(false),

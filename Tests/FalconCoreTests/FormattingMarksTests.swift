@@ -19,18 +19,20 @@ final class FormattingMarksTests: XCTestCase {
         ])
     }
 
-    /// Word marks the end of the last paragraph too, which has no line break of its own; one
-    /// that ends in a line break is marked by it, and only once.
-    func testTheLastParagraphIsMarkedOnceWhereverItEnds() {
-        for (text, last) in [("a b", FormattingMarks.Mark(character: 2, symbol: "¶", after: true)),
-                             ("a\n", FormattingMarks.Mark(character: 1, symbol: "¶")),
-                             ("a\u{2029}", FormattingMarks.Mark(character: 1, symbol: "¶"))] {
+    /// Word marks the end of every paragraph once, the last too: after its text when it has no
+    /// line break, and when the text ends in a line break, on the empty line that follows, as
+    /// on the one line of an empty text.
+    func testEveryParagraphIsMarkedOnceWhereverTheTextEnds() {
+        for (text, last, paragraphs) in [("a b", FormattingMarks.Mark(character: 2, symbol: "¶", after: true), 1),
+                                         ("a\n", FormattingMarks.Mark(character: 2, symbol: "¶"), 2),
+                                         ("a\u{2029}", FormattingMarks.Mark(character: 2, symbol: "¶"), 2),
+                                         ("a\n\n", FormattingMarks.Mark(character: 3, symbol: "¶"), 3),
+                                         ("", FormattingMarks.Mark(character: 0, symbol: "¶"), 1)] {
             let string = text as NSString
             let found = FormattingMarks.marks(in: string, range: NSRange(location: 0, length: string.length))
             XCTAssertEqual(found.last, last, text)
-            XCTAssertEqual(found.filter { $0.symbol == "¶" }.count, 1, text)
+            XCTAssertEqual(found.filter { $0.symbol == "¶" }.count, paragraphs, text)
         }
-        XCTAssertEqual(FormattingMarks.marks(in: "", range: NSRange(location: 0, length: 0)), [])
     }
 
     /// Text drawn a line at a time ends its last paragraph only when the line drawn is the last.
@@ -40,6 +42,78 @@ final class FormattingMarksTests: XCTestCase {
                        [.init(character: 3, symbol: "·"), .init(character: 7, symbol: "¶")])
         XCTAssertEqual(FormattingMarks.marks(in: text, range: NSRange(location: 8, length: 5)),
                        [.init(character: 12, symbol: "¶", after: true)])
+        let ending = "one\ntwo\n" as NSString
+        XCTAssertEqual(FormattingMarks.marks(in: ending, range: NSRange(location: 0, length: 4)), [.init(character: 3, symbol: "¶")])
+        XCTAssertEqual(FormattingMarks.marks(in: ending, range: NSRange(location: 4, length: 4)),
+                       [.init(character: 7, symbol: "¶"), .init(character: 8, symbol: "¶")])
+    }
+
+    /// A body that ends in a line break shows a ¶ on the empty line after it, where the caret
+    /// stands, however much of the view is redrawn: the whole of it, or that line alone, as
+    /// when the last character on it is deleted.
+    func testTheEmptyLastLineShowsItsMark() throws {
+        let (view, layout) = composer()
+        view.drawsBackground = false
+        view.insertText("Hello Sam,\nBest wishes\n", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let container = try XCTUnwrap(layout.textContainers.first)
+        layout.ensureLayout(for: container)
+        let line = layout.extraLineFragmentRect.offsetBy(dx: view.textContainerOrigin.x, dy: view.textContainerOrigin.y)
+        XCTAssertGreaterThan(line.height, 0)
+        XCTAssertEqual(inkedPixels(displaying: view, in: line), 0, "nothing is drawn there without the marks")
+        layout.showsMarks = true
+        XCTAssertGreaterThan(inkedPixels(displaying: view, in: line), 0, "the empty line's ¶, drawn with that line alone")
+        XCTAssertGreaterThan(inkedPixels(displaying: view, in: view.bounds, within: line), 0, "and with the whole view")
+        // Once the line holds text, its ¶ follows that text instead.
+        view.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let text = view.string as NSString
+        XCTAssertEqual(FormattingMarks.marks(in: text, range: NSRange(location: 0, length: text.length)).last,
+                       .init(character: 23, symbol: "¶", after: true))
+    }
+
+    /// The empty last line's ¶ stands where the caret does, one line's pitch below the line
+    /// before, whatever the spacing and alignment.
+    func testTheEmptyLastLinesMarkStandsWhereTheCaretDoes() throws {
+        for (spacing, alignment) in [(CGFloat(0), NSTextAlignment.natural), (5, .natural), (0, .center), (0, .right)] {
+            let (view, layout) = composer()
+            let style = NSMutableParagraphStyle()
+            style.paragraphSpacingBefore = spacing
+            style.paragraphSpacing = spacing
+            style.lineSpacing = spacing
+            style.alignment = alignment
+            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .paragraphStyle: style]
+            view.typingAttributes = attributes
+            let storage = try XCTUnwrap(view.textStorage)
+            storage.setAttributedString(NSAttributedString(string: "Hello\n\n", attributes: attributes))
+            view.setSelectedRange(NSRange(location: storage.length, length: 0))
+            let container = try XCTUnwrap(layout.textContainers.first)
+            layout.ensureLayout(for: container)
+            let found = FormattingMarks.marks(in: storage.string as NSString, range: NSRange(location: 0, length: storage.length))
+            let start = { (character: Int) in found.first { $0.character == character }.flatMap(layout.baselineStart) }
+            let first = try XCTUnwrap(start(5)), empty = try XCTUnwrap(start(6)), last = try XCTUnwrap(start(7))
+            XCTAssertEqual(last.y - empty.y, empty.y - first.y, accuracy: 0.01, "spacing \(spacing)")
+            var count = 0
+            let caret = try XCTUnwrap(layout.rectArray(forCharacterRange: NSRange(location: 7, length: 0),
+                                                       withinSelectedCharacterRange: NSRange(location: 7, length: 0),
+                                                       in: container, rectCount: &count)?.pointee)
+            XCTAssertEqual(last.x, caret.minX, accuracy: 0.5, "alignment \(alignment.rawValue)")
+            XCTAssertTrue(caret.minY < last.y && last.y <= caret.maxY, "\(caret) \(last)")
+        }
+    }
+
+    /// An empty body shows the ¶ of its one paragraph where the caret stands, drawn when its
+    /// view asks, as it has no glyphs for the view to draw.
+    func testAnEmptyTextShowsItsMark() throws {
+        let (view, layout) = composer()
+        view.drawsBackground = false
+        XCTAssertEqual(inkedPixels(drawingMarksOfEmptyText: layout, origin: view.textContainerOrigin), 0)
+        layout.showsMarks = true
+        XCTAssertGreaterThan(inkedPixels(drawingMarksOfEmptyText: layout, origin: view.textContainerOrigin), 0)
+        let start = try XCTUnwrap(layout.baselineStart(of: .init(character: 0, symbol: "¶")))
+        XCTAssertEqual(start.x, try XCTUnwrap(layout.textContainers.first).lineFragmentPadding, accuracy: 0.01)
+        XCTAssertEqual(start.y, layout.defaultBaselineOffset(for: NSFont.systemFont(ofSize: 14)), accuracy: 0.01)
+        view.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(inkedPixels(drawingMarksOfEmptyText: layout, origin: view.textContainerOrigin), 0,
+                       "a text with glyphs has its marks drawn with them")
     }
 
     /// A message written with ¶ on, typed and drawn as the composer types and draws it, goes out
@@ -134,20 +208,49 @@ final class FormattingMarksTests: XCTestCase {
         return (view, layout)
     }
 
+    /// Has the view draw `rect` as it would on screen, and counts the pixels that took any ink,
+    /// of all of them or of those `within` part of it.
+    private func inkedPixels(displaying view: NSView, in rect: NSRect, within part: NSRect? = nil) -> Int {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: rect) else { return 0 }
+        view.cacheDisplay(in: rect, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / rect.width
+        let counted = (part ?? rect).offsetBy(dx: -rect.minX, dy: -rect.minY)
+        var inked = 0
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                // The rep's rows run down the view, as a flipped text view's do.
+                let point = NSPoint(x: (CGFloat(x) + 0.5) / scale, y: (CGFloat(y) + 0.5) / scale)
+                guard counted.contains(point), let colour = rep.colorAt(x: x, y: y), colour.alphaComponent > 0 else { continue }
+                inked += 1
+            }
+        }
+        return inked
+    }
+
+    /// The same for the marks of an empty text, drawn as its view asks for them.
+    private func inkedPixels(drawingMarksOfEmptyText layout: FormattingMarksLayoutManager, origin: NSPoint) -> Int {
+        draw(size: NSSize(width: 400, height: 300)) { layout.drawMarksOfEmptyText(at: origin) }
+    }
+
     /// Draws all the text as the text view would and counts the pixels that took any ink.
     private func inkedPixels(drawing layout: NSLayoutManager) -> Int {
-        let size = NSSize(width: 400, height: 300)
+        guard let container = layout.textContainers.first else { return 0 }
+        return draw(size: NSSize(width: 400, height: 300)) { layout.drawGlyphs(forGlyphRange: layout.glyphRange(for: container), at: .zero) }
+    }
+
+    /// Runs `drawing` into a clear bitmap `size` points big and counts the pixels that took any
+    /// ink.
+    private func draw(size: NSSize, _ drawing: () -> Void) -> Int {
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-              let context = NSGraphicsContext(bitmapImageRep: rep),
-              let container = layout.textContainers.first else { return 0 }
+              let context = NSGraphicsContext(bitmapImageRep: rep) else { return 0 }
         // A text view's coordinates run down the page.
         context.cgContext.translateBy(x: 0, y: size.height)
         context.cgContext.scaleBy(x: 1, y: -1)
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context.cgContext, flipped: true)
-        layout.drawGlyphs(forGlyphRange: layout.glyphRange(for: container), at: .zero)
+        drawing()
         NSGraphicsContext.restoreGraphicsState()
         guard let data = rep.bitmapData else { return 0 }
         var inked = 0
