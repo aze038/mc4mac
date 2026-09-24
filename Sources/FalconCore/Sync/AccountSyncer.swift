@@ -109,6 +109,15 @@ public actor AccountSyncer {
     private var syncRequested = false
     /// The owner asked for new mail, so the next whole pass says whether it found any.
     private var checkRequested = false
+    /// A pass that was to answer a check and was cut short had already found new mail in an
+    /// inbox, which the pass that answers in its place says too.
+    private var checkFoundNewMail = false
+    /// True while a whole pass that answers a check runs: an inbox whose catch-up is held back
+    /// still gets what arrived since its last window, so that the answer holds.
+    private var passAnswersCheck = false
+    /// Inbox mail the current whole pass has stored so far, counted as it is stored, so that a
+    /// pass cut short part of the way still knows what it found.
+    private var passArrivals = 0
     /// Folders to bring up to date on their own, without a whole pass over the account.
     private var requestedFolders: [UUID] = []
     private var health: AccountHealth?
@@ -761,11 +770,20 @@ public actor AccountSyncer {
         // sees everything that arrived up to the question. A pass cut short, by a dropped
         // connection or a pause, leaves its check to the pass after it, so that a quiet
         // reconnect still answers the owner.
+        // What it found before it was cut goes with the check, so that mail announced by the
+        // cut pass is not followed by No new messages from the one after it.
         let checking = checkRequested
         checkRequested = false
+        passAnswersCheck = checking
+        passArrivals = 0
         var answered = false
-        defer { if checking, !answered { checkRequested = true } }
-        var arrivals = 0
+        defer {
+            passAnswersCheck = false
+            if checking, !answered {
+                checkRequested = true
+                checkFoundNewMail = checkFoundNewMail || passArrivals > 0
+            }
+        }
         let listed = try await client.listFolders()
         let folders = try await store.reconcileFolders(accountID: account.id, listed: listed)
         extras.keepFolders(Set(folders.map(\.id)))
@@ -774,10 +792,13 @@ public actor AccountSyncer {
             // Paused by a throttle met on the op connection: the rest waits for the pass after.
             guard pauseRemaining() == nil else { return }
             events.yield(.progress(accountID: account.id, text: "Checking \(f.name) in \(account.email)"))
-            arrivals += try await syncFolder(f, client: client)
+            try await syncFolder(f, client: client)
         }
         if checking {
-            events.yield(.checked(accountID: account.id, foundNewMail: arrivals > 0))
+            // Mail a catch-up has still to fetch into an inbox arrived too, only not here yet.
+            let waiting = folders.contains { $0.role == .inbox && catchUps[$0.id]?.unfetched.isEmpty == false }
+            events.yield(.checked(accountID: account.id, foundNewMail: passArrivals > 0 || checkFoundNewMail || waiting))
+            checkFoundNewMail = false
             answered = true
         }
     }
@@ -895,6 +916,7 @@ public actor AccountSyncer {
         }
         var newMessages = arrived.messages
         let arrivals = folder.role == .inbox && listedBefore ? newMessages.filter(isNews).count : 0
+        passArrivals += arrivals
 
         // Old mail arriving now, as an import brings, is left as it is: rules and mutes act only
         // on what was sent lately, and on none that was listed here before.
@@ -1012,12 +1034,21 @@ public actor AccountSyncer {
     /// over UIDs stored without a gap below them, and is saved after every batch, so a pass cut
     /// short leaves no hole behind it and the next fetches nothing twice. It stays a cursor an
     /// earlier build understands: at worst that build fetches again what is stored above it.
+    /// A pass the owner asked for with Send & Receive, while an inbox's catch-up is held back,
+    /// takes what arrived there since the newest message stored, and leaves the backlog below
+    /// it and the cursor as they are for the catch-up's next pass.
     private func fetchNewMessages(_ folder: inout FolderInfo, client: IMAPClient, fs: FolderStore) async throws -> NewMail {
+        var backlog: [UInt32]?
         if let catchUp = catchUps[folder.id], catchUp.notBefore > Date() {
-            return NewMail(unfetched: catchUp.unfetched)
+            guard passAnswersCheck, folder.role == .inbox else { return NewMail(unfetched: catchUp.unfetched) }
+            backlog = catchUp.unfetched
         }
+        var have = await fs.uids()
         let candidates: [UInt32]
-        if folder.lastSyncedUID == 0 {
+        if backlog != nil {
+            let top = max(have.max() ?? 0, folder.lastSyncedUID)
+            candidates = try await client.uidSearch("UID \(top + 1):*").filter { $0 > top }
+        } else if folder.lastSyncedUID == 0 {
             let all = try await client.uidSearch("ALL")
             var start = all.suffix(pacing.initialWindow).first ?? 0
             // A first pass cut short saved where its window began. Taken again, the window
@@ -1032,7 +1063,6 @@ public actor AccountSyncer {
             let after = folder.lastSyncedUID
             candidates = try await client.uidSearch("UID \(after + 1):*").filter { $0 > after }
         }
-        var have = await fs.uids()
         let folderID = folder.id
         let accounted = { (uid: UInt32) -> Bool in have.contains(uid) || self.isSuppressed(folderID: folderID, uid: uid) }
         let missing = candidates.filter { !accounted($0) }
@@ -1045,6 +1075,8 @@ public actor AccountSyncer {
         var result = NewMail(unfetched: [])
         var next = 0
         func advanceCursor() {
+            // Never past a backlog still to fetch.
+            guard backlog == nil else { return }
             while next < candidates.count, accounted(candidates[next]) {
                 folder.lastSyncedUID = max(folder.lastSyncedUID, candidates[next])
                 next += 1
@@ -1066,6 +1098,12 @@ public actor AccountSyncer {
             advanceCursor()
             try await saveCursors(folder)
             await store.notifyMessagesChanged(folderID: folder.id)
+        }
+        if let backlog, let held = catchUps[folder.id] {
+            // The catch-up keeps its time; whatever this window left joins its backlog.
+            result.unfetched = (backlog + later).sorted()
+            catchUps[folder.id] = (held.notBefore, result.unfetched)
+            return result
         }
         if folder.oldestSyncedUID == 0 { folder.oldestSyncedUID = candidates.first ?? folder.lastSyncedUID }
         // Only what the window left for a later pass is a backlog. A message asked for and not

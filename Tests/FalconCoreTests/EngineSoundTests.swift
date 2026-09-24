@@ -511,4 +511,69 @@ final class EngineSoundTests: XCTestCase {
         listener.hear(await h.events.timed)
         XCTAssertEqual(listener.sounds, [.noNewMessages])
     }
+
+    func testACheckWhosePassIsCutAfterItBroughtMailSaysItFoundSome() async throws {
+        let (h, clock) = try await started()
+        let listener = Listener(start: clock)
+        let logins = h.server.loginCount
+        // Stored without a word to the idling connection; the check's pass brings it from INBOX
+        // and loses its connection at the next folder.
+        h.server.add(fresh("news"), to: "INBOX")
+        h.server.cutAfter("SELECT", count: 2)
+        listener.check([h.account.id])
+        await h.syncer.requestSync(check: true)
+        await assertEventually(within: 5) { await self.checkedCount(h) == 1 }
+        await h.settled()
+
+        XCTAssertGreaterThan(h.server.loginCount, logins, "the pass was cut and the engine connected again")
+        let all = await h.events.all
+        let announcedAt = try XCTUnwrap(all.firstIndex { if case .newMessages = $0 { return true }; return false })
+        let lastStart = try XCTUnwrap(all.lastIndex { if case .started = $0 { return true }; return false })
+        XCTAssertLessThan(announcedAt, lastStart, "the cut pass brought it, before the pass that answered")
+        let found = all.compactMap { if case .checked(_, let found) = $0 { return found }; return nil }
+        XCTAssertEqual(found, [true], "the answer carries what the cut pass found")
+        listener.hear(await h.events.timed)
+        XCTAssertEqual(listener.sounds, [.newMessage], "and No new messages never follows the new message sound")
+    }
+
+    func testACheckDuringACatchUpFetchesWhatArrivedSinceAndSaysMailCame() async throws {
+        var pacing = self.pacing
+        pacing.catchUpWindow = 5
+        pacing.catchUpInterval = 3600
+        let (h, clock) = try await started(pacing)
+        // Another program files twelve messages at once: a pass takes the newest five and holds
+        // the rest back for the catch-up interval, an hour here.
+        let bulk = h.server.addMany(12, to: "INBOX") { self.fresh("bulk-\($0)") }
+        await h.syncer.requestSync()
+        await assertEventually { ((try? await h.uids(in: "INBOX")) ?? []).count == 6 }
+        await assertEventually { await self.finishedCount(h) >= 2 && h.server.idlingCount == 1 }
+
+        // The message the owner is waiting for arrives, and they ask for it.
+        let listener = Listener(start: clock)
+        h.server.resetCounters()
+        let urgent = h.server.add(fresh("urgent"), to: "INBOX")
+        listener.check([h.account.id])
+        await h.syncer.requestSync(check: true)
+        await assertEventually { await self.checkedCount(h) == 1 }
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertTrue(stored.contains(urgent), "fetched for the check, catch-up or not")
+        XCTAssertEqual(stored.count, 7, "the backlog still waits for its turn")
+        XCTAssertEqual(FakeIMAPServer.headerFetchUIDs(h.server.exchanges), [urgent], "nothing of the backlog was fetched")
+        let cursor = try await h.folder("INBOX").lastSyncedUID
+        XCTAssertLessThan(cursor, bulk[0], "the cursor stays below the backlog")
+
+        // Asked again with nothing newer, the answer is that mail is on its way, not none.
+        listener.check([h.account.id])
+        await h.syncer.requestSync(check: true)
+        await assertEventually { await self.checkedCount(h) == 2 }
+        await h.settled()
+        let after = try await h.uids(in: "INBOX")
+        XCTAssertEqual(after.count, 7)
+        let found = await h.events.all.compactMap { if case .checked(_, let found) = $0 { return found }; return nil }
+        XCTAssertEqual(found, [true, true])
+        let announced = await h.events.announced.map(\.messageID)
+        XCTAssertEqual(announced.last, "<urgent@example.com>")
+        listener.hear(await h.events.timed)
+        XCTAssertEqual(listener.sounds, [.newMessage, .newMessage], "the bulk's newest and the one asked for; never No new messages")
+    }
 }
