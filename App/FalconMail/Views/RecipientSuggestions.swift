@@ -41,6 +41,16 @@ struct RecipientSuggestions: NSViewRepresentable {
         height - SuggestionLook.listTop - (CGFloat(row) - 0.5) * SuggestionLook.rowHeight
     }
 
+    /// Where a list window `size` points big goes under a field whose box is `box`, both in the
+    /// coordinates of the field's window: as Outlook hangs it, the arrow's tip five points below
+    /// the box and the body fifteen points in from its left, counted from the outside of the
+    /// box's border, which straddles the box's edge and so ends half a point beyond it.
+    static func panelFrame(under box: NSRect, size: NSSize) -> NSRect {
+        let outside = box.insetBy(dx: -SuggestionLook.boxBorderOutside, dy: -SuggestionLook.boxBorderOutside)
+        return NSRect(x: outside.minX + SuggestionLook.bodyX, y: outside.minY - SuggestionLook.drop - size.height,
+                      width: size.width, height: size.height)
+    }
+
     final class AnchorView: NSView {
         var text = ""
         var accept: (String) -> Void = { _ in }
@@ -161,13 +171,9 @@ struct RecipientSuggestions: NSViewRepresentable {
             place(panel, in: window)
         }
 
-        /// The arrow's tip meets the foot of the field's box, the popover's left edge fifteen
-        /// points in from the box's, as Outlook hangs it.
         private func place(_ panel: SuggestionPanel, in window: NSWindow) {
-            let anchor = convert(bounds, to: nil)
-            let size = panel.list.fittingSize
-            let corner = window.convertPoint(toScreen: NSPoint(x: anchor.minX + SuggestionLook.bodyX, y: anchor.minY))
-            panel.setFrame(NSRect(x: corner.x, y: corner.y - size.height, width: size.width, height: size.height), display: true)
+            let frame = RecipientSuggestions.panelFrame(under: convert(bounds, to: nil), size: panel.list.fittingSize)
+            panel.setFrame(window.convertToScreen(frame), display: true)
         }
 
         private func watch(_ window: NSWindow) {
@@ -225,10 +231,14 @@ struct RecipientSuggestions: NSViewRepresentable {
     }
 }
 
-/// The popover measured off Outlook's (2x, dark): a 486 point body with a one point border, its
-/// arrow ten points tall on a seventeen point base, then inside it a 27 point header band and 27
-/// point rows, their text in 13 points with its capitals from 6.5 points down.
+/// The popover measured off Outlook's (2x, dark): hung with its arrow's tip five points under the
+/// To box, a 486 point body with a one point border, its arrow ten points tall on a seventeen
+/// point base, then inside it a 27 point header band and 27 point rows, their text in 13 points
+/// with its capitals from 6.5 points down.
 enum SuggestionLook {
+    static let drop: CGFloat = 5
+    /// How far a header field's one point border reaches outside its box.
+    static let boxBorderOutside: CGFloat = 0.5
     static let bodyX: CGFloat = 15
     static let bodyWidth: CGFloat = 486
     static let arrowHeight: CGFloat = 10

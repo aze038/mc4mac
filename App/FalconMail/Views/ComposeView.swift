@@ -39,10 +39,16 @@ struct ComposeView: View {
                 CloseGuardInstaller { window in model.mayCloseUnsent(draftID, over: window) { window.close() } }
             }
         }
-        .onAppear { load() }
+        .onAppear {
+            if !embedded { model.composeWindowDrafts.insert(draftID) }
+            load()
+        }
         .onDisappear {
             editSessions.values.forEach { $0.stop() }
-            if !embedded { model.saveDraftToServer(draftID) }
+            if !embedded {
+                model.composeWindowDrafts.remove(draftID)
+                model.saveDraftToServer(draftID)
+            }
         }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             Task {

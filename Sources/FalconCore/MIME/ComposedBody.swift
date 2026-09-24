@@ -190,12 +190,16 @@ public enum ComposedBody {
     }
 
     /// Replaces the paragraphs `convertibleRange` finds with Outlook's Table Grid holding their
-    /// text, in the formatting where they start, as one step Undo takes back; the caret lands in
-    /// the first cell.
+    /// text, as one step Undo takes back; the caret lands in the first cell. Each cell keeps its
+    /// text's own formatting and links, so nothing the recipient would have had is lost; the
+    /// paragraph breaks and the cells padding short rows take the formatting where the text
+    /// starts.
     @MainActor
     public static func convertToTable(in editor: NSTextView, before history: String, font: NSFont, lines: NSColor) {
         guard let range = convertibleRange(in: editor, before: history), let storage = editor.textStorage else { return }
-        let contents = ComposedTable.cells(from: (storage.string as NSString).substring(with: range))
+        let contents = ComposedTable.cellRanges(in: (storage.string as NSString).substring(with: range)).map { row in
+            row.map { storage.attributedSubstring(from: NSRange(location: range.location + $0.location, length: $0.length)) }
+        }
         guard let columns = contents.first?.count else { return }
         var attributes = storage.attributes(at: range.location, effectiveRange: nil)
         attributes[.link] = nil

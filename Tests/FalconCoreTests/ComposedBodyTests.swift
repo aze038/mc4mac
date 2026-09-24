@@ -305,6 +305,33 @@ final class ComposedBodyTests: XCTestCase {
         XCTAssertEqual(occurrences(of: historyHTML, in: try sent(editor)), 1)
     }
 
+    func testConvertedTextKeepsItsLinksAndFormatting() throws {
+        let editor = editor("Name,Where\nDocs, click here" + historyPlain)
+        let storage = try XCTUnwrap(editor.textStorage)
+        let link = try XCTUnwrap(URL(string: "https://example.com/spec"))
+        let bold = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+        storage.addAttribute(.link, value: link, range: (storage.string as NSString).range(of: "click here"))
+        storage.addAttribute(.font, value: bold, range: (storage.string as NSString).range(of: "Docs"))
+        editor.setSelectedRange(NSRange(location: 0, length: 26))
+        ComposedBody.convertToTable(in: editor, before: historyPlain, font: font, lines: .labelColor)
+
+        XCTAssertEqual(try cellTexts(in: editor), ["Name", "Where", "Docs", "click here"])
+        let text = storage.string as NSString
+        let linked = text.range(of: "click here")
+        var extent = NSRange()
+        XCTAssertEqual(storage.attribute(.link, at: linked.location, longestEffectiveRange: &extent,
+                                         in: NSRange(location: 0, length: text.length)) as? URL, link)
+        XCTAssertEqual(extent, linked)
+        let traits = { (word: String) in
+            NSFontManager.shared.traits(of: storage.attribute(.font, at: text.range(of: word).location, effectiveRange: nil) as? NSFont ?? self.font)
+        }
+        XCTAssertTrue(traits("Docs").contains(.boldFontMask))
+        XCTAssertFalse(traits("Name").contains(.boldFontMask))
+        let html = try sent(editor)
+        XCTAssertTrue(html.contains("https://example.com/spec"), html)
+        XCTAssertEqual(occurrences(of: historyHTML, in: html), 1)
+    }
+
     func testTextAtTheEndConvertsWithAParagraphLeftBelowTheTable() throws {
         let editor = editor("a,b\nc,d")
         editor.setSelectedRange(NSRange(location: 0, length: 7))

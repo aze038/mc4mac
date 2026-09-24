@@ -30,10 +30,11 @@ public enum ComposedTable {
     }
 
     /// Every cell is a paragraph in `attributes`, empty or holding its text from `contents`,
-    /// rows of columns; a paragraph style there is kept, and its blocks enclose the table, so a
-    /// table inserted inside a cell nests in it.
+    /// rows of columns, which keeps its own formatting and links; a paragraph style in
+    /// `attributes` is kept, and its blocks enclose the table, so a table inserted inside a cell
+    /// nests in it.
     public static func grid(rows: Int, columns: Int, width: CGFloat, lines: NSColor,
-                            attributes: [NSAttributedString.Key: Any], contents: [[String]] = []) -> NSAttributedString {
+                            attributes: [NSAttributedString.Key: Any], contents: [[NSAttributedString]] = []) -> NSAttributedString {
         let outer = (attributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
         let table = NSTextTable()
         table.numberOfColumns = columns
@@ -59,10 +60,13 @@ public enum ComposedTable {
                 block.verticalAlignment = .topAlignment
                 let style = (outer.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
                 style.textBlocks = outer.textBlocks + [block]
-                var cell = attributes
-                cell[.paragraphStyle] = style
-                let text = contents.indices.contains(row) && contents[row].indices.contains(column) ? contents[row][column] : ""
-                cells.append(NSAttributedString(string: text + "\n", attributes: cell))
+                let cell = NSMutableAttributedString()
+                if contents.indices.contains(row), contents[row].indices.contains(column) {
+                    cell.append(contents[row][column])
+                }
+                cell.append(NSAttributedString(string: "\n", attributes: attributes))
+                cell.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: cell.length))
+                cells.append(cell)
             }
         }
         return cells
@@ -72,10 +76,41 @@ public enum ComposedTable {
     /// line, blank lines left out, split at tabs when any line has one and at commas otherwise,
     /// every row padded to the widest.
     public static func cells(from text: String) -> [[String]] {
-        let lines = text.components(separatedBy: .newlines).filter { !$0.trimmed.isEmpty }
-        let separator: Character = lines.contains { $0.contains("\t") } ? "\t" : ","
-        let rows = lines.map { $0.split(separator: separator, omittingEmptySubsequences: false).map { String($0).trimmed } }
+        let string = text as NSString
+        return cellRanges(in: text).map { $0.map(string.substring(with:)) }
+    }
+
+    /// Where each of those cells lies in `text`, in UTF-16 units, trimmed of the space around
+    /// it; a cell padding a short row is empty at the row's end. Ranges rather than strings, so
+    /// a cell can be cut from the formatted text with its links and formatting.
+    public static func cellRanges(in text: String) -> [[NSRange]] {
+        let string = text as NSString
+        // Every newline and space is a single UTF-16 unit, so the text is read unit by unit.
+        func isAny(_ set: CharacterSet, _ index: Int) -> Bool {
+            UnicodeScalar(string.character(at: index)).map(set.contains) ?? false
+        }
+        func split(_ range: NSRange, at isBreak: (Int) -> Bool) -> [NSRange] {
+            var parts: [NSRange] = []
+            var start = range.location
+            for index in range.location...NSMaxRange(range) where index == NSMaxRange(range) || isBreak(index) {
+                parts.append(NSRange(location: start, length: index - start))
+                start = index + 1
+            }
+            return parts
+        }
+        func trimmed(_ range: NSRange) -> NSRange {
+            var start = range.location, end = NSMaxRange(range)
+            while start < end, isAny(.whitespacesAndNewlines, start) { start += 1 }
+            while end > start, isAny(.whitespacesAndNewlines, end - 1) { end -= 1 }
+            return NSRange(location: start, length: end - start)
+        }
+        let lines = split(NSRange(location: 0, length: string.length)) { isAny(.newlines, $0) }.filter { trimmed($0).length > 0 }
+        let tab = unichar(9), comma = unichar(44)
+        let separator = lines.contains { string.range(of: "\t", range: $0).location != NSNotFound } ? tab : comma
+        let rows = lines.map { split($0) { string.character(at: $0) == separator }.map(trimmed) }
         let columns = rows.map(\.count).max() ?? 0
-        return rows.map { $0 + Array(repeating: "", count: columns - $0.count) }
+        return zip(lines, rows).map { line, row in
+            row + Array(repeating: NSRange(location: NSMaxRange(line), length: 0), count: columns - row.count)
+        }
     }
 }

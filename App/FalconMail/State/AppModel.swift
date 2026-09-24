@@ -380,6 +380,9 @@ final class AppModel {
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored var openMainWindow: (@MainActor () -> Void)?
     @ObservationIgnored var openComposeWindow: (@MainActor (UUID) -> Void)?
+    /// The drafts being written in compose windows of their own; with those in tabs, they are
+    /// the drafts that are not left over.
+    @ObservationIgnored var composeWindowDrafts: Set<UUID> = []
 
     private func applyOfflineSettings() {
         Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) }
@@ -1536,9 +1539,14 @@ final class AppModel {
         perform([stored], announcing: false) { try await $0.purge($1) }
     }
 
+    /// Saves to the Drafts folder the drafts that no compose window or tab holds, such as those
+    /// left from the last session. One still being written is saved only as it closes: a copy
+    /// saved from under it would be one that Discard Changes could not take back and that Save
+    /// as Draft would add a second copy beside.
     func saveLeftoverDrafts() {
-        let openIDs = Set((tabs + minimizedTabs).compactMap { if case .compose(let id) = $0 { return id } else { return nil } })
-        for id in drafts.keys where !openIDs.contains(id) { saveDraftToServer(id) }
+        let inTabs = (tabs + minimizedTabs).compactMap { if case .compose(let id) = $0 { return id } else { return nil } }
+        let open = composeWindowDrafts.union(inTabs)
+        for id in drafts.keys where !open.contains(id) { saveDraftToServer(id) }
     }
 
     private func markReadOnOpen(_ message: MessageSummary) {
