@@ -165,6 +165,7 @@ final class AppModel {
     var isLoadingMoreResults = false
     var statusText = "Ready"
     var online: [UUID: Bool] = [:]
+    var accountStatus = AccountStatusBoard()
     var outboxItems: [OutboxItem] = []
     var archiveRecords: [ArchiveRecord] = []
     var errorMessage: String?
@@ -209,13 +210,36 @@ final class AppModel {
 
     func refreshBandwidth() async {
         var out: [UUID: Int] = [:]
-        for account in accounts { out[account.id] = await BandwidthMeter.shared.spentToday(account.id) }
+        for account in accounts { out[account.id] = TrafficMeter.shared.used(.download, by: account.id) }
         downloadedToday = out
     }
 
+    /// Accounts to offer a retry for: ones that cannot be reached. One Gmail asked to slow down
+    /// or that waits for the owner already says so in the status line, and a retry would not help.
     var offlineAccounts: [AccountInfo] {
         guard accountsNeedingSignIn.isEmpty else { return [] }
-        return accounts.filter { $0.isEnabled && online[$0.id] == false }
+        return accounts.filter { account in
+            guard account.isEnabled, case .offline = accountStatus.health[account.id] else { return false }
+            return true
+        }
+    }
+
+    /// Why each account that is paused or blocked is not syncing, in the words the engine gave,
+    /// kept on show until it syncs again. Offline accounts and ones to sign in again have a
+    /// button of their own instead.
+    var pausedAccountNotices: [(account: AccountInfo, text: String)] {
+        accounts.compactMap { account in
+            guard account.isEnabled, let text = accountStatus.problems[account.id] else { return nil }
+            switch accountStatus.health[account.id] {
+            case .imapPaused, .blocked: return (account, text)
+            default: return nil
+            }
+        }
+    }
+
+    /// False while an account cannot sync, when "All folders are up to date" would not be true.
+    var everyAccountReachable: Bool {
+        accountStatus.allReachable(accounts.filter(\.isEnabled).map(\.id))
     }
 
     var syncingSummary: String? {
@@ -368,6 +392,7 @@ final class AppModel {
     @ObservationIgnored private var soundGate = MailSoundGate(isEnabled: SoundLibrary.isEnabled)
     @ObservationIgnored private var bodyCache: [String: MIMEMessage] = [:]
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
+    @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
     @ObservationIgnored private var sessionSaveTask: Task<Void, Never>?
     @ObservationIgnored private var pendingDraftSaves: [UUID: Task<Void, Never>] = [:]
@@ -413,8 +438,12 @@ final class AppModel {
     }
 
     init() {
+        Log.start(in: layout.root)
+        AppModel.keepCachesOffDisk()
+        let info = Bundle.main.infoDictionary
+        Log.info("app", "launch version=\(info?["CFBundleShortVersionString"] as? String ?? "?") build=\(info?["CFBundleVersion"] as? String ?? "?") data=\(layout.root.path)")
         let store = MailStore(layout: layout)
-        let tokens = TokenStore { OAuthConfigLoader.load() }
+        let tokens = TokenStore(clientConfigProvider: { OAuthConfigLoader.load() }, knownClientConfigs: { OAuthConfigLoader.all() })
         let rules = RuleStore(layout: layout)
         let mutes = MuteStore(layout: layout)
         self.store = store
@@ -430,6 +459,17 @@ final class AppModel {
         self.session = SessionStore(layout: layout)
         self.moveTargets = MoveTargets(layout: layout)
         self.signatures = SignatureLibrary(store: SignatureStore(layout: layout))
+    }
+
+    /// HTTP responses are kept in memory only, and what earlier builds' web and HTTP caches
+    /// left in ~/Library/Caches is removed, once.
+    private static func keepCachesOffDisk() {
+        URLCache.shared = URLCache(memoryCapacity: 8 * 1024 * 1024, diskCapacity: 0, directory: nil)
+        let removed = "legacyCachesRemoved"
+        guard !UserDefaults.standard.bool(forKey: removed),
+              let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
+        LegacyCaches.remove(from: caches, runningAs: Bundle.main.bundleIdentifier)
+        UserDefaults.standard.set(true, forKey: removed)
     }
 
     func bootstrap() async {
@@ -456,6 +496,7 @@ final class AppModel {
         contactList = await contacts.all()
         await notifications.requestPermission()
         listen()
+        watchForWake()
         await coordinator.startAll()
         await reloadMessages()
         if let s = restoredState {
@@ -464,6 +505,19 @@ final class AppModel {
             await restoreTabs(s.openTabs, minimized: s.minimizedTabs, active: s.activeTab)
         }
         Task { await syncContacts() }
+        noteUnreadableFiles()
+    }
+
+    /// Says once which stored files could not be read. Each was kept, untouched, for the owner
+    /// or a later build to recover, rather than being quietly replaced. Called at launch and
+    /// again after each pass of the engine, which reads some files only when it first needs
+    /// them: the actions waiting for the server, and the index of a folder not yet opened.
+    private func noteUnreadableFiles() {
+        let names = StoredFileNotices.take()
+        guard !names.isEmpty else { return }
+        let notice = "FalconMail could not read \(ListFormatter.localizedString(byJoining: names)). "
+            + "Nothing was written over: each was left as it was or kept under a name ending in “unreadable”. Details are in the log."
+        errorMessage = errorMessage.map { $0 + "\n\n" + notice } ?? notice
     }
 
     var windowsToRestore: [String] {
@@ -541,21 +595,22 @@ final class AppModel {
                     self.syncingAccounts.remove(id)
                     self.soundGate.syncSucceeded(id)
                     self.statusText = "Up to date"
+                    self.noteUnreadableFiles()
                     await self.refreshBandwidth()
                 case .checked(let id, let found):
                     self.play(self.soundGate.checkFinished(id, foundNewMail: found, at: Date()))
                 case .error(let id, let message):
                     self.syncingAccounts.remove(id)
+                    self.statusText = message
+                    self.accountStatus.apply(event)
                     self.play(self.soundGate.syncFailed(id, uptime: ProcessInfo.processInfo.systemUptime))
-                    if message == FalconError.notAuthenticated.localizedDescription {
-                        self.accountsNeedingSignIn.insert(id)
-                        self.statusText = "\(self.accountName(id)) needs to sign in again"
-                    } else {
-                        self.statusText = "\(self.accountName(id)): \(message)"
-                    }
-                case .problem(let id, let message): self.statusText = "\(self.accountName(id)): \(message)"
+                    self.noteUnreadableFiles()
+                case .problem(_, let message): self.statusText = message
                 case .actionFailed(_, let message): self.showActionError(message)
-                case .online(let id, let on): self.online[id] = on
+                case .health(let id, let health):
+                    self.accountStatus.apply(event)
+                    self.online[id] = health.isReachable
+                    if health == .needsSignIn { self.accountsNeedingSignIn.insert(id) } else { self.accountsNeedingSignIn.remove(id) }
                 case .newMessages(let id, let folderID, let list):
                     self.announce(list, accountID: id, folderID: folderID)
                 case .folderSynced: break
@@ -577,12 +632,23 @@ final class AppModel {
         })
     }
 
+    /// Connections that slept with the Mac may be dead without knowing it, so every account
+    /// opens fresh ones when it wakes.
+    private func watchForWake() {
+        guard wakeObserver == nil else { return }
+        let coordinator = coordinator
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                                                                         queue: .main) { _ in
+            Task { await coordinator.reconnectAll(reason: "the Mac woke") }
+        }
+    }
+
     func accountName(_ id: UUID) -> String { accounts.first { $0.id == id }?.email ?? "account" }
 
+    /// The engine announces only mail dated within the last day and not from the account itself.
     private func announce(_ list: [MessageSummary], accountID: UUID, folderID: UUID) {
         guard !migrationInProgress, let account = accounts.first(where: { $0.id == accountID }), let folder = folder(folderID) else { return }
-        let recent = list.filter { $0.date > Date().addingTimeInterval(-48 * 3600) }
-        guard !recent.isEmpty, notifications.announce(recent, account: account, folder: folder, policy: notificationPolicy) else { return }
+        guard notifications.announce(list, account: account, folder: folder, policy: notificationPolicy) else { return }
         play(soundGate.newMailArrived())
     }
 
@@ -1188,6 +1254,7 @@ final class AppModel {
                 do {
                     records.append(contentsOf: try await op(syncer, group))
                 } catch {
+                    Log.info("action", "\(self.accountName(accountID)): \(error.localizedDescription)")
                     failure = error.localizedDescription
                 }
             }
@@ -1848,20 +1915,20 @@ final class AppModel {
         archiveRecords = await archives.all()
     }
 
+    /// Uploads the files' messages, pausing whenever the account's daily upload allowance is
+    /// spent or Gmail asks for quiet, and syncing the folder for them now and then rather than
+    /// after every message.
     func importFiles(_ urls: [URL], into folder: FolderInfo) {
         Task {
             guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }
             var count = 0
             for url in urls {
                 do {
-                    if url.pathExtension.lowercased() == "mbox" {
-                        for m in MboxReader.messages(in: try Data(contentsOf: url)) {
-                            try await syncer.append(raw: m.raw, to: folder, flags: m.flags, date: m.date)
-                            count += 1
-                        }
-                    } else {
-                        let m = try EMLImport.message(at: url)
-                        try await syncer.append(raw: m.raw, to: folder, flags: m.flags, date: m.date)
+                    let messages = url.pathExtension.lowercased() == "mbox"
+                        ? MboxReader.messages(in: try Data(contentsOf: url))
+                        : [try EMLImport.message(at: url)]
+                    for m in messages {
+                        try await syncer.importMessage(m, into: folder)
                         count += 1
                     }
                 } catch {
@@ -1888,6 +1955,7 @@ final class AppModel {
     }
 
     func shutdown() async {
+        Log.info("app", "quit")
         cancelPendingRead()
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
@@ -1900,6 +1968,7 @@ final class AppModel {
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
         await coordinator.stopAll()
+        Log.flush()
     }
 }
 

@@ -1,45 +1,79 @@
 import Foundation
 import Network
 
+/// Nothing came from the server within the time allowed, so the connection was given up rather
+/// than waited on for ever, as a dead path or a server that stopped answering would have it.
+public struct StreamStalled: Error, LocalizedError, Sendable, Equatable {
+    public var seconds: TimeInterval
+
+    public var errorDescription: String? { "The mail server stopped answering." }
+}
+
 public actor StreamConnection {
     public let host: String
     public let port: UInt16
     private let connection: NWConnection
+    private let queue: DispatchQueue
+    private let tap: TrafficTap
     private var buffer = Data()
     private var isClosed = false
 
-    public init(host: String, port: UInt16, tls: Bool = true) {
+    public init(host: String, port: UInt16, tls: Bool = true, tap: TrafficTap = .none) {
         self.host = host
         self.port = port
+        self.tap = tap
+        // Keepalive finds a path that died without a word, which otherwise leaves a connection
+        // waiting in IDLE for a reply that can never come.
+        let tcp = NWProtocolTCP.Options()
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 60
+        tcp.keepaliveInterval = 15
         let params: NWParameters
         if tls {
             let tlsOptions = NWProtocolTLS.Options()
             sec_protocol_options_set_min_tls_protocol_version(tlsOptions.securityProtocolOptions, .TLSv12)
-            params = NWParameters(tls: tlsOptions)
+            params = NWParameters(tls: tlsOptions, tcp: tcp)
         } else {
-            params = .tcp
+            params = NWParameters(tls: nil, tcp: tcp)
         }
         connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: params)
+        queue = DispatchQueue(label: "falconmail.net.\(host)")
     }
 
-    public func connect() async throws {
+    /// Opens the connection, giving up after `deadline` seconds, when one is given, rather than
+    /// waiting as long as the network does for a path that may never come.
+    public func connect(deadline: TimeInterval? = nil) async throws {
         let box = ResumeOnce()
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    box.run { cont.resume() }
-                case .failed(let err):
-                    box.run { cont.resume(throwing: FalconError.network(err.localizedDescription)) }
-                case .cancelled:
-                    box.run { cont.resume(throwing: FalconError.network("connection cancelled")) }
-                case .waiting(let err):
-                    Log.info("net", "waiting: \(err.localizedDescription)")
-                default:
-                    break
+        let connection = connection
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        box.run { cont.resume() }
+                    case .failed(let err):
+                        box.run { cont.resume(throwing: FalconError.network(err.localizedDescription)) }
+                    case .cancelled:
+                        box.run { cont.resume(throwing: FalconError.network("connection cancelled")) }
+                    case .waiting(let err):
+                        Log.info("net", "waiting: \(err.localizedDescription)")
+                    default:
+                        break
+                    }
+                }
+                connection.start(queue: queue)
+                if let deadline {
+                    queue.asyncAfter(deadline: .now() + deadline) {
+                        box.run {
+                            connection.cancel()
+                            cont.resume(throwing: StreamStalled(seconds: deadline))
+                        }
+                    }
                 }
             }
-            connection.start(queue: DispatchQueue(label: "falconmail.net.\(host)"))
+        } catch {
+            isClosed = true
+            throw error
         }
     }
 
@@ -50,27 +84,56 @@ public actor StreamConnection {
                 if let error { cont.resume(throwing: FalconError.network(error.localizedDescription)) } else { cont.resume() }
             })
         }
+        tap.sent(data.count)
     }
 
     public func send(line: String) async throws {
         try await send(Data((line + "\r\n").utf8))
     }
 
-    private func fill() async throws {
-        let result: (Data?, Bool, NWError?) = await withCheckedContinuation { cont in
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, isComplete, error in
-                cont.resume(returning: (data, isComplete, error))
+    private struct Received: Sendable {
+        var data: Data?
+        var isComplete: Bool
+        var error: NWError?
+    }
+
+    /// Waits for more data, at most `deadline` seconds of silence when one is given: a long reply
+    /// that keeps arriving is never cut short, a path that has gone quiet is.
+    private func fill(deadline: TimeInterval?) async throws {
+        let box = ResumeOnce()
+        let connection = connection
+        let result: Received
+        do {
+            result = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Received, Error>) in
+                let timer = deadline.map { seconds in
+                    Deadline(after: seconds, on: queue) {
+                        box.run {
+                            connection.cancel()
+                            cont.resume(throwing: StreamStalled(seconds: seconds))
+                        }
+                    }
+                }
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, isComplete, error in
+                    timer?.cancel()
+                    box.run { cont.resume(returning: Received(data: data, isComplete: isComplete, error: error)) }
+                }
             }
-        }
-        if let error = result.2 { isClosed = true; throw FalconError.network(error.localizedDescription) }
-        if let data = result.0, !data.isEmpty { buffer.append(data) }
-        if result.1 {
+        } catch {
             isClosed = true
-            if result.0?.isEmpty ?? true { throw FalconError.network("connection closed by peer") }
+            throw error
+        }
+        if let error = result.error { isClosed = true; throw FalconError.network(error.localizedDescription) }
+        if let data = result.data, !data.isEmpty {
+            buffer.append(data)
+            tap.received(data.count)
+        }
+        if result.isComplete {
+            isClosed = true
+            if result.data?.isEmpty ?? true { throw FalconError.network("connection closed by peer") }
         }
     }
 
-    public func readLine() async throws -> Data {
+    public func readLine(deadline: TimeInterval? = nil) async throws -> Data {
         while true {
             if let range = buffer.range(of: Data([0x0D, 0x0A])) {
                 let line = buffer.subdata(in: buffer.startIndex..<range.lowerBound)
@@ -78,14 +141,14 @@ public actor StreamConnection {
                 return line
             }
             if isClosed { throw FalconError.network("connection closed") }
-            try await fill()
+            try await fill(deadline: deadline)
         }
     }
 
-    public func read(exactly count: Int) async throws -> Data {
+    public func read(exactly count: Int, deadline: TimeInterval? = nil) async throws -> Data {
         while buffer.count < count {
             if isClosed { throw FalconError.network("connection closed") }
-            try await fill()
+            try await fill(deadline: deadline)
         }
         let out = Data(buffer.prefix(count))
         buffer.removeFirst(count)
@@ -95,6 +158,20 @@ public actor StreamConnection {
     public func close() {
         isClosed = true
         connection.cancel()
+    }
+}
+
+/// A timer that can be called off from any thread, as a reply arriving does.
+private final class Deadline: @unchecked Sendable {
+    private let work: DispatchWorkItem
+
+    init(after seconds: TimeInterval, on queue: DispatchQueue, _ fire: @escaping @Sendable () -> Void) {
+        work = DispatchWorkItem(block: fire)
+        queue.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    func cancel() {
+        work.cancel()
     }
 }
 

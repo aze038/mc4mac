@@ -13,6 +13,11 @@ public actor FolderStore {
     public let folderID: UUID
     public let accountID: UUID
     private let directory: URL
+    /// Names the folder in the log and to the owner.
+    private let name: String
+    /// Where an index that could not be decoded was moved at load; its messages are listed again
+    /// from the server.
+    public private(set) var snapshotSetAside: URL?
     private var messages: [UInt32: MessageSummary] = [:]
     private var byMessageID: [String: UInt32] = [:]
     private var journalHandle: FileHandle?
@@ -36,25 +41,39 @@ public actor FolderStore {
     private var journalURL: URL { directory.appendingPathComponent("journal.jsonl") }
     private var bodiesURL: URL { directory.appendingPathComponent("Bodies", isDirectory: true) }
 
-    public init(accountID: UUID, folderID: UUID, directory: URL) {
+    public init(accountID: UUID, folderID: UUID, directory: URL, name: String? = nil) {
         self.accountID = accountID
         self.folderID = folderID
         self.directory = directory
+        self.name = name ?? folderID.uuidString
     }
 
     public func load() throws {
         guard !loaded else { return }
-        loaded = true
         try FileManager.default.createDirectory(at: bodiesURL, withIntermediateDirectories: true)
-        if let data = AtomicFile.read(snapshotURL),
-           let list = try? PropertyListDecoder().decode([MessageSummary].self, from: data) {
-            for m in list { messages[m.uid] = m }
+        let snapshot = AtomicFile.load(from: snapshotURL, what: "the messages listed for \(name)") { data in
+            try PropertyListDecoder().decode([MessageSummary].self, from: data)
         }
+        switch snapshot {
+        case .loaded(let list):
+            for m in list { messages[m.uid] = m }
+        case .missing:
+            break
+        case .setAside(let aside, _):
+            snapshotSetAside = aside
+        case .unreadable(let detail):
+            // Carrying on empty would write a near-empty index over the one still on disk.
+            throw FalconError.storage("The messages listed for \(name) could not be read: \(detail)")
+        }
+        loaded = true
         if let data = AtomicFile.read(journalURL) {
             let decoder = JSONDecoder()
+            var skipped = 0
             for line in data.split(separator: 0x0A) {
-                if let op = try? decoder.decode(FolderJournalOp.self, from: line) { apply(op) ; journalOps += 1 }
+                if let op = try? decoder.decode(FolderJournalOp.self, from: line) { apply(op) ; journalOps += 1 } else { skipped += 1 }
             }
+            // A line cut short by a crash is expected; more than one says something else is wrong.
+            if skipped > 0 { Log.info("store", "\(name): skipped \(skipped) unreadable journal lines") }
         }
         for m in messages.values where !m.messageID.isEmpty { byMessageID[m.messageID] = m.uid }
         if let data = AtomicFile.read(termsURL), let stored = try? PropertyListDecoder().decode([String: [UInt32]].self, from: data) {
@@ -187,6 +206,13 @@ public actor FolderStore {
     }
 
     public func message(uid: UInt32) -> MessageSummary? { messages[uid] }
+
+    /// Those of `rows` that still name the message they were read for. A row read before the
+    /// folder was renumbered, or since removed, carries a UID that now names another message
+    /// or none, and acting on it would reach the wrong one.
+    public func current(_ rows: [MessageSummary]) -> [MessageSummary] {
+        rows.filter { row in messages[row.uid].map { $0.isSameMessage(as: row) } ?? false }
+    }
 
     public func uids() -> Set<UInt32> { Set(messages.keys) }
 
@@ -365,5 +391,14 @@ public actor FolderStore {
         journalHandle = nil
         try? FileManager.default.removeItem(at: journalURL)
         journalOps = 0
+    }
+}
+
+extension MessageSummary {
+    /// Whether the two rows describe one message: what the server sent for it, not its flags,
+    /// its snippet or whether its body is kept, all of which change as it is read and marked.
+    func isSameMessage(as other: MessageSummary) -> Bool {
+        uid == other.uid && messageID == other.messageID && size == other.size && subject == other.subject
+            && from.address.caseInsensitiveCompare(other.from.address) == .orderedSame
     }
 }

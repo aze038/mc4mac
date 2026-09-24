@@ -22,11 +22,25 @@ public enum StoreChange: Sendable {
     case contactsChanged
 }
 
+/// Why an account's folder list could not be used. Its folders and their messages are kept on
+/// disk under ids only that list knows, so the account is left alone rather than given a new
+/// list that would orphan them.
+public struct FolderListProblem: Sendable, Equatable {
+    public var detail: String
+    public var fileName: String
+}
+
 public actor MailStore {
     public let layout: FileLayout
     private var accounts: [AccountInfo] = []
+    /// The name the account list is kept under when it could not be read. Accounts are neither
+    /// added nor removed meanwhile: a new list would give them new ids, orphaning the mail,
+    /// folders and sign-ins stored under the old ones, and download everything again.
+    private var accountListProblem: String?
     private var folders: [UUID: [FolderInfo]] = [:]
+    private var folderListProblems: [UUID: FolderListProblem] = [:]
     private var folderStores: [UUID: FolderStore] = [:]
+    private var folderStoreLoads: [UUID: Task<FolderStore, Error>] = [:]
     private var changeContinuations: [UUID: AsyncStream<StoreChange>.Continuation] = [:]
 
     public init(layout: FileLayout = FileLayout()) {
@@ -35,10 +49,50 @@ public actor MailStore {
 
     public func load() throws {
         try layout.ensureDirectory(layout.root)
-        accounts = AtomicFile.readJSON([AccountInfo].self, from: layout.accountsFile) ?? []
-        for a in accounts {
-            folders[a.id] = AtomicFile.readJSON([FolderInfo].self, from: layout.foldersFile(a.id)) ?? []
+        let what = "the account list"
+        switch AtomicFile.loadJSON([AccountInfo].self, from: layout.accountsFile, what: what) {
+        case .loaded(let list):
+            accounts = list
+        case .missing:
+            // One set aside at an earlier launch still holds the ids that every account's
+            // stored mail is filed under.
+            if let aside = AtomicFile.setAsideCopies(of: layout.accountsFile).last {
+                Log.info("store", "no account list, and \(aside.lastPathComponent) is still set aside; accounts are not added or removed")
+                StoredFileNotices.add(what)
+                accountListProblem = aside.lastPathComponent
+            }
+        case .setAside(let aside, _):
+            accountListProblem = aside.lastPathComponent
+        case .unreadable:
+            accountListProblem = layout.accountsFile.lastPathComponent
         }
+        for a in accounts {
+            let file = layout.foldersFile(a.id)
+            switch AtomicFile.loadJSON([FolderInfo].self, from: file, what: "the folder list for \(a.email)") {
+            case .loaded(let list):
+                folders[a.id] = list
+            case .missing:
+                folders[a.id] = []
+                if let aside = AtomicFile.setAsideCopies(of: file).last {
+                    // A new list would give every folder a new id, orphaning the ones stored
+                    // under the list that was set aside, just as at the launch that set it aside.
+                    Log.info("store", "\(a.email): no folder list, and \(aside.lastPathComponent) is still set aside; not syncing")
+                    StoredFileNotices.add("the folder list for \(a.email)")
+                    folderListProblems[a.id] = FolderListProblem(detail: "an earlier folder list is still set aside", fileName: aside.lastPathComponent)
+                }
+            case .setAside(let aside, let detail):
+                folders[a.id] = []
+                folderListProblems[a.id] = FolderListProblem(detail: detail, fileName: aside.lastPathComponent)
+            case .unreadable(let detail):
+                folders[a.id] = []
+                folderListProblems[a.id] = FolderListProblem(detail: detail, fileName: file.lastPathComponent)
+            }
+        }
+    }
+
+    /// Set when the account's folder list could not be read at launch; nothing writes a new one.
+    public func folderListProblem(_ accountID: UUID) -> FolderListProblem? {
+        folderListProblems[accountID]
     }
 
     public func changes() -> AsyncStream<StoreChange> {
@@ -63,7 +117,14 @@ public actor MailStore {
 
     public func account(_ id: UUID) -> AccountInfo? { accounts.first { $0.id == id } }
 
+    private func refuseIfAccountListUnread() throws {
+        guard let kept = accountListProblem else { return }
+        throw FalconError.storage("FalconMail could not read its list of accounts, which is kept as \(kept). No account is added or removed "
+                                  + "until that list can be read again, so the mail stored for the accounts in it stays theirs.")
+    }
+
     public func saveAccount(_ account: AccountInfo) throws {
+        try refuseIfAccountListUnread()
         if let i = accounts.firstIndex(where: { $0.id == account.id }) { accounts[i] = account } else { accounts.append(account) }
         try AtomicFile.writeJSON(accounts, to: layout.accountsFile)
         if folders[account.id] == nil { folders[account.id] = [] }
@@ -71,6 +132,7 @@ public actor MailStore {
     }
 
     public func removeAccount(_ id: UUID) throws {
+        try refuseIfAccountListUnread()
         accounts.removeAll { $0.id == id }
         try AtomicFile.writeJSON(accounts, to: layout.accountsFile)
         for f in folders[id] ?? [] { folderStores[f.id] = nil }
@@ -102,6 +164,7 @@ public actor MailStore {
     }
 
     public func reconcileFolders(accountID: UUID, listed: [IMAPFolderInfo]) throws -> [FolderInfo] {
+        try refuseIfFolderListUnread(accountID)
         var existing = folders[accountID] ?? []
         var result: [FolderInfo] = []
         for l in listed {
@@ -129,6 +192,7 @@ public actor MailStore {
     }
 
     public func updateFolder(_ folder: FolderInfo) throws {
+        try refuseIfFolderListUnread(folder.accountID)
         guard var list = folders[folder.accountID], let i = list.firstIndex(where: { $0.id == folder.id }) else { return }
         list[i] = folder
         folders[folder.accountID] = list
@@ -136,13 +200,48 @@ public actor MailStore {
         emit(.foldersChanged(accountID: folder.accountID))
     }
 
+    /// Changes the stored record as it is now. Anyone who read a copy, awaited something and
+    /// then saved that whole copy would put back whatever another caller changed meanwhile,
+    /// such as the cursors a sync pass or Load older moved.
+    public func updateFolder(_ id: UUID, _ change: (inout FolderInfo) -> Void) throws {
+        guard var f = folder(id) else { return }
+        let before = f
+        change(&f)
+        guard f != before else { return }
+        try updateFolder(f)
+    }
+
+    private func refuseIfFolderListUnread(_ accountID: UUID) throws {
+        guard let problem = folderListProblems[accountID] else { return }
+        throw FalconError.storage("The folder list could not be read and was kept as \(problem.fileName), so it is not written again.")
+    }
+
+    /// The folder's message store, loaded once however many callers ask at the same moment: two
+    /// stores on one folder would each append to its journal and write over each other.
     public func folderStore(_ folder: FolderInfo) async throws -> FolderStore {
         if let s = folderStores[folder.id] { return s }
+        if let loading = folderStoreLoads[folder.id] { return try await loading.value }
         let s = FolderStore(accountID: folder.accountID, folderID: folder.id,
-                            directory: layout.folderDirectory(accountID: folder.accountID, folderID: folder.id))
-        try await s.load()
-        folderStores[folder.id] = s
-        return s
+                            directory: layout.folderDirectory(accountID: folder.accountID, folderID: folder.id),
+                            name: "\(folder.path) of \(account(folder.accountID)?.email ?? "an account")")
+        let loading = Task { () async throws -> FolderStore in
+            try await s.load()
+            if await s.snapshotSetAside != nil {
+                // The messages it listed are fetched again from the server rather than left
+                // missing: with the cursors kept, the next sync would look only for mail newer
+                // than them. Done before anyone waiting for this load carries on, so that none
+                // of them reads the old cursors.
+                try self.updateFolder(folder.id) { current in
+                    current.lastSyncedUID = 0
+                    current.oldestSyncedUID = 0
+                }
+            }
+            self.folderStores[folder.id] = s
+            return s
+        }
+        folderStoreLoads[folder.id] = loading
+        defer { folderStoreLoads[folder.id] = nil }
+        return try await loading.value
     }
 
     public func messages(in folderID: UUID) async throws -> [MessageSummary] {
@@ -219,14 +318,14 @@ public actor MailStore {
     }
 
     public func refreshCounts(folderID: UUID) async throws {
-        guard var f = folder(folderID) else { return }
+        guard let f = folder(folderID) else { return }
         let store = try await folderStore(f)
         let total = await store.count
         let unread = await store.unreadCount()
-        guard f.totalCount != total || f.unreadCount != unread else { return }
-        f.totalCount = total
-        f.unreadCount = unread
-        try updateFolder(f)
+        try updateFolder(folderID) { current in
+            current.totalCount = total
+            current.unreadCount = unread
+        }
     }
 
     public func cacheSizeBytes() async -> Int {

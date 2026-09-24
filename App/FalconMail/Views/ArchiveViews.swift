@@ -138,9 +138,8 @@ struct ArchiveSheet: View {
                 var req = request
                 req.parentID = parent
                 guard let syncer = await model.coordinator.syncer(for: id) else { throw FalconError.storage("account is not running") }
-                let client = try await syncer.openArchiveSourceClient()
-                defer { Task { await client.logout() } }
-                let (manifest, rootID) = try await ArchiveJob.run(request: req, account: account, client: client, storage: storage) { progress in
+                let outcome = try await ArchiveJob.run(request: req, account: account, source: syncer.archiveSource(),
+                                                       storage: storage) { progress in
                     Task { @MainActor in
                         switch progress {
                         case .status(let s): status = s
@@ -150,17 +149,24 @@ struct ArchiveSheet: View {
                         }
                     }
                 }
-                let record = ArchiveRecord(name: manifest.name, accountID: id, storageKind: storage.kind, rootID: rootID, manifest: manifest)
+                let record = ArchiveRecord(name: outcome.manifest.name, accountID: id, storageKind: storage.kind, rootID: outcome.rootID,
+                                           manifest: outcome.manifest)
                 try await model.archives.add(record)
                 await model.reloadArchives()
                 if removeFromServer { model.syncNow() }
+                if !outcome.keptOnServer.isEmpty {
+                    model.statusText = "Archived. Mail in \(outcome.keptOnServer.joined(separator: ", ")) was also kept on the server, "
+                        + "because another message there is marked for deletion or the folder changed during the archive."
+                }
                 running = false
                 dismiss()
             } catch is CancellationError {
                 status = "Stopped"
                 running = false
             } catch {
-                status = "Failed: \(error.localizedDescription)"
+                let failure = MailServiceError.classify(error, account: account)
+                Log.info("archive", "\(account.email): archive failed: \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: account.email))")
+                status = "Failed: \(failure.sentence)"
                 running = false
             }
         }

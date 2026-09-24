@@ -137,9 +137,11 @@ struct StatusBar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
 
-    /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail.
-    private var stateText: String {
-        model.statusText == "Up to date" || model.statusText == "Ready" ? "All folders are up to date." : model.statusText
+    /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail. Nothing is claimed
+    /// to be up to date while an account cannot sync; what stops it is shown on its own.
+    private var stateText: String? {
+        guard model.statusText == "Up to date" || model.statusText == "Ready" else { return model.statusText }
+        return model.everyAccountReachable ? "All folders are up to date." : nil
     }
 
     private var connectedText: String? {
@@ -154,12 +156,25 @@ struct StatusBar: View {
                 .foregroundStyle(OLColor.text)
                 .padding(.leading, OL.statusLeftX)
             ForEach(model.accounts.filter { model.accountsNeedingSignIn.contains($0.id) }) { account in
-                Button("Sign in to \(account.email) again") { signInAgain(account) }
+                if account.usesPassword {
+                    // Its password is changed in Settings → Accounts, which restarts its sync.
+                    Button("Update the password for \(account.email)") {
+                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    }
                     .buttonStyle(.borderedProminent).controlSize(.small)
+                } else {
+                    Button("Sign in to \(account.email) again") { signInAgain(account) }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
+                }
             }
             ForEach(model.offlineAccounts) { account in
                 Button("\(account.email) is offline · Retry") { model.syncNow() }
                     .buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
+            }
+            ForEach(model.pausedAccountNotices, id: \.account.id) { notice in
+                Text(notice.text)
+                    .font(.caption).foregroundStyle(Color.orange).lineLimit(1).truncationMode(.middle)
+                    .help(notice.text)
             }
             Spacer()
             chordCapsule
@@ -169,7 +184,7 @@ struct StatusBar: View {
             if let summary = model.syncingSummary {
                 ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
                 Text(summary).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
-            } else {
+            } else if let stateText {
                 Text(stateText).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
             }
             if let connectedText {

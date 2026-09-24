@@ -115,15 +115,19 @@ public enum RuleEngine {
 public actor RuleStore {
     private let url: URL
     private var rules: [RuleDefinition] = []
+    private let writable: Bool
 
     public init(layout: FileLayout) {
         self.url = layout.rulesFile
-        self.rules = AtomicFile.readJSON([RuleDefinition].self, from: url) ?? []
+        let stored = AtomicFile.loadJSON([RuleDefinition].self, from: url, what: "the rules")
+        self.rules = stored.value ?? []
+        self.writable = stored.canSave
     }
 
     public func all() -> [RuleDefinition] { rules }
 
     public func save(_ list: [RuleDefinition]) throws {
+        guard writable else { throw FalconError.storage("The rules file could not be read, so it is left as it is.") }
         rules = list
         try AtomicFile.writeJSON(rules, to: url)
     }

@@ -39,6 +39,8 @@ public struct IMAPMailboxStatus: Sendable {
     public var unseen: Int = 0
     public var flags: [String] = []
     public var readOnly = false
+    /// The mailbox's HIGHESTMODSEQ on a server with CONDSTORE; nil where it keeps none.
+    public var highestModSeq: UInt64?
 }
 
 public struct IMAPFetchItem: Sendable {
@@ -68,6 +70,8 @@ public enum IMAPResponse: Sendable {
     case expunge(Int)
     case fetch(IMAPFetchItem)
     case search([UInt32])
+    /// An ESEARCH reply: the UIDs it matched, sent as a compact set.
+    case esearch([UInt32])
     case flags([String])
     case status(mailbox: String, items: [String: Int])
     case other(String)
@@ -107,6 +111,8 @@ struct IMAPResponseParser {
                 return .capability(first.split(separator: " ").dropFirst(2).map(String.init))
             case "SEARCH":
                 return .search(first.split(separator: " ").dropFirst(2).compactMap { UInt32($0) })
+            case "ESEARCH":
+                return .esearch(esearchUIDs(first))
             case "FLAGS":
                 let values = try IMAPTokenizer.values(from: try IMAPTokenizer.tokenize(parts))
                 let list = values.last?.listValue ?? []
@@ -140,6 +146,30 @@ struct IMAPResponseParser {
         }
         let (code, text) = splitCode(words.count > 2 ? words[2] : "")
         return .tagged(tag: w0, status: status, code: code, text: text)
+    }
+
+    /// The UIDs of `* ESEARCH (TAG "F0001") UID ALL 1:3,7`, or none when nothing matched.
+    static func esearchUIDs(_ line: String) -> [UInt32] {
+        var words = line.split(separator: " ").dropFirst(2).map(String.init)[...]
+        if words.first?.hasPrefix("(") == true {
+            while let word = words.popFirst(), !word.hasSuffix(")") {}
+        }
+        while let word = words.popFirst() {
+            guard word.uppercased() == "ALL", let set = words.popFirst() else { continue }
+            return expandSet(set)
+        }
+        return []
+    }
+
+    /// Every UID a set such as `1:3,7` names.
+    static func expandSet(_ set: String) -> [UInt32] {
+        var out: [UInt32] = []
+        for piece in set.split(separator: ",") {
+            let ends = piece.split(separator: ":").compactMap { UInt32($0) }
+            guard let low = ends.min(), let high = ends.max() else { continue }
+            out.append(contentsOf: low...high)
+        }
+        return out
     }
 
     static func splitCode(_ rest: String) -> (String?, String) {

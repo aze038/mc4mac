@@ -55,12 +55,9 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     static func reply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool,
                       signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
-        let replyTarget = parsed?.replyTo.first ?? message.from
-        d.to = replyTarget.rfc5322
-        if all {
-            let others = (message.to + message.cc).filter { $0.address.caseInsensitiveCompare(account.email) != .orderedSame && $0.address != replyTarget.address }
-            d.cc = others.map { $0.rfc5322 }.joined(separator: ", ")
-        }
+        let recipients = ReplyAddressing.recipients(for: message, replyTo: parsed?.replyTo ?? [], own: account.ownAddresses, all: all)
+        d.to = recipients.to.map { $0.rfc5322 }.joined(separator: ", ")
+        if all { d.cc = recipients.cc.map { $0.rfc5322 }.joined(separator: ", ") }
         d.subject = message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: \(message.subject)"
         d.inReplyTo = message.messageID
         d.references = message.references + [message.messageID].filter { !$0.isEmpty }

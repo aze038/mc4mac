@@ -25,6 +25,7 @@ public actor MuteStore {
     private let url: URL
     private var muted: [MutedThread] = []
     private var loaded = false
+    private var writable = true
 
     public init(layout: FileLayout = FileLayout()) {
         self.url = layout.mutedFile
@@ -89,10 +90,17 @@ public actor MuteStore {
     private func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
-        muted = AtomicFile.readJSON([MutedThread].self, from: url) ?? []
+        let stored = AtomicFile.loadJSON([MutedThread].self, from: url, what: "the muted conversations")
+        muted = stored.value ?? []
+        writable = stored.canSave
     }
 
     private func save() {
-        try? AtomicFile.writeJSON(muted, to: url)
+        guard writable else { return }
+        do {
+            try AtomicFile.writeJSON(muted, to: url)
+        } catch {
+            Log.info("store", "could not save the muted conversations: \(error.localizedDescription)")
+        }
     }
 }

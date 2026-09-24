@@ -572,7 +572,8 @@ enum MessageRenderer {
 enum WebViewPool {
     private static var free: [WKWebView] = []
     private static let processPool = WKProcessPool()
-    /// Remote images a message loads are cached for this session only, never under ~/Library.
+    /// Remote images and whatever else a message loads are kept for this session only, in
+    /// memory, never under ~/Library nor in WebKit's disk cache with its browser-sized limit.
     private static let dataStore = WKWebsiteDataStore.nonPersistent()
 
     static func acquire() -> WKWebView {

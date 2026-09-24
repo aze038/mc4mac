@@ -287,7 +287,8 @@ public enum FalconError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .notAuthenticated: return "Not signed in."
-        case .protocolError(let s): return "Protocol error: \(s)"
+        // What the server said goes to the log; the owner reads a plain sentence.
+        case .protocolError: return "The mail server refused the request."
         case .network(let s): return "Network error: \(s)"
         case .http(let code, let s): return "HTTP \(code): \(s)"
         case .storage(let s): return "Storage error: \(s)"
