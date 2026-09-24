@@ -114,7 +114,9 @@ class Environment {
         flush: () => {},
         newConditionalFormatRule: () => new Builder({ kind: 'conditionalFormat' }),
         newDataValidation: () => new Builder({ kind: 'dataValidation' }),
+        newFilterCriteria: () => new Builder({ kind: 'filterCriteria' }),
         WrapStrategy: { WRAP: 'WRAP', CLIP: 'CLIP', OVERFLOW: 'OVERFLOW' },
+        ProtectionType: { RANGE: 'RANGE', SHEET: 'SHEET' },
       },
       DriveApp: env.drive.api(),
       MimeType: { GOOGLE_SHEETS: SHEETS_MIME },
@@ -203,6 +205,7 @@ class Builder {
   requireValueInList(values, dropdown) { this.spec.values = Array.from(values); this.spec.dropdown = dropdown; return this; }
   setAllowInvalid(allow) { this.spec.allowInvalid = allow; return this; }
   setHelpText(text) { this.spec.helpText = text; return this; }
+  setHiddenValues(values) { this.spec.hiddenValues = Array.from(values); return this; }
   build() { return Object.freeze(Object.assign({}, this.spec)); }
 }
 
@@ -253,6 +256,7 @@ class FakeSheet {
     this.filter = null;
     this.tabColour = null;
     this.hiddenGridlines = false;
+    this.protections = [];
   }
 
   getName() { return this.name; }
@@ -263,11 +267,17 @@ class FakeSheet {
   getFrozenRows() { return this.frozenRows; }
   setColumnWidth(column, pixels) { this.columnWidths[column] = pixels; return this; }
   setRowHeight(row, pixels) { this.rowHeights[row] = pixels; return this; }
+  setRowHeights(row, rows, pixels) {
+    for (let r = row; r < row + rows; r++) this.rowHeights[r] = pixels;
+    return this;
+  }
   setTabColor(colour) { this.tabColour = colour; return this; }
   setHiddenGridlines(hidden) { this.hiddenGridlines = hidden; return this; }
   setConditionalFormatRules(rules) { this.rules = rules.slice(); }
   getConditionalFormatRules() { return this.rules.slice(); }
   getFilter() { return this.filter; }
+  protect() { return new FakeProtection(this, 'SHEET', null); }
+  getProtections(type) { return this.protections.filter(protection => protection.type === type); }
 
   getLastRow() {
     for (let r = this.data.length; r >= 1; r--) {
@@ -299,6 +309,25 @@ class FakeSheet {
     if (start + count - 1 > this.maxColumns) throw new Error('Those columns are out of bounds.');
     this.data.forEach(row => row && row.splice(start - 1, count));
     this.maxColumns -= count;
+  }
+
+  insertColumnsAfter(after, count) {
+    if (after < 1 || after > this.maxColumns) throw new Error('Those columns are out of bounds.');
+    this.data.forEach(row => row && row.length > after && row.splice(after, 0, ...Array(count).fill('')));
+    this.maxColumns += count;
+    return this;
+  }
+
+  // Sheets' own rule: the destination is counted before the columns are taken out. Data moves
+  // with its column (Sheets moves formatting too; these stand-ins do not track that).
+  moveColumns(columnSpec, destinationIndex) {
+    const { column, columns } = columnSpec;
+    const to = destinationIndex > column ? destinationIndex - columns - 1 : destinationIndex - 1;
+    this.data.forEach(row => {
+      if (!row) return;
+      while (row.length < this.maxColumns) row.push('');
+      row.splice(to, 0, ...row.splice(column - 1, columns));
+    });
   }
 
   clear() {
@@ -405,6 +434,21 @@ class FakeRange {
     this.sheet.filter = new FakeFilter(this.sheet, this);
     return this.sheet.filter;
   }
+
+  protect() { return new FakeProtection(this.sheet, 'RANGE', this); }
+}
+
+class FakeProtection {
+  constructor(sheet, type, range) {
+    Object.assign(this, { sheet, type, range, warningOnly: false, description: '' });
+    sheet.protections.push(this);
+  }
+
+  setWarningOnly(warningOnly) { this.warningOnly = warningOnly; return this; }
+  setDescription(description) { this.description = description; return this; }
+  getDescription() { return this.description; }
+  getRange() { return this.range; }
+  remove() { this.sheet.protections = this.sheet.protections.filter(protection => protection !== this); }
 }
 
 class FakeFilter {
@@ -431,8 +475,8 @@ class FakeDrive {
     this.folders = new Map();
   }
 
-  addFile(id, name, mimeType, parent = 'root') {
-    const file = new FakeFile(id, name, mimeType, parent);
+  addFile(id, name, mimeType, parent = 'root', owner = this.env.email) {
+    const file = new FakeFile(this, id, name, mimeType, parent, owner);
     this.files.set(id, file);
     return file;
   }
@@ -468,7 +512,7 @@ function iterate(items) {
 
 class FakeFolder {
   constructor(drive, id, name, owner) {
-    Object.assign(this, { drive, id, name, owner, trashed: false, sharing: null });
+    Object.assign(this, { drive, id, name, owner, trashed: false, sharing: null, shareableByEditors: true });
   }
 
   getId() { return this.id; }
@@ -477,6 +521,7 @@ class FakeFolder {
   getOwner() { return { getEmail: () => this.owner }; }
   isTrashed() { return this.trashed; }
   setSharing(access, permission) { this.sharing = { access, permission }; return this; }
+  setShareableByEditors(shareable) { this.shareableByEditors = shareable; return this; }
 
   getFilesByType(mimeType) {
     return iterate(Array.from(this.drive.files.values())
@@ -485,15 +530,23 @@ class FakeFolder {
 }
 
 class FakeFile {
-  constructor(id, name, mimeType, parent) {
-    Object.assign(this, { id, name, mimeType, parent, trashed: false, sharing: null });
+  constructor(drive, id, name, mimeType, parent, owner) {
+    Object.assign(this, { drive, id, name, mimeType, parent, owner, trashed: false, sharing: null, shareableByEditors: true });
   }
 
   getId() { return this.id; }
   getName() { return this.name; }
+  getOwner() { return { getEmail: () => this.owner }; }
   isTrashed() { return this.trashed; }
-  setTrashed(trashed) { this.trashed = trashed; return this; }
   setSharing(access, permission) { this.sharing = { access, permission }; return this; }
+  setShareableByEditors(shareable) { this.shareableByEditors = shareable; return this; }
+
+  // Drive lets only a file's owner move it to the trash.
+  setTrashed(trashed) {
+    if (this.owner !== this.drive.env.email) throw new Error('Access denied: DriveApp.');
+    this.trashed = trashed;
+    return this;
+  }
   moveTo(folder) { this.parent = folder.getId(); return this; }
 }
 

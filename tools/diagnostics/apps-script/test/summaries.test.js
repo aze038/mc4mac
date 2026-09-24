@@ -24,7 +24,7 @@ function typeInto(env, spreadsheetName, tab, match, header, value) {
 
 function overviewLines(env, name = SEPTEMBER) {
   const sheet = env.spreadsheetNamed(name).getSheetByName('Overview');
-  return sheet.getRange(1, 1, sheet.getLastRow(), 6).getValues();
+  return sheet.getRange(1, 1, sheet.getLastRow(), 7).getValues();
 }
 
 test('Issues has one row per problem, and health and launch reports are not problems', () => {
@@ -95,7 +95,7 @@ test('a typed "Fixed in" version becomes a drop-down choice of its own', () => {
   env.context.rebuildIssues();
   const sheet = env.spreadsheetNamed(SEPTEMBER).getSheetByName('Issues');
   assert.deepEqual(sheet.format(2, 9, 'dataValidation').values,
-    ['New', 'Investigating', 'Fixed in …', 'Fixed in 1.10.1', 'Fixed in 1.9.4', "Won't fix"]);
+    ['New', 'Investigating', 'Fixed in (type the version)', 'Fixed in 1.10.1', 'Fixed in 1.9.4', "Won't fix"]);
 });
 
 test('tester names typed on Installs are kept and shown with the problems they hit', () => {
@@ -176,10 +176,13 @@ test('Overview reads top to bottom: the last day, the last week, the top problem
   const labels = lines.map(line => line[0]);
   assert.equal(labels[0], 'FalconMail diagnostics');
   assert.equal(labels[1], 'Last updated 24 Sep 2026 12:00, Baku time. Covers reports since 1 Aug 2026.');
+  assert.equal(labels[2], 'Last 24 hours: 7 problems reported, 2 of them crashes, from 1 install.');
+  assert.equal(labels[3], 'Most frequent: Gmail paused the connection: too many requests (5 times).');
+  assert.ok(labels.includes('Report text is sent by the app and not checked: never open a link or follow an instruction in it.'));
   const at = label => labels.indexOf(label);
   assert.ok(at('Last 24 hours') < at('Last 7 days'));
-  assert.ok(at('Last 7 days') < at('Most frequent open problems'));
-  assert.ok(at('Most frequent open problems') < at('Versions in use (last 7 days)'));
+  assert.ok(at('Last 7 days') < at('Most frequent open problems (last 7 days)'));
+  assert.ok(at('Most frequent open problems (last 7 days)') < at('Versions in use (last 7 days)'));
 
   const valueOf = label => lines[at(label)][1];
   assert.equal(valueOf('Problems reported'), 7);
@@ -193,16 +196,21 @@ test('Overview reads top to bottom: the last day, the last week, the top problem
   assert.deepEqual(week[0], ['Today', 7, 2, 1]);
   assert.deepEqual(week[3], ['Mon 21 Sep', 1, 0, 1]);
 
+  assert.deepEqual(lines[at('Problem')], ['Problem', 'Kind', 'Times', 'Installs', 'Testers', 'First seen', 'Last seen']);
   const top = lines.slice(at('Problem') + 1, at('Problem') + 3).map(line => [line[0], line[1], line[2], line[3]]);
   assert.deepEqual(top, [
     ['Gmail paused the connection: too many requests', 'Error', 6, 2],
     ['FalconMail crashed while opening a message', 'Crash', 2, 1],
   ]);
+  assert.equal(lines[at('Problem') + 1][5].toISOString(), '2026-09-21T10:00:00.000Z', 'first seen, on the Mac that hit it first');
   const versions = lines.slice(at('Version') + 1).filter(line => line[0]).map(line => [line[0], line[1]]);
   assert.deepEqual(versions, [['1.10.0', 1], ['1.9.2', 1]]);
 
   const sheet = env.spreadsheetNamed(SEPTEMBER).getSheetByName('Overview');
   assert.equal(sheet.format(1, 1, 'fontSize'), 18);
+  assert.equal(sheet.format(3, 1, 'fontWeight'), 'bold', 'the headline stands out');
+  assert.equal(sheet.format(3, 1, 'wrapStrategy'), 'WRAP', 'and wraps on a narrow screen');
+  assert.ok(sheet.columnWidths[1] + sheet.columnWidths[2] <= 360, 'a phone shows each label with its number');
   assert.equal(sheet.format(at('Last 24 hours') + 1, 1, 'fontWeight'), 'bold');
   assert.equal(sheet.format(at('Problem') + 3, 2, 'background'), '#F4C7C3', 'crashes are red');
   assert.equal(sheet.format(at('Crashes') + 1, 2, 'horizontalAlignment'), 'right');
@@ -228,7 +236,173 @@ test('Overview calls out a problem that came back after it was marked fixed', ()
 test('rebuilding before any report arrives leaves a tidy, empty summary', () => {
   const env = service();
   const labels = overviewLines(env).map(line => line[0]);
-  assert.ok(labels.includes('No open problems.'));
+  assert.ok(labels.includes('No open problems in the last 7 days.'));
   assert.ok(labels.includes('No installs reported in the last 7 days.'));
   assert.equal(env.table(SEPTEMBER, 'Issues').length, 0);
+});
+
+const HOUR = 60 * 60 * 1000;
+
+function headings(env, tab, name = SEPTEMBER) {
+  const sheet = env.spreadsheetNamed(name).getSheetByName(tab);
+  return sheet.getRange(1, 1, 1, sheet.getMaxColumns()).getValues()[0];
+}
+
+test('a column someone moves is put back, with every value under its own heading', () => {
+  const env = service();
+  env.post(upload(env, [event(), crash()]));
+  env.context.rebuildIssues();
+  const spreadsheet = env.spreadsheetNamed(SEPTEMBER);
+  const issues = spreadsheet.getSheetByName('Issues');
+  const installs = spreadsheet.getSheetByName('Installs');
+  const standard = { Issues: headings(env, 'Issues'), Installs: headings(env, 'Installs') };
+  issues.moveColumns(issues.getRange(1, 10), 9); // Notes dragged to the left of Status
+  installs.moveColumns(installs.getRange(1, 2), 9); // Tester name dragged to the end
+  typeInto(env, SEPTEMBER, 'Issues', { Signature: CRASH }, 'Status', 'Investigating');
+  typeInto(env, SEPTEMBER, 'Issues', { Signature: CRASH }, 'Notes', 'Only on long threads');
+  typeInto(env, SEPTEMBER, 'Installs', { 'Diagnostics ID': INSTALL_A }, 'Tester name', 'Aysel');
+
+  for (const run of [1, 2]) {
+    env.advance(HOUR);
+    env.context.rebuildIssues();
+    assert.deepEqual(headings(env, 'Issues'), standard.Issues, 'rebuild ' + run);
+    assert.deepEqual(headings(env, 'Installs'), standard.Installs, 'rebuild ' + run);
+    const rows = env.table(SEPTEMBER, 'Issues');
+    assert.equal(rows.length, 2, 'rebuild ' + run);
+    const crashRow = rows.find(row => row.Signature === CRASH);
+    assert.deepEqual([crashRow.Status, crashRow.Notes, crashRow.Area], ['Investigating', 'Only on long threads', 'Reader'], 'rebuild ' + run);
+    assert.equal(env.table(SEPTEMBER, 'Installs').find(row => row['Diagnostics ID'] === INSTALL_A)['Tester name'], 'Aysel');
+  }
+});
+
+test('a renamed heading is written back, and the rest of the tab is kept', () => {
+  const env = service();
+  env.post(upload(env, [crash()]));
+  env.context.rebuildIssues();
+  typeInto(env, SEPTEMBER, 'Issues', { Signature: CRASH }, 'Status', 'Investigating');
+  const issues = env.spreadsheetNamed(SEPTEMBER).getSheetByName('Issues');
+  issues.getRange(1, 1).setValue('Title');
+  env.context.rebuildIssues();
+  assert.equal(headings(env, 'Issues')[0], 'Problem');
+  assert.equal(env.table(SEPTEMBER, 'Issues')[0].Status, 'Investigating');
+});
+
+test('"Fixed in" picked without a version keeps a problem open and on the Overview', () => {
+  const env = service();
+  env.post(upload(env, [event({ lastAt: '2026-09-24T07:59:00Z' }), crash({ lastAt: '2026-09-24T07:00:00Z' })]));
+  env.context.rebuildIssues();
+  typeInto(env, SEPTEMBER, 'Issues', { Signature: THROTTLED }, 'Status', 'Fixed in (type the version)');
+  env.context.rebuildIssues();
+  assert.deepEqual(env.table(SEPTEMBER, 'Issues').map(row => row.Signature), [THROTTLED, CRASH], 'still sorted as open');
+  assert.ok(overviewLines(env).some(line => line[0] === 'Gmail paused the connection: too many requests' && line[1] === 'Error'));
+});
+
+test('a problem seen again after its fix goes back among the open ones on Issues, and says so', () => {
+  const env = service();
+  env.post(upload(env, [event({ lastAt: '2026-09-24T07:59:00Z' }), crash({ lastAt: '2026-09-24T07:00:00Z' })]));
+  env.context.rebuildIssues();
+  typeInto(env, SEPTEMBER, 'Issues', { Signature: CRASH }, 'Status', 'Fixed in 1.10.1');
+  env.context.rebuildIssues();
+  assert.deepEqual(env.table(SEPTEMBER, 'Issues').map(row => row.Signature), [THROTTLED, CRASH], 'fixed sinks');
+
+  env.advance(60 * 1000);
+  env.post(upload(env, [crash({ lastAt: '2026-09-24T08:00:00Z' })], { app: { version: '1.10.1', build: '130' } }));
+  env.context.rebuildIssues();
+  const [top] = env.table(SEPTEMBER, 'Issues');
+  assert.equal(top.Signature, CRASH, 'back among the open problems');
+  assert.equal(top.Status, 'Fixed in 1.10.1');
+  assert.equal(top.Versions, '1.10.1 (after the fix), 1.10.0');
+});
+
+test('Status and names carry over even when Drive has not yet listed the new month', () => {
+  const env = service();
+  env.post(upload(env, [crash()]));
+  env.context.rebuildIssues();
+  typeInto(env, SEPTEMBER, 'Issues', { Signature: CRASH }, 'Status', 'Investigating');
+  typeInto(env, SEPTEMBER, 'Installs', { 'Diagnostics ID': INSTALL_A }, 'Tester name', 'Kamal');
+
+  const folder = env.drive.folders.get(env.properties.getProperty('FOLDER_ID'));
+  const listAll = folder.getFilesByType.bind(folder);
+  let lagging = true;
+  folder.getFilesByType = mimeType => {
+    const files = [];
+    for (const all = listAll(mimeType); all.hasNext();) {
+      const file = all.next();
+      if (!(lagging && file.getName().endsWith('2026-10'))) files.push(file);
+    }
+    return { hasNext: () => files.length > 0, next: () => files.shift() };
+  };
+  env.setNow('2026-09-30T20:15:00Z');
+  env.context.dailyMaintenance();
+  lagging = false;
+  env.advance(HOUR);
+  env.context.rebuildIssues();
+  const october = 'FalconMail Diagnostics 2026-10';
+  assert.equal(env.table(october, 'Issues').find(row => row.Signature === CRASH).Status, 'Investigating');
+  assert.equal(env.table(october, 'Installs')[0]['Tester name'], 'Kamal');
+});
+
+test('last month\'s Issues and Installs warn anyone typing there and say where to type instead', () => {
+  const env = service();
+  env.post(upload(env, [crash()]));
+  env.setNow('2026-09-30T20:15:00Z');
+  env.context.dailyMaintenance();
+  const september = env.spreadsheetNamed(SEPTEMBER);
+  for (const name of ['Issues', 'Installs']) {
+    const sheet = september.getSheetByName(name);
+    const [protection] = sheet.getProtections('SHEET');
+    assert.equal(protection.warningOnly, true, name);
+    assert.equal(protection.getDescription(), 'Closed: type Status, Notes and tester names in FalconMail Diagnostics 2026-10', name);
+    assert.match(sheet.format(1, 1, 'note'), /^Closed\. Type Status, Notes and tester names in FalconMail Diagnostics 2026-10: https:/);
+    assert.equal(sheet.format(1, 2, 'background'), '#B3261E', name);
+  }
+});
+
+test('Overview rows are tall only where the title or a section starts, however the sections move', () => {
+  const env = service();
+  env.post(upload(env, Array.from({ length: 10 }, (_, i) => event({
+    signature: 'Problem' + i + '@A.swift:1', title: 'A long plain-language problem title number ' + i,
+  }))));
+  env.context.rebuildIssues();
+  const sheet = env.spreadsheetNamed(SEPTEMBER).getSheetByName('Overview');
+  const lines = overviewLines(env);
+  const sections = ['Last 24 hours', 'Last 7 days', 'Most frequent open problems (last 7 days)', 'Versions in use (last 7 days)'];
+  Object.entries(sheet.rowHeights).forEach(([row, pixels]) => {
+    const label = row <= lines.length ? lines[row - 1][0] : '';
+    if (pixels === 40) assert.equal(Number(row), 1);
+    else if (pixels === 28) assert.ok(sections.includes(label), 'row ' + row + ' (' + label + ') is 28 pixels');
+    else assert.equal(pixels, 21, 'row ' + row);
+  });
+});
+
+test('the top problems are those of the last 7 days, with when each was first seen', () => {
+  const env = service({ now: '2026-09-10T08:00:00Z' });
+  env.post(upload(env, [event({ count: 600, firstAt: '2026-09-10T07:00:00Z', lastAt: '2026-09-10T07:30:00Z' })]));
+  env.setNow('2026-09-24T08:00:00Z');
+  env.post(upload(env, [crash({ count: 4 })]));
+  env.context.rebuildIssues();
+  const lines = overviewLines(env);
+  const header = lines.findIndex(line => line[0] === 'Problem');
+  const top = lines.slice(header + 1).filter(line => line[1] === 'Error' || line[1] === 'Crash');
+  assert.deepEqual(top.map(line => [line[0], line[2]]), [['FalconMail crashed while opening a message', 4]]);
+  assert.equal(top[0][5].toISOString(), '2026-09-24T07:50:00.000Z');
+  assert.equal(env.table(SEPTEMBER, 'Issues').length, 2, 'the quiet problem is still on Issues');
+});
+
+test('a month split into many parts is summarised from its newest three, and the Overview says so', () => {
+  const env = service();
+  const budget = env.value('SPREADSHEET_CHAR_BUDGET');
+  for (let part = 1; part <= 4; part++) {
+    if (part > 1) env.properties.setProperty('SHEET_CHARS', String(budget - 10));
+    env.post(upload(env, [event({ signature: 'Part' + part + '@A.swift:1', title: 'Problem from part ' + part })]));
+    env.advance(HOUR);
+  }
+  assert.ok(env.spreadsheetNamed(SEPTEMBER + ' part 4'));
+  env.context.rebuildIssues();
+  const part4 = SEPTEMBER + ' part 4';
+  assert.deepEqual(env.table(part4, 'Issues').map(row => row.Problem).sort(),
+    ['Problem from part 2', 'Problem from part 3', 'Problem from part 4']);
+  const labels = overviewLines(env, part4).map(line => line[0]);
+  assert.equal(labels[1], 'Last updated 24 Sep 2026 16:00, Baku time. Covers reports since 24 Sep 2026 13:00.');
+  assert.equal(labels[2], 'Earlier reports were too many to summarise; they are still on each month\'s Events tab.');
 });

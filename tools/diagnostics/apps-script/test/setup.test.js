@@ -37,6 +37,41 @@ test('setup shares the folder and this month\'s spreadsheet with the whole domai
   assert.equal(spreadsheet.timeZone, 'Asia/Baku');
 });
 
+test('nobody the reports are shared with can share them further', () => {
+  const env = service();
+  const [folder] = env.drive.folders.values();
+  assert.equal(folder.shareableByEditors, false);
+  assert.equal(env.spreadsheetNamed(SEPTEMBER).file.shareableByEditors, false);
+  env.setNow('2026-09-30T20:15:00Z');
+  env.context.dailyMaintenance();
+  assert.equal(env.spreadsheetNamed('FalconMail Diagnostics 2026-10').file.shareableByEditors, false, 'next month too');
+});
+
+test('each table\'s heading row warns before anyone changes it, once however often setup runs', () => {
+  const env = service();
+  env.context.setup();
+  const spreadsheet = env.spreadsheetNamed(SEPTEMBER);
+  for (const name of ['Issues', 'Installs', 'Events']) {
+    const sheet = spreadsheet.getSheetByName(name);
+    const protections = sheet.getProtections('RANGE');
+    assert.equal(protections.length, 1, name);
+    assert.equal(protections[0].warningOnly, true, name);
+    assert.equal(protections[0].getRange().getA1Notation(), sheet.getRange(1, 1, 1, sheet.getMaxColumns()).getA1Notation(), name);
+    assert.match(protections[0].getDescription(), /hide a column instead/, name);
+  }
+});
+
+test('Events starts with health and launch reports filtered out, and keeps the team\'s own filter', () => {
+  const env = service();
+  const events = env.spreadsheetNamed(SEPTEMBER).getSheetByName('Events');
+  assert.deepEqual(events.getFilter().getColumnFilterCriteria(3).hiddenValues, ['Health', 'Launch']);
+  assert.equal(env.spreadsheetNamed(SEPTEMBER).getSheetByName('Issues').getFilter().getColumnFilterCriteria(2), null);
+  events.getFilter().remove();
+  events.getRange(1, 1, events.getMaxRows(), 17).createFilter();
+  env.context.styleTable_(events, env.value('EVENTS_COLUMNS'));
+  assert.equal(events.getFilter().getColumnFilterCriteria(3), null, 'a cleared filter stays cleared');
+});
+
 test('setup makes two different random keys and logs each once', () => {
   const env = service();
   const ingest = env.properties.getProperty('INGEST_KEY');
@@ -116,7 +151,7 @@ test('Issues puts the plain-language title first and widest and the signature la
   assert.equal(sheet.format(2, 8, 'numberFormat'), 'd mmm yyyy hh:mm');
 
   const status = sheet.format(2, 9, 'dataValidation');
-  assert.deepEqual(status.values, ['New', 'Investigating', 'Fixed in …', "Won't fix"]);
+  assert.deepEqual(status.values, ['New', 'Investigating', 'Fixed in (type the version)', "Won't fix"]);
   assert.equal(status.allowInvalid, true, 'a version can be typed after "Fixed in"');
   assert.match(sheet.format(1, 9, 'note'), /Kept when this tab is refreshed/);
 });
@@ -124,7 +159,8 @@ test('Issues puts the plain-language title first and widest and the signature la
 test('Issues colours kinds and greys out closed problems before banding rows', () => {
   const env = service();
   const rules = env.spreadsheetNamed(SEPTEMBER).getSheetByName('Issues').getConditionalFormatRules();
-  assert.equal(rules[0].formula, '=REGEXMATCH($I2,"(?i)^(fixed|won.?t fix)")');
+  assert.equal(rules[0].formula,
+    '=AND(REGEXMATCH($I2,"(?i)^(fixed in\\s*v?\\d|won.?t fix)"),NOT(REGEXMATCH($F2,"after the fix")))');
   assert.equal(rules[0].fontColour, '#A0A4A8');
   const colours = Object.fromEntries(rules.filter(rule => rule.textEqualTo).map(rule => [rule.textEqualTo, rule.background]));
   assert.equal(colours.Crash, '#F4C7C3');

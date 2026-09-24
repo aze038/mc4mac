@@ -84,7 +84,7 @@ test('rows come back with the contract\'s fields, as they were sent', () => {
   const [row] = env.get({ op: 'read', key: readKey(env) }).rows;
   assert.deepEqual(row, {
     receivedAt: '2026-09-24T08:00:00.000Z',
-    title: sent.title,
+    title: '=HYPERLINK("https[:]//example[.]com","Open")',
     kind: 'crash',
     install: 'E621E1F8-C36C-495A-93FC-0C247A3E6E5F',
     version: '1.10.0',
@@ -116,4 +116,73 @@ test('issues returns the Issues tab as JSON', () => {
   ]);
   assert.equal(answer.issues[0].lastSeen, '2026-09-24T07:55:00.000Z');
   assert.equal(answer.issues[0].signature, 'IMAP.throttled@AccountSyncer.swift:131');
+});
+
+// Every page from `since` onwards, checking that each `next` moves forward.
+function readAll(env, limit, since) {
+  const titles = [];
+  for (let pages = 0; pages < 50; pages++) {
+    const page = env.get({ op: 'read', key: readKey(env), limit: String(limit), since });
+    assert.equal(page.ok, true);
+    titles.push(...page.rows.map(row => row.title));
+    if (!page.next) return titles;
+    if (since) assert.ok(Date.parse(page.next) > Date.parse(since), page.next + ' is not after ' + since);
+    since = page.next;
+  }
+  assert.fail('read never finished');
+}
+
+test('read pages in arrival order even after someone sorts the Events tab', () => {
+  const env = service();
+  env.post(upload(env, [event({ title: 'old' })]));
+  const cursor = new Date(env.nowMs + 30 * 1000).toISOString();
+  const sent = [['n0'], ['n1', 'n1b'], ['n2'], ['n3'], ['n4'], ['n5'], ['n6']];
+  sent.forEach((titles, i) => {
+    env.advance(60 * 1000);
+    env.post(upload(env, titles.map(title => event({ title, kind: i % 2 ? 'crash' : 'error' }))));
+  });
+  const expected = sent.flat();
+  const sheet = env.spreadsheetNamed('FalconMail Diagnostics 2026-09').getSheetByName('Events');
+  const rows = sheet.data.slice(1, sheet.getLastRow());
+  const sorts = {
+    'by Kind': (a, b) => String(a[2]).localeCompare(String(b[2])),
+    'newest first': (a, b) => b[0] - a[0],
+  };
+  for (const [name, compare] of Object.entries(sorts)) {
+    sheet.data.splice(1, rows.length, ...rows.slice().sort(compare));
+    for (const limit of [1, 2, 1000]) {
+      assert.deepEqual(readAll(env, limit, cursor), expected, name + ', limit ' + limit);
+    }
+    assert.deepEqual(readAll(env, 2), ['old'].concat(expected), name + ', from the start');
+  }
+});
+
+test('a missing account or context comes back as JSON null, and context is always JSON', () => {
+  const env = service();
+  env.post(upload(env, [
+    event({ title: 'none', account: null, context: null }),
+    event({ title: 'text', context: 'plain text, not JSON' }),
+    event({ title: 'json', context: '{"attempt":3}' }),
+  ]));
+  const rows = env.get({ op: 'read', key: readKey(env) }).rows;
+  const byTitle = Object.fromEntries(rows.map(row => [row.title, row]));
+  assert.equal(byTitle.none.account, 'null');
+  assert.equal(byTitle.none.context, 'null');
+  assert.equal(JSON.parse(byTitle.text.context), 'plain text, not JSON');
+  assert.deepEqual(JSON.parse(byTitle.json.context), { attempt: 3 });
+  rows.forEach(row => { JSON.parse(row.account); JSON.parse(row.context); });
+  const [first] = env.table('FalconMail Diagnostics 2026-09', 'Events');
+  assert.equal(first.Account, '', 'the sheet itself leaves an empty cell');
+});
+
+test('text starting with an apostrophe comes back as it was sent', () => {
+  const env = service();
+  env.post(upload(env, [event({ title: "'Sent' folder could not be found", signature: "'Sent'.missing@Folders.swift:9" })]));
+  const [row] = env.get({ op: 'read', key: readKey(env) }).rows;
+  assert.equal(row.title, "'Sent' folder could not be found");
+  assert.equal(row.signature, "'Sent'.missing@Folders.swift:9");
+  env.context.rebuildIssues();
+  const [issue] = env.get({ op: 'issues', key: readKey(env) }).issues;
+  assert.equal(issue.title, "'Sent' folder could not be found");
+  assert.equal(issue.signature, "'Sent'.missing@Folders.swift:9");
 });

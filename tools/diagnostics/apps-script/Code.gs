@@ -19,7 +19,8 @@ const DOMAIN = 'freightmasters.llc';
 // What everyone in the domain may do with the folder and its spreadsheets. VIEW lets them read
 // the reports. For the team to fill in Status, Notes and Tester name themselves, change this to
 // DriveApp.Permission.EDIT (or to DriveApp.Permission.COMMENT for comments only) and run
-// setup() again; it re-shares the folder and every spreadsheet in it.
+// setup() again; it re-shares the folder and every spreadsheet in it. Editors can never share
+// them further: only the owner can add people or open the reports beyond freightmasters.llc.
 const SHARE_PERMISSION = DriveApp.Permission.VIEW;
 
 const FOLDER_NAME = 'FalconMail Diagnostics';
@@ -32,10 +33,15 @@ const SCHEMA = 1;
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_EVENTS_PER_UPLOAD = 200;
 const MAX_UPLOADS_PER_INSTALL_PER_HOUR = 60;
-// The ingest key ships inside every public release, so this cap is what protects the daily
-// quotas and the spreadsheet if a build misbehaves or someone replays the key: about 250
-// events a day for each of ~20 installs.
+// The ingest key ships inside every public release, so these caps are what protect the daily
+// quotas and the spreadsheets if a build misbehaves or someone replays the key: about 250 events
+// a day for each of ~20 installs, no one install more than a fifth of the day's events, and a
+// day's text a quarter of what one spreadsheet holds.
 const MAX_EVENTS_PER_DAY = 5000;
+const MAX_EVENTS_PER_INSTALL_PER_DAY = 1000;
+const MAX_CHARS_PER_DAY = 10 * 1000 * 1000;
+// Occurrences folded into one event; more than this is a fault in the app, not a real count.
+const MAX_COUNT = 10000;
 const DEDUPE_HOURS = 6;
 const LOCK_WAIT_MS = 20000;
 
@@ -51,6 +57,9 @@ const MAX_SHORT_CHARS = 100;
 const SPREADSHEET_CHAR_BUDGET = 40 * 1000 * 1000;
 // Rows added whenever a tab runs out, so formatting is extended every thousand rows at most.
 const SPARE_ROWS = 1000;
+// The hourly rebuild reads at most this many spreadsheets, newest first, so a month split into
+// many parts by a flood of reports cannot push it past Apps Script's six minutes.
+const MAX_SUMMARY_SPREADSHEETS = 3;
 
 const READ_LIMIT_DEFAULT = 1000;
 const READ_LIMIT_MAX = 5000;
@@ -103,7 +112,12 @@ const KIND_COLOURS = [
 
 const DATE_FORMAT = 'd mmm yyyy hh:mm';
 const STATUS_NEW = 'New';
-const STATUS_CHOICES = ['New', 'Investigating', 'Fixed in …', "Won't fix"];
+// "Fixed in" counts as closed only once a version follows it, so the choice says it is unfinished.
+const STATUS_CHOICES = ['New', 'Investigating', 'Fixed in (type the version)', "Won't fix"];
+// Marks a version on Issues that came after the one a problem was marked fixed in.
+const AFTER_FIX = '(after the fix)';
+const HEADER_PROTECTION = 'Column headings: the hourly refresh finds each column by its heading and puts moved ' +
+  'columns back. To make room, hide a column instead.';
 
 const OVERVIEW_TAB = 'Overview';
 const ISSUES_TAB = 'Issues';
@@ -146,7 +160,8 @@ const INSTALLS_COLUMNS = [
   { header: 'Problems in last 7 days', key: 'recent', width: 110, type: 'number' },
 ];
 
-// The keys are the field names of op=read rows in the contract.
+// The keys are the field names of op=read rows in the contract. The json columns hold JSON text,
+// and op=read gives "null" for an empty one, as the contract promises JSON there.
 const EVENTS_COLUMNS = [
   { header: 'Received', key: 'receivedAt', width: 140, type: 'date' },
   { header: 'Problem', key: 'title', width: 300, type: 'wrap' },
@@ -162,10 +177,14 @@ const EVENTS_COLUMNS = [
   { header: 'Build', key: 'build', width: 70, type: 'technical' },
   { header: 'macOS', key: 'os', width: 170, type: 'technical' },
   { header: 'Mac model', key: 'hw', width: 120, type: 'technical' },
-  { header: 'Account', key: 'account', width: 200, type: 'technical' },
+  { header: 'Account', key: 'account', width: 200, type: 'technical', json: true },
   { header: 'Event ID', key: 'eventId', width: 150, type: 'technical' },
-  { header: 'Context', key: 'context', width: 100, type: 'technical' },
+  { header: 'Context', key: 'context', width: 100, type: 'technical', json: true },
 ];
+
+// Health and launch reports are two thirds of Events and only say an install is alive, so its
+// filter starts with them hidden; the team can clear it.
+const FILTER_DEFAULTS = { [EVENTS_TAB]: { key: 'kind', hidden: ['Health', 'Launch'] } };
 
 const TABLES = [
   { name: ISSUES_TAB, columns: ISSUES_COLUMNS, colour: '#E37400' },
@@ -188,7 +207,7 @@ function setup() {
 
   const props = PropertiesService.getScriptProperties();
   const folder = ownFolder_(props, email);
-  folder.setSharing(DriveApp.Access.DOMAIN, SHARE_PERMISSION);
+  shareWithDomain_(folder);
   const newKeys = ensureKeys_(props);
 
   const lock = LockService.getScriptLock();
@@ -199,7 +218,7 @@ function setup() {
   } finally {
     lock.releaseLock();
   }
-  listSpreadsheets_(folder).forEach(entry => entry.file.setSharing(DriveApp.Access.DOMAIN, SHARE_PERMISSION));
+  listSpreadsheets_(folder).forEach(entry => shareWithDomain_(entry.file));
   installTriggers_();
   rebuildIssues();
 
@@ -250,6 +269,13 @@ function ownFolder_(props, email) {
   if (!folder) folder = DriveApp.createFolder(FOLDER_NAME);
   props.setProperty('FOLDER_ID', folder.getId());
   return folder;
+}
+
+// Drive lets editors share a file onwards unless told otherwise; with EDIT, any teammate could
+// then open the reports to the world or to someone outside the business.
+function shareWithDomain_(item) {
+  item.setSharing(DriveApp.Access.DOMAIN, SHARE_PERMISSION);
+  item.setShareableByEditors(false);
 }
 
 function ownerEmail_(item) {
@@ -389,26 +415,67 @@ function store_(props, upload, candidates, invalid) {
   if (invalid) result.invalid = invalid;
   if (!fresh.length) return result;
 
-  const dayKey = 'EVENTS_ON_' + Utilities.formatDate(now, TIME_ZONE, 'yyyy-MM-dd');
-  const today = Number(props.getProperty(dayKey)) || 0;
-  if (today + fresh.length > MAX_EVENTS_PER_DAY) return refuse_('The daily limit is reached; try again tomorrow');
-
   const rows = fresh.map(event => eventRow_(event, upload, now));
   const chars = rows.reduce((sum, row) => sum + rowChars_(row), 0);
+  const day = dailyCounts_(props, now);
+  if (day.events + fresh.length > MAX_EVENTS_PER_DAY || day.chars + chars > MAX_CHARS_PER_DAY) {
+    return refuse_('The daily limit is reached; try again tomorrow');
+  }
+  const installEvents = day.installs[upload.install] || 0;
+  if (installEvents + fresh.length > MAX_EVENTS_PER_INSTALL_PER_DAY) {
+    return refuse_('This install has sent as much as it may today; try again tomorrow');
+  }
+
   const spreadsheet = currentSpreadsheet_(now, chars);
   appendRows_(spreadsheet.getSheetByName(EVENTS_TAB), EVENTS_COLUMNS, rows);
   SpreadsheetApp.flush();
 
   seen.save(now);
+  day.installs[upload.install] = installEvents + fresh.length;
   props.setProperties({
-    [dayKey]: String(today + fresh.length),
+    [day.keys.events]: String(day.events + fresh.length),
+    [day.keys.chars]: String(day.chars + chars),
+    [day.keys.installs]: installCountsText_(day.installs),
     SHEET_CHARS: String((Number(props.getProperty('SHEET_CHARS')) || 0) + chars),
   });
   return result;
 }
 
-// A rough per-install limit kept outside the lock, so a runaway install is turned away without
-// holding up everyone else; the daily cap is the hard limit.
+// Today's totals, Baku time, in Script Properties whose keys end in the date; the nightly run
+// deletes those of earlier days.
+function dailyCounts_(props, now) {
+  const date = Utilities.formatDate(now, TIME_ZONE, 'yyyy-MM-dd');
+  const keys = { events: 'EVENTS_ON_' + date, chars: 'CHARS_ON_' + date, installs: 'INSTALLS_ON_' + date };
+  let installs = {};
+  try {
+    installs = JSON.parse(props.getProperty(keys.installs) || '{}') || {};
+  } catch (error) {
+    // A value cut short by hand: counting starts again for today.
+  }
+  return {
+    keys: keys,
+    events: Number(props.getProperty(keys.events)) || 0,
+    chars: Number(props.getProperty(keys.chars)) || 0,
+    installs: installs,
+  };
+}
+
+// Every install's count for the day in one property. A value may hold 9 KB, so when a flood of
+// made-up install IDs fills it the smallest counts are dropped: those installs are furthest from
+// their limit, and the busiest stay counted.
+function installCountsText_(counts) {
+  const entries = Object.keys(counts).map(id => [id, counts[id]]).sort((a, b) => b[1] - a[1]);
+  let text = JSON.stringify(Object.fromEntries(entries));
+  while (text.length > 8000) {
+    entries.pop();
+    text = JSON.stringify(Object.fromEntries(entries));
+  }
+  return text;
+}
+
+// A rough hourly limit checked before waiting for the lock, so a runaway install is turned away
+// without holding up everyone else. Uploads arriving at the same moment can slip past it; what
+// one install may send in a day is counted exactly, under the lock, in store_.
 function allowUpload_(install) {
   const cache = CacheService.getScriptCache();
   const key = 'uploads:' + install + ':' + Math.floor(Date.now() / HOUR_MS);
@@ -493,21 +560,50 @@ function cleanEvent_(event) {
     id: id,
     kind: kind,
     signature: signature,
-    title: oneLine_(event.title, MAX_TITLE_CHARS) || signature,
+    title: oneLine_(defang_(event.title), MAX_TITLE_CHARS) || signature,
     area: oneLine_(event.area, 60),
-    count: Math.min(Math.max(Math.floor(Number(event.count)) || 1, 1), 1e9),
+    count: Math.min(Math.max(Math.floor(Number(event.count)) || 1, 1), MAX_COUNT),
     firstAt: parseTime_(event.firstAt),
     lastAt: parseTime_(event.lastAt),
-    message: truncate_(typeof event.message === 'string' ? event.message.trim() : '', MAX_MESSAGE_CHARS),
+    message: lines_(defang_(event.message), MAX_MESSAGE_CHARS),
     context: contextText_(event.context),
     account: accountText_(event.account),
   };
 }
 
+// Always valid JSON, so readers can parse it: text that is not JSON is kept as a JSON string, and
+// context too large to keep whole becomes {"truncated":true,...} with as much of its start as fits.
 function contextText_(context) {
   if (context === null || context === undefined) return '';
-  const text = typeof context === 'string' ? context : JSON.stringify(context);
-  return truncate_(text, MAX_CONTEXT_CHARS);
+  let text = typeof context === 'string' ? lines_(context, Infinity) : JSON.stringify(context);
+  if (typeof context === 'string' && !isJson_(text)) text = JSON.stringify(text);
+  if (text.length <= MAX_CONTEXT_CHARS) return text;
+  const cut = { truncated: true, size: text.length, start: text.slice(0, MAX_CONTEXT_CHARS) };
+  let json = JSON.stringify(cut);
+  while (json.length > MAX_CONTEXT_CHARS) {
+    cut.start = cut.start.slice(0, cut.start.length - (json.length - MAX_CONTEXT_CHARS));
+    json = JSON.stringify(cut);
+  }
+  return json;
+}
+
+function isJson_(text) {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+// Web addresses in report text are kept readable but never clickable: Sheets turns them into
+// links, and anyone holding the public ingest key could put one in front of the whole company.
+function defang_(value) {
+  if (typeof value !== 'string') return value;
+  const host = name => name.replace(/\./g, '[.]');
+  return value
+    .replace(/\b(https?|ftp):\/\/([^\s\/?#]*)/gi, (url, scheme, name) => scheme + '[:]//' + host(name))
+    .replace(/\bwww\.([^\s\/?#]*)/gi, (url, name) => 'www[.]' + host(name));
 }
 
 // Keeps only the four fields the contract defines, so nothing else about an account is stored.
@@ -561,7 +657,7 @@ function readEvents_(params) {
   const limit = Math.min(Math.max(isNaN(requested) ? READ_LIMIT_DEFAULT : requested, 1), READ_LIMIT_MAX);
 
   const page = { rows: [], chars: 0, lastMs: null, full: false, more: false };
-  const spreadsheets = listSpreadsheets_(diagnosticsFolder_());
+  const spreadsheets = knownSpreadsheets_();
   for (let i = 0; i < spreadsheets.length && !page.more; i++) {
     const entry = spreadsheets[i];
     if (!page.full && monthStart_(nextMonthKey_(entry.month)) + DAY_MS <= since) continue;
@@ -576,40 +672,43 @@ function readEvents_(params) {
   };
 }
 
+// Chooses rows by their Received time, not by where they sit on the tab: sorting with the tab's
+// filter reorders the rows themselves. Rows are appended in time order, so normally the page is
+// one run of rows at the bottom; after such a sort it is read from the span that holds it.
 function readSheetPage_(sheet, since, limit, page) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
   const times = sheet.getRange(2, 1, lastRow - 1, 1).getValues().map(row => timeOf_(row[0]));
-  let index = firstAfter_(times, page.full ? page.lastMs - 1 : since);
-  while (index < times.length) {
-    const count = Math.min(times.length - index, Math.max(limit - page.rows.length, 0) + MAX_EVENTS_PER_UPLOAD);
-    const values = sheet.getRange(index + 2, 1, count, EVENTS_COLUMNS.length).getValues();
-    for (let i = 0; i < values.length; i++) {
-      const at = times[index + i];
+  const after = page.full ? page.lastMs - 1 : since;
+  const order = [];
+  times.forEach((at, index) => { if (at > after) order.push(index); });
+  if (!order.length) return;
+  order.sort((a, b) => times[a] - times[b] || a - b);
+
+  // Enough rows to fill the page, then the rest of the upload the last of them arrived with.
+  let take = page.full ? 0 : Math.min(order.length, limit - page.rows.length);
+  const boundary = take ? times[order[take - 1]] : page.lastMs;
+  while (take < order.length && times[order[take]] === boundary) take += 1;
+
+  const chosen = order.slice(0, take);
+  if (chosen.length) {
+    const first = chosen.reduce((low, index) => Math.min(low, index), Infinity);
+    const last = chosen.reduce((high, index) => Math.max(high, index), -Infinity);
+    const values = sheet.getRange(first + 2, 1, last - first + 1, EVENTS_COLUMNS.length).getValues();
+    for (const index of chosen) {
+      const at = times[index];
       if (page.full && at !== page.lastMs) {
         page.more = true;
         return;
       }
-      const row = readRecord_(values[i], EVENTS_COLUMNS);
+      const row = readRecord_(values[index - first], EVENTS_COLUMNS);
       page.rows.push(row);
       page.chars += JSON.stringify(row).length;
       page.lastMs = at;
       if (page.rows.length >= limit || page.chars >= READ_CHAR_BUDGET) page.full = true;
     }
-    index += count;
   }
-}
-
-// Binary search for the first row received after `after`; rows are appended in time order.
-function firstAfter_(times, after) {
-  let low = 0;
-  let high = times.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (times[middle] > after) high = middle;
-    else low = middle + 1;
-  }
-  return low;
+  if (page.full && take < order.length) page.more = true;
 }
 
 function readIssues_() {
@@ -643,6 +742,7 @@ function jsonValue_(value, column) {
     return isNaN(at) ? null : new Date(at).toISOString();
   }
   if (column.type === 'number') return Number(value) || 0;
+  if (column.json) return unescapeText_(value) || 'null';
   return unescapeText_(value);
 }
 
@@ -699,35 +799,80 @@ function createSpreadsheet_(props, month, part, previousId) {
   const file = DriveApp.getFileById(spreadsheet.getId());
   file.moveTo(folder);
   // The folder's sharing is inherited; set it on the file too so it holds even if moved.
-  file.setSharing(DriveApp.Access.DOMAIN, SHARE_PERMISSION);
+  shareWithDomain_(file);
 
-  props.setProperties({ SHEET_ID: spreadsheet.getId(), SHEET_MONTH: month, SHEET_PART: String(part), SHEET_CHARS: '0' });
+  // The previous spreadsheet is remembered rather than found in the folder later: Drive can take
+  // a while to list a file it has just been given, and the team's Status, Notes and tester names
+  // are carried over from it.
+  props.setProperties({
+    SHEET_ID: spreadsheet.getId(), SHEET_MONTH: month, SHEET_PART: String(part), SHEET_CHARS: '0',
+    PREVIOUS_SHEET_ID: previousId || '',
+  });
   if (previousId) markClosed_(previousId, spreadsheet);
   return spreadsheet;
 }
 
+// Rebuilds take Status, Notes and tester names from the newest spreadsheet, so anything typed into
+// a closed one would be lost: its Issues and Installs tabs warn whoever edits them and say where
+// to type instead.
 function markClosed_(previousId, successor) {
   const previous = openSpreadsheet_(previousId);
-  const overview = previous && previous.getSheetByName(OVERVIEW_TAB);
-  if (!overview) return;
-  overview.getRange(2, 1)
-    .setValue('Closed. Newer reports are in ' + successor.getName() + ': ' + successor.getUrl())
-    .setFontColor(COLOURS.alert)
-    .setFontWeight('bold');
+  if (!previous) return;
+  const where = successor.getName();
+  const overview = previous.getSheetByName(OVERVIEW_TAB);
+  if (overview) {
+    overview.getRange(2, 1)
+      .setValue('Closed. Newer reports are in ' + where + ': ' + successor.getUrl())
+      .setFontColor(COLOURS.alert)
+      .setFontWeight('bold');
+  }
+  [ISSUES_TAB, INSTALLS_TAB].forEach(name => {
+    const sheet = previous.getSheetByName(name);
+    if (!sheet) return;
+    sheet.protect().setWarningOnly(true).setDescription('Closed: type Status, Notes and tester names in ' + where);
+    sheet.getRange(1, 1, 1, sheet.getMaxColumns()).setBackground(COLOURS.alert);
+    sheet.getRange(1, 1).setNote('Closed. Type Status, Notes and tester names in ' + where + ': ' + successor.getUrl());
+  });
 }
 
-// This folder's diagnostics spreadsheets, oldest first. Anything else in the folder is ignored.
+// This folder's diagnostics spreadsheets, oldest first. Anything else in the folder is ignored,
+// including a spreadsheet under a matching name that someone else owns: anyone with edit access
+// could drop one in, and the script could neither trash it nor trust what it holds.
 function listSpreadsheets_(folder) {
+  const owner = ownerEmail_(folder);
   const found = [];
   const files = folder.getFilesByType(MimeType.GOOGLE_SHEETS);
   while (files.hasNext()) {
     const file = files.next();
     const match = SPREADSHEET_NAME.exec(file.getName());
-    if (match && !file.isTrashed()) {
+    if (match && !file.isTrashed() && ownerEmail_(file) === owner) {
       found.push({ file: file, id: file.getId(), month: match[1], part: Number(match[2] || 1) });
     }
   }
-  return found.sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : a.part - b.part));
+  return found.sort(byMonthAndPart_);
+}
+
+function byMonthAndPart_(a, b) {
+  return a.month < b.month ? -1 : a.month > b.month ? 1 : a.part - b.part;
+}
+
+// The folder's spreadsheets and the current one, which Drive may not list yet in the first
+// moments after it was made.
+function knownSpreadsheets_() {
+  const props = PropertiesService.getScriptProperties();
+  const found = listSpreadsheets_(diagnosticsFolder_());
+  const id = props.getProperty('SHEET_ID');
+  if (!id || found.some(entry => entry.id === id)) return found;
+  let file = null;
+  try {
+    file = DriveApp.getFileById(id);
+  } catch (error) {
+    // Deleted by hand: the next upload starts a new one.
+    return found;
+  }
+  if (file.isTrashed()) return found;
+  found.push({ file: file, id: id, month: props.getProperty('SHEET_MONTH'), part: Number(props.getProperty('SHEET_PART')) || 1 });
+  return found.sort(byMonthAndPart_);
 }
 
 // Runs every night at about 00:15 Baku time. If uploads keep the lock busy, the month still
@@ -750,21 +895,25 @@ function dailyMaintenance() {
 }
 
 function pruneDailyCounters_(props, now) {
-  const today = 'EVENTS_ON_' + Utilities.formatDate(now, TIME_ZONE, 'yyyy-MM-dd');
+  const today = '_ON_' + Utilities.formatDate(now, TIME_ZONE, 'yyyy-MM-dd');
   props.getKeys()
-    .filter(key => key.indexOf('EVENTS_ON_') === 0 && key !== today)
+    .filter(key => /_ON_\d{4}-\d{2}-\d{2}$/.test(key) && !key.endsWith(today))
     .forEach(key => props.deleteProperty(key));
 }
 
 // Moves a month's spreadsheets to the trash RETENTION_DAYS after that month ends. Only this
-// folder's own diagnostics spreadsheets are considered, and never the current one.
+// folder's own diagnostics spreadsheets are considered, and never the current one. One that
+// cannot be trashed is logged and passed over, so it never holds up the rest.
 function applyRetention_(now) {
   const currentId = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
   listSpreadsheets_(diagnosticsFolder_()).forEach(entry => {
     const ended = monthStart_(nextMonthKey_(entry.month));
-    if (entry.id !== currentId && now.getTime() - ended > RETENTION_DAYS * DAY_MS) {
+    if (entry.id === currentId || now.getTime() - ended <= RETENTION_DAYS * DAY_MS) return;
+    try {
       entry.file.setTrashed(true);
       Logger.log('Moved to the trash after ' + RETENTION_DAYS + ' days: ' + entry.file.getName());
+    } catch (error) {
+      console.error('Could not move ' + entry.file.getName() + ' to the trash: ' + error);
     }
   });
 }
@@ -776,16 +925,18 @@ function applyRetention_(now) {
 function rebuildIssues() {
   const current = currentSpreadsheetIfAny_();
   if (!current) return;
+  const props = PropertiesService.getScriptProperties();
   const now = new Date();
   const thisMonth = monthKey_(now);
   const window = [previousMonthKey_(thisMonth), thisMonth];
-  const spreadsheets = listSpreadsheets_(diagnosticsFolder_());
-  const events = readWindowEvents_(spreadsheets.filter(entry => window.indexOf(entry.month) >= 0));
+  const inWindow = knownSpreadsheets_().filter(entry => window.indexOf(entry.month) >= 0);
+  const read = inWindow.slice(-MAX_SUMMARY_SPREADSHEETS);
+  const events = readWindowEvents_(read);
 
   // The team's Status, Notes and tester names come from this spreadsheet, or from the one
   // before it on the first rebuild after a new month or part begins.
-  const position = spreadsheets.map(entry => entry.id).indexOf(current.getId());
-  const previous = position > 0 ? openSpreadsheet_(spreadsheets[position - 1].id) : null;
+  const previousId = props.getProperty('PREVIOUS_SHEET_ID');
+  const previous = previousId && previousId !== current.getId() ? openSpreadsheet_(previousId) : null;
 
   const installs = buildInstalls_(events, earlierRecords_(current, previous, INSTALLS_TAB, INSTALLS_COLUMNS, 'install'), now);
   const testers = new Map();
@@ -796,14 +947,18 @@ function rebuildIssues() {
   const issuesSheet = current.getSheetByName(ISSUES_TAB);
   writeTable_(issuesSheet, ISSUES_COLUMNS, issues);
   setStatusChoices_(issuesSheet, issues);
+  const earliest = events.reduce((low, event) => Math.min(low, Date.parse(event.receivedAt)), Infinity);
+  const skipped = read.length < inWindow.length && isFinite(earliest);
   writeOverview_(current.getSheetByName(OVERVIEW_TAB), {
     now: now,
-    since: monthStart_(window[0]),
+    since: skipped ? earliest : monthStart_(window[0]),
+    skipped: skipped,
     events: events,
     issues: issues,
     installs: installs,
+    testers: testers,
   });
-  PropertiesService.getScriptProperties().setProperty('SUMMARY_UPDATED_AT', now.toISOString());
+  props.setProperty('SUMMARY_UPDATED_AT', now.toISOString());
 }
 
 // Reads the window's events once each: a resent batch that slipped past the cache is counted once.
@@ -915,21 +1070,25 @@ function buildIssues_(events, earlier, testers) {
   const records = [];
   bySignature.forEach(issue => {
     const before = earlier.get(issue.signature);
+    const status = before ? before.status : STATUS_NEW;
+    const fixedIn = fixedVersion_(status);
+    const versions = Array.from(issue.versions).sort(compareVersions_).reverse();
+    const afterFix = fixedIn ? versions.filter(version => compareVersions_(version, fixedIn) >= 0) : [];
     records.push({
       title: issue.title,
       kind: issue.kind,
       times: issue.times,
       installs: issue.installs.size,
       testers: testerList_(issue.installs, testers),
-      versions: listWithMore_(Array.from(issue.versions).sort(compareVersions_).reverse(), 4),
+      versions: listWithMore_(versions.map(version => (afterFix.indexOf(version) >= 0 ? version + ' ' + AFTER_FIX : version)), 4),
       firstSeen: new Date(issue.firstSeen),
       lastSeen: new Date(issue.lastSeen),
-      status: before ? before.status : STATUS_NEW,
+      status: status,
       notes: before ? before.notes : '',
       example: issue.example,
       area: issue.area,
       signature: issue.signature,
-      allVersions: Array.from(issue.versions),
+      afterFix: afterFix,
     });
   });
   // A problem the team has written about stays listed after it goes quiet, with its last figures.
@@ -938,10 +1097,16 @@ function buildIssues_(events, earlier, testers) {
     if (!bySignature.has(signature) && annotated) records.push(Object.assign({}, before, { quiet: true }));
   });
   return records.sort((a, b) =>
-    statusRank_(a.status) - statusRank_(b.status) ||
+    rank_(a) - rank_(b) ||
     timeOf_(b.lastSeen) - timeOf_(a.lastSeen) ||
     b.times - a.times ||
     severity_(b.kind) - severity_(a.kind));
+}
+
+// Open problems first, then fixed ones, then those the team has decided to leave. A problem seen
+// again in or after the version it was fixed in is open again, whatever its Status says.
+function rank_(record) {
+  return record.afterFix && record.afterFix.length ? 0 : statusRank_(record.status);
 }
 
 function testerList_(installs, testers) {
@@ -959,15 +1124,16 @@ function listWithMore_(items, max) {
   return items.slice(0, max).join(', ') + (items.length > max ? ' + ' + (items.length - max) + ' more' : '');
 }
 
-// Open problems first, then fixed ones, then those the team has decided to leave.
+// "Fixed in" counts as fixed only with a version after it: without one, nothing says in which
+// release the problem should stop, so it could never be seen to come back.
 function statusRank_(status) {
-  if (/^fixed/i.test(status || '')) return 1;
+  if (fixedVersion_(status)) return 1;
   if (/^won.?t fix/i.test(status || '')) return 2;
   return 0;
 }
 
 function fixedVersion_(status) {
-  const match = /^fixed in\s+v?(\d+(?:\.\d+)*)/i.exec(status || '');
+  const match = /^fixed in\s*v?(\d+(?:\.\d+)*)/i.exec(status || '');
   return match ? match[1] : null;
 }
 
@@ -997,7 +1163,10 @@ function statusValidation_(choices) {
 // Overview
 // ============================================================================================
 
-const OVERVIEW_WIDTHS = [400, 100, 80, 90, 180, 150];
+// Titles and labels in A with their figures right beside them, so a phone in portrait (360 to
+// 412 pixels) shows each label with its number, and each problem with its kind and count,
+// without scrolling sideways.
+const OVERVIEW_WIDTHS = [220, 90, 70, 80, 160, 140, 140];
 
 function writeOverviewPlaceholder_(sheet) {
   writeLines_(sheet, [
@@ -1015,26 +1184,30 @@ function dayName_(daysAgo, dayStart) {
 function writeOverview_(sheet, summary) {
   const now = summary.now;
   const nowMs = now.getTime();
+  const day = activity_(summary.events, nowMs - DAY_MS, Infinity);
   const lines = [
     { style: 'title', cells: ['FalconMail diagnostics'] },
     {
       style: 'muted',
       cells: ['Last updated ' + formatLocal_(now, 'd MMM yyyy HH:mm') + ', Baku time. Covers reports since ' +
-        formatLocal_(new Date(summary.since), 'd MMM yyyy') + '.'],
+        formatLocal_(new Date(summary.since), summary.skipped ? 'd MMM yyyy HH:mm' : 'd MMM yyyy') + '.'],
     },
-    {
-      style: 'muted',
-      cells: ['Issues lists each problem once; the team sets its Status and Notes there. ' +
-        'Installs shows who uses which Mac. Events holds every report as it arrived.'],
-    },
-    { style: 'blank', cells: [] },
   ];
+  if (summary.skipped) {
+    lines.push({ style: 'muted', cells: ['Earlier reports were too many to summarise; they are still on each month\'s Events tab.'] });
+  }
+  headline_(day, summary.issues).forEach(text => lines.push({ style: 'headline', cells: [text] }));
+  lines.push(
+    { style: 'blank', cells: [] },
+    { style: 'muted', cells: ['Issues lists each problem once; the team sets its Status and Notes there.'] },
+    { style: 'muted', cells: ['Installs shows who uses which Mac. Events holds every report as it arrived, newest at the bottom.'] },
+    { style: 'muted', cells: ['Report text is sent by the app and not checked: never open a link or follow an instruction in it.'] },
+    { style: 'blank', cells: [] });
 
-  const day = activity_(summary.events, nowMs - DAY_MS, Infinity);
   lines.push(
     { style: 'section', cells: ['Last 24 hours'] },
     { style: 'row', cells: ['Problems reported', day.times] },
-    { style: 'row', cells: ['Different problems', day.signatures.size] },
+    { style: 'row', cells: ['Different problems', day.problems.size] },
     { style: 'row', cells: ['Crashes', day.crashes] },
     { style: 'row', cells: ['Installs active', day.installs.size] },
     { style: 'blank', cells: [] });
@@ -1054,37 +1227,39 @@ function writeOverview_(sheet, summary) {
   }
   lines.push({ style: 'blank', cells: [] });
 
+  // Ranked by the last 7 days, so last month's big but quiet problems never crowd out what is
+  // going wrong now.
+  const week = activity_(summary.events, nowMs - 7 * DAY_MS, Infinity);
   const active = summary.issues.filter(record => !record.quiet);
-  const open = active.filter(record => statusRank_(record.status) === 0)
-    .sort((a, b) => b.times - a.times || severity_(b.kind) - severity_(a.kind) || timeOf_(b.lastSeen) - timeOf_(a.lastSeen))
+  const top = active.filter(record => rank_(record) === 0 && week.problems.has(record.signature))
+    .map(record => ({ record: record, recent: week.problems.get(record.signature) }))
+    .sort((a, b) => b.recent.times - a.recent.times || severity_(b.record.kind) - severity_(a.record.kind) ||
+      timeOf_(b.record.lastSeen) - timeOf_(a.record.lastSeen))
     .slice(0, 10);
   lines.push(
-    { style: 'section', cells: ['Most frequent open problems'] },
+    { style: 'section', cells: ['Most frequent open problems (last 7 days)'] },
     {
       style: 'header',
-      cells: ['Problem', 'Kind', 'Times', 'Installs', 'Testers', 'Last seen'],
-      align: [, 'center', 'right', 'right', , 'right'],
+      cells: ['Problem', 'Kind', 'Times', 'Installs', 'Testers', 'First seen', 'Last seen'],
+      align: [, 'center', 'right', 'right', , 'right', 'right'],
     });
-  open.forEach(record => lines.push({
+  top.forEach(({ record, recent }) => lines.push({
     style: 'row',
     kindColumn: 2,
-    cells: [record.title, kindLabel_(record.kind), record.times, record.installs, record.testers, record.lastSeen],
+    cells: [record.title, kindLabel_(record.kind), recent.times, recent.installs.size,
+      testerList_(recent.installs, summary.testers), record.firstSeen, record.lastSeen],
   }));
-  if (!open.length) lines.push({ style: 'muted', cells: ['No open problems.'] });
+  if (!top.length) lines.push({ style: 'muted', cells: ['No open problems in the last 7 days.'] });
   lines.push({ style: 'blank', cells: [] });
 
-  const returned = active.map(record => {
-    const fixedIn = fixedVersion_(record.status);
-    const since = fixedIn ? record.allVersions.filter(version => compareVersions_(version, fixedIn) >= 0) : [];
-    return { record: record, since: since.sort(compareVersions_).reverse() };
-  }).filter(item => item.since.length);
+  const returned = active.filter(record => record.afterFix && record.afterFix.length);
   if (returned.length) {
     lines.push(
       { style: 'section', cells: ['Back after a fix'] },
-      { style: 'header', cells: ['Problem', 'Status', '', '', 'Seen again in', 'Last seen'], align: [, , , , , 'right'] });
-    returned.forEach(item => lines.push({
+      { style: 'header', cells: ['Problem', 'Status', '', '', 'Seen again in', '', 'Last seen'], align: [, , , , , , 'right'] });
+    returned.forEach(record => lines.push({
       style: 'row',
-      cells: [item.record.title, item.record.status, '', '', item.since.join(', '), item.record.lastSeen],
+      cells: [record.title, record.status, '', '', record.afterFix.join(', '), '', record.lastSeen],
     }));
     lines.push({ style: 'blank', cells: [] });
   }
@@ -1105,16 +1280,41 @@ function writeOverview_(sheet, summary) {
   writeLines_(sheet, lines);
 }
 
-// Problems, crashes and active installs among events that happened in [from, to).
+// The day in one or two sentences at the top, for whoever opens the spreadsheet on a phone.
+function headline_(day, issues) {
+  if (!day.installs.size) return ['Last 24 hours: nothing reported.'];
+  const from = ' from ' + counted_(day.installs.size, 'install', 'installs') + '.';
+  if (!day.times) return ['Last 24 hours: no problems reported' + from];
+  const crashes = day.crashes ? ', ' + counted_(day.crashes, 'of them a crash', 'of them crashes') + ',' : '';
+  let most = null;
+  day.problems.forEach((problem, signature) => {
+    if (!most || problem.times > most.times) most = { signature: signature, times: problem.times };
+  });
+  const issue = issues.filter(record => record.signature === most.signature)[0];
+  return [
+    'Last 24 hours: ' + counted_(day.times, 'problem', 'problems') + ' reported' + crashes + from,
+    'Most frequent: ' + (issue ? issue.title : most.signature) + ' (' + counted_(most.times, 'time', 'times') + ').',
+  ];
+}
+
+function counted_(count, one, many) {
+  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' ' + (count === 1 ? one : many);
+}
+
+// Problems, crashes and active installs among events that happened in [from, to), with each
+// problem's own count and installs.
 function activity_(events, from, to) {
-  const stats = { times: 0, crashes: 0, signatures: new Set(), installs: new Set() };
+  const stats = { times: 0, crashes: 0, problems: new Map(), installs: new Set() };
   events.forEach(event => {
     if (event.when < from || event.when >= to) return;
     stats.installs.add(event.install);
     if (!isProblem_(event.kind)) return;
     stats.times += event.count;
-    stats.signatures.add(event.signature);
     if (event.kind === 'crash') stats.crashes += event.count;
+    const problem = stats.problems.get(event.signature) || { times: 0, installs: new Set() };
+    problem.times += event.count;
+    problem.installs.add(event.install);
+    stats.problems.set(event.signature, problem);
   });
   return stats;
 }
@@ -1125,8 +1325,12 @@ function writeLines_(sheet, lines) {
   sheet.setConditionalFormatRules([]);
   sheet.setHiddenGridlines(true);
   if (sheet.getMaxRows() < lines.length) sheet.insertRowsAfter(sheet.getMaxRows(), lines.length - sheet.getMaxRows());
+  if (sheet.getMaxColumns() < width) sheet.insertColumnsAfter(sheet.getMaxColumns(), width - sheet.getMaxColumns());
   if (sheet.getMaxColumns() > width) sheet.deleteColumns(width + 1, sheet.getMaxColumns() - width);
   OVERVIEW_WIDTHS.forEach((pixels, i) => sheet.setColumnWidth(i + 1, pixels));
+  // clear() keeps row heights, and the sections move whenever the number of problems changes.
+  // Not forced, so wrapped titles still grow to fit.
+  sheet.setRowHeights(1, sheet.getMaxRows(), 21);
 
   const values = lines.map(line => {
     const cells = line.cells.map(cellValue_);
@@ -1142,6 +1346,9 @@ function writeLines_(sheet, lines) {
     if (line.style === 'title') {
       range.setFontSize(18).setFontWeight('bold').setFontColor(COLOURS.title);
       sheet.setRowHeight(row, 40);
+    } else if (line.style === 'headline') {
+      range.setFontSize(11).setFontWeight('bold').setFontColor(COLOURS.title);
+      sheet.getRange(row, 1).setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
     } else if (line.style === 'muted') {
       range.setFontColor(COLOURS.muted);
     } else if (line.style === 'section') {
@@ -1179,9 +1386,10 @@ function paintKind_(range, label) {
 function styleTable_(sheet, columns) {
   const width = columns.length;
   const rows = sheet.getMaxRows();
+  if (sheet.getMaxColumns() < width) sheet.insertColumnsAfter(sheet.getMaxColumns(), width - sheet.getMaxColumns());
   if (sheet.getMaxColumns() > width) sheet.deleteColumns(width + 1, sheet.getMaxColumns() - width);
 
-  sheet.getRange(1, 1, 1, width)
+  const header = sheet.getRange(1, 1, 1, width)
     .setValues([columns.map(column => column.header)])
     .setFontWeight('bold')
     .setBackground(COLOURS.header)
@@ -1190,6 +1398,12 @@ function styleTable_(sheet, columns) {
     .setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
   sheet.setFrozenRows(1);
   sheet.setRowHeight(1, 36);
+  // Rebuilds find the team's Status, Notes and tester names by these headings, so changing one
+  // asks first.
+  sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE)
+    .filter(protection => protection.getDescription() === HEADER_PROTECTION)
+    .forEach(protection => protection.remove());
+  header.protect().setWarningOnly(true).setDescription(HEADER_PROTECTION);
 
   columns.forEach((column, i) => {
     sheet.setColumnWidth(i + 1, column.width);
@@ -1211,11 +1425,12 @@ function styleTable_(sheet, columns) {
   });
 
   sheet.setConditionalFormatRules(tableRules_(sheet, columns, rows));
-  refreshFilter_(sheet, width);
+  refreshFilter_(sheet, columns);
 }
 
 // Sheets applies only the first matching rule to a cell, so the order matters: closed problems
-// are greyed out whole, then kinds get their colours, then rows are banded.
+// are greyed out whole, then kinds get their colours, then rows are banded. A problem is closed
+// once fixed in a named version or not to be fixed, and open again once seen after its fix.
 function tableRules_(sheet, columns, rows) {
   const width = columns.length;
   const all = sheet.getRange(2, 1, rows - 1, width);
@@ -1223,8 +1438,10 @@ function tableRules_(sheet, columns, rows) {
   const status = columnIndex_(columns, 'status');
   if (status) {
     const cell = '$' + columnLetter_(status) + '2';
+    const versions = '$' + columnLetter_(columnIndex_(columns, 'versions')) + '2';
     rules.push(SpreadsheetApp.newConditionalFormatRule()
-      .whenFormulaSatisfied('=REGEXMATCH(' + cell + ',"(?i)^(fixed|won.?t fix)")')
+      .whenFormulaSatisfied('=AND(REGEXMATCH(' + cell + ',"(?i)^(fixed in\\s*v?\\d|won.?t fix)"),' +
+        'NOT(REGEXMATCH(' + versions + ',"after the fix")))')
       .setFontColor(COLOURS.closed)
       .setRanges([all])
       .build());
@@ -1246,8 +1463,10 @@ function tableRules_(sheet, columns, rows) {
   return rules;
 }
 
-// Recreates the filter over the whole tab, keeping whatever the team had filtered on.
-function refreshFilter_(sheet, width) {
+// Recreates the filter over the whole tab, keeping whatever the team had filtered on; a new
+// filter starts from the tab's defaults.
+function refreshFilter_(sheet, columns) {
+  const width = columns.length;
   const existing = sheet.getFilter();
   const criteria = [];
   if (existing) {
@@ -1256,6 +1475,9 @@ function refreshFilter_(sheet, width) {
       if (kept) criteria.push([column, kept]);
     }
     existing.remove();
+  } else if (FILTER_DEFAULTS[sheet.getName()]) {
+    const defaults = FILTER_DEFAULTS[sheet.getName()];
+    criteria.push([columnIndex_(columns, defaults.key), SpreadsheetApp.newFilterCriteria().setHiddenValues(defaults.hidden).build()]);
   }
   const filter = sheet.getRange(1, 1, sheet.getMaxRows(), width).createFilter();
   criteria.forEach(([column, kept]) => filter.setColumnFilterCriteria(column, kept));
@@ -1268,7 +1490,27 @@ function ensureRows_(sheet, columns, lastRow) {
   styleTable_(sheet, columns);
 }
 
+// Rows are written column by column in the order of `columns`, so a column someone has dragged
+// elsewhere is moved back first, its data and formatting with it, and every value stays under its
+// own heading. Headings renamed or deleted cannot be matched: the standard ones are written back
+// with their formatting. Columns added to the right are left alone.
+function ensureLayout_(sheet, columns) {
+  const width = columns.length;
+  if (sheet.getMaxColumns() < width) sheet.insertColumnsAfter(sheet.getMaxColumns(), width - sheet.getMaxColumns());
+  const headers = sheet.getRange(1, 1, 1, sheet.getMaxColumns()).getValues()[0].map(header => String(header).trim());
+  const inPlace = () => columns.every((column, i) => headers[i] === column.header);
+  if (inPlace()) return;
+  columns.forEach((column, i) => {
+    const at = headers.indexOf(column.header, i);
+    if (at <= i) return;
+    sheet.moveColumns(sheet.getRange(1, at + 1), i + 1);
+    headers.splice(i, 0, headers.splice(at, 1)[0]);
+  });
+  if (!inPlace()) styleTable_(sheet, columns);
+}
+
 function appendRows_(sheet, columns, rows) {
+  ensureLayout_(sheet, columns);
   const first = sheet.getLastRow() + 1;
   ensureRows_(sheet, columns, first + rows.length - 1);
   sheet.getRange(first, 1, rows.length, columns.length).setValues(rows);
@@ -1276,6 +1518,7 @@ function appendRows_(sheet, columns, rows) {
 
 function writeTable_(sheet, columns, records) {
   const width = columns.length;
+  ensureLayout_(sheet, columns);
   ensureRows_(sheet, columns, records.length + 1);
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, width).clearContent();
@@ -1287,7 +1530,8 @@ function writeTable_(sheet, columns, records) {
   sheet.getRange(2, 1, values.length, width).setValues(values);
 }
 
-// Reads a tab by its header names, so a column the team has moved is still found.
+// Reads a tab by its header names, so a column the team has moved is still found before
+// writeTable_ moves it back.
 function readTable_(sheet, columns) {
   const lastRow = sheet.getLastRow();
   const lastColumn = sheet.getLastColumn();
@@ -1340,29 +1584,42 @@ function severity_(kind) {
   return KINDS[kind] ? KINDS[kind].severity : 3;
 }
 
-// Text written to a cell: kept under the cell limit, and never read by Sheets as a formula.
+// Text written to a cell: kept under the cell limit, and never read by Sheets as a formula. A
+// leading apostrophe is Sheets' own mark for text, so text starting with one is escaped too, or
+// Sheets would swallow it.
 function cellValue_(value) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'number' || isDate_(value)) return value;
   const text = truncate_(String(value), MAX_CELL_CHARS);
-  return /^[=+\-@\t\r]/.test(text) ? "'" + text : text;
+  return /^[=+\-@\t\r']/.test(text) ? "'" + text : text;
 }
 
 // Sheets drops the leading apostrophe that cellValue_ adds; this also covers a cell where it
-// was kept.
+// was kept, which only ever comes before a character cellValue_ escapes.
 function unescapeText_(value) {
   if (value === null || value === undefined) return '';
   if (isDate_(value)) return value.toISOString();
   const text = String(value);
-  return /^'[=+\-@\t\r]/.test(text) ? text.slice(1) : text;
+  return /^'[=+\-@\t\r']/.test(text) ? text.slice(1) : text;
 }
 
 function truncate_(text, max) {
   return text.length > max ? text.slice(0, max - 1) + '…' : text;
 }
 
+// Control characters other than tab and line breaks. Report text reaches the owner's terminal,
+// where an escape sequence could rename the window or rewrite what is on screen.
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+
 function oneLine_(value, max) {
-  return typeof value === 'string' ? truncate_(value.replace(/\s+/g, ' ').trim(), max) : '';
+  if (typeof value !== 'string') return '';
+  return truncate_(value.replace(CONTROL_CHARACTERS, '').replace(/\s+/g, ' ').trim(), max);
+}
+
+// Text that may run over several lines, such as a message, with every line break made \n.
+function lines_(value, max) {
+  if (typeof value !== 'string') return '';
+  return truncate_(value.replace(/\r\n?/g, '\n').replace(CONTROL_CHARACTERS, '').trim(), max);
 }
 
 function parseTime_(value) {

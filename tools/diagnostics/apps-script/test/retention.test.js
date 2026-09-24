@@ -55,7 +55,58 @@ test('the nightly run forgets earlier days\' upload counts', () => {
   const env = service();
   env.properties.setProperty('EVENTS_ON_2026-09-22', '120');
   env.properties.setProperty('EVENTS_ON_2026-09-23', '80');
+  env.properties.setProperty('CHARS_ON_2026-09-23', '8000');
+  env.properties.setProperty('INSTALLS_ON_2026-09-23', '{}');
   env.post(upload(env, [event()]));
   env.context.dailyMaintenance();
-  assert.deepEqual(env.properties.getKeys().filter(key => key.startsWith('EVENTS_ON_')), ['EVENTS_ON_2026-09-24']);
+  assert.deepEqual(env.properties.getKeys().filter(key => /_ON_/.test(key)).sort(),
+    ['CHARS_ON_2026-09-24', 'EVENTS_ON_2026-09-24', 'INSTALLS_ON_2026-09-24']);
+});
+
+// A spreadsheet named like a diagnostics one, put in the folder by someone else, with one event.
+function planted(env, name, owner) {
+  const spreadsheet = env.context.SpreadsheetApp.create(name);
+  const sheet = spreadsheet.insertSheet('Events');
+  const header = env.value('EVENTS_COLUMNS').map(column => column.header);
+  sheet.getRange(1, 1, 1, header.length).setValues([header]);
+  const row = header.map(() => '');
+  row[0] = new Date(env.nowMs);
+  row[1] = 'Planted problem';
+  row[2] = 'Crash';
+  row[3] = 'ABCDEF01-2345-6789-ABCD-EF0123456789';
+  row[6] = 1;
+  row[10] = 'Planted.signature';
+  row[15] = 'planted-event';
+  sheet.getRange(2, 1, 1, header.length).setValues([row]);
+  spreadsheet.file.parent = env.properties.getProperty('FOLDER_ID');
+  spreadsheet.file.owner = owner;
+  return spreadsheet;
+}
+
+test('a spreadsheet someone else put in the folder is never trashed, read or counted', () => {
+  const env = service();
+  env.post(upload(env, [event()]));
+  const old = planted(env, 'FalconMail Diagnostics 2020-01', 'teammate@freightmasters.llc');
+  planted(env, 'FalconMail Diagnostics 2026-09 part 9', 'teammate@freightmasters.llc');
+  const may = env.drive.addFile('may', 'FalconMail Diagnostics 2026-05', SHEETS_MIME, env.properties.getProperty('FOLDER_ID'));
+
+  env.context.dailyMaintenance();
+  assert.equal(old.file.isTrashed(), false);
+  assert.equal(may.isTrashed(), true, 'retention carries on past it');
+  const readKey = env.properties.getProperty('READ_KEY');
+  assert.deepEqual(env.get({ op: 'read', key: readKey }).rows.map(row => row.title), ['Gmail paused the connection: too many requests']);
+  env.context.rebuildIssues();
+  assert.deepEqual(env.table('FalconMail Diagnostics 2026-09', 'Issues').map(row => row.Problem),
+    ['Gmail paused the connection: too many requests']);
+});
+
+test('a spreadsheet that cannot be trashed is logged and the rest still go', () => {
+  const env = service();
+  const folderId = env.properties.getProperty('FOLDER_ID');
+  const april = env.drive.addFile('april', 'FalconMail Diagnostics 2026-04', SHEETS_MIME, folderId);
+  const may = env.drive.addFile('may', 'FalconMail Diagnostics 2026-05', SHEETS_MIME, folderId);
+  april.setTrashed = () => { throw new Error('Service error: Drive'); };
+  env.context.dailyMaintenance();
+  assert.equal(may.isTrashed(), true);
+  assert.ok(env.errors.some(line => line.startsWith('Could not move FalconMail Diagnostics 2026-04 to the trash')));
 });

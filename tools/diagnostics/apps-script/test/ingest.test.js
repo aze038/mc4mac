@@ -158,7 +158,7 @@ test('text Sheets would run as a formula is stored as plain text', () => {
   const sheet = eventsSheet(env);
   assert.deepEqual(sheet.formulaCells, []);
   const [row] = env.table(SEPTEMBER, 'Events');
-  assert.equal(row.Problem, dangerous.title);
+  assert.equal(row.Problem, '=HYPERLINK("https[:]//example[.]com","Open")');
   assert.equal(row.Message, dangerous.message);
   assert.equal(row.Signature, dangerous.signature);
 });
@@ -178,8 +178,12 @@ test('long text is cut to the contract\'s limits and every cell stays under 50,0
   assert.equal(row.Problem.length, 120);
   assert.equal(row.Message.length, 2000);
   assert.ok(row.Message.endsWith('…'));
-  assert.equal(row.Context.length, 16 * 1024);
   assert.equal(row.Signature.length, 300);
+  const context = JSON.parse(row.Context);
+  assert.ok(row.Context.length <= 16 * 1024);
+  assert.equal(context.truncated, true, 'too large to keep whole, and still JSON');
+  assert.equal(context.size, JSON.stringify(huge.context).length);
+  assert.ok(context.start.startsWith('{"dump":"CCC'));
 });
 
 test('events that cannot be filed are skipped and counted, the rest are kept', () => {
@@ -228,7 +232,7 @@ test('a month that outgrows its size budget carries on in a part 2', () => {
 test('the Events tab grows past its first thousand rows and keeps its formatting', () => {
   const env = service();
   for (let batch = 0; batch < 6; batch++) {
-    env.post(upload(env, Array.from({ length: 200 }, () => event())));
+    env.post(upload(env, Array.from({ length: 200 }, () => event()), { install: batch % 2 ? INSTALL_A : INSTALL_B }));
     env.advance(1000);
   }
   const sheet = eventsSheet(env);
@@ -238,4 +242,81 @@ test('the Events tab grows past its first thousand rows and keeps its formatting
   assert.equal(sheet.getFilter().getRange().getLastRow(), bottom);
   assert.ok(sheet.getConditionalFormatRules().every(rule => rule.ranges.every(range => range.endsWith(String(bottom)))));
   assert.equal(sheet.format(1201, 1, 'numberFormat'), 'd mmm yyyy hh:mm');
+});
+
+test('one install cannot use up the day on its own: 1,000 events each, counted under the lock', () => {
+  const env = service();
+  for (let i = 0; i < 5; i++) {
+    assert.equal(env.post(upload(env, Array.from({ length: 200 }, () => event()))).accepted, 200, 'upload ' + (i + 1));
+    env.advance(1000);
+  }
+  const refused = env.post(upload(env, [event()]));
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /This install has sent as much as it may today/);
+  assert.equal(env.post(upload(env, [event({ kind: 'crash' })], { install: INSTALL_B })).accepted, 1, 'others still get through');
+  assert.deepEqual(JSON.parse(env.properties.getProperty('INSTALLS_ON_2026-09-24')), { [INSTALL_A]: 1000, [INSTALL_B]: 1 });
+  env.setNow('2026-09-24T20:30:00Z'); // 00:30 on the 25th in Baku
+  assert.equal(env.post(upload(env, [event()])).accepted, 1, 'a new day starts a new count');
+});
+
+test('the day\'s text is capped as well as its events, so large reports cannot fill Drive', () => {
+  const env = service();
+  env.post(upload(env, [event()]));
+  const used = Number(env.properties.getProperty('CHARS_ON_2026-09-24'));
+  assert.ok(used > 0);
+  env.properties.setProperty('CHARS_ON_2026-09-24', String(env.value('MAX_CHARS_PER_DAY') - 10));
+  const refused = env.post(upload(env, [event()], { install: INSTALL_B }));
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /daily limit/);
+  assert.equal(eventsSheet(env).getLastRow(), 2);
+});
+
+test('a flood of made-up install IDs keeps the per-install counts inside one property', () => {
+  const env = service();
+  const counts = {};
+  for (let i = 0; i < 400; i++) counts['FFFFFFFF-0000-4000-8000-' + String(i).padStart(12, '0')] = 1;
+  counts[INSTALL_A] = 900;
+  const text = env.context.installCountsText_(counts);
+  assert.ok(text.length <= 8000, text.length + ' characters');
+  assert.equal(JSON.parse(text)[INSTALL_A], 900, 'the busiest install stays counted');
+});
+
+test('control characters never reach the spreadsheet, and line breaks in a message stay', () => {
+  const env = service();
+  env.post(upload(env, [event({
+    title: '\u001b]0;owned\u0007\u001b[2KGmail paused',
+    message: 'first line\r\nsecond\u001b[1A\u001b[2K line\u0085',
+    area: 'IMAP\u0000',
+    signature: 'IMAP.x\u001b[8m@A.swift:1',
+    account: { provider: 'google', kind: 'gmail', host: 'imap.gmail.com\u0007', ref: '1a2b3c4d' },
+  })], { app: { version: '1.10\u001b[5m', build: '1' } }));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  for (const value of Object.values(row)) {
+    if (typeof value === 'string') assert.doesNotMatch(value, /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/);
+  }
+  assert.equal(row.Problem, ']0;owned[2KGmail paused');
+  assert.equal(row.Message, 'first line\nsecond[1A[2K line');
+  assert.equal(row['App version'], '1.10[5m');
+  assert.equal(JSON.parse(row.Account).host, 'imap.gmail.com');
+});
+
+test('web addresses in titles and messages are kept readable but not clickable, and counts are capped', () => {
+  const env = service();
+  env.post(upload(env, [event({
+    title: 'FalconMail must be updated: install it from https://falconmail-update.example/get',
+    message: 'See HTTP://evil.example/x or www.evil.example/y; the server mail.your-server.de refused',
+    count: 1e12,
+  })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, 'FalconMail must be updated: install it from https[:]//falconmail-update[.]example/get');
+  assert.equal(row.Message, 'See HTTP[:]//evil[.]example/x or www[.]evil[.]example/y; the server mail.your-server.de refused');
+  assert.equal(row.Times, 10000);
+});
+
+test('text starting with an apostrophe keeps it', () => {
+  const env = service();
+  env.post(upload(env, [event({ title: "'Sent' folder could not be found", message: "'quoted' reply" })]));
+  const [row] = env.table(SEPTEMBER, 'Events');
+  assert.equal(row.Problem, "'Sent' folder could not be found");
+  assert.equal(row.Message, "'quoted' reply");
 });
