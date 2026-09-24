@@ -92,6 +92,73 @@ final class FolderListTests: XCTestCase {
         XCTAssertEqual(inbox.count, 30)
     }
 
+    /// The sync loop, with whole passes an hour apart, over INBOX and HR, idling on INBOX.
+    private func running(gone: TimeInterval) async throws -> EngineHarness {
+        var pacing = SyncPacing()
+        pacing.fullSyncInterval = 3600
+        pacing.idleRefresh = 3600
+        pacing.folderGoneConfirmation = gone
+        pacing.minimumReconnectInterval = 0.05
+        let server = try EngineHarness.gmailServer()
+        server.addMailbox("HR")
+        server.addMany(3, to: "INBOX") { FakeIMAPServer.message("in-\($0)") }
+        server.addMany(2, to: "HR") { FakeIMAPServer.message("hr-\($0)") }
+        let h = try await EngineHarness(server: server, pacing: pacing)
+        harness = h
+        await h.syncer.start()
+        await assertEventually { await self.finishedCount(h) == 1 && server.idlingCount == 1 }
+        return h
+    }
+
+    /// A folder deleted on the server goes from the Mac about the confirmation time after the
+    /// first list that left it out: a second list looks for it then, instead of at the next
+    /// whole pass, which here is an hour away.
+    func testAFolderDeletedOnTheServerGoesSoonAfterTheFirstListWithoutIt() async throws {
+        let h = try await running(gone: 0.5)
+        let hr = try await h.folder("HR")
+        h.server.removeMailbox("HR")
+        let listsBefore = h.server.commands.filter { $0.contains(" LIST ") }.count
+        let asked = Date()
+        await h.syncer.requestSync()
+        await assertEventually { await h.store.foldersLeftOut(accountID: h.account.id) == [hr.id] }
+        var stored = await h.store.folder(hr.id)
+        XCTAssertNotNil(stored, "one list is not enough")
+        await assertEventually("taken off by a second list", within: 5) { await h.store.folder(hr.id) == nil }
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(asked), 0.5, "not before the confirmation time")
+        stored = await h.store.folder(hr.id)
+        XCTAssertNil(stored)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory(h, hr).path))
+        let lists = h.server.commands.filter { $0.contains(" LIST ") }.count - listsBefore
+        XCTAssertEqual(lists, 2, "the pass asked for, then the one that confirms it")
+        // Nothing more is asked of the server until the next pass is due.
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertEqual(h.server.commands.filter { $0.contains(" LIST ") }.count - listsBefore, 2)
+        let inbox = try await h.uids(in: "INBOX")
+        XCTAssertEqual(inbox.count, 3)
+    }
+
+    /// A folder deleted on the server and then asked for on its own, as after saving into it or
+    /// finding one of its messages gone: the SELECT the server refuses neither drops the
+    /// connection nor takes the account offline. The folders are listed again at once, and the
+    /// folder goes once a list the confirmation time later leaves it out too.
+    func testAFolderAskedForAfterItWasDeletedOnTheServerKeepsTheConnection() async throws {
+        let h = try await running(gone: 0.5)
+        let hr = try await h.folder("HR")
+        let healthsBefore = await h.events.healths.count
+        h.server.removeMailbox("HR")
+        await h.syncer.requestSync(folderID: hr.id)
+        await assertEventually("taken off by a second list", within: 5) { await h.store.folder(hr.id) == nil }
+        await assertEventually { h.server.idlingCount == 1 }
+        XCTAssertEqual(h.server.loginCount, 1, "the connection stayed up")
+        let healths = await h.events.healths.dropFirst(healthsBefore)
+        XCTAssertFalse(healths.contains { if case .offline = $0 { return true }; return false }, "\(Array(healths))")
+        let errors = await h.events.errors
+        XCTAssertTrue(errors.isEmpty, "\(errors)")
+        XCTAssertTrue(h.server.commands.contains { $0.contains("SELECT") && $0.contains("HR") }, "it was asked for")
+        let inbox = try await h.uids(in: "INBOX")
+        XCTAssertEqual(inbox.count, 3)
+    }
+
     /// A pass whose list leaves INBOX out while its catch-up is held back: the inbox and its
     /// hold stay, the loop neither spins nor stops idling, and the rest of the backlog and
     /// what IDLE tells of next still arrive.

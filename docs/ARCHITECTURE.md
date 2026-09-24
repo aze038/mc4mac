@@ -91,10 +91,15 @@ search of bodies goes through Core Spotlight, header search runs in memory.
 
 Each whole pass reconciles the stored folder list with the server's `LIST`. A
 folder the list leaves out keeps its record and everything stored for it, and
-is not synced, until a list at least a minute later leaves it out too; only
-then is it taken off the Mac. A list without `INBOX`, or an empty one, takes
-nothing off, since every IMAP server lists `INBOX` and one that does not has
-lost track of the account for a moment.
+whole passes do not sync it, until a list at least a minute later leaves it out
+too; only then is it taken off the Mac. That second list comes from a whole
+pass run a minute after the first, not at the next pass on the usual schedule,
+so a folder deleted on the server goes about a minute after the first list
+without it. A list without `INBOX`, or an empty one, takes nothing off, since
+every IMAP server lists `INBOX` and one that does not has lost track of the
+account for a moment. When a folder synced on its own, for example after
+something was saved into it, is refused because it no longer exists, the
+connection stays up and a whole pass lists the folders again at once.
 
 ## Archives and local space
 

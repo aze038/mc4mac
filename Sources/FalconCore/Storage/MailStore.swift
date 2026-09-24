@@ -224,6 +224,12 @@ public actor MailStore {
         return folders(for: accountID).filter { named.contains($0.id) }
     }
 
+    /// The account's folders that a list from the server has left out. They wait for a later
+    /// list to leave them out too before they are taken off the Mac.
+    public func foldersLeftOut(accountID: UUID) -> Set<UUID> {
+        Set((folders[accountID] ?? []).map(\.id).filter { missingSince[$0] != nil })
+    }
+
     public func updateFolder(_ folder: FolderInfo) throws {
         try refuseIfFolderListUnread(folder.accountID)
         guard var list = folders[folder.accountID], let i = list.firstIndex(where: { $0.id == folder.id }) else { return }

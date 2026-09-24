@@ -40,7 +40,8 @@ public struct SyncPacing: Sendable {
     /// a pass at least this much later finds it empty too.
     public var emptyFolderConfirmation: TimeInterval = 60
     /// A folder the server's list leaves out is taken off the Mac, with everything stored for
-    /// it, only when a list at least this much later leaves it out too.
+    /// it, only when a list at least this much later leaves it out too. A whole pass runs this
+    /// long after the first such list to look again.
     public var folderGoneConfirmation: TimeInterval = 60
     /// The least time between two attempts to connect, so that flapping Wi-Fi cannot make a
     /// burst of sign-ins.
@@ -807,7 +808,10 @@ public actor AccountSyncer {
                 checkFoundNewMail = checkFoundNewMail || passArrivals > 0
             }
         }
-        let folders = try await reconciled(try await client.listFolders())
+        let listed = try await client.listFolders()
+        // This list is the second look that a folder left out of the last one was waiting for.
+        folderCheckAt = nil
+        let folders = try await reconciled(listed)
         for f in folders where f.isSelectable && f.role != .all {
             try Task.checkCancellation()
             // Paused by a throttle met on the op connection: the rest waits for the pass after.
@@ -827,7 +831,15 @@ public actor AccountSyncer {
     /// The folders a list from the server names, reconciled with those stored (see
     /// `MailStore.reconcileFolders`); what the engine kept about a folder no longer stored goes.
     func reconciled(_ listed: [IMAPFolderInfo]) async throws -> [FolderInfo] {
+        let waiting = await store.foldersLeftOut(accountID: account.id)
         let named = try await store.reconcileFolders(accountID: account.id, listed: listed, goneAfter: pacing.folderGoneConfirmation)
+        // A folder this list left out for the first time is looked for again once the
+        // confirmation time is up, not at the next whole pass. It is taken off then if that list
+        // leaves it out too, so a folder deleted on the server goes about a minute after the
+        // first list without it.
+        if !(await store.foldersLeftOut(accountID: account.id)).subtracting(waiting).isEmpty {
+            folderCheckAt = Date().addingTimeInterval(pacing.folderGoneConfirmation)
+        }
         let stored = Set(await store.folders(for: account.id).map(\.id))
         extras.keepFolders(stored)
         catchUps = catchUps.filter { stored.contains($0.key) }
@@ -838,8 +850,16 @@ public actor AccountSyncer {
     }
 
     private var lastFullSync = Date()
+    /// When a whole pass lists the folders again, sooner than it would otherwise, to confirm
+    /// that a folder the last list left out has gone from the server.
+    private var folderCheckAt: Date?
 
     private var wantsSync: Bool { syncRequested || !requestedFolders.isEmpty }
+
+    /// Whether a whole pass is due, on its own schedule or to look again for a folder left out.
+    private var fullSyncDue: Bool {
+        Date().timeIntervalSince(lastFullSync) >= pacing.fullSyncInterval || folderCheckAt.map { $0 <= Date() } == true
+    }
 
     private func idleLoop(_ client: IMAPClient) async throws {
         // The loop is entered after a whole pass.
@@ -865,7 +885,8 @@ public actor AccountSyncer {
                 passed = true
             }
             var changed = false
-            let dueIn = pacing.fullSyncInterval - Date().timeIntervalSince(lastFullSync)
+            var dueIn = pacing.fullSyncInterval - Date().timeIntervalSince(lastFullSync)
+            if let folderCheckAt { dueIn = min(dueIn, folderCheckAt.timeIntervalSinceNow) }
             if !wantsSync, dueIn > 0, inbox == nil {
                 // Nothing to idle on, as on a server that lists no INBOX: the next whole pass, or
                 // one asked for, comes after a wait, not straight after the last.
@@ -905,7 +926,7 @@ public actor AccountSyncer {
             }
             // Nothing is fetched during a pause; the pass after it catches up.
             guard pauseRemaining() == nil else { continue }
-            if syncRequested || Date().timeIntervalSince(lastFullSync) >= pacing.fullSyncInterval {
+            if syncRequested || fullSyncDue {
                 passed = true
                 try await syncAll(client)
                 lastFullSync = Date()
@@ -931,7 +952,16 @@ public actor AccountSyncer {
             }
             for id in targets {
                 guard let fresh = await store.folder(id), fresh.isSelectable else { continue }
-                try await syncFolder(fresh, client: client)
+                do {
+                    try await syncFolder(fresh, client: client)
+                } catch let refusal as IMAPServerError where refusal.command == "SELECT"
+                    && MailServiceError.classify(refusal, account: account).kind == .folderGone {
+                    // Deleted on the server since the last list, as from another device. The
+                    // connection is fine, so it stays up. A whole pass lists the folders again
+                    // now, and the folder goes once a list a minute later leaves it out too.
+                    Log.info("sync", "\(account.email) \(fresh.path): no longer on the server; listing the folders again")
+                    syncRequested = true
+                }
             }
             if pauseRemaining() == nil { setHealth(.online) }
             events.yield(.finished(accountID: account.id))
