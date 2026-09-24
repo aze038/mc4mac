@@ -255,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         WindowTray.installMinimizeHook()
+        WindowTray.installCloseHook()
         #if DEBUG
         MainActor.assumeIsolated { RecipientDemo.startIfRequested() }
         #endif

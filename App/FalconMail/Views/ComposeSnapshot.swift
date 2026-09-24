@@ -4,10 +4,11 @@ import AppKit
 import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
-/// Table picker, the main window's Home ribbon, which shares the compose ribbon's tiles, the
-/// Signatures pane with two stand-in signatures, with none and with its notice of a damaged
-/// file set aside, and a signature's editor window, in both appearances into PNGs at twice
-/// their size in that directory, then quits. Nothing is ever put on screen or activated, so
+/// Table picker idle and with a size and text to convert, the address suggestions under a
+/// recipient field, the alert on closing an unsent message, the main window's Home ribbon,
+/// which shares the compose ribbon's tiles, the Signatures pane with two stand-in signatures,
+/// with none and with its notice of a damaged file set aside, and a signature's editor window,
+/// in both appearances into PNGs at twice their size in that directory, then quits. Nothing is ever put on screen or activated, so
 /// they can be measured against Outlook's while the Mac is in use. Run it with
 /// CFFIXED_USER_HOME pointing at an empty folder, so the model reads no mail; the stand-in
 /// signatures are held in memory and never saved.
@@ -24,11 +25,13 @@ enum ComposeSnapshot {
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")
-            // The menu material's own grey, as it shows over a compose window.
-            let ground = name == "dark" ? Color(red: 85 / 255, green: 84 / 255, blue: 90 / 255)
-                                        : Color(red: 223 / 255, green: 222 / 255, blue: 228 / 255)
-            render(picker.background(ground), size: NSSize(width: 220, height: 240), appearance: appearance,
-                   to: "\(directory)/picker-\(name).png")
+            let menu = NSSize(width: TableGrid.width, height: 272)
+            render(picker(hovering: nil, converts: false), size: menu, appearance: appearance, to: "\(directory)/table-\(name).png")
+            render(picker(hovering: TableSize(columns: 3, rows: 4), converts: true), size: menu, appearance: appearance,
+                   to: "\(directory)/table-hover-\(name).png")
+            render(suggestions, size: NSSize(width: 516, height: 148), appearance: appearance,
+                   to: "\(directory)/suggestions-\(name).png")
+            unsentAlert(appearance: appearance, to: "\(directory)/close-unsent-\(name).png")
             render(CommandBar().environment(model).frame(maxHeight: .infinity, alignment: .top),
                    size: NSSize(width: 1728, height: 140), appearance: appearance,
                    to: "\(directory)/home-\(name).png")
@@ -119,11 +122,42 @@ enum ComposeSnapshot {
         }
     }
 
-    @MainActor private static var picker: some View {
+    @MainActor private static func picker(hovering size: TableSize?, converts: Bool) -> some View {
         let selection = TableGridSelection()
-        selection.hovered = TableSize(columns: 3, rows: 4)
-        return TableGridPicker(selection: selection, insert: { _ in }, insertCustom: {})
+        selection.hovered = size
+        return TableGridPicker(selection: selection, insert: { _ in }, insertCustom: {}, convertText: converts ? {} : nil)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// Outlook's capture in the same frame: the left edge on the recipient field's, the field's
+    /// foot five points down, the list hung from it where the field would hang it, over a
+    /// contact with a label and two recent addresses, the middle one highlighted, the last two
+    /// too long for their columns.
+    @MainActor private static var suggestions: some View {
+        let rows = [
+            RecipientSuggestion(name: "Kamal Muradov", email: "kamal.muradov@example.com", label: "Work"),
+            RecipientSuggestion(name: "kamal-muradov-example", email: "notifications@example.com", isRecentAddress: true),
+            RecipientSuggestion(name: "kamal-muradov-example/example-project-tools",
+                                email: "example-project-tools@noreply.example.com", isRecentAddress: true),
+        ]
+        return ZStack(alignment: .topLeading) {
+            OLColor.reading
+            SuggestionList(rows: rows, highlighted: 1, accept: { _ in }, highlight: { _ in }, remove: { _ in })
+                .fixedSize()
+                .padding(.leading, SuggestionLook.bodyX)
+                .padding(.top, 5)
+        }
+    }
+
+    /// The alert's own content: its glass cannot be drawn off screen, so the content is laid on
+    /// the window background colour, and a window that is not key draws its default button grey
+    /// rather than blue.
+    @MainActor private static func unsentAlert(appearance: NSAppearance.Name, to path: String) {
+        let alert = UnsentMessageAlert.make()
+        alert.window.appearance = NSAppearance(named: appearance)
+        alert.layout()
+        guard let content = alert.window.contentView else { return }
+        capture(content, appearance: appearance, ground: .windowBackgroundColor, to: path)
     }
 
     @MainActor private static func render(_ view: some View, size: NSSize, appearance: NSAppearance.Name, to path: String) {
@@ -135,19 +169,36 @@ enum ComposeSnapshot {
         capture(host, appearance: appearance, to: path)
     }
 
-    @MainActor private static func capture(_ view: NSView, appearance: NSAppearance.Name, to path: String) {
+    @MainActor private static func capture(_ view: NSView, appearance: NSAppearance.Name, ground: NSColor? = nil, to path: String) {
         view.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
         view.layoutSubtreeIfNeeded()
         let size = view.bounds.size
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
-                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return }
-        rep.size = size
+        guard var rep = bitmap(size) else { return }
         NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
             view.cacheDisplay(in: view.bounds, to: rep)
         }
+        if let ground, let grounded = bitmap(size) {
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: grounded)
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                ground.setFill()
+                NSRect(origin: .zero, size: size).fill()
+                rep.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: 1,
+                         respectFlipped: false, hints: nil)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            rep = grounded
+        }
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+
+    private static func bitmap(_ size: NSSize) -> NSBitmapImageRep? {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        rep?.size = size
+        return rep
     }
 }
 #endif

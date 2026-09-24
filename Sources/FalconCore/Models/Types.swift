@@ -246,6 +246,10 @@ public struct MessageFlags: OptionSet, Codable, Hashable, Sendable {
 }
 
 public struct ContactInfo: Codable, Hashable, Sendable, Identifiable {
+    /// The source of an address FalconMail took from a message it sent rather than from a contact
+    /// list: Outlook's recent addresses, which the suggestion list can forget.
+    public static let recentSource = "recent"
+
     public var id: String
     public var accountID: UUID
     public var name: String
@@ -253,8 +257,11 @@ public struct ContactInfo: Codable, Hashable, Sendable, Identifiable {
     public var source: String
     public var useCount: Int
     public var lastUsed: Date?
+    /// What the contact list calls the address, such as Work or Home; nil where it says nothing.
+    public var label: String?
 
-    public init(id: String, accountID: UUID, name: String, email: String, source: String, useCount: Int = 0, lastUsed: Date? = nil) {
+    public init(id: String, accountID: UUID, name: String, email: String, source: String, useCount: Int = 0,
+                lastUsed: Date? = nil, label: String? = nil) {
         self.id = id
         self.accountID = accountID
         self.name = name
@@ -262,7 +269,10 @@ public struct ContactInfo: Codable, Hashable, Sendable, Identifiable {
         self.source = source
         self.useCount = useCount
         self.lastUsed = lastUsed
+        self.label = label
     }
+
+    public var isRecentAddress: Bool { source == Self.recentSource }
 }
 
 public enum FalconError: Error, LocalizedError, Sendable {

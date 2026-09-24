@@ -28,6 +28,25 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         var bodyRTF: Data?
     }
 
+    /// A digest of what the message held when it was opened, fresh or from the Drafts folder,
+    /// which closing compares against so it asks only when something would be lost. Nil for a
+    /// message that exists nowhere else, such as a send called back from the Outbox, which
+    /// always asks.
+    var openedDigest: String?
+
+    /// Everything closing without saving would lose: who it is from and to, what it says and
+    /// how, what is attached, when it goes and how important it is.
+    var contentDigest: String {
+        let fields = [accountID.uuidString, to, cc, bcc, subject, body, importance,
+                      scheduledAt.map { String($0.timeIntervalSince1970) } ?? ""]
+        let attached = attachments.flatMap { [Data($0.filename.utf8), Data($0.mimeType.utf8), $0.data] }
+        return UnsentMessage.fingerprint(fields.map { Data($0.utf8) } + [bodyRTF ?? Data()] + attached)
+    }
+
+    var isUntouched: Bool { openedDigest == contentDigest }
+
+    mutating func markOpened() { openedDigest = contentDigest }
+
     var isBlank: Bool {
         to.trimmed.isEmpty && cc.trimmed.isEmpty && bcc.trimmed.isEmpty && subject.trimmed.isEmpty && attachments.isEmpty
             && body.replacingOccurrences(of: historyPlain, with: "").trimmed.isEmpty

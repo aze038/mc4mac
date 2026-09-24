@@ -42,6 +42,28 @@ public enum RecipientText {
             .filter { seen.insert($0.email.lowercased()).inserted }
     }
 
+    /// The rows of Outlook's suggestion list for `fragment`, at most `limit`, in the order of
+    /// `suggestions(from:for:)`. Each row gathers what every entry for its address knows: a name
+    /// where the best one has none, the contact list's label, and whether the address is only a
+    /// recent one, which is what lets the list offer to forget it.
+    public static func suggestionRows(from contacts: [ContactInfo], for fragment: String, limit: Int) -> [RecipientSuggestion] {
+        let offered = suggestions(from: contacts, for: fragment).prefix(limit)
+        guard !offered.isEmpty else { return [] }
+        let wanted = Set(offered.map { $0.email.lowercased() })
+        var entries: [String: [ContactInfo]] = [:]
+        for contact in contacts {
+            let key = contact.email.lowercased()
+            if wanted.contains(key) { entries[key, default: []].append(contact) }
+        }
+        return offered.map { best in
+            let all = entries[best.email.lowercased()] ?? [best]
+            let listed = all.filter { !$0.isRecentAddress }
+            let name = best.name.trimmed.isEmpty ? (listed + all).first { !$0.name.trimmed.isEmpty }?.name ?? "" : best.name
+            let label = listed.lazy.compactMap { $0.label?.trimmed }.first { !$0.isEmpty } ?? ""
+            return RecipientSuggestion(name: name, email: best.email, label: label, isRecentAddress: listed.isEmpty)
+        }
+    }
+
     /// The address `fragment` already spells out in full, bare or in angle brackets after a name;
     /// nil while it is still being typed. Whole means a local part, one at sign and a dotted
     /// domain whose last label has at least two characters, as every top-level domain has.
@@ -79,4 +101,23 @@ public enum RecipientText {
         }
         return start
     }
+}
+
+/// One row of the suggestion list: an address and what the contact list knows of it.
+public struct RecipientSuggestion: Hashable, Sendable {
+    public var name: String
+    public var email: String
+    /// The contact list's label for the address, such as Work; empty where it has none.
+    public var label: String
+    /// Known only from messages sent, in no contact list, so the row offers to forget it.
+    public var isRecentAddress: Bool
+
+    public init(name: String, email: String, label: String = "", isRecentAddress: Bool = false) {
+        self.name = name
+        self.email = email
+        self.label = label
+        self.isRecentAddress = isRecentAddress
+    }
+
+    public var address: EmailAddress { EmailAddress(name: name, address: email) }
 }

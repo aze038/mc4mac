@@ -10,24 +10,44 @@ struct TableSize: Equatable {
     var title: String { "\(columns)x\(rows) Table" }
 }
 
-/// The picker's geometry and colours. Unlike the rest of the look these are not measured: the
-/// Legacy Outlook on this Mac can no longer be captured, so the grid follows Office's own picker,
-/// ten squares by eight, in Outlook's blue.
+/// The picker measured off Outlook's (2x, dark): a 246 × 272 point menu, its title in 12 points
+/// with its capitals from 6.5 points down, ten by eight outlined squares of 18 points on a 22
+/// point pitch from (15, 29), a two point rule at 214, then Insert Table… and Convert Text to
+/// Table… in 14 points on a 24 point pitch, each after a twenty point icon.
 enum TableGrid {
     static let columns = 10
     static let rows = 8
-    static let square: CGFloat = 16
-    static let gap: CGFloat = 2
-    static let inset: CGFloat = 10
-    static let fill = OLColor.dynamic(light: 0xFFFFFF, dark: 0x2B2B2B)
-    static let line = OLColor.dynamic(light: 0xC0C0C0, dark: 0x5A5A5A)
+    static let width: CGFloat = 246
+    static let corner: CGFloat = 5
+    static let titleFont: CGFloat = 12
+    static let titleX: CGFloat = 15
+    static let titleTop: CGFloat = 4
+    static let gridX: CGFloat = 15
+    static let gridTop: CGFloat = 29
+    static let square: CGFloat = 18
+    static let gap: CGFloat = 4
+    static let ruleTop: CGFloat = 214
+    static let rule: CGFloat = 2
+    static let itemFont: CGFloat = 14
+    static let itemRow: CGFloat = 24
+    static let itemsTop: CGFloat = 218
+    static let itemTextTop: CGFloat = 4.5
+    static let itemIconX: CGFloat = 20
+    static let itemTextX: CGFloat = 44
+    static let itemHighlightInset: CGFloat = 5
+    static let bottom: CGFloat = 6
+    /// A dimmed item's icon, as Outlook fades Convert Text to Table… with nothing to convert.
+    static let dimmedIcon: CGFloat = 0.35
+
+    static let ground = OLColor.dynamic(light: 0xF2F2F2, dark: 0x323232)
+    static let text = OLColor.dynamic(light: 0x262626, dark: 0xE0E0E0)
+    static let dimmedText = OLColor.dynamic(light: 0xB0B0B0, dark: 0x656565)
+    static let line = OLColor.dynamic(light: 0x8C8C8C, dark: 0x969696)
     static let litFill = OLColor.dynamic(light: 0xDCEAF7, dark: 0x1B3A5C)
     static let litLine = OLColor.unread
-    /// The rule above Insert Table…, translucent as a menu's own: the menu material takes on
-    /// whatever is behind the panel, and a solid grey vanishes into it wherever the two meet.
-    static let separator = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(white: 1, alpha: 0.2) : NSColor(white: 0, alpha: 0.15)
-    })
+    static let separator = OLColor.dynamic(light: 0xD9D9D9, dark: 0x464646)
+    static let iconGrey = OLColor.dynamic(light: 0x5A5A5A, dark: 0xD4D4D4)
+    static let iconBlue = OLColor.dynamic(light: 0x2F78C4, dark: 0x5698D6)
 }
 
 /// The size the grid is showing, shared by the pointer and the arrow keys.
@@ -46,46 +66,40 @@ final class TableGridSelection {
 
 /// Outlook's Table dropdown: the title names the size under the pointer, the squares from the
 /// top-left corner to it light up, and a click inserts that table. Insert Table… below the grid
-/// asks for a size the grid cannot show.
+/// asks for a size the grid cannot show; Convert Text to Table… turns the selected lines into a
+/// table, and is dimmed while there is nothing selected it can convert.
 struct TableGridPicker: View {
     let selection: TableGridSelection
     let insert: (TableSize) -> Void
     let insertCustom: () -> Void
-    @State private var customHovered = false
+    /// Nil while there is no text to convert.
+    let convertText: (() -> Void)?
 
     private static var pitch: CGFloat { TableGrid.square + TableGrid.gap }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(selection.hovered?.title ?? "Insert Table")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(OLColor.text)
-                .frame(height: 26, alignment: .center)
-                .padding(.horizontal, TableGrid.inset)
+            text(selection.hovered?.title ?? "Insert Table", size: TableGrid.titleFont, top: TableGrid.titleTop)
+                .foregroundStyle(TableGrid.text)
+                .frame(height: TableGrid.gridTop, alignment: .top)
+                .padding(.leading, TableGrid.titleX)
             grid
-                .padding(.horizontal, TableGrid.inset)
+                .padding(.leading, TableGrid.gridX)
             Rectangle()
                 .fill(TableGrid.separator)
-                .frame(height: 1)
-                .padding(.horizontal, TableGrid.inset)
-                .padding(.vertical, 6)
-            Button(action: insertCustom) {
-                Text("Insert Table…")
-                    .font(.system(size: 13))
-                    .foregroundStyle(customHovered ? Color.white : OLColor.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, TableGrid.inset)
-                    .frame(height: 22)
-                    .background(customHovered ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .onHover { customHovered = $0 }
-            .padding(.horizontal, 5)
-            .padding(.bottom, 5)
+                .frame(height: TableGrid.rule)
+                .padding(.top, TableGrid.ruleTop - TableGrid.gridTop - gridHeight)
+            PickerItem(title: "Insert Table…", enabled: true, action: insertCustom) { InsertTableIcon() }
+                .padding(.top, TableGrid.itemsTop - TableGrid.ruleTop - TableGrid.rule)
+            PickerItem(title: "Convert Text to Table…", enabled: convertText != nil, action: { convertText?() }) { ConvertTextIcon() }
         }
+        .padding(.bottom, TableGrid.bottom)
+        .frame(width: TableGrid.width, alignment: .leading)
+        .background(TableGrid.ground, in: RoundedRectangle(cornerRadius: TableGrid.corner))
         .fixedSize()
     }
+
+    private var gridHeight: CGFloat { CGFloat(TableGrid.rows) * Self.pitch - TableGrid.gap }
 
     private var grid: some View {
         VStack(spacing: TableGrid.gap) {
@@ -109,7 +123,7 @@ struct TableGridPicker: View {
 
     private func square(lit: Bool) -> some View {
         Rectangle()
-            .fill(lit ? TableGrid.litFill : TableGrid.fill)
+            .fill(lit ? TableGrid.litFill : Color.clear)
             .overlay(Rectangle().strokeBorder(lit ? TableGrid.litLine : TableGrid.line, lineWidth: 1))
             .frame(width: TableGrid.square, height: TableGrid.square)
     }
@@ -117,6 +131,94 @@ struct TableGridPicker: View {
     private func size(at point: CGPoint) -> TableSize {
         TableSize(columns: min(max(Int(point.x / Self.pitch) + 1, 1), TableGrid.columns),
                   rows: min(max(Int(point.y / Self.pitch) + 1, 1), TableGrid.rows))
+    }
+}
+
+/// A line of the picker's text, `top` points below the top of its row.
+private func text(_ string: String, size: CGFloat, top: CGFloat) -> some View {
+    Text(string)
+        .font(.system(size: size))
+        .lineLimit(1)
+        .padding(.top, top)
+}
+
+/// One of the items under the grid: its icon, its title, lit under the pointer as a menu item
+/// is, dimmed with nothing to act on.
+private struct PickerItem<Icon: View>: View {
+    let title: String
+    let enabled: Bool
+    let action: () -> Void
+    @ViewBuilder let icon: () -> Icon
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topLeading) {
+                icon()
+                    .opacity(enabled ? 1 : TableGrid.dimmedIcon)
+                    .padding(.leading, TableGrid.itemIconX)
+                text(title, size: TableGrid.itemFont, top: TableGrid.itemTextTop)
+                    .foregroundStyle(lit ? Color.white : enabled ? TableGrid.text : TableGrid.dimmedText)
+                    .padding(.leading, TableGrid.itemTextX)
+            }
+            .frame(width: TableGrid.width, height: TableGrid.itemRow, alignment: .topLeading)
+            .background {
+                if lit {
+                    RoundedRectangle(cornerRadius: 4).fill(Color.accentColor).padding(.horizontal, TableGrid.itemHighlightInset)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .allowsHitTesting(enabled)
+        .onHover { hovered = $0 }
+    }
+
+    private var lit: Bool { enabled && hovered }
+}
+
+/// Insert Table…'s icon, twenty points by eighteen four points down its row: a table with an
+/// arrow going into it from the left.
+private struct InsertTableIcon: View {
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Image(systemName: "squareshape.split.3x3")
+                .resizable()
+                .frame(width: 18, height: 18)
+                .foregroundStyle(TableGrid.iconGrey)
+                .padding(.leading, 2)
+            Image(systemName: "arrow.right")
+                .resizable()
+                .frame(width: 10, height: 7)
+                .foregroundStyle(TableGrid.iconBlue)
+                .padding(.top, 7)
+        }
+        .padding(.top, 4)
+    }
+}
+
+/// Convert Text to Table…'s icon, twenty points by nineteen three points down its row: lines of
+/// text turning into a column of cells.
+private struct ConvertTextIcon: View {
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Image(systemName: "text.alignleft")
+                .resizable()
+                .frame(width: 8, height: 7)
+                .foregroundStyle(TableGrid.iconGrey)
+                .padding(.leading, 2)
+            Image(systemName: "arrow.turn.down.right")
+                .resizable()
+                .frame(width: 9, height: 9)
+                .foregroundStyle(TableGrid.iconBlue)
+                .padding(.top, 11)
+            Image(systemName: "rectangle.grid.1x3")
+                .resizable()
+                .frame(width: 8, height: 19)
+                .foregroundStyle(TableGrid.iconGrey)
+                .padding(.leading, 11)
+        }
+        .padding(.top, 3)
     }
 }
 
@@ -134,7 +236,7 @@ final class TableGridPanel: NSPanel {
 
     @MainActor
     static func show(below anchor: NSView, hovering size: TableSize? = nil, insert: @escaping (TableSize) -> Void,
-                     insertCustom: @escaping () -> Void, closed: @escaping () -> Void) {
+                     insertCustom: @escaping () -> Void, convertText: (() -> Void)?, closed: @escaping () -> Void) {
         shown?.close()
         guard let parent = anchor.window else { return }
         let panel = TableGridPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: true)
@@ -152,20 +254,17 @@ final class TableGridPanel: NSPanel {
                                      insertCustom: { [weak panel] in
                                          panel?.close()
                                          insertCustom()
+                                     },
+                                     convertText: convertText.map { convert in
+                                         { [weak panel] in
+                                             panel?.close()
+                                             convert()
+                                         }
                                      })
         let host = NSHostingView(rootView: picker)
         let fitting = host.fittingSize
-        let ground = NSVisualEffectView(frame: NSRect(origin: .zero, size: fitting))
-        ground.material = .menu
-        ground.state = .active
-        ground.blendingMode = .behindWindow
-        ground.wantsLayer = true
-        ground.layer?.cornerRadius = 6
-        ground.layer?.masksToBounds = true
-        host.frame = ground.bounds
-        host.autoresizingMask = [.width, .height]
-        ground.addSubview(host)
-        panel.contentView = ground
+        host.frame = NSRect(origin: .zero, size: fitting)
+        panel.contentView = host
 
         // Hang two points below the tile's lit area, which stops six points above its foot, and
         // stay on the screen as a menu does: a compose window near its edge, or wider than the

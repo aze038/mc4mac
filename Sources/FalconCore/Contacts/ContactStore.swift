@@ -34,11 +34,23 @@ public actor ContactStore {
                 current[i].lastUsed = Date()
                 if current[i].name.isEmpty { current[i].name = a.name }
             } else {
-                current.append(ContactInfo(id: "recent:" + a.address.lowercased(), accountID: accountID, name: a.name, email: a.address, source: "recent", useCount: 1, lastUsed: Date()))
+                current.append(ContactInfo(id: "recent:" + a.address.lowercased(), accountID: accountID, name: a.name, email: a.address,
+                                           source: ContactInfo.recentSource, useCount: 1, lastUsed: Date()))
             }
         }
         contacts[accountID] = current
         try AtomicFile.writeJSON(current, to: directory.appendingPathComponent("\(accountID.uuidString).json"))
+    }
+
+    /// Takes `address` out of every account's recent addresses, as the suggestion list's remove
+    /// button does in Outlook. A contact list's entry for it stays: that is the list's to keep.
+    public func forgetRecent(_ address: String) throws {
+        for (accountID, list) in contacts {
+            let kept = list.filter { !($0.isRecentAddress && $0.email.caseInsensitiveCompare(address) == .orderedSame) }
+            guard kept.count != list.count else { continue }
+            contacts[accountID] = kept
+            try AtomicFile.writeJSON(kept, to: directory.appendingPathComponent("\(accountID.uuidString).json"))
+        }
     }
 
     public func suggest(_ prefix: String, limit: Int = 8) -> [ContactInfo] {
@@ -57,7 +69,12 @@ public struct GooglePeopleClient: Sendable {
 
     struct Person: Decodable {
         struct Name: Decodable { var displayName: String? }
-        struct Email: Decodable { var value: String? }
+        struct Email: Decodable {
+            var value: String?
+            var type: String?
+            /// The type as People shows it, "Work" for work, or a custom type as written.
+            var formattedType: String?
+        }
         var resourceName: String
         var names: [Name]?
         var emailAddresses: [Email]?
@@ -92,7 +109,9 @@ public struct GooglePeopleClient: Sendable {
                 let name = person.names?.first?.displayName ?? ""
                 for e in person.emailAddresses ?? [] {
                     guard let value = e.value, !value.isEmpty else { continue }
-                    out.append(ContactInfo(id: person.resourceName + ":" + value.lowercased(), accountID: accountID, name: name, email: value, source: source))
+                    let label = (e.formattedType ?? e.type)?.trimmingCharacters(in: .whitespaces)
+                    out.append(ContactInfo(id: person.resourceName + ":" + value.lowercased(), accountID: accountID, name: name, email: value,
+                                           source: source, label: label?.isEmpty == false ? label : nil))
                 }
             }
             token = p.nextPageToken

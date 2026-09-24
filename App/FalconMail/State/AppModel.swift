@@ -1479,6 +1479,13 @@ final class AppModel {
         }
     }
 
+    /// Forgets `address` as one of the recent addresses, as the suggestion list's remove button
+    /// asks; a contact list's entry for it stays.
+    func forgetRecentAddress(_ address: String) {
+        contactList.removeAll { $0.isRecentAddress && $0.email.caseInsensitiveCompare(address) == .orderedSame }
+        Task { try? await contacts.forgetRecent(address) }
+    }
+
     func newDraft(_ draft: ComposeDraft) -> UUID {
         drafts[draft.id] = draft
         return draft.id
@@ -1581,7 +1588,7 @@ final class AppModel {
                 _ = newDraft(draft)
                 openWindow(draft.id)
             } else {
-                openCompose(draft)
+                openCompose(draft, onlyCopy: true)
             }
             statusText = "Reopened “\(title)” as a draft"
         }

@@ -2,22 +2,24 @@ import SwiftUI
 import AppKit
 import FalconCore
 
-/// Legacy Outlook's address completion under a recipient field. The list is a borderless child
-/// window hung from the bottom-left corner of the view this sits behind, so it floats over the
-/// header band and the message body without moving either. It never takes the keyboard: the
-/// field goes on receiving the typing, and Down, Up, Return, Tab and Escape are read on their way
-/// to it while the list is open.
+/// Legacy Outlook's address completion under a recipient field: a popover whose arrow points up
+/// at the field, headed Contacts and Recent Addresses, a row to an address with its name, the
+/// address and the contact list's label, and a button that forgets an address known only from
+/// mail sent. It is a borderless child window hung from the view this sits behind, so it floats
+/// over the header band and the message body without moving either. It never takes the
+/// keyboard: the field goes on receiving the typing, and Down, Up, Return, Tab and Escape are
+/// read on their way to it while the list is open.
 struct RecipientSuggestions: NSViewRepresentable {
     static let maxRows = 8
-    static let rowHeight: CGFloat = 22
-    static let listInset: CGFloat = 3
 
-    let contacts: [ContactInfo]
+    let rows: [RecipientSuggestion]
     /// What the field holds; its last fragment is what the rows would replace.
     let text: String
     /// Hands over the field's text with a row in place of the fragment; the list is already shut.
     let accept: (String) -> Void
     let dismiss: () -> Void
+    /// Forgets a recent address; the field works the rows out again.
+    let remove: (RecipientSuggestion) -> Void
 
     func makeNSView(context: Context) -> AnchorView { AnchorView() }
 
@@ -25,18 +27,26 @@ struct RecipientSuggestions: NSViewRepresentable {
         view.text = text
         view.accept = accept
         view.dismiss = dismiss
-        view.show(contacts, for: RecipientText.lastFragment(of: text))
+        view.remove = remove
+        view.show(rows, for: RecipientText.lastFragment(of: text))
     }
 
     static func dismantleNSView(_ view: AnchorView, coordinator: ()) {
         view.show([], for: "")
     }
 
+    /// Where the middle of row `row`, counted from one, stands in a list window `height` points
+    /// tall, measured up from its foot as AppKit measures.
+    static func rowMidY(_ row: Int, inPanelOfHeight height: CGFloat) -> CGFloat {
+        height - SuggestionLook.listTop - (CGFloat(row) - 0.5) * SuggestionLook.rowHeight
+    }
+
     final class AnchorView: NSView {
         var text = ""
         var accept: (String) -> Void = { _ in }
         var dismiss: () -> Void = {}
-        private var contacts: [ContactInfo] = []
+        var remove: (RecipientSuggestion) -> Void = { _ in }
+        private var rows: [RecipientSuggestion] = []
         private var fragment = ""
         /// The row Return and Tab take. None while the fragment is a whole address that the top
         /// row does not have, so the list never looks as if it will replace what was typed.
@@ -61,9 +71,9 @@ struct RecipientSuggestions: NSViewRepresentable {
             reposition()
         }
 
-        func show(_ list: [ContactInfo], for typed: String) {
-            guard list != contacts || typed != fragment else { return }
-            contacts = list
+        func show(_ list: [RecipientSuggestion], for typed: String) {
+            guard list != rows || typed != fragment else { return }
+            rows = list
             fragment = typed
             chosen = false
             highlighted = list.first.flatMap { RecipientText.mayComplete(typed, with: $0.email) ? 0 : nil }
@@ -99,19 +109,18 @@ struct RecipientSuggestions: NSViewRepresentable {
         /// Empties and hides the list there and then rather than on SwiftUI's next update, so a
         /// key already queued behind the one that closed it finds nothing left to act on.
         private func shut() {
-            contacts = []
+            rows = []
             highlighted = nil
             chosen = false
             hide()
         }
 
-        /// Puts the contact in place of the fragment. The field editor is given the new text at
-        /// once with the caret at its end, as typing would leave it, so keys queued behind this
-        /// one follow the recipient instead of landing on the text it replaced.
-        private func take(_ contact: ContactInfo) {
+        /// Puts the row's address in place of the fragment. The field editor is given the new
+        /// text at once with the caret at its end, as typing would leave it, so keys queued behind
+        /// this one follow the recipient instead of landing on the text it replaced.
+        private func take(_ row: RecipientSuggestion) {
             let editor = fieldEditor
-            let completed = RecipientText.completing(editor?.string ?? text,
-                                                     with: EmailAddress(name: contact.name, address: contact.email))
+            let completed = RecipientText.completing(editor?.string ?? text, with: row.address)
             shut()
             if let editor {
                 let whole = NSRange(location: 0, length: (editor.string as NSString).length)
@@ -135,13 +144,14 @@ struct RecipientSuggestions: NSViewRepresentable {
         }
 
         private func render() {
-            panel?.list.rootView = SuggestionList(contacts: contacts, highlighted: highlighted,
+            panel?.list.rootView = SuggestionList(rows: rows, highlighted: highlighted,
                                                   accept: { [weak self] in self?.take($0) },
-                                                  highlight: { [weak self] in self?.highlight($0) })
+                                                  highlight: { [weak self] in self?.highlight($0) },
+                                                  remove: { [weak self] in self?.remove($0) })
         }
 
         private func highlight(_ index: Int) {
-            guard contacts.indices.contains(index), index != highlighted else { return }
+            guard rows.indices.contains(index), index != highlighted else { return }
             highlighted = index
             render()
         }
@@ -151,15 +161,13 @@ struct RecipientSuggestions: NSViewRepresentable {
             place(panel, in: window)
         }
 
-        /// Hung from the anchor's bottom-left corner, as wide as the rows want but no wider than the
-        /// field. The list sits a point inside the panel, so it starts on the field's left edge a
-        /// point below it: its border runs down the field's and meets it under the box.
+        /// The arrow's tip meets the foot of the field's box, the popover's left edge fifteen
+        /// points in from the box's, as Outlook hangs it.
         private func place(_ panel: SuggestionPanel, in window: NSWindow) {
             let anchor = convert(bounds, to: nil)
             let size = panel.list.fittingSize
-            let width = min(max(size.width, SuggestionList.minimumWidth), anchor.width)
-            let corner = window.convertPoint(toScreen: NSPoint(x: anchor.minX - 1, y: anchor.minY))
-            panel.setFrame(NSRect(x: corner.x, y: corner.y - size.height, width: width, height: size.height), display: true)
+            let corner = window.convertPoint(toScreen: NSPoint(x: anchor.minX + SuggestionLook.bodyX, y: anchor.minY))
+            panel.setFrame(NSRect(x: corner.x, y: corner.y - size.height, width: size.width, height: size.height), display: true)
         }
 
         private func watch(_ window: NSWindow) {
@@ -184,14 +192,14 @@ struct RecipientSuggestions: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent) -> Bool {
-            guard !contacts.isEmpty, event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]),
+            guard !rows.isEmpty, event.modifierFlags.isDisjoint(with: [.command, .option, .control, .shift]),
                   let editor = fieldEditor else { return false }
             // An input method composing a character owns Return and Escape until it is done.
             if editor.hasMarkedText() { return false }
             switch event.keyCode {
             case KeyRouter.Code.downArrow:
                 chosen = true
-                highlight(highlighted.map { min($0 + 1, contacts.count - 1) } ?? 0)
+                highlight(highlighted.map { min($0 + 1, rows.count - 1) } ?? 0)
             case KeyRouter.Code.upArrow:
                 chosen = true
                 highlight(highlighted.map { max($0 - 1, 0) } ?? 0)
@@ -199,9 +207,9 @@ struct RecipientSuggestions: NSViewRepresentable {
                 // A whole address typed or pasted stays as it is unless the arrows picked another
                 // row; the key goes on to the field instead, so Tab moves to the next one.
                 guard let row = highlighted,
-                      chosen || RecipientText.mayComplete(RecipientText.lastFragment(of: editor.string), with: contacts[row].email)
+                      chosen || RecipientText.mayComplete(RecipientText.lastFragment(of: editor.string), with: rows[row].email)
                 else { return false }
-                take(contacts[row])
+                take(rows[row])
             case KeyRouter.Code.escape:
                 shut()
                 dismiss()
@@ -217,9 +225,53 @@ struct RecipientSuggestions: NSViewRepresentable {
     }
 }
 
+/// The popover measured off Outlook's (2x, dark): a 486 point body with a one point border, its
+/// arrow ten points tall on a seventeen point base, then inside it a 27 point header band and 27
+/// point rows, their text in 13 points with its capitals from 6.5 points down.
+enum SuggestionLook {
+    static let bodyX: CGFloat = 15
+    static let bodyWidth: CGFloat = 486
+    static let arrowHeight: CGFloat = 10
+    static let arrowTipX: CGFloat = 14.5
+    static let arrowBase: CGFloat = 17
+    static let corner: CGFloat = 2
+    static let border: CGFloat = 1
+    static let insetX: CGFloat = 3
+    static let insetTop: CGFloat = 10
+    static let insetBottom: CGFloat = 5
+    static let rowHeight: CGFloat = 27
+    /// Outlook's list stops this far short of its last row, which it cuts off.
+    static let lastRowCut: CGFloat = 5
+    static let font: CGFloat = 13
+    static let textTop: CGFloat = 3.5
+    static let headerTextX: CGFloat = 25
+    static let nameX: CGFloat = 33
+    static let nameWidth: CGFloat = 180.5
+    static let addressX: CGFloat = 236.5
+    static let addressWidth: CGFloat = 180
+    static let labelInset: CGFloat = 5.5
+    static let removeSize: CGFloat = 13
+    /// The remove button's circle ends five points in from the rows' right edge, centred on its
+    /// row; the symbol's own margin takes a point and a half of that and sets it half a point low.
+    static let removeInset: CGFloat = 3.5
+    static let removeLift: CGFloat = 0.5
+
+    /// From the window's top to the first row: the arrow, the body's inset and the header.
+    static var listTop: CGFloat { arrowHeight + insetTop + rowHeight }
+
+    static let fill = OLColor.dynamic(light: 0xE9E9E9, dark: 0x323232)
+    static let line = OLColor.dynamic(light: 0xC4C4C4, dark: 0x424242)
+    static let header = OLColor.dynamic(light: 0xFFFFFF, dark: 0x1E1E1E)
+    static let row = OLColor.dynamic(light: 0xF5F5F5, dark: 0x3C3C3C)
+    static let selected = OLColor.dynamic(light: 0x0064E1, dark: 0x2458CA)
+    static let text = OLColor.dynamic(light: 0x000000, dark: 0xFFFFFF)
+    static let removeGlyph = OLColor.dynamic(light: 0x8C8C8C, dark: 0xB8B8B8)
+}
+
 /// A child window that never becomes key, so the field it hangs from keeps the caret.
 private final class SuggestionPanel: NSPanel {
-    let list = FirstClickHostingView(rootView: SuggestionList(contacts: [], highlighted: nil, accept: { _ in }, highlight: { _ in }))
+    let list = FirstClickHostingView(rootView: SuggestionList(rows: [], highlighted: nil, accept: { _ in }, highlight: { _ in },
+                                                              remove: { _ in }))
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -229,10 +281,7 @@ private final class SuggestionPanel: NSPanel {
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         animationBehavior = .none
-        // The anchor reads the rows' size off the list and sets the frame; a list wider than the
-        // field is cut short rather than let widen the panel past it.
         list.sizingOptions = [.intrinsicContentSize]
-        list.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         contentView = list
     }
 
@@ -245,48 +294,106 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// Outlook's rows: the name, then the address in the secondary colour; the highlighted row in
-/// the accent colour with white text.
-private struct SuggestionList: View {
-    static let minimumWidth: CGFloat = 280
-
-    let contacts: [ContactInfo]
+/// Outlook's list: the header, then a row to an address, the highlighted one blue with white
+/// text. The rows sit in a frame that stops short of the last one, as Outlook's does.
+struct SuggestionList: View {
+    let rows: [RecipientSuggestion]
     let highlighted: Int?
-    let accept: (ContactInfo) -> Void
+    let accept: (RecipientSuggestion) -> Void
     let highlight: (Int) -> Void
+    let remove: (RecipientSuggestion) -> Void
+
+    private typealias Look = SuggestionLook
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(contacts.enumerated()), id: \.offset) { index, contact in
-                row(contact, highlighted: index == highlighted)
-                    .onHover { if $0 { highlight(index) } }
-                    .onTapGesture { accept(contact) }
+            line("Contacts and Recent Addresses", weight: .bold)
+                .foregroundStyle(Look.text)
+                .padding(.leading, Look.headerTextX)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Look.header)
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    self.row(row, highlighted: index == highlighted)
+                        .onHover { if $0 { highlight(index) } }
+                        .onTapGesture { accept(row) }
+                }
             }
+            .frame(height: max(CGFloat(rows.count) * Look.rowHeight - Look.lastRowCut, 0), alignment: .top)
+            .clipped()
         }
-        .padding(.vertical, RecipientSuggestions.listInset)
-        .background(OLColor.reading)
-        // Boxed like the header fields, a one point line centred on the edge, with room in the
-        // window for the half of it that falls outside.
-        .clipShape(RoundedRectangle(cornerRadius: 2))
-        .overlay(RoundedRectangle(cornerRadius: 2).stroke(OLColor.divider, lineWidth: 1))
-        .padding(1)
-        .themedRoot()
+        .padding(.top, Look.arrowHeight + Look.insetTop)
+        .padding(.bottom, Look.insetBottom)
+        .padding(.horizontal, Look.insetX)
+        .frame(width: Look.bodyWidth)
+        .background {
+            PopoverOutline().fill(Look.fill)
+            PopoverOutline().stroke(Look.line, lineWidth: Look.border)
+        }
     }
 
-    private func row(_ contact: ContactInfo, highlighted: Bool) -> some View {
-        HStack(spacing: 6) {
-            Text(contact.name.isEmpty ? contact.email : contact.name)
-                .foregroundStyle(highlighted ? Color.white : OLColor.text)
-            if !contact.name.isEmpty {
-                Text(contact.email)
-                    .foregroundStyle(highlighted ? Color.white : OLColor.textMuted)
+    /// A line of the list's text, placed in its 27 point row as Outlook places it.
+    private func line(_ string: String, weight: Font.Weight = .regular) -> some View {
+        Text(string)
+            .font(.system(size: Look.font, weight: weight))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.top, Look.textTop)
+            .frame(height: Look.rowHeight, alignment: .top)
+    }
+
+    private func row(_ row: RecipientSuggestion, highlighted: Bool) -> some View {
+        HStack(spacing: 0) {
+            line(row.name.isEmpty ? row.email : row.name)
+                .frame(width: Look.nameWidth, alignment: .leading)
+            line(row.email)
+                .frame(width: Look.addressWidth, alignment: .leading)
+                .padding(.leading, Look.addressX - Look.nameX - Look.nameWidth)
+            Spacer(minLength: 0)
+            if row.isRecentAddress {
+                Button { remove(row) } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: Look.removeSize, weight: .bold))
+                        .foregroundStyle(Look.removeGlyph)
+                }
+                .buttonStyle(.plain)
+                .help("Remove from Recent Addresses")
+                .padding(.trailing, Look.removeInset)
+                .offset(y: -Look.removeLift)
+            } else if !row.label.isEmpty {
+                line(row.label)
+                    .padding(.trailing, Look.labelInset)
             }
         }
-        .font(.system(size: OL.composeLabelFont))
-        .lineLimit(1)
-        .padding(.horizontal, OL.composeTextInset)
-        .frame(maxWidth: .infinity, minHeight: RecipientSuggestions.rowHeight, alignment: .leading)
-        .background(highlighted ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear))
+        .foregroundStyle(highlighted ? Color.white : Look.text)
+        .padding(.leading, Look.nameX)
+        .frame(maxWidth: .infinity, minHeight: Look.rowHeight, maxHeight: Look.rowHeight)
+        .background(highlighted ? Look.selected : Look.row)
         .contentShape(Rectangle())
+    }
+}
+
+/// The popover's edge: a rectangle with slightly rounded corners and the arrow rising from its
+/// top, drawn half a point in so a one point line along it stays inside the window.
+private struct PopoverOutline: Shape {
+    func path(in rect: CGRect) -> Path {
+        typealias Look = SuggestionLook
+        let box = rect.insetBy(dx: Look.border / 2, dy: Look.border / 2)
+        let top = rect.minY + Look.arrowHeight + Look.border / 2
+        let tip = CGPoint(x: rect.minX + Look.arrowTipX, y: rect.minY + Look.border / 2)
+        let half = Look.arrowBase / 2
+        let r = Look.corner
+        var path = Path()
+        path.move(to: CGPoint(x: box.minX + r, y: top))
+        path.addLine(to: CGPoint(x: tip.x - half, y: top))
+        path.addLine(to: tip)
+        path.addLine(to: CGPoint(x: tip.x + half, y: top))
+        path.addLine(to: CGPoint(x: box.maxX - r, y: top))
+        path.addArc(tangent1End: CGPoint(x: box.maxX, y: top), tangent2End: CGPoint(x: box.maxX, y: box.maxY), radius: r)
+        path.addArc(tangent1End: CGPoint(x: box.maxX, y: box.maxY), tangent2End: CGPoint(x: box.minX, y: box.maxY), radius: r)
+        path.addArc(tangent1End: CGPoint(x: box.minX, y: box.maxY), tangent2End: CGPoint(x: box.minX, y: top), radius: r)
+        path.addArc(tangent1End: CGPoint(x: box.minX, y: top), tangent2End: CGPoint(x: box.maxX, y: top), radius: r)
+        path.closeSubpath()
+        return path
     }
 }

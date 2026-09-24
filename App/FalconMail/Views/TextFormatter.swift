@@ -237,6 +237,16 @@ final class TextFormatter {
                                  font: RichText.defaultFont, lines: RichText.tableLines)
     }
 
+    /// Whether the selection is text Convert Text to Table can turn into a table.
+    var canConvertTextToTable: Bool {
+        editor.map { ComposedBody.convertibleRange(in: $0, before: history) != nil } ?? false
+    }
+
+    func convertTextToTable() {
+        guard let editor else { return }
+        ComposedBody.convertToTable(in: editor, before: history, font: RichText.defaultFont, lines: RichText.tableLines)
+    }
+
     func insertSignature(_ signature: Signature) {
         guard let editor, !signature.isBlank else { return }
         ComposedBody.insertSignature(signature.block, into: editor, before: history)

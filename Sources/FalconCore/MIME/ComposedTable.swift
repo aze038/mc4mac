@@ -29,10 +29,11 @@ public enum ComposedTable {
         return min(max(fitted, needed), body - lineWidth)
     }
 
-    /// Every cell is an empty paragraph in `attributes`; a paragraph style there is kept, and
-    /// its blocks enclose the table, so a table inserted inside a cell nests in it.
+    /// Every cell is a paragraph in `attributes`, empty or holding its text from `contents`,
+    /// rows of columns; a paragraph style there is kept, and its blocks enclose the table, so a
+    /// table inserted inside a cell nests in it.
     public static func grid(rows: Int, columns: Int, width: CGFloat, lines: NSColor,
-                            attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+                            attributes: [NSAttributedString.Key: Any], contents: [[String]] = []) -> NSAttributedString {
         let outer = (attributes[.paragraphStyle] as? NSParagraphStyle) ?? .default
         let table = NSTextTable()
         table.numberOfColumns = columns
@@ -60,9 +61,21 @@ public enum ComposedTable {
                 style.textBlocks = outer.textBlocks + [block]
                 var cell = attributes
                 cell[.paragraphStyle] = style
-                cells.append(NSAttributedString(string: "\n", attributes: cell))
+                let text = contents.indices.contains(row) && contents[row].indices.contains(column) ? contents[row][column] : ""
+                cells.append(NSAttributedString(string: text + "\n", attributes: cell))
             }
         }
         return cells
+    }
+
+    /// Lines of text as the cells of a table, as Convert Text to Table reads them: a row to a
+    /// line, blank lines left out, split at tabs when any line has one and at commas otherwise,
+    /// every row padded to the widest.
+    public static func cells(from text: String) -> [[String]] {
+        let lines = text.components(separatedBy: .newlines).filter { !$0.trimmed.isEmpty }
+        let separator: Character = lines.contains { $0.contains("\t") } ? "\t" : ","
+        let rows = lines.map { $0.split(separator: separator, omittingEmptySubsequences: false).map { String($0).trimmed } }
+        let columns = rows.map(\.count).max() ?? 0
+        return rows.map { $0 + Array(repeating: "", count: columns - $0.count) }
     }
 }
