@@ -1060,9 +1060,10 @@ public actor AccountSyncer {
             backlog = catchUp.unfetched
         }
         var have = await fs.uids()
+        // Where a check's search during a hold begins: above the newest stored.
+        let top = max(have.max() ?? 0, folder.lastSyncedUID)
         let candidates: [UInt32]
         if backlog != nil {
-            let top = max(have.max() ?? 0, folder.lastSyncedUID)
             candidates = try await client.uidSearch("UID \(top + 1):*").filter { $0 > top }
         } else if folder.lastSyncedUID == 0 {
             let all = try await client.uidSearch("ALL")
@@ -1116,8 +1117,15 @@ public actor AccountSyncer {
             await store.notifyMessagesChanged(folderID: folder.id)
         }
         if let backlog, let held = catchUps[folder.id] {
-            // The catch-up keeps its time; whatever this window left joins its backlog.
-            result.unfetched = (backlog + later).sorted()
+            // The catch-up keeps its time; whatever this window left joins its backlog, each
+            // message once. With the newest stored gone from INBOX the search began below the
+            // backlog and listed it again: what it took is stored or gone, and what it no longer
+            // lists above where it began is gone. Only what the server holds and FalconMail does
+            // not may count as still to fetch, or the count that keeps a reply listing nothing
+            // from removing rows would reckon on messages that are not there.
+            let listed = Set(candidates)
+            let waiting = backlog.filter { $0 <= top || listed.contains($0) }
+            result.unfetched = Set(waiting + later).subtracting(have).subtracting(taking).sorted()
             catchUps[folder.id] = (held.notBefore, result.unfetched)
             return result
         }

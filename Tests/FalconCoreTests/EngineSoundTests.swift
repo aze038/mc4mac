@@ -613,6 +613,59 @@ final class EngineSoundTests: XCTestCase {
         XCTAssertEqual(listener.sounds, [.newMessage, .newMessage], "the bulk's newest and the one asked for; never No new messages")
     }
 
+    func testACheckDuringACatchUpWhoseNewestLeftTheInboxRemovesNothingForAFlagReplyThatListsNothing() async throws {
+        var pacing = self.pacing
+        pacing.catchUpWindow = 35
+        pacing.catchUpInterval = 3600
+        var old: [UInt32] = []
+        let (h, _) = try await started(pacing) { server in
+            old = server.addMany(29, to: "INBOX") { FakeIMAPServer.message("old-\($0)") }
+        }
+        old = try await h.uids(in: "INBOX").sorted()
+        XCTAssertEqual(old.count, 30)
+        // Another program files 105 messages at once: a pass takes the newest 35 and holds the
+        // other 70 back for the catch-up interval, an hour here.
+        let bulk = h.server.addMany(105, to: "INBOX") { FakeIMAPServer.message("bulk-\($0)") }
+        await h.syncer.requestSync()
+        await assertEventually { ((try? await h.uids(in: "INBOX")) ?? []).count == 65 }
+        await assertEventually { await self.finishedCount(h) >= 2 && h.server.idlingCount == 1 }
+        // Those 35 leave INBOX, as a rule, the owner or another program might take them, and a
+        // pass drops them: the newest stored is now below the whole backlog.
+        for uid in bulk.suffix(35) { h.server.remove(uid: uid, from: "INBOX") }
+        await h.syncer.requestSync()
+        await assertEventually { ((try? await h.uids(in: "INBOX")) ?? []).count == 30 }
+        await assertEventually { await self.finishedCount(h) >= 3 && h.server.idlingCount == 1 }
+
+        // Send & Receive during the hold, when the server loses track of INBOX for one flag
+        // fetch: the count guard must still see that nothing is missing.
+        let urgent = h.server.add(fresh("urgent"), to: "INBOX")
+        h.server.emptyNextFlagFetches(1)
+        await h.syncer.requestSync(check: true)
+        await assertEventually { await self.checkedCount(h) == 1 }
+        await assertEventually { h.server.idlingCount == 1 }
+        await h.settled()
+        var stored = Set(try await h.uids(in: "INBOX"))
+        XCTAssertEqual(Set(old).subtracting(stored), [], "no row is taken off INBOX for a flag reply that listed nothing")
+        XCTAssertTrue(stored.contains(urgent))
+        XCTAssertEqual(stored.count, 65, "the thirty old, the one asked for and the backlog's newest 34")
+        let found = await h.events.all.compactMap { if case .checked(_, let found) = $0 { return found }; return nil }
+        XCTAssertEqual(found, [true])
+
+        // What the check left for the catch-up counts each message once, so a plain pass
+        // still in the hold is not misled by the next such reply either.
+        let before = await finishedCount(h)
+        h.server.emptyNextFlagFetches(1)
+        await h.syncer.requestSync()
+        await assertEventually { await self.finishedCount(h) > before && h.server.idlingCount == 1 }
+        await h.settled()
+        stored = Set(try await h.uids(in: "INBOX"))
+        XCTAssertEqual(stored.count, 65)
+        XCTAssertEqual(Set(old).subtracting(stored), [])
+        let cursor = try await h.folder("INBOX").lastSyncedUID
+        XCTAssertLessThan(cursor, bulk[0], "the cursor stays below the backlog")
+        XCTAssertEqual(h.server.messages(in: "INBOX").count, 101, "and nothing on the server was touched")
+    }
+
     func testACheckOnAServerWithoutIdleIsAnsweredAtOnce() async throws {
         let clock = Date()
         let server = try EngineHarness.gmailServer(capabilities: ["IMAP4rev1", "AUTH=PLAIN", "MOVE", "UIDPLUS", "SPECIAL-USE"])
