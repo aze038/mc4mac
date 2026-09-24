@@ -22,6 +22,7 @@ public struct FileLayout: Sendable {
     public var notificationPolicyFile: URL { root.appendingPathComponent("notifications.json") }
     public var outboxDirectory: URL { root.appendingPathComponent("Outbox", isDirectory: true) }
     public var contactsDirectory: URL { root.appendingPathComponent("Contacts", isDirectory: true) }
+    public var diagnosticsDirectory: URL { root.appendingPathComponent("Diagnostics", isDirectory: true) }
 
     public func accountDirectory(_ accountID: UUID) -> URL {
         root.appendingPathComponent("Accounts", isDirectory: true).appendingPathComponent(accountID.uuidString, isDirectory: true)
