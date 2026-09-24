@@ -133,9 +133,9 @@ What becomes an event:
   takes the engine's typed `MailServiceError`: a warning when it passes by itself (a
   throttle, a connection limit, a dropped connection, a message moved or deleted), an error
   when something the owner asked for did not happen or the account waits for them (a
-  refused sign-in, a refusal, a message held in the Outbox). The kind the engine read from
-  the server's status and response code, never the server's words, gives the signature and
-  the title. The areas are stable, one for each kind of work:
+  refused sign-in, a refusal, a message held in the Outbox). The kind the engine decided
+  from the server's status and response code gives the signature and the title; the server's
+  words never appear in either. The areas are stable, one for each kind of work:
 
   | Area | What failed | Example signature |
   | --- | --- | --- |

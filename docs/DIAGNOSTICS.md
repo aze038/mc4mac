@@ -117,10 +117,12 @@ A logged failure is placed by its file and function, not its line: lines move wh
 above them changes, nearly every release and above all in the one that fixes the failure, which
 would make a fixed problem look new and lose the team's notes on it.
 
-A failure of the mail engine takes its code from the kind of failure the engine read from the
+A failure of the mail engine takes its code from the kind of failure the engine decided: from the
 server's status, its response code (such as `THROTTLED`, `AUTHENTICATIONFAILED` or `TRYCREATE`) or
-its SMTP code, never from the server's words, so a server that words the same refusal otherwise
-still gives the same signature. The words reach the event only in its `message`, redacted. Its
+its SMTP code, and for Gmail's throttle and connection limit, which come without a code, from the
+fixed phrases Gmail sends them with. So a server that words the same coded refusal otherwise still
+gives the same signature, and the server's words never appear in a signature or a title: they
+reach the event only in its `message`, redacted. Its
 context says the kind as `failure` and, for the engine's own work, the account's status when it
 failed as `health` (`connecting`, `online`, `offline`, `imapPaused`, `needsSignIn` or `blocked`).
 
