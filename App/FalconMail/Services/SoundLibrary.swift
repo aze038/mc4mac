@@ -1,106 +1,113 @@
 import AppKit
+import FalconCore
 
-enum MailSound: String, CaseIterable, Identifiable {
-    case newMail, sent, error, reminder
-
-    var id: String { rawValue }
-
+extension MailSoundEvent {
+    /// As Outlook's Notifications and Sounds pane names them.
     var title: String {
         switch self {
-        case .newMail: return "New mail"
-        case .sent: return "Message sent"
-        case .error: return "Error"
+        case .newMessage: return "New message"
+        case .messageSent: return "Message sent"
         case .reminder: return "Reminder"
+        case .syncError: return "Mailbox sync error"
+        case .noNewMessages: return "No new messages"
+        case .welcome: return "Welcome"
         }
     }
 
-    var outlookFile: String {
+    /// The built-in set's file in the app bundle.
+    var fileName: String {
         switch self {
-        case .newMail: return "newmail"
-        case .sent: return "mailsent"
-        case .error: return "mailerror"
+        case .newMessage: return "newmail"
+        case .messageSent: return "mailsent"
         case .reminder: return "reminder"
+        case .syncError: return "mailerror"
+        case .noNewMessages: return "nomail"
+        case .welcome: return "welcome"
         }
     }
 
+    /// The macOS alert sound the FalconMail set plays.
     var systemName: String {
         switch self {
-        case .newMail: return "Glass"
-        case .sent: return "Pop"
-        case .error: return "Basso"
+        case .newMessage: return "Glass"
+        case .messageSent: return "Pop"
         case .reminder: return "Ping"
+        case .syncError: return "Basso"
+        case .noNewMessages: return "Tink"
+        case .welcome: return "Hero"
         }
     }
 }
 
-enum SoundPreset: String, CaseIterable, Identifiable {
-    case falcon, outlook, silent, custom
+/// The Sound set pop-up's choices. The raw values are those earlier builds stored, so a choice
+/// made there carries over: "outlook" once played the sounds of an installed Outlook and now
+/// plays the same sounds from the app itself, and "silent" is Outlook's None.
+enum SoundSet: String, CaseIterable, Identifiable {
+    case outlook, falcon, custom, silent
 
     var id: String { rawValue }
 
+    /// Outlook calls its own set Default, and so it is here.
     var title: String {
         switch self {
+        case .outlook: return "Default"
         case .falcon: return "FalconMail"
-        case .outlook: return "Outlook"
-        case .silent: return "Silent"
         case .custom: return "Custom"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .falcon: return "The macOS alert sounds FalconMail ships with."
-        case .outlook: return "Plays the sounds from Microsoft Outlook on this Mac. Nothing is copied into FalconMail, so the sounds disappear if Outlook is removed."
-        case .silent: return "No sounds at all. Banners and badges still appear."
-        case .custom: return "Pick a macOS sound for each event yourself."
+        case .silent: return "None"
         }
     }
 }
 
 enum SoundLibrary {
-    static let presetKey = "soundPreset"
-    static let none = SystemSounds.none
+    static let setKey = "soundPreset"
 
-    private static let outlookRoots = [
-        "/Applications/Microsoft Outlook.app/Contents/Resources",
-        "/Applications/Microsoft Outlook.app/Contents/Frameworks/OutlookCore.framework/Versions/A/Resources"
-    ]
-
-    static var outlookAvailable: Bool {
-        MailSound.allCases.contains { outlookURL(for: $0) != nil }
+    static var soundSet: SoundSet {
+        get { SoundSet(rawValue: Preferences.string(setKey, default: SoundSet.outlook.rawValue)) ?? .outlook }
+        set { Preferences.set(newValue.rawValue, setKey) }
     }
 
-    static func outlookURL(for sound: MailSound) -> URL? {
-        for root in outlookRoots {
-            let url = URL(fileURLWithPath: root).appendingPathComponent(sound.outlookFile + ".wav")
-            if FileManager.default.fileExists(atPath: url.path) { return url }
+    static func enabledKey(_ sound: MailSoundEvent) -> String { "sound.on.\(sound.rawValue)" }
+
+    static func isEnabled(_ sound: MailSoundEvent) -> Bool {
+        Preferences.bool(enabledKey(sound), default: sound.isOnByDefault)
+    }
+
+    static func setEnabled(_ on: Bool, _ sound: MailSoundEvent) {
+        Preferences.set(on, enabledKey(sound))
+    }
+
+    /// Earlier builds had one "Notify about new mail" switch for the banner and its sound alike.
+    /// Outlook keeps the sound apart, so someone who had turned that switch off keeps the new
+    /// message sound off too, once, instead of hearing it again after the update.
+    static func carryOverEarlierChoices() {
+        let key = "sound.carriedOver"
+        guard !Preferences.bool(key, default: false) else { return }
+        if UserDefaults.standard.object(forKey: AlertPrefs.desktopAlert) as? Bool == false,
+           UserDefaults.standard.object(forKey: enabledKey(.newMessage)) == nil {
+            setEnabled(false, .newMessage)
         }
-        return nil
+        Preferences.set(true, key)
     }
 
-    static var preset: SoundPreset {
-        get { SoundPreset(rawValue: Preferences.string(presetKey, default: SoundPreset.falcon.rawValue)) ?? .falcon }
-        set { Preferences.set(newValue.rawValue, presetKey) }
-    }
+    static func customKey(_ sound: MailSoundEvent) -> String { "sound.\(sound.rawValue)" }
 
-    static func customKey(_ sound: MailSound) -> String { "sound.\(sound.rawValue)" }
-
-    static func customName(_ sound: MailSound) -> String {
+    static func customName(_ sound: MailSoundEvent) -> String {
         Preferences.string(customKey(sound), default: sound.systemName)
     }
 
-    /// Plays the sound for an event under the chosen preset. Outlook's own files are read from the
-    /// installed copy of Outlook and never bundled.
-    static func play(_ sound: MailSound) {
-        switch preset {
+    /// Loaded once each, so a burst of new mail does not read the file again every time.
+    @MainActor private static var loaded: [MailSoundEvent: NSSound] = [:]
+
+    /// The event's sound in the chosen set, whether or not the event's box is ticked: the pane's
+    /// play buttons and the sound gate both come here.
+    @MainActor static func play(_ sound: MailSoundEvent) {
+        switch soundSet {
         case .silent:
             return
         case .outlook:
-            if let url = outlookURL(for: sound), let player = NSSound(contentsOf: url, byReference: true) {
-                player.play()
-                return
-            }
-            SystemSounds.play(sound.systemName)
+            guard let player = bundled(sound) else { return SystemSounds.play(sound.systemName) }
+            player.stop()
+            player.play()
         case .falcon:
             SystemSounds.play(sound.systemName)
         case .custom:
@@ -108,10 +115,11 @@ enum SoundLibrary {
         }
     }
 
-    static func preview(_ sound: MailSound, preset: SoundPreset) {
-        let saved = SoundLibrary.preset
-        SoundLibrary.preset = preset
-        play(sound)
-        SoundLibrary.preset = saved
+    @MainActor private static func bundled(_ sound: MailSoundEvent) -> NSSound? {
+        if let player = loaded[sound] { return player }
+        guard let url = Bundle.main.url(forResource: sound.fileName, withExtension: "wav"),
+              let player = NSSound(contentsOf: url, byReference: true) else { return nil }
+        loaded[sound] = player
+        return player
     }
 }

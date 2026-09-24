@@ -75,6 +75,14 @@ public actor SyncCoordinator {
     public func syncNow() async {
         for s in syncers.values { await s.requestSync() }
     }
+
+    /// The accounts being kept in sync, which a check for new mail asks.
+    public var runningAccountIDs: Set<UUID> { Set(syncers.keys) }
+
+    /// Send & Receive: a sync of every account whose pass ends with `checked`.
+    public func checkForNewMail() async {
+        for s in syncers.values { await s.requestSync(check: true) }
+    }
 }
 
 public struct SMTPSender: MessageSender {

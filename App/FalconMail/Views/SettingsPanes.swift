@@ -112,6 +112,20 @@ struct GeneralSettings: View {
                 Toggle("Hide On My Computer folders", isOn: $hideLocal)
                 Toggle("Allow folder reordering", isOn: $allowReordering)
             }
+
+            // Outlook leaves the Dock's badge to macOS; FalconMail draws its own, so whether to
+            // show it at all is kept here, next to the rest of how the app looks.
+            SettingsRow(label: "Dock:") {
+                Toggle("Show unread count in the Dock", isOn: $model.dockBadge)
+            }
+
+            Divider()
+
+            SearchSettingsRows()
+
+            Divider()
+
+            UpdateSettingsRows()
         }
     }
 }
@@ -722,21 +736,19 @@ struct SpellingSettings: View {
     }
 }
 
-struct SearchSettings: View {
+/// Search's settings, which Outlook's grid has no pane for; they sit in General.
+struct SearchSettingsRows: View {
     @AppStorage("searchShowTopResults") private var topResults = true
     @AppStorage("searchIncludeDeleted") private var includeDeleted = true
     @AppStorage("searchScope") private var scope = "smart"
     @AppStorage("showSavedSearches") private var savedSearches = true
 
     var body: some View {
-        SettingsScroll {
-            SettingsRow(label: "Search Results:") {
-                Toggle("Show top results", isOn: $topResults)
-                Toggle("Include Deleted Items", isOn: $includeDeleted)
-            }
-            Divider()
-            Text("Narrow your results by selecting where you want to search:")
-                .font(.system(size: 13))
+        SettingsRow(label: "Search results:") {
+            Toggle("Show top results", isOn: $topResults)
+            Toggle("Include Deleted Items", isOn: $includeDeleted)
+        }
+        SettingsRow(label: "Search in:") {
             Picker("", selection: $scope) {
                 Text("All Mailboxes").tag("all")
                 Text("Current Mailbox").tag("mailbox")
@@ -745,11 +757,10 @@ struct SearchSettings: View {
                 Text("Subfolders").tag("subfolders")
             }
             .pickerStyle(.radioGroup).labelsHidden()
-            .padding(.leading, 60)
-            Divider()
-            SettingsRow(label: "Saved Searches:") {
-                Toggle("Show Saved Searches folders", isOn: $savedSearches)
-            }
+            .frame(width: 460, alignment: .leading)
+        }
+        SettingsRow(label: "Saved Searches:") {
+            Toggle("Show Saved Searches folders", isOn: $savedSearches)
         }
     }
 }

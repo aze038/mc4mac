@@ -115,7 +115,7 @@ struct HomeRibbon: View {
             }
             RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
                 Button("Run Rules Now") { model.runRulesNow() }
-                Button("Edit Rules…") { openSettings() }
+                Button("Edit Rules…") { SettingsWindows.shared.show(.rules) }
             }
             RibbonSeparator()
 
@@ -140,12 +140,8 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.syncNow() }
+            RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
         }
-    }
-
-    private func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 }
 
@@ -203,12 +199,12 @@ struct OrganiseRibbon: View {
             RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }
             RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
                 Button("Run Rules Now") { model.runRulesNow() }
-                Button("Edit Rules…") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+                Button("Edit Rules…") { SettingsWindows.shared.show(.rules) }
             }
             RibbonTile(title: "Delete\nAll", symbol: "trash.slash", tint: .red, enabled: model.canEmptyCurrentFolder) { model.emptyCurrentFolder() }
             RibbonSeparator()
 
-            RibbonTile(title: "Sync\nFolder", symbol: "arrow.clockwise.circle", tint: .green, enabled: !model.accounts.isEmpty) { model.syncNow() }
+            RibbonTile(title: "Sync\nFolder", symbol: "arrow.clockwise.circle", tint: .green, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
         }
     }
 }
@@ -219,7 +215,7 @@ struct ToolsRibbon: View {
 
     var body: some View {
         RibbonBody {
-            RibbonTile(title: "Accounts", symbol: "person.crop.square") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+            RibbonTile(title: "Accounts", symbol: "person.crop.square") { SettingsWindows.shared.show(.accounts) }
             RibbonTile(title: "Out of\nOffice", symbol: "arrow.left.square", enabled: false) {}
             RibbonTile(title: "Public\nFolders", symbol: "folder.badge.person.crop", enabled: false) {}
             RibbonSeparator()
@@ -296,7 +292,7 @@ struct CategoryMenuItems: View {
         }
         Divider()
         Button("Clear Categories") { model.clearCategories(on: model.selectedMessages) }
-        Button("Edit Categories…") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+        Button("Edit Categories…") { SettingsWindows.shared.show(.categories) }
     }
 }
 

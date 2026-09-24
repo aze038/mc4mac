@@ -34,6 +34,8 @@ struct FalconMailApp: App {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }
                     model.openComposeWindow = { openWindow(value: $0) }
                     appDelegate.model = model
+                    SettingsWindows.shared.model = model
+                    SettingsWindows.shared.updates = model.updates
                     AppAppearance.apply(model.appearance)
                 }
                 .onOpenURL { url in
@@ -99,6 +101,9 @@ struct FalconMailApp: App {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") { Task { await model.updates.check(userInitiated: true) } }
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { SettingsWindows.shared.show() }.keyboardShortcut(",", modifiers: .command)
+            }
             CommandMenu("Archive") {
                 Button("Archive Mail to Cloud…") { NotificationCenter.default.post(name: .falconArchive, object: nil) }
                 Button("Export Folder to Local Archive…") { NotificationCenter.default.post(name: .falconExportArchive, object: nil) }
@@ -121,10 +126,6 @@ struct FalconMailApp: App {
         }
         .defaultSize(width: 917, height: 1006)
         .windowStyle(.hiddenTitleBar)
-
-        Settings {
-            SettingsView().themedRoot().environment(model).environmentObject(model.updates)
-        }
     }
 
     @ViewBuilder private var replyCommands: some View {
@@ -178,7 +179,7 @@ struct FalconMailApp: App {
     }
 
     @ViewBuilder private var syncCommands: some View {
-        Button("Check for New Mail") { model.syncNow() }.keyboardShortcut("n", modifiers: [.command, .shift])
+        Button("Check for New Mail") { model.checkForNewMail() }.keyboardShortcut("n", modifiers: [.command, .shift])
         Button("Load Older Messages") { model.loadOlder() }
     }
 

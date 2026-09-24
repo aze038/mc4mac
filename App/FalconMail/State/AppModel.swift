@@ -318,11 +318,6 @@ final class AppModel {
         get { maxOfflineMBStorage }
         set { maxOfflineMBStorage = newValue; Preferences.set(newValue, "maxOfflineMB"); applyOfflineSettings() }
     }
-    private var sentSoundStorage = Preferences.string("sentSound", default: "Pop")
-    var sentSound: String {
-        get { sentSoundStorage }
-        set { sentSoundStorage = newValue; Preferences.set(newValue, "sentSound") }
-    }
     private var markReadPolicyStorage = Preferences.string("markReadPolicy", default: MarkReadPolicy.delay.rawValue)
     var markReadPolicy: String {
         get { markReadPolicyStorage }
@@ -366,6 +361,7 @@ final class AppModel {
 
     @ObservationIgnored private var restoredState: SessionState?
     @ObservationIgnored private var knownSentIDs = Set<UUID>()
+    @ObservationIgnored private var soundGate = MailSoundGate(isEnabled: SoundLibrary.isEnabled)
     @ObservationIgnored private var bodyCache: [String: MIMEMessage] = [:]
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
@@ -420,6 +416,8 @@ final class AppModel {
     }
 
     func bootstrap() async {
+        SoundLibrary.carryOverEarlierChoices()
+        play(soundGate.launched())
         do { try await store.load() } catch { errorMessage = error.localizedDescription }
         restoredState = session.load()
         for d in session.loadDrafts() { drafts[d.id] = d }
@@ -514,16 +512,21 @@ final class AppModel {
                     self.statusText = text
                 case .finished(let id):
                     self.syncingAccounts.remove(id)
+                    self.soundGate.syncSucceeded(id)
                     self.statusText = "Up to date"
                     await self.refreshBandwidth()
+                case .checked(let id, let found):
+                    self.play(self.soundGate.checkFinished(id, foundNewMail: found, at: Date()))
                 case .error(let id, let message):
                     self.syncingAccounts.remove(id)
+                    self.play(self.soundGate.syncFailed(id, uptime: ProcessInfo.processInfo.systemUptime))
                     if message == FalconError.notAuthenticated.localizedDescription {
                         self.accountsNeedingSignIn.insert(id)
                         self.statusText = "\(self.accountName(id)) needs to sign in again"
                     } else {
                         self.statusText = "\(self.accountName(id)): \(message)"
                     }
+                case .problem(let id, let message): self.statusText = "\(self.accountName(id)): \(message)"
                 case .actionFailed(_, let message): self.showActionError(message)
                 case .online(let id, let on): self.online[id] = on
                 case .newMessages(let id, let folderID, let list):
@@ -538,7 +541,7 @@ final class AppModel {
                 let sent = Set(items.filter { $0.status == .sent }.map { $0.id })
                 let newlySent = sent.subtracting(self.knownSentIDs)
                 if !self.knownSentIDs.isEmpty || !self.outboxItems.isEmpty, !newlySent.isEmpty {
-                    SoundLibrary.play(.sent)
+                    self.play(self.soundGate.messageSent())
                 }
                 for id in newlySent { self.discardSidecar(id) }
                 self.knownSentIDs = sent
@@ -552,8 +555,12 @@ final class AppModel {
     private func announce(_ list: [MessageSummary], accountID: UUID, folderID: UUID) {
         guard !migrationInProgress, let account = accounts.first(where: { $0.id == accountID }), let folder = folder(folderID) else { return }
         let recent = list.filter { $0.date > Date().addingTimeInterval(-48 * 3600) }
-        guard !recent.isEmpty else { return }
-        notifications.notify(newMessages: recent, account: account, folder: folder, policy: notificationPolicy)
+        guard !recent.isEmpty, notifications.announce(recent, account: account, folder: folder, policy: notificationPolicy) else { return }
+        play(soundGate.newMailArrived())
+    }
+
+    private func play(_ sound: MailSoundEvent?) {
+        if let sound { SoundLibrary.play(sound) }
     }
 
     func setNotifyMode(_ mode: NotifyMode, for accountID: UUID) {
@@ -1460,6 +1467,17 @@ final class AppModel {
 
     func syncNow() {
         Task { await coordinator.syncNow() }
+    }
+
+    /// Send & Receive and Check for New Mail: a sync the reader asked for, which says No new
+    /// messages when it finds none. Accounts known to be offline are not waited for; they are
+    /// retrying on their own and would answer long after the question.
+    func checkForNewMail() {
+        Task {
+            let asked = await coordinator.runningAccountIDs.filter { online[$0] != false }
+            soundGate.manualCheckStarted(accounts: asked, at: Date())
+            await coordinator.checkForNewMail()
+        }
     }
 
     var canShowMore: Bool { messages.count < storedInSelection }

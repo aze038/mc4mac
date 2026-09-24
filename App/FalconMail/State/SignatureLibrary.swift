@@ -48,8 +48,8 @@ final class SignatureLibrary {
         saveNow()
     }
 
-    func add() -> Signature {
-        let signature = book.add()
+    func add(startingWith text: String = "") -> Signature {
+        let signature = book.add(startingWith: text)
         saveNow()
         return signature
     }

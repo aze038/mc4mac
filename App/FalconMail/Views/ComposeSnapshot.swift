@@ -5,12 +5,16 @@ import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
 /// Table picker, the main window's Home ribbon, which shares the compose ribbon's tiles, the
-/// Signatures pane with two stand-in signatures, with none and with its notice of a damaged
-/// file set aside, and a signature's editor window, in both appearances into PNGs at twice
-/// their size in that directory, then quits. Nothing is ever put on screen or activated, so
-/// they can be measured against Outlook's while the Mac is in use. Run it with
-/// CFFIXED_USER_HOME pointing at an empty folder, so the model reads no mail; the stand-in
-/// signatures are held in memory and never saved.
+/// Settings window's icon grid, its Signatures pane with two stand-in signatures, with none and
+/// with its notice of a damaged file set aside, its Notifications and Sounds pane and every other
+/// pane, and a signature's editor window for a signature, for a new one and with ¶ showing the
+/// marks for what does not print, in both appearances
+/// into PNGs at twice their size in that directory, writes down beside them the words and
+/// buttons of the question asked before a signature is deleted, then quits.
+/// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
+/// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
+/// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
+/// mail; the stand-in signatures are held in memory and never saved.
 enum ComposeSnapshot {
     private static let appearances: [(String, NSAppearance.Name)] = [("dark", .darkAqua), ("light", .aqua)]
 
@@ -34,7 +38,44 @@ enum ComposeSnapshot {
                    to: "\(directory)/home-\(name).png")
         }
         signatures(model, to: directory)
+        for (name, appearance) in appearances {
+            captureSettings(nil, model: model, active: false, appearance: appearance, to: "\(directory)/settings-grid-\(name).png")
+            captureSettings(.notifications, model: model, active: true, appearance: appearance,
+                            to: "\(directory)/notifications-\(name).png")
+            // A pane that scrolls does not come out of a titled window with a toolbar offscreen on
+            // macOS 26, so the other panes are drawn on their own, without the window's buttons.
+            for pane in SettingsPane.allCases where pane != .signatures && pane != .notifications {
+                render(SettingsRoot(navigator: SettingsNavigator(pane: pane))
+                        .environment(\.controlActiveState, .key).environment(model).environmentObject(model.updates).themedRoot(),
+                       size: pane.windowSize, appearance: appearance, to: "\(directory)/settings-\(pane.rawValue)-\(name).png")
+            }
+            // macOS draws an alert's glass, words and buttons itself, so offscreen only its icon
+            // comes out; what it says and how its buttons stand is written down instead.
+            let alert = SignatureDeletion.alert()
+            alert.window.appearance = NSAppearance(named: appearance)
+            alert.layout()
+            try? describe(alert).write(toFile: "\(directory)/delete-alert-\(name).txt", atomically: true, encoding: .utf8)
+        }
         exit(0)
+    }
+
+    /// A Settings window at `pane`, built as the app builds it but drawn as it looks in front
+    /// when `active`.
+    @MainActor private static func captureSettings(_ pane: SettingsPane?, model: AppModel, active: Bool,
+                                                   appearance: NSAppearance.Name, to path: String) {
+        let navigator = SettingsNavigator(pane: pane)
+        let window = SettingsWindows.window(navigator: navigator, model: model, updates: model.updates)
+        let root = SettingsRoot(navigator: navigator)
+            .environment(\.controlActiveState, active ? .key : .inactive)
+            .environment(model)
+            .environmentObject(model.updates)
+            .themedRoot()
+        let host = NSHostingView(rootView: root)
+        host.sizingOptions = []
+        window.contentView = host
+        window.appearance = NSAppearance(named: appearance)
+        guard let frame = window.contentView?.superview else { return }
+        capture(frame, appearance: appearance, to: path)
     }
 
     @MainActor private static func signatures(_ model: AppModel, to directory: String) {
@@ -55,24 +96,39 @@ enum ComposeSnapshot {
                      plainIn: RichText.bodyAttributes)
         book.setDefault(formal.id, for: accounts[0].id, .newMessages)
         book.setDefault(short.id, for: accounts[0].id, .replies)
+        // A new one as the pane's + makes it, named Untitled and holding the first account's name.
+        let untitled = book.add(startingWith: accounts[0].displayName)
         let library = SignatureLibrary(book: book)
-        let pane = NSSize(width: 760, height: 620)
         for (name, appearance) in appearances {
-            model.signatures = library
-            render(SettingsView(pane: .signatures).environment(model), size: pane, appearance: appearance,
-                   to: "\(directory)/signatures-\(name).png")
+            model.signatures = SignatureLibrary(book: { var shown = book; shown.remove(untitled.id); return shown }())
+            captureSettings(.signatures, model: model, active: true, appearance: appearance, to: "\(directory)/signatures-\(name).png")
             model.signatures = SignatureLibrary(book: SignatureBook())
-            render(SettingsView(pane: .signatures).environment(model), size: pane, appearance: appearance,
-                   to: "\(directory)/signatures-empty-\(name).png")
+            captureSettings(.signatures, model: model, active: true, appearance: appearance,
+                            to: "\(directory)/signatures-empty-\(name).png")
             let aside = URL(fileURLWithPath: "/signatures-unreadable-1790000000.json")
             model.signatures = SignatureLibrary(book: book, problem: .setAside(aside))
-            render(SettingsView(pane: .signatures).environment(model), size: pane, appearance: appearance,
-                   to: "\(directory)/signatures-notice-\(name).png")
-            guard let window = SignatureEditorWindows.window(for: formal.id, library: library),
-                  let frame = window.contentView?.superview else { continue }
-            window.appearance = NSAppearance(named: appearance)
-            capture(frame, appearance: appearance, to: "\(directory)/signature-editor-\(name).png")
+            captureSettings(.signatures, model: model, active: true, appearance: appearance,
+                            to: "\(directory)/signatures-notice-\(name).png")
+            for (id, file, marks) in [(formal.id, "signature-editor", false), (untitled.id, "signature-editor-new", false),
+                                      (formal.id, "signature-editor-marks", true)] {
+                guard let window = SignatureEditorWindows.window(for: id, library: library),
+                      let frame = window.contentView?.superview else { continue }
+                window.appearance = NSAppearance(named: appearance)
+                if marks {
+                    frame.layoutSubtreeIfNeeded()
+                    (textView(in: frame)?.layoutManager as? SignatureLayoutManager)?.showsMarks = true
+                }
+                capture(frame, appearance: appearance, to: "\(directory)/\(file)-\(name).png")
+            }
         }
+    }
+
+    @MainActor private static func textView(in view: NSView) -> NSTextView? {
+        if let text = view as? NSTextView { return text }
+        for child in view.subviews {
+            if let text = textView(in: child) { return text }
+        }
+        return nil
     }
 
     /// A signature with what the editor can do: a bold name, a coloured line, a link and a
@@ -133,6 +189,19 @@ enum ComposeSnapshot {
         window.appearance = NSAppearance(named: appearance)
         window.contentView = host
         capture(host, appearance: appearance, to: path)
+    }
+
+    @MainActor private static func describe(_ alert: NSAlert) -> String {
+        let buttons = alert.buttons.sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+        let keys = buttons.map { button -> String in
+            switch button.keyEquivalent {
+            case "\r": return "\(button.title) (Return, default)"
+            case "\u{1b}": return "\(button.title) (Escape)"
+            default: return button.title
+            }
+        }
+        return "\(alert.messageText)\n\(alert.informativeText)\nButtons, left to right: \(keys.joined(separator: ", "))\n"
+            + "Panel \(Int(alert.window.frame.width)) × \(Int(alert.window.frame.height)) pt\n"
     }
 
     @MainActor private static func capture(_ view: NSView, appearance: NSAppearance.Name, to path: String) {

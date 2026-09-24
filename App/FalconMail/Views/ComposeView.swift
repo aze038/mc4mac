@@ -9,7 +9,6 @@ struct ComposeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.openSettings) private var openSettings
     let draftID: UUID
     var embedded = false
     var onClose: (() -> Void)? = nil
@@ -307,10 +306,9 @@ struct ComposeView: View {
         .padding(16).frame(width: 320)
     }
 
-    /// Signatures…: Settings, opened at the pane where signatures are written.
+    /// Edit Signatures…: Settings, opened at the pane where signatures are written.
     private func editSignatures() {
-        SettingsRouter.shared.requested = .signatures
-        openSettings()
+        SettingsWindows.shared.show(.signatures)
     }
 
     private func load() {

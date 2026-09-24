@@ -249,12 +249,13 @@ struct SmallGlyph: View {
     let symbol: String
     let size: CGFloat
     var turn: Angle = .zero
+    var ink = OLColor.ribbonIcon
 
     var body: some View {
         Image(systemName: symbol)
             .font(.system(size: size, weight: .light))
             .rotationEffect(turn)
-            .foregroundStyle(OLColor.ribbonIcon)
+            .foregroundStyle(ink)
             .frame(width: OL.ribbonSmallIcon, height: OL.ribbonSmallIcon)
     }
 }
@@ -296,6 +297,8 @@ extension RibbonSmallButton where Glyph == SmallGlyph {
 /// left, the copy in front at the bottom right with its corner turned down and two fainter
 /// lines of text, in one point lines on the small icons' sixteen point square.
 struct CopyGlyph: View {
+    var ink = OLColor.ribbonIcon
+
     var body: some View {
         ZStack {
             Path { path in
@@ -314,7 +317,7 @@ struct CopyGlyph: View {
             .stroke(lineWidth: 1)
             .opacity(0.64)
         }
-        .foregroundStyle(OLColor.ribbonIcon)
+        .foregroundStyle(ink)
         .frame(width: OL.ribbonSmallIcon, height: OL.ribbonSmallIcon)
     }
 }
@@ -412,22 +415,32 @@ struct FmtButton: View {
     let symbol: String
     let title: String
     let ink: Color
+    var accent: Color?
+    var size: CGFloat = 13
+    var box: CGFloat = 22
     let action: () -> Void
     @State private var hovering = false
 
-    init(_ symbol: String, _ title: String, ink: Color = OLColor.ribbonIcon, action: @escaping () -> Void) {
+    /// With an `accent`, the symbol's first layer takes it, as the blue bullets and arrows of
+    /// Outlook's list and indent buttons.
+    init(_ symbol: String, _ title: String, ink: Color = OLColor.ribbonIcon, accent: Color? = nil, size: CGFloat = 13,
+         box: CGFloat = 22, action: @escaping () -> Void) {
         self.symbol = symbol
         self.title = title
         self.ink = ink
+        self.accent = accent
+        self.size = size
+        self.box = box
         self.action = action
     }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(ink)
-                .frame(width: 22, height: 22)
+                .font(.system(size: size, weight: .regular))
+                .symbolRenderingMode(accent == nil ? .monochrome : .palette)
+                .foregroundStyle(accent ?? ink, ink)
+                .frame(width: box, height: box)
                 .background(hovering ? OLColor.hover : Color.clear, in: RoundedRectangle(cornerRadius: 3))
                 .contentShape(RoundedRectangle(cornerRadius: 3))
         }
@@ -441,22 +454,34 @@ struct FmtButton: View {
 struct FmtMenuButton<Content: View>: View {
     let symbol: String
     let title: String
+    var ink = OLColor.ribbonIcon
+    var accent: Color?
+    var chevronInk = OLColor.ribbonLabel
+    var size: CGFloat = 13
+    var box: CGFloat = 22
     let action: () -> Void
     @ViewBuilder var menu: () -> Content
 
-    init(_ symbol: String, _ title: String, action: @escaping () -> Void, @ViewBuilder menu: @escaping () -> Content) {
+    init(_ symbol: String, _ title: String, ink: Color = OLColor.ribbonIcon, accent: Color? = nil,
+         chevronInk: Color = OLColor.ribbonLabel, size: CGFloat = 13, box: CGFloat = 22, action: @escaping () -> Void,
+         @ViewBuilder menu: @escaping () -> Content) {
         self.symbol = symbol
         self.title = title
+        self.ink = ink
+        self.accent = accent
+        self.chevronInk = chevronInk
+        self.size = size
+        self.box = box
         self.action = action
         self.menu = menu
     }
 
     var body: some View {
         HStack(spacing: 2) {
-            FmtButton(symbol, title, action: action)
+            FmtButton(symbol, title, ink: ink, accent: accent, size: size, box: box, action: action)
             Menu { menu() } label: {
-                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
-                    .frame(width: 10, height: 22).contentShape(Rectangle())
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(chevronInk)
+                    .frame(width: 10, height: box).contentShape(Rectangle())
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
@@ -472,13 +497,25 @@ struct FmtColourButton: View {
     let title: String
     let colour: Color
     let palette: [(String, Color)]
+    var ink = OLColor.ribbonIcon
+    var chevronInk = OLColor.ribbonLabel
+    var size: CGFloat = 12
+    var box: CGFloat = 22
+    var glyphHeight: CGFloat = 15
     let apply: (Color) -> Void
 
-    init(_ symbol: String, _ title: String, colour: Color, palette: [(String, Color)], apply: @escaping (Color) -> Void) {
+    init(_ symbol: String, _ title: String, colour: Color, palette: [(String, Color)], ink: Color = OLColor.ribbonIcon,
+         chevronInk: Color = OLColor.ribbonLabel, size: CGFloat = 12, box: CGFloat = 22, glyphHeight: CGFloat = 15,
+         apply: @escaping (Color) -> Void) {
         self.symbol = symbol
         self.title = title
         self.colour = colour
         self.palette = palette
+        self.ink = ink
+        self.chevronInk = chevronInk
+        self.size = size
+        self.box = box
+        self.glyphHeight = glyphHeight
         self.apply = apply
     }
 
@@ -486,10 +523,10 @@ struct FmtColourButton: View {
         HStack(spacing: 2) {
             Button { apply(colour) } label: {
                 VStack(spacing: 1) {
-                    Image(systemName: symbol).font(.system(size: 12, weight: .regular)).foregroundStyle(OLColor.ribbonIcon).frame(height: 15)
+                    Image(systemName: symbol).font(.system(size: size, weight: .regular)).foregroundStyle(ink).frame(height: glyphHeight)
                     RoundedRectangle(cornerRadius: 1).fill(colour).frame(width: 16, height: 3)
                 }
-                .frame(width: 22, height: 22)
+                .frame(width: box, height: box)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -499,8 +536,8 @@ struct FmtColourButton: View {
                     Button(entry.0) { apply(entry.1) }
                 }
             } label: {
-                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
-                    .frame(width: 10, height: 22).contentShape(Rectangle())
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(chevronInk)
+                    .frame(width: 10, height: box).contentShape(Rectangle())
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
@@ -514,24 +551,61 @@ struct FmtColourButton: View {
 struct FmtPopup<Content: View>: View {
     let text: String
     let width: CGFloat
+    var height: CGFloat = 22
+    var textSize: CGFloat = 13
+    var inset: CGFloat = 7
+    var fill = OLColor.ribbonField
+    var edge: Color?
+    var textInk = OLColor.text
+    /// The signature editor's boxes end in Outlook's heavier chevron, `chevronInset` from the
+    /// box's right edge, where the compose ribbon's take the system's.
+    var chevron: HeavyChevron?
+    var chevronInset: CGFloat?
     @ViewBuilder var menu: () -> Content
 
     var body: some View {
         Menu { menu() } label: {
             HStack(spacing: 4) {
-                Text(text).font(.system(size: 13)).foregroundStyle(OLColor.text).lineLimit(1)
+                Text(text).font(.system(size: textSize)).foregroundStyle(textInk).lineLimit(1)
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                if let chevron {
+                    chevron
+                } else {
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                }
             }
-            .padding(.horizontal, 7)
-            .frame(width: width, height: 22)
-            .background(OLColor.ribbonField, in: RoundedRectangle(cornerRadius: 3))
+            .padding(.leading, inset)
+            .padding(.trailing, chevronInset ?? inset)
+            .frame(width: width, height: height)
+            .background(fill, in: RoundedRectangle(cornerRadius: 3))
+            .overlay {
+                if let edge { RoundedRectangle(cornerRadius: 4).strokeBorder(edge, lineWidth: 1) }
+            }
             .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+}
+
+/// Outlook's chevron in the signature editor's ribbon: six points by four, drawn a point and a
+/// half thick, heavier than the system's.
+struct HeavyChevron: View {
+    let ink: Color
+    /// How far below its box's centre the chevron sits.
+    var drop: CGFloat = 0
+
+    var body: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0.75, y: 0.75))
+            path.addLine(to: CGPoint(x: 3, y: 3.1))
+            path.addLine(to: CGPoint(x: 5.25, y: 0.75))
+        }
+        .stroke(ink, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+        .frame(width: 6, height: 4)
+        .offset(y: drop)
     }
 }
 

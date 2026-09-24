@@ -2,84 +2,61 @@ import SwiftUI
 import AppKit
 import FalconCore
 
-/// Legacy Outlook's Signatures pane: the signatures by name with + and − under the list, the
-/// selected one's preview beside it, and each account's defaults below.
+/// Legacy Outlook's Signatures pane at its measured positions: under "Edit signature:", a group
+/// box holding the signatures by name, with + − and Edit under the list and the chosen one's
+/// preview on white beside it; under "Choose default signature:", a box with each account's
+/// signatures for new messages and for replies and forwards.
 struct SignaturesSettings: View {
     @Environment(AppModel.self) private var model
     @State private var selection: UUID?
     @State private var accountID: UUID?
-    @State private var removing: Signature?
 
     private var library: SignatureLibrary { model.signatures }
 
+    static let size = CGSize(width: 612, height: 425 - SettingsWindows.titleBarHeight)
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Edit signature:")
-                .font(.system(size: 13, weight: .bold))
-                .padding(.bottom, SignaturesMetrics.headingGap)
-            HStack(alignment: .top, spacing: SignaturesMetrics.boxGap) {
-                // The buttons' top edge lies on the list's bottom edge, one line for both.
-                VStack(alignment: .leading, spacing: -1) {
-                    SignatureTable(signatures: library.sorted, selection: $selection,
-                                   open: { edit($0) }, remove: { askToRemove() })
-                        .frame(width: SignaturesMetrics.listWidth, height: SignaturesMetrics.boxHeight)
-                    AddRemoveButtons(canRemove: selection != nil, add: { add() }, remove: { askToRemove() })
-                        .frame(width: AddRemoveButtons.width, height: AddRemoveButtons.height)
-                }
-                SignaturePreview(text: library.signature(selection).map(previewText))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: SignaturesMetrics.boxHeight)
-            }
-            Divider()
-                .padding(.top, SignaturesMetrics.sectionGap)
-                .padding(.bottom, SignaturesMetrics.sectionGap)
-            Text("Choose default signature:")
-                .font(.system(size: 13, weight: .bold))
-                .padding(.bottom, SignaturesMetrics.headingGap + 4)
-            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: SignaturesMetrics.rowGap) {
-                GridRow {
-                    label("Account:")
-                    PopUpField(title: "Account:", items: model.accounts.map { ($0.email, Optional($0.id)) },
-                               selection: accountBinding)
-                        .frame(width: SignaturesMetrics.accountPopup)
-                }
-                GridRow {
-                    label("New messages:")
-                    defaultPopup(.newMessages, title: "New messages:")
-                }
-                GridRow {
-                    label("Replies/forwards:")
-                    defaultPopup(.replies, title: "Replies/forwards:")
-                }
+        Placements(width: Self.size.width, height: Self.size.height) {
+            ClassicText("Edit signature:", weight: .bold).at(x: 19, baseline: 24)
+            ClassicBox(width: 572, height: 187).at(x: 20, y: 36)
+            SignatureTable(signatures: library.sorted, selection: $selection,
+                           open: { edit($0) }, remove: { askToRemove() })
+                .frame(width: SignatureTable.size.width, height: SignatureTable.size.height)
+                .at(x: 36, y: 53)
+            SignatureListBar(canRemove: selection != nil, canEdit: selection != nil,
+                             add: { add() }, remove: { askToRemove() }, edit: { selection.map(edit) })
+                .at(x: 36, y: 184)
+            SignaturePreview(text: library.signature(selection).map(previewText)).at(x: 276, y: 53)
+
+            ClassicText("Choose default signature:", weight: .bold).at(x: 18.6, baseline: 244)
+            ClassicBox(width: 572, height: 96).at(x: 20, y: 257)
+            Group {
+                ClassicText("Account:").at(rightX: 203, baseline: 282)
+                ClassicPopUp(title: "Account", items: model.accounts.map { (accountTitle($0), Optional($0.id)) },
+                             selection: accountBinding, small: true)
+                    .frame(width: 350, height: ClassicPopUp<UUID?>.smallHeight)
+                    .at(x: 206, y: 270)
+                ClassicText("New messages:").at(rightX: 203, baseline: 308)
+                defaultPopup(.newMessages, title: "New messages").at(x: 206, y: 293)
+                ClassicText("Replies/Forwards:").at(rightX: 203, baseline: 332)
+                defaultPopup(.replies, title: "Replies/Forwards").at(x: 206, y: 318)
             }
             .disabled(model.accounts.isEmpty)
             if let problem = library.problem {
-                SignaturesNotice(problem: problem)
-                    .padding(.top, SignaturesMetrics.sectionGap)
+                SignaturesNotice(problem: problem).frame(width: 572, alignment: .leading).at(x: 20, y: 357)
             }
         }
-        .padding(.horizontal, SignaturesMetrics.inset)
-        .padding(.top, SignaturesMetrics.top)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .alert(removing.map { "Delete the signature “\($0.name)”?" } ?? "",
-               isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
-               presenting: removing) { signature in
-            Button("Delete", role: .destructive) { remove(signature) }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Accounts that use it will have no signature. You can’t undo this.")
-        }
         .onAppear {
             if selection == nil { selection = library.sorted.first?.id }
             if accountID == nil { accountID = model.accounts.first?.id }
         }
     }
 
-    private func label(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 13))
-            .frame(width: SignaturesMetrics.labelWidth, alignment: .trailing)
-            .gridColumnAlignment(.trailing)
+    /// Outlook names an account by its owner and address.
+    private func accountTitle(_ account: AccountInfo) -> String {
+        let name = account.displayName.trimmed
+        return name.isEmpty ? account.email : "\(name) (\(account.email))"
     }
 
     /// Plain signatures carry no formatting, so they are shown in the composer's.
@@ -94,14 +71,17 @@ struct SignaturesSettings: View {
     private func defaultPopup(_ use: SignatureUse, title: String) -> some View {
         let account = accountBinding.wrappedValue
         let items = [("None", UUID?.none)] + library.sorted.map { ($0.name, Optional($0.id)) }
-        return PopUpField(title: title, items: items, selection: Binding(
+        return ClassicPopUp(title: title, items: items, selection: Binding(
             get: { account.flatMap { library.book.defaultID(for: $0, use) } },
-            set: { id in if let account { library.setDefault(id, for: account, use) } }))
-            .frame(width: SignaturesMetrics.defaultPopup)
+            set: { id in if let account { library.setDefault(id, for: account, use) } }), small: true)
+            .frame(width: 350, height: ClassicPopUp<UUID?>.smallHeight)
     }
 
+    /// Outlook starts a new signature with the writer's name, taken here from the first
+    /// account, and opens it at once.
     private func add() {
-        let signature = library.add()
+        let name = model.accounts.first.map { $0.displayName.trimmed } ?? ""
+        let signature = library.add(startingWith: name.isEmpty ? NSFullUserName() : name)
         selection = signature.id
         edit(signature.id)
     }
@@ -111,7 +91,16 @@ struct SignaturesSettings: View {
     }
 
     private func askToRemove() {
-        removing = library.signature(selection)
+        guard let signature = library.signature(selection) else { return }
+        let alert = SignatureDeletion.alert()
+        let confirmed: (NSApplication.ModalResponse) -> Void = { response in
+            if response == .alertFirstButtonReturn { remove(signature) }
+        }
+        if let window = NSApp.keyWindow {
+            alert.beginSheetModal(for: window, completionHandler: confirmed)
+        } else {
+            confirmed(alert.runModal())
+        }
     }
 
     /// The row that takes the deleted one's place is selected, as a list in AppKit does.
@@ -125,8 +114,21 @@ struct SignaturesSettings: View {
     }
 }
 
+/// Outlook's question before a signature goes, word for word, Delete being the default button.
+enum SignatureDeletion {
+    static func alert() -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Are you sure that you want to permanently delete the selected signature(s)?"
+        alert.informativeText = "This action cannot be undone."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert
+    }
+}
+
 /// Says when the signatures file was left alone or moved aside, so that nothing done here is
-/// lost, or turns up elsewhere, without a word.
+/// lost, or turns up elsewhere, without a word. One line under the boxes; the whole of it is
+/// in its help tag.
 struct SignaturesNotice: View {
     let problem: SignatureStore.Problem
 
@@ -136,13 +138,15 @@ struct SignaturesNotice: View {
                 .foregroundStyle(.yellow)
             Text(message)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if case .setAside(let file) = problem {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([file]) }
-                    .controlSize(.small)
+                    .controlSize(.mini)
             }
         }
         .font(.system(size: 11))
+        .help(message)
     }
 
     private var message: String {
@@ -157,313 +161,240 @@ struct SignaturesNotice: View {
     }
 }
 
-/// The pane's measures: an AppKit preference pane's twenty point margins, the list and preview
-/// the same height side by side, popups at the widths their longest usual entries need.
-enum SignaturesMetrics {
-    static let inset: CGFloat = 20
-    static let top: CGFloat = 18
-    static let headingGap: CGFloat = 8
-    static let boxGap: CGFloat = 20
-    static let listWidth: CGFloat = 220
-    static let boxHeight: CGFloat = 200
-    static let sectionGap: CGFloat = 18
-    static let rowGap: CGFloat = 10
-    static let labelWidth: CGFloat = 150
-    static let accountPopup: CGFloat = 300
-    static let defaultPopup: CGFloat = 220
+// MARK: - the list
+
+/// The list's colours, measured: a darker header over a lighter line, rows striped dark and
+/// clear so the box shows through, the chosen row grey until the list has the keyboard.
+enum SignatureListColours {
+    static let border = Classic.colour(light: 0xBEBEBE, dark: 0x353535)
+    static let header = Classic.colour(light: 0xF7F7F7, dark: 0x1F222D)
+    static let headerLine = Classic.colour(light: 0xD9D9D9, dark: 0x393C47)
+    static let headerText = Classic.colour(light: 0x262626, dark: 0xFFFFFF)
+    static let stripeEven = Classic.colour(light: 0xFFFFFF, dark: 0x1E1E1E)
+    static let stripeOdd = Classic.colour(light: 0xF4F5F5, dark: 0x292C37)
+    static let selected = Classic.colour(light: 0xDCDCDC, dark: 0x464746)
+    static let rowText = Classic.colour(light: 0x262626, dark: 0xDFDFE1)
 }
 
-/// The signature list: an AppKit table in a bordered scroll view with one column headed
-/// "Signature name". Double-click and Delete act on a row as Outlook's do.
-struct SignatureTable: NSViewRepresentable {
+/// The signature list: one column headed "Signature name", nineteen point rows striped down to
+/// the list's bottom edge under a twenty-seven point header, in a one point frame. Arrow keys
+/// move the choice, Return or a double-click edits it and Delete asks to remove it, as in
+/// Outlook's.
+struct SignatureTable: View {
+    static let size = CGSize(width: 227, height: 131)
+    static let rowHeight: CGFloat = 19
+    static let headerHeight: CGFloat = 27
+
     let signatures: [Signature]
     @Binding var selection: UUID?
     let open: (UUID) -> Void
     let remove: () -> Void
+    @FocusState private var focused: Bool
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let table = DeletingTableView()
-        let column = NSTableColumn(identifier: Coordinator.column)
-        column.title = "Signature name"
-        column.resizingMask = .autoresizingMask
-        table.addTableColumn(column)
-        table.style = .fullWidth
-        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        table.allowsMultipleSelection = false
-        table.allowsEmptySelection = true
-        table.usesAlternatingRowBackgroundColors = false
-        table.dataSource = context.coordinator
-        table.delegate = context.coordinator
-        table.target = context.coordinator
-        table.doubleAction = #selector(Coordinator.doubleClicked(_:))
-        table.onDelete = { [weak coordinator = context.coordinator] in coordinator?.parent.remove() }
-        table.setAccessibilityLabel("Signatures")
-        let scroll = NSScrollView()
-        scroll.documentView = table
-        scroll.borderType = .bezelBorder
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        return scroll
-    }
-
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let coordinator = context.coordinator
-        coordinator.parent = self
-        guard let table = scroll.documentView as? NSTableView else { return }
-        coordinator.syncing = true
-        defer { coordinator.syncing = false }
-        let rows = signatures.map { Coordinator.Row(id: $0.id, name: $0.name) }
-        if rows != coordinator.rows {
-            coordinator.rows = rows
-            table.reloadData()
-        }
-        if let row = rows.firstIndex(where: { $0.id == selection }) {
-            if table.selectedRow != row {
-                table.selectRowIndexes([row], byExtendingSelection: false)
-                table.scrollRowToVisible(row)
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                SignatureListColours.header
+                Text("Signature name").font(.system(size: 11)).foregroundStyle(SignatureListColours.headerText).fixedSize()
+                    .at(x: 10, baseline: 18)
             }
-        } else if table.selectedRow >= 0 {
-            table.deselectAll(nil)
+            .frame(height: Self.headerHeight)
+            SignatureListColours.headerLine.frame(height: 1)
+            ScrollView(.vertical) {
+                VStack(spacing: 0) {
+                    ForEach(signatures) { signature in row(signature) }
+                }
+                .frame(maxWidth: .infinity, minHeight: Self.size.height - 3 - Self.headerHeight, alignment: .top)
+                .background(stripes)
+            }
+            .scrollIndicators(.automatic)
+        }
+        .padding(1)
+        .background(SignatureListColours.border)
+        .frame(width: Self.size.width, height: Self.size.height)
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(.upArrow) { move(-1) }
+        .onKeyPress(.downArrow) { move(1) }
+        .onKeyPress(.return) { selection.map(open); return .handled }
+        .onKeyPress(.delete) { remove(); return .handled }
+        .onKeyPress(.deleteForward) { remove(); return .handled }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Signatures")
+    }
+
+    private func row(_ signature: Signature) -> some View {
+        let chosen = signature.id == selection
+        return ZStack(alignment: .topLeading) {
+            chosen ? (focused ? Color(nsColor: .selectedContentBackgroundColor) : SignatureListColours.selected) : Color.clear
+            Text(signature.name)
+                .font(.system(size: 13))
+                .foregroundStyle(chosen && focused ? Color.white : SignatureListColours.rowText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: Self.size.width - 16, alignment: .leading)
+                .at(x: 8, baseline: 14)
+        }
+        .frame(height: Self.rowHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selection = signature.id
+            focused = true
+        }
+        .simultaneousGesture(TapGesture(count: 2).onEnded { open(signature.id) })
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(signature.name)
+        .accessibilityAddTraits(chosen ? [.isSelected, .isButton] : [.isButton])
+    }
+
+    /// Every row's place is striped, filled or not, as Outlook's list is down to its bottom edge.
+    private var stripes: some View {
+        Canvas { context, size in
+            var index = 0
+            while CGFloat(index) * Self.rowHeight < size.height {
+                let rect = CGRect(x: 0, y: CGFloat(index) * Self.rowHeight, width: size.width, height: Self.rowHeight)
+                context.fill(Path(rect), with: .color(index.isMultiple(of: 2) ? SignatureListColours.stripeEven : SignatureListColours.stripeOdd))
+                index += 1
+            }
         }
     }
 
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-        struct Row: Equatable {
-            let id: UUID
-            let name: String
-        }
-
-        static let column = NSUserInterfaceItemIdentifier("name")
-        var parent: SignatureTable
-        var rows: [Row] = []
-        /// Set while the table is brought into line with SwiftUI, whose state must not change
-        /// in the middle of an update.
-        var syncing = false
-
-        init(_ parent: SignatureTable) { self.parent = parent }
-
-        func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-
-        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            let cell = tableView.makeView(withIdentifier: Coordinator.column, owner: nil) as? NSTableCellView ?? makeCell()
-            cell.textField?.stringValue = rows[row].name
-            return cell
-        }
-
-        private func makeCell() -> NSTableCellView {
-            let cell = NSTableCellView()
-            cell.identifier = Coordinator.column
-            let field = NSTextField(labelWithString: "")
-            field.lineBreakMode = .byTruncatingTail
-            field.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(field)
-            cell.textField = field
-            NSLayoutConstraint.activate([
-                field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
-                field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-            return cell
-        }
-
-        func tableViewSelectionDidChange(_ notification: Notification) {
-            guard !syncing, let table = notification.object as? NSTableView else { return }
-            let row = table.selectedRow
-            parent.selection = rows.indices.contains(row) ? rows[row].id : nil
-        }
-
-        @objc func doubleClicked(_ table: NSTableView) {
-            let row = table.clickedRow
-            guard rows.indices.contains(row) else { return }
-            parent.open(rows[row].id)
-        }
+    private func move(_ step: Int) -> KeyPress.Result {
+        guard !signatures.isEmpty else { return .ignored }
+        let current = signatures.firstIndex { $0.id == selection }
+        let next = current.map { min(max($0 + step, 0), signatures.count - 1) } ?? 0
+        selection = signatures[next].id
+        return .handled
     }
 }
 
-/// A table that hands Delete and Forward Delete on a selected row to its owner.
-final class DeletingTableView: NSTableView {
-    var onDelete: (() -> Void)?
+// MARK: - the bar under the list
 
-    override func keyDown(with event: NSEvent) {
-        let deleteKeys: Set<UInt16> = [51, 117]
-        if deleteKeys.contains(event.keyCode), selectedRow >= 0, let onDelete {
-            onDelete()
-            return
-        }
-        super.keyDown(with: event)
-    }
-}
-
-/// The joined + and − under a list: two small square bezel buttons twenty-two points tall
-/// sharing their middle edge, as AppKit's preference panes draw them.
-struct AddRemoveButtons: NSViewRepresentable {
-    static let buttonWidth: CGFloat = 24
-    static let height: CGFloat = 22
-    static var width: CGFloat { buttonWidth * 2 - 1 }
-
+/// Joined + and − at the left of a bar as wide as the list, Edit at its right end.
+struct SignatureListBar: View {
     let canRemove: Bool
+    let canEdit: Bool
     let add: () -> Void
     let remove: () -> Void
+    let edit: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    private static let bar = Classic.colour(light: 0xE6E6E6, dark: 0x3B3D48)
+    private static let barEdge = Classic.colour(light: 0xC4C4C4, dark: 0x464752)
+    private static let button = Classic.colour(light: 0xFBFBFB, dark: 0x575963)
+    private static let buttonEdge = Classic.colour(light: 0xB5B5B5, dark: 0x74757D)
+    private static let joint = Classic.colour(light: 0xA8A8A8, dark: 0x919298)
+    private static let inner = Classic.colour(light: 0xBDBDBD, dark: 0x6C6E76)
+    private static let ink = Classic.colour(light: 0x3C3C3C, dark: 0xE5E5E7)
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height))
-        let plus = button(NSImage.addTemplateName, label: "Add", action: #selector(Coordinator.addPressed(_:)), context: context)
-        let minus = button(NSImage.removeTemplateName, label: "Remove", action: #selector(Coordinator.removePressed(_:)), context: context)
-        plus.frame = NSRect(x: 0, y: 0, width: Self.buttonWidth, height: Self.height)
-        minus.frame = NSRect(x: Self.buttonWidth - 1, y: 0, width: Self.buttonWidth, height: Self.height)
-        view.addSubview(plus)
-        view.addSubview(minus)
-        context.coordinator.minus = minus
-        return view
+    var body: some View {
+        Placements(width: SignatureTable.size.width, height: 22) {
+            Self.barEdge.frame(width: 227, height: 22)
+            Self.bar.frame(width: 225, height: 20).at(x: 1, y: 1)
+            box(x: 0, width: 23)
+            box(x: 22, width: 23)
+            box(x: 171, width: 56)
+            Self.joint.frame(width: 1, height: 20).at(x: 22, y: 1)
+            Self.inner.frame(width: 1, height: 20).at(x: 44, y: 1)
+            Self.inner.frame(width: 1, height: 20).at(x: 171, y: 1)
+            Button(action: add) { glyph(plus: true) }
+                .buttonStyle(.plain).accessibilityLabel("Add").at(x: 1, y: 1)
+            Button(action: remove) { glyph(plus: false) }
+                .buttonStyle(.plain).accessibilityLabel("Remove").disabled(!canRemove).at(x: 23, y: 1)
+            Button(action: edit) {
+                Text("Edit").font(.system(size: 13)).foregroundStyle(Self.ink)
+                    .opacity(canEdit ? 1 : 0.4)
+                    .frame(width: 54, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canEdit)
+            .at(x: 172, y: 1)
+        }
     }
 
-    func updateNSView(_ view: NSView, context: Context) {
-        context.coordinator.onAdd = add
-        context.coordinator.onRemove = remove
-        context.coordinator.minus?.isEnabled = canRemove
+    private func box(x: CGFloat, width: CGFloat) -> some View {
+        Self.button
+            .frame(width: width - 2, height: 20)
+            .overlay(Rectangle().strokeBorder(Self.buttonEdge, lineWidth: 1).padding(-1))
+            .at(x: x + 1, y: 1)
     }
 
-    private func button(_ image: NSImage.Name, label: String, action: Selector, context: Context) -> NSButton {
-        let button = NSButton(image: NSImage(named: image) ?? NSImage(), target: context.coordinator, action: action)
-        button.bezelStyle = .smallSquare
-        button.setButtonType(.momentaryPushIn)
-        button.imagePosition = .imageOnly
-        button.setAccessibilityLabel(label)
-        return button
-    }
-
-    final class Coordinator: NSObject {
-        var onAdd: () -> Void = {}
-        var onRemove: () -> Void = {}
-        weak var minus: NSButton?
-
-        @objc func addPressed(_ sender: Any?) { onAdd() }
-        @objc func removePressed(_ sender: Any?) { onRemove() }
+    /// The + and − in one point lines ten and a half points long.
+    private func glyph(plus: Bool) -> some View {
+        Canvas { context, size in
+            let centre = CGPoint(x: size.width / 2 + 0.25, y: size.height / 2 - (plus ? 0.25 : 0))
+            var path = Path()
+            path.move(to: CGPoint(x: centre.x - 5.25, y: centre.y))
+            path.addLine(to: CGPoint(x: centre.x + 5.25, y: centre.y))
+            if plus {
+                path.move(to: CGPoint(x: centre.x, y: centre.y - 5.25))
+                path.addLine(to: CGPoint(x: centre.x, y: centre.y + 5.25))
+            }
+            context.stroke(path, with: .color(Self.ink), lineWidth: 1)
+        }
+        .frame(width: 21, height: 20)
+        .opacity(plus || canRemove ? 1 : 0.4)
+        .contentShape(Rectangle())
     }
 }
 
-/// "Signature Preview": the selected signature as it will look, in a bordered box headed the
-/// way the list is, by a one-column AppKit table whose single row holds the text.
-struct SignaturePreview: NSViewRepresentable {
+// MARK: - the preview
+
+/// "Signature Preview": a grey strip with the words centred over a white page on which the
+/// signature is drawn as the recipient will see it, dark text on white in either appearance.
+struct SignaturePreview: View {
     let text: NSAttributedString?
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    static let size = CGSize(width: 300, height: 152)
+
+    private static let strip = Classic.colour(light: 0xE8E8E8, dark: 0x4B4C57)
+    private static let stripBottom = Classic.colour(light: 0xE0E0E0, dark: 0x464852)
+    private static let stripEdge = Classic.colour(light: 0xC2C2C2, dark: 0x60626B)
+    private static let stripText = Classic.colour(light: 0x262626, dark: 0xE4E4E5)
+
+    var body: some View {
+        Placements(width: Self.size.width, height: Self.size.height) {
+            Self.stripEdge.frame(width: 300, height: 18)
+            LinearGradient(colors: [Self.strip, Self.stripBottom], startPoint: .top, endPoint: .bottom)
+                .frame(width: 298, height: 16).at(x: 1, y: 1)
+            Text("Signature Preview").font(.system(size: 11)).foregroundStyle(Self.stripText).fixedSize()
+                .at(centreX: 150, baseline: 13)
+            PreviewPage(text: text ?? NSAttributedString())
+                .frame(width: 296, height: 134)
+                .at(x: 2, y: 18)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Signature Preview")
+    }
+}
+
+/// The page itself: a read-only text view in the light appearance, so text in the automatic
+/// colour is dark on it as it is in the message that goes out.
+private struct PreviewPage: NSViewRepresentable {
+    let text: NSAttributedString
 
     func makeNSView(context: Context) -> NSScrollView {
-        let table = NSTableView()
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("preview"))
-        column.title = "Signature Preview"
-        column.resizingMask = .autoresizingMask
-        table.addTableColumn(column)
-        table.style = .fullWidth
-        table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
-        table.selectionHighlightStyle = .none
-        table.allowsColumnResizing = false
-        table.allowsColumnReordering = false
-        table.dataSource = context.coordinator
-        table.delegate = context.coordinator
-        table.setAccessibilityLabel("Signature Preview")
-        let scroll = NSScrollView()
-        scroll.documentView = table
-        scroll.borderType = .bezelBorder
+        let scroll = NSTextView.scrollableTextView()
+        scroll.appearance = NSAppearance(named: .aqua)
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .white
+        guard let view = scroll.documentView as? NSTextView else { return scroll }
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = true
+        view.backgroundColor = .white
+        // The first line's text eight points in and its baseline twenty-one points down.
+        view.textContainerInset = NSSize(width: 3, height: 7.5)
+        view.setAccessibilityLabel("Signature Preview")
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let shown = text ?? NSAttributedString()
-        guard let table = scroll.documentView as? NSTableView, !shown.isEqual(to: context.coordinator.text.textStorage ?? NSAttributedString()) else { return }
-        context.coordinator.text.textStorage?.setAttributedString(shown)
-        table.noteHeightOfRows(withIndexesChanged: [0])
-        table.reloadData()
-    }
-
-    final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
-        let text: NSTextView = {
-            let view = NSTextView()
-            view.isEditable = false
-            view.isSelectable = true
-            view.drawsBackground = false
-            view.textContainerInset = NSSize(width: SignaturePreview.inset, height: SignaturePreview.inset)
-            view.isVerticallyResizable = false
-            view.setAccessibilityLabel("Signature Preview")
-            return view
-        }()
-
-        func numberOfRows(in tableView: NSTableView) -> Int { 1 }
-
-        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? { text }
-
-        func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
-
-        func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-            let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
-            let storage = NSTextStorage(attributedString: text.textStorage ?? NSAttributedString())
-            let layout = NSLayoutManager()
-            let container = NSTextContainer(size: NSSize(width: max(1, width - 2 * SignaturePreview.inset), height: .greatestFiniteMagnitude))
-            storage.addLayoutManager(layout)
-            layout.addTextContainer(container)
-            layout.ensureLayout(for: container)
-            return max(ceil(layout.usedRect(for: container).height) + 2 * SignaturePreview.inset, 1)
-        }
-
-        func tableViewColumnDidResize(_ notification: Notification) {
-            (notification.object as? NSTableView)?.noteHeightOfRows(withIndexesChanged: [0])
-        }
-    }
-
-    static let inset: CGFloat = 6
-}
-
-/// An AppKit pop-up button as wide as it is placed, as preference panes size theirs; SwiftUI's
-/// menu picker keeps to the width of its current choice.
-struct PopUpField<Tag: Hashable>: NSViewRepresentable {
-    let title: String
-    let items: [(String, Tag)]
-    @Binding var selection: Tag
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSPopUpButton {
-        let button = NSPopUpButton(frame: .zero, pullsDown: false)
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.chosen(_:))
-        button.setAccessibilityLabel(title)
-        button.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        return button
-    }
-
-    func updateNSView(_ button: NSPopUpButton, context: Context) {
-        button.isEnabled = context.environment.isEnabled
-        let coordinator = context.coordinator
-        coordinator.tags = items.map(\.1)
-        coordinator.choose = { selection = $0 }
-        let titles = items.map(\.0)
-        if button.itemTitles != titles {
-            button.removeAllItems()
-            // Added one by one, so two signatures of the same name both stay in the menu.
-            for title in titles {
-                button.menu?.addItem(NSMenuItem(title: title, action: nil, keyEquivalent: ""))
-            }
-        }
-        if let index = items.firstIndex(where: { $0.1 == selection }), button.indexOfSelectedItem != index {
-            button.selectItem(at: index)
-        }
-    }
-
-    final class Coordinator: NSObject {
-        var tags: [Tag] = []
-        var choose: (Tag) -> Void = { _ in }
-
-        @objc func chosen(_ button: NSPopUpButton) {
-            let index = button.indexOfSelectedItem
-            guard tags.indices.contains(index) else { return }
-            choose(tags[index])
-        }
+        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage, !storage.isEqual(to: text) else { return }
+        storage.setAttributedString(text)
     }
 }

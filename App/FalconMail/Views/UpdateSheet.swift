@@ -79,45 +79,58 @@ struct UpdateSheet: View {
     }
 }
 
-struct UpdateSettings: View {
+/// Updates, which Outlook leaves to Microsoft AutoUpdate and its grid has no pane for; they sit
+/// in General. The GitHub token is read from the Keychain only when its sheet is opened.
+struct UpdateSettingsRows: View {
     @EnvironmentObject var updates: UpdateManager
-    @State private var token = ""
-    @State private var tokenSaved = false
+    @State private var editingToken = false
 
     var body: some View {
-        Form {
-            Section("Updates from GitHub Releases") {
-                LabeledContent("Repository", value: updates.repository)
-                LabeledContent("Installed version", value: updates.currentVersion.description)
-                Toggle("Check for updates automatically", isOn: $updates.automaticChecks)
-                Toggle("Include pre-releases", isOn: $updates.includePrereleases)
-                HStack {
-                    Button("Check Now") { Task { await updates.check(userInitiated: true) } }
-                        .disabled(updates.phase == .checking)
-                    if updates.phase == .checking { ProgressView().controlSize(.small) }
-                    if let d = updates.lastChecked { Text("Last checked \(d.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary) }
-                }
-                if case .failed(let m) = updates.phase { Text(m).foregroundStyle(.red).font(.caption) }
-                if updates.phase == .idle, updates.lastChecked != nil, updates.release == nil {
-                    Text("FalconMail is up to date.").font(.caption).foregroundStyle(.secondary)
+        SettingsRow(label: "Updates:") {
+            Text("\(updates.repository) · installed \(updates.currentVersion.description)")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            Toggle("Check for updates automatically", isOn: $updates.automaticChecks)
+            Toggle("Include pre-releases", isOn: $updates.includePrereleases)
+            HStack(spacing: 8) {
+                Button("Check Now") { Task { await updates.check(userInitiated: true) } }
+                    .disabled(updates.phase == .checking)
+                Button("GitHub Token…") { editingToken = true }
+                if updates.phase == .checking { ProgressView().controlSize(.small) }
+                if let d = updates.lastChecked {
+                    Text("Last checked \(d.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section {
-                SecureField("GitHub token (only for a private repository)", text: $token)
-                HStack {
-                    Spacer()
-                    Button("Save Token") {
-                        try? KeychainStore().save(Data(token.utf8), account: UpdateManager.tokenAccount)
-                        tokenSaved = true
-                    }
-                }
-                if tokenSaved { Text("Saved to the Keychain.").font(.caption).foregroundStyle(.secondary) }
-            } footer: {
-                Text("A public repository needs no token. For a private repository create a fine-grained token with read access to Contents.")
+            if case .failed(let m) = updates.phase { Text(m).foregroundStyle(.red).font(.caption) }
+            if updates.phase == .idle, updates.lastChecked != nil, updates.release == nil {
+                Text("FalconMail is up to date.").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
-        .padding()
+        .sheet(isPresented: $editingToken) { UpdateTokenSheet() }
+    }
+}
+
+private struct UpdateTokenSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var token = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("GitHub token").font(.system(size: 13, weight: .bold))
+            SecureField("GitHub token (only for a private repository)", text: $token)
+            Text("A public repository needs no token. For a private repository create a fine-grained token with read access to Contents.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Save Token") {
+                    try? KeychainStore().save(Data(token.utf8), account: UpdateManager.tokenAccount)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
         .onAppear {
             if let data = try? KeychainStore().load(account: UpdateManager.tokenAccount) { token = String(decoding: data, as: UTF8.self) }
         }
