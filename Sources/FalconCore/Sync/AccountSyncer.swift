@@ -120,14 +120,15 @@ public actor AccountSyncer {
                 break
             } catch {
                 if Task.isCancelled { break }
-                Log.info("sync", "\(account.email): \(error.localizedDescription)")
                 if AccountSyncer.isThrottled(error) {
+                    Log.warning("IMAP", "\(account.email): \(error.localizedDescription)", error: error, account: account)
                     backoff = max(backoff * 2, 1800)
                     backoff = min(backoff, 7200)
                     let minutes = Int(backoff / 60)
                     events.yield(.error(accountID: account.id,
                                         message: "Google paused mail access for \(account.email) because too much was downloaded at once. Waiting \(minutes) minutes, then continuing on its own."))
                 } else {
+                    Log.error("IMAP", "\(account.email): \(error.localizedDescription)", error: error, account: account)
                     events.yield(.error(accountID: account.id, message: error.localizedDescription))
                     backoff = min(max(backoff * 2, 5), 300)
                 }
@@ -301,7 +302,8 @@ public actor AccountSyncer {
                 if !budgetNoticeGiven {
                     budgetNoticeGiven = true
                     let used = await meter.spentToday(account.id) / 1_000_000
-                    Log.info("sync", "\(account.email): \(used) MB downloaded today, pausing offline copies until tomorrow")
+                    Log.warning("Sync", "\(account.email): \(used) MB downloaded today, pausing offline copies until tomorrow",
+                                account: account)
                     events.yield(.progress(accountID: account.id, text: "\(account.email) has downloaded \(used) MB today; new mail still arrives and messages open on demand"))
                 }
                 break
@@ -357,6 +359,7 @@ public actor AccountSyncer {
                     case .stopProcessing: break
                     }
                 } catch {
+                    Log.error("Rules", "Rule failed: \(error.localizedDescription)", error: error, account: account)
                     events.yield(.error(accountID: account.id, message: "Rule failed: \(error.localizedDescription)"))
                 }
                 if moved { break }
@@ -398,6 +401,7 @@ public actor AccountSyncer {
             try await archiveOnServer(uids: uids, client: client)
             try await fs.remove(uids: uids)
         } catch {
+            Log.error("Mute", "Could not file a muted conversation: \(error.localizedDescription)", error: error, account: account)
             events.yield(.error(accountID: account.id, message: "Could not file a muted conversation: \(error.localizedDescription)"))
             return messages
         }
@@ -606,6 +610,7 @@ public actor AccountSyncer {
             await pendingActions.remove(action.pending.id)
             if action.pending.verb == .move { await requestSync() }
         } catch {
+            Log.error("Actions", "\(action.record.failurePrefix): \(error.localizedDescription)", error: error, account: account)
             unsuppress(action.pending)
             await pendingActions.remove(action.pending.id)
             guard !action.record.isAutomatic else { return }
@@ -683,6 +688,8 @@ public actor AccountSyncer {
                 try await run(pending)
                 await pendingActions.remove(pending.id)
             } catch {
+                Log.error("Actions", "Could not finish an action from the last session: \(error.localizedDescription)",
+                          error: error, account: account)
                 events.yield(.actionFailed(accountID: account.id,
                                            message: "Could not finish an action from the last session: \(error.localizedDescription)"))
             }
@@ -709,6 +716,7 @@ public actor AccountSyncer {
             try await store.refreshCounts(folderID: folder.id)
             await store.notifyMessagesChanged(folderID: folder.id)
         } catch {
+            Log.error("Actions", "Could not restore messages of an expired action: \(error.localizedDescription)", error: error, account: account)
             events.yield(.error(accountID: account.id, message: error.localizedDescription))
         }
     }

@@ -420,7 +420,10 @@ struct AccountDetail: View {
                 await model.coordinator.start(account: account)
                 newPassword = ""
                 message = "Password updated and verified."
-            } catch { message = error.localizedDescription }
+            } catch {
+                Log.warning("SignIn", "Checking a new password failed: \(error.localizedDescription)", error: error, account: account)
+                message = error.localizedDescription
+            }
         }
     }
 
@@ -431,7 +434,10 @@ struct AccountDetail: View {
             do {
                 try await model.addGoogleAccount(loginHint: account.email)
                 message = "Google authorization renewed."
-            } catch { message = error.localizedDescription }
+            } catch {
+                Log.warning("SignIn", "Renewing Google sign-in failed: \(error.localizedDescription)", error: error, account: account)
+                message = error.localizedDescription
+            }
         }
     }
 }

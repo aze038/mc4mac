@@ -247,12 +247,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     var model: AppModel? {
-        didSet { MainActor.assumeIsolated { deliverQueuedActions() } }
+        didSet {
+            MainActor.assumeIsolated {
+                if let model { DiagnosticsService.shared.attach(model) }
+                deliverQueuedActions()
+            }
+        }
     }
 
     private var queuedActions: [QueuedNotificationAction] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { DiagnosticsService.shared.start() }
         UNUserNotificationCenter.current().delegate = self
         WindowTray.installMinimizeHook()
         #if DEBUG
@@ -310,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             UpdateInstaller.relaunch(installed)
             NSApp.terminate(nil)
         } catch {
+            Log.error("Install", "Moving FalconMail to Applications failed: \(error.localizedDescription)", error: error)
             let failure = NSAlert()
             failure.messageText = "Could not move FalconMail"
             failure.informativeText = error.localizedDescription
@@ -318,6 +325,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { DiagnosticsService.shared.endSession() }
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }

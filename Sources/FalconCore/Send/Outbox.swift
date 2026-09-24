@@ -159,10 +159,12 @@ public actor Outbox {
                 item.attempts = attempts
                 item.error = error.localizedDescription
                 if Outbox.isTransient(error) && attempts < 30 {
+                    Log.warning("SMTP", "Sending failed on attempt \(attempts), trying again: \(error.localizedDescription)", error: error)
                     item.status = .queued
                     item.sendAt = Date().addingTimeInterval(min(600, 15 * pow(2, Double(min(attempts, 6)))))
                     item.undoUntil = Date()
                 } else {
+                    Log.error("SMTP", "Sending failed after \(attempts) attempts: \(error.localizedDescription)", error: error)
                     item.status = .failed
                 }
             }

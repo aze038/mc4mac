@@ -149,7 +149,8 @@ public actor TokenStore {
             guard let config = clientConfigProvider() else { throw FalconError.notAuthenticated }
             do {
                 token = try await GoogleOAuth(config: config).refresh(token)
-            } catch FalconError.http(let status, _) where status == 400 || status == 401 {
+            } catch FalconError.http(let status, let text) where status == 400 || status == 401 {
+                Log.warning("OAuth", "Google refused to renew the sign-in (HTTP \(status)): \(text)", error: FalconError.notAuthenticated)
                 throw FalconError.notAuthenticated
             }
             try save(token, for: accountID)

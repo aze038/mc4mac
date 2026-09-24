@@ -55,7 +55,10 @@ struct CalendarView: View {
         do {
             events = try await client.events(from: Calendar.current.startOfDay(for: Date()), to: Date().addingTimeInterval(14 * 86400))
             status = ""
-        } catch { status = error.localizedDescription }
+        } catch {
+            Log.warning("Calendar", "Loading calendar events failed: \(error.localizedDescription)", error: error)
+            status = error.localizedDescription
+        }
     }
 }
 
@@ -144,7 +147,10 @@ struct NewMeetingSheet: View {
                 _ = try await GoogleCalendarClient(tokens: model.tokens, accountID: accountID).create(event)
                 onCreated()
                 dismiss()
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                Log.warning("Calendar", "Creating a calendar event failed: \(error.localizedDescription)", error: error)
+                self.error = error.localizedDescription
+            }
             saving = false
         }
     }
