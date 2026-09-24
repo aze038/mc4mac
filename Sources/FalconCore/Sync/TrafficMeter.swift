@@ -68,13 +68,12 @@ struct TrafficHour: Codable, Equatable {
     }
 }
 
-/// One account's entry in bandwidth.json. `day` and `bytes`, the download of that UTC day, are
-/// all that earlier builds read and write, so a downgrade still finds a sensible count; `hours`
-/// is the rolling window, which they ignore.
+/// One account's entry in bandwidth.json: the download of that UTC day, all the previous
+/// release reads and writes. It rewrites the whole file with nothing else in it, so the hourly
+/// count this build keeps lives in traffic.json, which it never touches.
 struct TrafficRecord: Codable {
     var day: String
     var bytes: Int
-    var hours: [TrafficHour]?
 }
 
 /// Counts every IMAP byte each account moves, down and up, over a rolling 24 hours in hourly
@@ -83,11 +82,14 @@ struct TrafficRecord: Codable {
 /// Thread-safe, so a connection can count as bytes arrive without waiting on anything.
 public final class TrafficMeter: @unchecked Sendable {
     public let limits: TrafficLimits
-    private let url: URL
-    private let writable: Bool
+    private let countURL: URL
+    private let hoursURL: URL
+    private let countWritable: Bool
+    private let hoursWritable: Bool
     private let now: @Sendable () -> Date
     private let lock = NSLock()
-    /// Keyed by account id as stored, oldest hour first.
+    /// Keyed by account id as stored, oldest hour first, kept for two days so that a day's
+    /// total in bandwidth.json can be told apart from what the previous release added to it.
     private var hours: [String: [TrafficHour]] = [:]
     private var dirty = false
 
@@ -95,35 +97,68 @@ public final class TrafficMeter: @unchecked Sendable {
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.limits = limits
         self.now = now
-        url = layout.root.appendingPathComponent("bandwidth.json")
-        let stored = AtomicFile.loadJSON([String: TrafficRecord].self, from: url, what: "the download count")
-        writable = stored.canSave
+        countURL = layout.root.appendingPathComponent("bandwidth.json")
+        hoursURL = layout.root.appendingPathComponent("traffic.json")
+        let counts = AtomicFile.loadJSON([String: TrafficRecord].self, from: countURL, what: "the download count")
+        let hourly = AtomicFile.loadJSON([String: [TrafficHour]].self, from: hoursURL, what: "the hourly traffic count")
+        countWritable = counts.canSave
+        hoursWritable = hourly.canSave
+        hours = hourly.value ?? [:]
         let current = TrafficMeter.hourIndex(now())
-        for (key, record) in stored.value ?? [:] {
-            hours[key] = record.hours ?? TrafficMeter.seed(record, currentHour: current)
+        let modified = (try? FileManager.default.attributesOfItem(atPath: countURL.path)[.modificationDate]) as? Date
+        let written = modified.map(TrafficMeter.hourIndex) ?? current
+        for (key, record) in counts.value ?? [:] {
+            guard let extra = TrafficMeter.uncounted(record, in: hours[key] ?? [], writtenHour: written, currentHour: current) else { continue }
+            var list = hours[key] ?? []
+            if let i = list.firstIndex(where: { $0.hour == extra.hour }) {
+                list[i].down += extra.down
+            } else {
+                list.append(extra)
+                list.sort { $0.hour < $1.hour }
+            }
+            hours[key] = list
+            dirty = true
         }
     }
 
     public static let shared = TrafficMeter()
 
-    /// A count written by an earlier build, which knew only today's total, taken as downloaded
-    /// at the start of that UTC day so that it leaves the window no later than it should.
-    private static func seed(_ record: TrafficRecord, currentHour: Int) -> [TrafficHour] {
-        let dayStart = currentHour - currentHour % 24
-        guard record.bytes > 0, record.day == dayName(hour: currentHour) else { return [] }
-        return [TrafficHour(hour: dayStart, down: record.bytes, up: 0, background: 0)]
+    /// Downloads in a day's total that the hourly count does not hold: what the previous
+    /// release, which knows only the total, added since this build last saved, or the whole of
+    /// a count from before this build. None can have come after the file was written, so they
+    /// are placed at that hour, within their day, and stay in the window at least as long as
+    /// they belong there.
+    private static func uncounted(_ record: TrafficRecord, in list: [TrafficHour], writtenHour: Int, currentHour: Int) -> TrafficHour? {
+        guard record.bytes > 0, let dayStart = hourIndex(day: record.day) else { return nil }
+        let counted = list.filter { $0.hour >= dayStart && $0.hour < dayStart + 24 }.reduce(0) { $0 + $1.down }
+        guard record.bytes > counted else { return nil }
+        var hour = min(writtenHour, currentHour)
+        // A file written before the day it counts has a clock to blame: the latest hour is safe.
+        if hour < dayStart { hour = currentHour }
+        hour = min(hour, dayStart + 23)
+        guard hour > currentHour - 24 else { return nil }
+        return TrafficHour(hour: hour, down: record.bytes - counted, up: 0, background: 0)
     }
 
     static func hourIndex(_ date: Date) -> Int {
         Int((date.timeIntervalSince1970 / 3600).rounded(.down))
     }
 
-    private static func dayName(hour: Int) -> String {
+    private static func dayFormatter() -> DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(secondsFromGMT: 0)
         f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: Date(timeIntervalSince1970: TimeInterval(hour) * 3600))
+        return f
+    }
+
+    private static func dayName(hour: Int) -> String {
+        dayFormatter().string(from: Date(timeIntervalSince1970: TimeInterval(hour) * 3600))
+    }
+
+    /// The first hour of a day named as bandwidth.json names it.
+    private static func hourIndex(day: String) -> Int? {
+        dayFormatter().date(from: day).map(hourIndex)
     }
 
     /// Counts the connection's bytes against `account`, and its downloads against the
@@ -139,7 +174,7 @@ public final class TrafficMeter: @unchecked Sendable {
         guard down > 0 || up > 0 || background > 0 else { return }
         let current = TrafficMeter.hourIndex(now())
         lock.withLock {
-            var list = window(account.uuidString, currentHour: current)
+            var list = kept(account.uuidString, currentHour: current)
             if let i = list.firstIndex(where: { $0.hour == current }) {
                 list[i].down += max(0, down)
                 list[i].up += max(0, up)
@@ -151,6 +186,11 @@ public final class TrafficMeter: @unchecked Sendable {
             hours[account.uuidString] = list
             dirty = true
         }
+    }
+
+    /// The account's hours of the last two days. Called under the lock.
+    private func kept(_ key: String, currentHour: Int) -> [TrafficHour] {
+        (hours[key] ?? []).filter { $0.hour > currentHour - 48 }
     }
 
     /// The account's hours still inside the 24-hour window. Called under the lock. Hours ahead
@@ -189,23 +229,27 @@ public final class TrafficMeter: @unchecked Sendable {
         return moment.addingTimeInterval(24 * 3600)
     }
 
-    /// Saves the counts, so that a relaunch cannot undo the protection. Earlier builds find
-    /// today's download in the fields they know.
+    /// Saves the counts, so that a relaunch cannot undo the protection: the hours in
+    /// traffic.json, and today's download in bandwidth.json, where the previous release finds
+    /// it. A save cut short between the two loses nothing: what a day's total holds beyond the
+    /// hours is counted from it when next read.
     public func persist() {
         let current = TrafficMeter.hourIndex(now())
         let dayStart = current - current % 24
         let today = TrafficMeter.dayName(hour: current)
         lock.withLock {
-            guard dirty, writable else { return }
-            var out: [String: TrafficRecord] = [:]
+            guard dirty else { return }
+            var hourly: [String: [TrafficHour]] = [:]
+            var counts: [String: TrafficRecord] = [:]
             for key in hours.keys {
-                let list = window(key, currentHour: current)
+                let list = kept(key, currentHour: current)
                 guard !list.isEmpty else { continue }
-                let bytes = list.filter { $0.hour >= dayStart }.reduce(0) { $0 + $1.down }
-                out[key] = TrafficRecord(day: today, bytes: bytes, hours: list)
+                hourly[key] = list
+                counts[key] = TrafficRecord(day: today, bytes: list.filter { $0.hour >= dayStart }.reduce(0) { $0 + $1.down })
             }
             do {
-                try AtomicFile.writeJSON(out, to: url)
+                if hoursWritable { try AtomicFile.writeJSON(hourly, to: hoursURL) }
+                if countWritable { try AtomicFile.writeJSON(counts, to: countURL) }
                 dirty = false
             } catch {
                 Log.info("store", "could not save the download count: \(error.localizedDescription)")

@@ -90,24 +90,58 @@ final class TrafficTests: XCTestCase {
         XCTAssertEqual(earlier[account.uuidString]?.day, "2026-09-24")
         XCTAssertEqual(earlier[account.uuidString]?.bytes, 7_000, "today's download since midnight UTC, as it counted")
 
-        // The earlier release writes back only what it knows; this build then starts from that.
+        // The earlier release writes back only what it knows, and the hours kept beside it are
+        // untouched: nothing is lost and nothing counted twice.
         try JSONEncoder().encode(earlier).write(to: countFile)
         let after = TrafficMeter(layout: FileLayout(root: root), now: clock.reading)
-        XCTAssertEqual(after.used(.download, by: account), 7_000)
+        XCTAssertEqual(after.used(.download, by: account), 10_000)
     }
 
-    func testACountFromTheEarlierReleaseIsKept() throws {
+    /// Writes bandwidth.json as the earlier release does, last written at `written`.
+    private func writeEarlierCount(_ counts: [UUID: EarlierUsage], written: Date) throws {
+        try JSONEncoder().encode(Dictionary(uniqueKeysWithValues: counts.map { ($0.key.uuidString, $0.value) })).write(to: countFile)
+        try FileManager.default.setAttributes([.modificationDate: written], ofItemAtPath: countFile.path)
+    }
+
+    func testACountFromTheEarlierReleaseStaysAFullDay() throws {
         let today = UUID()
         let yesterday = UUID()
-        try Data("""
-            {"\(today.uuidString)":{"bytes":3998127,"day":"2026-09-24"},"\(yesterday.uuidString)":{"bytes":5000,"day":"2026-09-23"}}
-            """.utf8).write(to: countFile)
+        let stale = UUID()
+        try writeEarlierCount([today: EarlierUsage(day: "2026-09-24", bytes: 3_998_127),
+                               yesterday: EarlierUsage(day: "2026-09-23", bytes: 5_000),
+                               stale: EarlierUsage(day: "2026-09-21", bytes: 9_000)],
+                              written: date("2026-09-24T17:40:00Z"))
         let clock = TestClock(date("2026-09-24T18:00:00Z"))
         let meter = TrafficMeter(layout: FileLayout(root: root), now: clock.reading)
         XCTAssertEqual(meter.used(.download, by: today), 3_998_127)
-        XCTAssertEqual(meter.used(.download, by: yesterday), 0)
+        XCTAssertEqual(meter.used(.download, by: yesterday), 5_000, "downloaded by the end of yesterday, perhaps within the last 24 hours")
+        XCTAssertEqual(meter.used(.download, by: stale), 0)
         clock.set(date("2026-09-25T00:30:00Z"))
-        XCTAssertEqual(meter.used(.download, by: today), 0, "counted from midnight, it leaves the window a day later")
+        XCTAssertEqual(meter.used(.download, by: today), 3_998_127, "no longer gone at midnight, when it may be an hour old")
+        XCTAssertEqual(meter.used(.download, by: yesterday), 0)
+        clock.set(date("2026-09-25T17:00:01Z"))
+        XCTAssertEqual(meter.used(.download, by: today), 0, "24 hours after the earlier release last wrote it")
+    }
+
+    func testTheHourlyCountOutlivesTheEarlierReleaseRewritingTheFile() throws {
+        let clock = TestClock(date("2026-09-24T23:00:00Z"))
+        let account = UUID()
+        let meter = TrafficMeter(layout: FileLayout(root: root), now: clock.reading)
+        meter.record(down: 1_700 * megabyte, for: account)
+        meter.persist()
+
+        // The earlier release runs for a moment, downloads a little and saves in its own shape.
+        var earlier = try JSONDecoder().decode([String: EarlierUsage].self, from: Data(contentsOf: countFile))
+        earlier[account.uuidString]?.bytes += 2 * megabyte
+        try writeEarlierCount(Dictionary(uniqueKeysWithValues: earlier.map { (UUID(uuidString: $0.key)!, $0.value) }),
+                              written: date("2026-09-24T23:20:00Z"))
+
+        clock.set(date("2026-09-25T00:05:00Z"))
+        let after = TrafficMeter(layout: FileLayout(root: root), now: clock.reading)
+        XCTAssertEqual(after.used(.download, by: account), 1_702 * megabyte, "this build's hours and what the earlier release added")
+        XCTAssertFalse(after.allows(.download, adding: 1_000 * megabyte, for: account), "midnight UTC frees nothing")
+        clock.set(date("2026-09-25T23:00:01Z"))
+        XCTAssertEqual(after.used(.download, by: account), 0)
     }
 
     func testAnUndecodableCountIsSetAsideNotWrittenOver() throws {
@@ -120,6 +154,24 @@ final class TrafficTests: XCTestCase {
         XCTAssertEqual(aside.count, 1)
         XCTAssertEqual(try Data(contentsOf: aside[0]), garbage)
         XCTAssertTrue(StoredFileNotices.take().contains("the download count"))
+    }
+
+    func testAnUndecodableHourlyCountIsSetAsideAndTheDayTotalStillCounts() throws {
+        let hoursFile = root.appendingPathComponent("traffic.json")
+        let garbage = Data("[{\"hour\": oops".utf8)
+        try garbage.write(to: hoursFile)
+        let account = UUID()
+        try writeEarlierCount([account: EarlierUsage(day: "2026-09-24", bytes: 70_000)], written: date("2026-09-24T09:30:00Z"))
+        let clock = TestClock(date("2026-09-24T10:00:00Z"))
+        let meter = TrafficMeter(layout: FileLayout(root: root), now: clock.reading)
+        XCTAssertEqual(meter.used(.download, by: account), 70_000, "the day's total is counted from bandwidth.json")
+        meter.persist()
+        let aside = AtomicFile.setAsideCopies(of: hoursFile)
+        XCTAssertEqual(aside.count, 1)
+        XCTAssertEqual(try Data(contentsOf: aside[0]), garbage)
+        XCTAssertTrue(StoredFileNotices.take().contains("the hourly traffic count"))
+        let reopened = TrafficMeter(layout: FileLayout(root: root), now: clock.reading)
+        XCTAssertEqual(reopened.used(.download, by: account), 70_000, "counted once, not again from both files")
     }
 
     // MARK: Counting on the wire
