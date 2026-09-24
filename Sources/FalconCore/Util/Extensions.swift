@@ -30,11 +30,13 @@ extension String {
         hasPrefix(p) ? String(dropFirst(p.count)) : self
     }
 
+    /// Only RFC 3986's unreserved characters stay as they are. `CharacterSet.alphanumerics` would
+    /// also pass letters such as "é" or "д" through unencoded, which is not a valid query.
     public var urlQueryEncoded: String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
+        addingPercentEncoding(withAllowedCharacters: String.urlUnreserved) ?? self
     }
+
+    private static let urlUnreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 }
 
 extension Dictionary where Key == String, Value == String {
