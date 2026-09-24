@@ -88,7 +88,9 @@ the system frames' names and the signature.
 ## 4. Fix, one problem at a time
 
 1. **Find the cause.** A logged failure's signature ends in the file and function that reported
-   it (`IMAP.throttled@AccountSyncer.swift:loop`). A crash's or hang's ends in FalconMail's own
+   it (`IMAP.throttled@AccountSyncer.swift:loop`); for the mail engine's failures its code is the
+   kind of failure the engine read from the server, its context says that kind as `failure` and
+   the account's status at the time as `health`, and `docs/ARCHITECTURE.md` lists the areas. A crash's or hang's ends in FalconMail's own
    function when the report names it, and otherwise, as in a release build, in the system
    function next to FalconMail's frame
    (`Crash.EXC_CRASH.SIGABRT.NSRangeException.NSArrayMObjectAtIndexedSubscriptIndexBeyondBounds@CoreFoundation:NSArrayM.objectAtIndexedSubscript`),
@@ -102,8 +104,11 @@ the system frames' names and the signature.
    ```
 
 3. **Reproduce it with a test first.** Add a failing XCTest under `Tests/FalconCoreTests/` using
-   the existing in-process doubles and temporary folders (for example `SilentSender` in
-   `SendTests.swift`, `FolderStore` on a temporary directory in `StoreAndRulesTests.swift`).
+   the existing in-process doubles and temporary folders: `EngineHarness` with `FakeIMAPServer` in
+   `Tests/FalconCoreTests/Support` for anything the mail engine does (it can refuse, stall, throttle
+   or cut any command), `FakeGmailURLProtocol` for the Gmail API, `SilentSender` in
+   `SendTests.swift`, or `FolderStore` on a temporary directory in `StoreAndRulesTests.swift`.
+   `EngineDiagnosticsTests.swift` shows how to check the event a failure gives.
    Never a real server or account. If it cannot be reproduced this way, do not guess: put what you
    know under **Needs Kamal**.
 4. **Fix it**, keeping to the surrounding style: comments say why, in British English.

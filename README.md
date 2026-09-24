@@ -23,7 +23,8 @@ problems are found and fixed quickly.
   disk used, sync and error counts), and the versions of FalconMail and macOS.
 - **Never sent:** messages, subjects, contacts, e-mail addresses, the names of your own
   folders, attachment names or passwords. Addresses and folder names are replaced by
-  short codes that cannot be turned back.
+  short codes that cannot be turned back. FalconMail's own log file stays on your Mac;
+  only its warnings and errors are reported, redacted the same way.
 - **Switching it off:** Settings → Privacy → untick *Send diagnostic data to the
   FalconMail team*. Anything waiting is deleted at once, and *Show Data Waiting to Be
   Sent…* shows exactly what would go.

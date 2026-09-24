@@ -14,9 +14,9 @@ FalconMail is a desktop email client. It runs entirely on your Mac.
 - Release builds send diagnostic reports to the FalconMail team: errors, crashes,
   hangs, daily counts (accounts, folders, messages, disk used) and the versions of
   FalconMail and macOS. They never contain messages, subjects, contacts, e-mail
-  addresses, the names of your own folders, attachment names or passwords. This is on
-  by default and can be switched off in Settings → Privacy, which also deletes
-  anything not yet sent. See docs/DIAGNOSTICS.md.
+  addresses, the names of your own folders, attachment names or passwords. FalconMail's
+  own log file stays on your Mac. This is on by default and can be switched off in
+  Settings → Privacy, which also deletes anything not yet sent. See docs/DIAGNOSTICS.md.
 - FalconMail collects no analytics.
 
 Google user data obtained through Google APIs is used only to display and

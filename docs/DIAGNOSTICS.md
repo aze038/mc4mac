@@ -18,7 +18,8 @@ between the app and the backend that files the reports, which both sides impleme
   so problems are found and fixed every day.
 - **What is never sent.** Messages, subjects, contacts, e-mail addresses, the names of your
   own folders, attachment names and passwords. Addresses and folder names become short codes
-  that cannot be turned back.
+  that cannot be turned back. FalconMail's own log file stays on the Mac: of what it writes
+  there, only warnings and errors are sent, and only after the same redaction.
 - **Which copies send.** Only a release build of FalconMail. A build made from the source code
   never sends anything.
 - **How to switch it off.** Settings → Privacy → untick *Send diagnostic data to the FalconMail
@@ -115,6 +116,38 @@ reads `libsqlite.dylib`.
 A logged failure is placed by its file and function, not its line: lines move whenever code
 above them changes, nearly every release and above all in the one that fixes the failure, which
 would make a fixed problem look new and lose the team's notes on it.
+
+A failure of the mail engine takes its code from the kind of failure the engine read from the
+server's status, its response code (such as `THROTTLED`, `AUTHENTICATIONFAILED` or `TRYCREATE`) or
+its SMTP code, never from the server's words, so a server that words the same refusal otherwise
+still gives the same signature. The words reach the event only in its `message`, redacted. Its
+context says the kind as `failure` and, for the engine's own work, the account's status when it
+failed as `health` (`connecting`, `online`, `offline`, `imapPaused`, `needsSignIn` or `blocked`).
+
+| Kind of failure | Code | What the title says after the work that failed, as in *Opening a message failed: …* |
+| --- | --- | --- |
+| The server asked FalconMail to slow down (`IMAP.throttled` reads *The mail server paused the connection: too many requests*) | `throttled` | the server asked FalconMail to slow down |
+| The day's download or upload allowance is used | `dailyLimit`, `uploadLimit` | today's safe download (upload) limit was reached |
+| The server allows no more connections | `tooManyConnections` | other apps were using all the connections the server allows |
+| The server wants a sign-in in a web browser | `webSignIn` | the server wants the account signed in to in a web browser first |
+| The connection dropped or stalled | `connectionClosed` | the connection dropped |
+| The sign-in was refused | `notSignedIn` (`wrongPassword` while an account is set up) | the account needs to sign in again |
+| The message was moved or deleted | `messageGone` | the message was no longer there |
+| The folder is gone, or was rebuilt | `noMailbox`, `mailboxRebuilt` | a folder is missing on the server; the folder was rebuilt on the server |
+| Deleting for good was refused because another message is marked | `expungeRefused` | another message in the folder was marked for deletion |
+| A temporary problem on the server | `temporary` | the server had a temporary problem |
+| The daily sending limit, a refused recipient | `sendingLimit`, `recipientRejected` | the daily sending limit was reached; the server refused a recipient |
+| The folder list kept on the Mac could not be read | `folderListUnreadable` | the folder list kept on this Mac could not be read |
+| Any other refusal | `serverRefused` | the server refused the request |
+| Something on the Mac | what macOS said, such as `diskFull` or `noPermission`, else `local` | this Mac is out of disk space, and so on |
+
+A Gmail API refusal is named the same way, from its HTTP status and reason code: `throttled`,
+`apiQuota`, `apiDisabled`, `noScope`, `notSignedIn`, `clientRejected`, `messageGone`, `temporary`
+or `offline`. Where there is no error to read, the code says what happened: `setAside`,
+`stillSetAside`, `unreadable` and `journalLinesSkipped` for FalconMail's own files, `interrupted`
+for a message held because FalconMail stopped while sending it, `unknownClient` for a Google
+sign-in made by a FalconMail this one cannot renew. The areas are listed in
+`docs/ARCHITECTURE.md`.
 
 A crash or hang is grouped by what went wrong and where, from its own report, and never by an
 address or an offset, which change with every build:
@@ -292,6 +325,7 @@ written to its queue or sent. Each rule is tested in `DiagnosticsRedactorTests`.
 | A name written beside an address: quoted, before it, surname first, or in brackets after it | Removed; the rest of the sentence stays |
 | Message subjects, bodies, snippets, attachment names and contact names | Never included. A `Subject:` or similar header line becomes `Subject: <text>`, an encoded word `<text>` |
 | Folder and label names | Standard ones stay: Inbox, Sent, Drafts, Trash, Junk or Spam, Archive, All Mail, Starred, Important, with or without `[Gmail]/` or `INBOX.`. Any other becomes `<label:ref>`: in IMAP commands and Gmail labels, wherever one of the account's own folder names stands as a word, and, for a short name such as HR or 2024, wherever a server or FalconMail names a folder |
+| The folder and file names a line is about, which the engine hands over with it: the folder it was working in, the one a server named in its refusal | `<label:ref>` wherever each stands as a word, in any case, however short, and also in the modified UTF-7 a server writes a name in, whether or not the app has listed the account's folders yet |
 | IMAP literals, and quoted strings and search terms after `FETCH`, `SEARCH` and `APPEND` | `{n}<literal>` and `"…"` |
 | Text between quotation marks | Between double quotes, kept only when it reads like a code, such as `"invalid_grant"`. Between any language's typographic marks (“…”, „…“, «…», 「…」, ״…״ and the rest) always `…`; a Hebrew gershayim inside a word, as in דו״ח, neither opens nor closes a quotation, while one after up to four of the letters Hebrew joins to the front of a word, as in ב״…״, ה״…״, ומה״…״ or וכשה״…״, opens one. Between single quotes, kept when it reads like code, such as `'NSInvalidArgumentException'` or `'try!'`, otherwise `'…'` |
 | An uncaught exception's name and reason in a crash report | Kept between their single quotes, as the runtime writes them, with every other rule still applied inside them |

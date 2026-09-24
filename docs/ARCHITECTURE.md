@@ -129,6 +129,28 @@ What becomes an event:
 
 - Every `Log.warning` and `Log.error` line, never `Log.info`. Each error alert and banner
   the app shows is one, under the area `Alert`.
+- Every failure of the mail engine that the owner could notice, through `Log.failure`, which
+  takes the engine's typed `MailServiceError`: a warning when it passes by itself (a
+  throttle, a connection limit, a dropped connection, a message moved or deleted), an error
+  when something the owner asked for did not happen or the account waits for them (a
+  refused sign-in, a refusal, a message held in the Outbox). The kind the engine read from
+  the server's status and response code, never the server's words, gives the signature and
+  the title. The areas are stable, one for each kind of work:
+
+  | Area | What failed | Example signature |
+  | --- | --- | --- |
+  | `IMAP` | A pass of the sync loop, a throttle, the connection limit, the download allowance | `IMAP.throttled@AccountSyncer.swift:loop` |
+  | `Sync` | The folder list could not be read, offline copies paused | `Sync.folderListUnreadable@AccountSyncer.swift:loop` |
+  | `Open` | Opening a message, one moved or deleted included, or one found by a Gmail search | `Open.messageGone@AccountSyncer.swift:body` |
+  | `Actions`, `Rules`, `Mute` | Moving, deleting, flagging, replaying an action from the last session, a rule, filing a muted conversation | `Actions.noMailbox@AccountSyncer.swift:commit` |
+  | `Save`, `Import`, `Older`, `Folders`, `Archive` | Saving a draft or a copy, importing, Load older, creating a folder, archiving | `Archive.expungeRefused@ArchiveJob.swift:archive` |
+  | `SMTP`, `Outbox` | Sending, with `context.outcome` `retrying`, `held` or `failed`; a message held after FalconMail stopped mid-send; the Outbox not saved | `SMTP.sendingLimit@Outbox.swift:tick` |
+  | `Store` | A file set aside or unreadable, a save that failed, journal lines skipped | `Store.setAside@FileLayout.swift:load` |
+  | `Search` | A Gmail search that fell back to this Mac or was paused | `Search.throttled@ServerSearch.swift:absorb` |
+  | `SignIn`, `OAuth` | Setting up or checking an account, renewing a Google sign-in | `OAuth.notSignedIn@GoogleOAuth.swift:refreshed` |
+
+  The event's context carries `failure`, the engine's kind, and for the engine's own work
+  `health`, the account's status when it failed.
 - Crashes, from the app's own reports in `~/Library/Logs/DiagnosticReports` at launch and
   from MetricKit, which also reports hangs, heavy CPU use and heavy disk writes. When macOS
   and MetricKit both report the same crash, it is sent once, from the `.ips` report, which
@@ -136,13 +158,31 @@ What becomes an event:
 - A `launch` event at each start, saying whether the last session quit normally, and a
   `health` event once a day.
 
+How it reaches the centre: `Log.observer`, set when the centre starts, which the app does
+before it loads its mail, so that what it finds as it opens is reported too. The observer is
+handed warnings and errors only. A failure the engine has always logged keeps its line in
+`falconmail.log` exactly as before, under the engine's area (`logAs`) and with every address
+but the account's own taken out (`keeping`), while the observer gets the line whole, with the
+folder and file names it is about (`names`), so the redactor sees everything: the address and
+the name beside it, and every one of those names wherever it stands, however short, and in the
+modified UTF-7 a server writes it in. Nothing but the redacted event is ever queued.
+
+The engine's own log, `falconmail.log` in the data folder, never leaves the Mac. It is written
+only once `Log.start` names that folder, so that tests and anything else that links FalconCore
+never write into the owner's; a full log (2 MB) becomes `falconmail.1.log`; and the sync
+coordinator writes an `alive` line every half hour, so a log that goes quiet means FalconMail was
+not running. Lines about a server's reply keep only the account's own address.
+
 When it is sent: a minute after launch, then hourly; within a minute of a crash or hang;
 after a failure, two minutes later, doubling with jitter up to six hours; when offline,
 again in ten minutes. An event leaves the queue only once the server has confirmed it.
 
 Who sends: only a Release build with the bundle identifier `com.falconmail.app`, an
 endpoint and key in its Info.plist (the release workflow fills them from the
-`FALCON_DIAGNOSTICS_URL` and `FALCON_DIAGNOSTICS_KEY` secrets), and the switch on.
+`FALCON_DIAGNOSTICS_URL` and `FALCON_DIAGNOSTICS_KEY` secrets), and the switch on. A Debug
+build, the offscreen snapshot build (`com.falconmail.app.snapshot`) and the tests never queue
+or upload anything, whatever they log; the snapshot draws the data waiting from a stand-in in a
+temporary folder whose every request fails and which is stopped before its first upload is due.
 Switching it off deletes the queue, and switching it back on leaves out whatever happened
 while it was off. The release workflow keeps each build's dSYM in
 `~/Library/Application Support/FalconMail Symbols/<version>/<build>/` on the runner,
