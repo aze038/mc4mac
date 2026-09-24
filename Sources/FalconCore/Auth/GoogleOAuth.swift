@@ -143,9 +143,11 @@ public actor TokenStore {
         return String(decoding: data, as: UTF8.self)
     }
 
-    public func validAccessToken(for accountID: UUID) async throws -> String {
+    /// The account's access token, refreshed first when it is about to expire, or always when
+    /// `forceRefresh`, as after the server turned down one that had not expired.
+    public func validAccessToken(for accountID: UUID, forceRefresh: Bool = false) async throws -> String {
         guard var token = try token(for: accountID) else { throw FalconError.notAuthenticated }
-        if token.isExpiringSoon {
+        if forceRefresh || token.isExpiringSoon {
             guard let config = clientConfigProvider() else { throw FalconError.notAuthenticated }
             do {
                 token = try await GoogleOAuth(config: config).refresh(token)

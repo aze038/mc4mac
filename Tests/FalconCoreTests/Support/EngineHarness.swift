@@ -13,6 +13,7 @@ final class EngineHarness: @unchecked Sendable {
     let store: MailStore
     let pending: PendingActionStore
     let meter: BandwidthMeter
+    let rules: RuleStore
     let account: AccountInfo
     let syncer: AccountSyncer
     let events = EventLog()
@@ -46,11 +47,12 @@ final class EngineHarness: @unchecked Sendable {
         }
         pending = PendingActionStore(layout: layout)
         meter = BandwidthMeter(layout: layout)
+        rules = RuleStore(layout: layout)
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream()
         let port = server.port
         syncer = AccountSyncer(account: account, store: store,
                                tokens: TokenStore(keychain: KeychainStore(service: "com.falconmail.tests.unused"), clientConfigProvider: { nil }),
-                               rules: RuleStore(layout: layout), mutes: MuteStore(layout: layout), indexer: nil,
+                               rules: rules, mutes: MuteStore(layout: layout), indexer: nil,
                                pendingActions: pending, events: continuation, meter: meter,
                                connector: { account in
                                    let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: account.email)

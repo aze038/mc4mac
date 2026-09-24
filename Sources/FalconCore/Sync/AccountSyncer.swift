@@ -37,6 +37,9 @@ public actor AccountSyncer {
     private var requestedFolders: [UUID] = []
     private var backoff: TimeInterval = 5
     private var health: AccountHealth?
+    /// Set when the server asked FalconMail to slow down or refused another connection, on
+    /// whichever connection it said so: until then nothing more is asked of it.
+    private var imapPause: (kind: MailServiceError.Kind, until: Date)?
     private var downSince: Date?
     private var isStopped = false
     /// How long a dropped connection is retried quietly before the owner is told.
@@ -139,6 +142,10 @@ public actor AccountSyncer {
                 return
             }
             do {
+                if let rest = pauseRemaining() {
+                    try await Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000))
+                    continue
+                }
                 if syncClient == nil, health == nil { setHealth(.connecting) }
                 let client = try await connectedSyncClient()
                 setHealth(.online)
@@ -175,14 +182,8 @@ public actor AccountSyncer {
         let now = Date()
         var shown = failure
         switch failure.kind {
-        case .throttled:
-            backoff = min(max(backoff * 2, 1800), 7200)
-            shown.retryAfter = now.addingTimeInterval(backoff)
-            setHealth(.imapPaused(until: now.addingTimeInterval(backoff)))
-        case .tooManyConnections:
-            backoff = TimeInterval.random(in: 300...600)
-            shown.retryAfter = now.addingTimeInterval(backoff)
-            setHealth(.imapPaused(until: now.addingTimeInterval(backoff)))
+        case .throttled, .tooManyConnections:
+            shown.retryAfter = pauseIMAP(for: failure.kind)
         case .needsSignIn:
             setHealth(.needsSignIn)
             events.yield(.error(accountID: account.id, message: failure.sentence))
@@ -207,6 +208,36 @@ public actor AccountSyncer {
         }
         events.yield(.error(accountID: account.id, message: shown.sentence))
         return true
+    }
+
+    /// Stops asking the server for anything until the returned time. Gmail's throttle and its
+    /// connection limit are the account's, not one connection's, and every command meanwhile
+    /// only prolongs them.
+    private func pauseIMAP(for kind: MailServiceError.Kind) -> Date {
+        backoff = kind == .throttled ? min(max(backoff * 2, 1800), 7200) : TimeInterval.random(in: 300...600)
+        let until = Date().addingTimeInterval(backoff)
+        imapPause = (kind, until)
+        setHealth(.imapPaused(until: until))
+        return until
+    }
+
+    /// How long the pause has left, nil when there is none.
+    private func pauseRemaining() -> TimeInterval? {
+        guard let pause = imapPause else { return nil }
+        let left = pause.until.timeIntervalSinceNow
+        guard left > 0 else {
+            imapPause = nil
+            return nil
+        }
+        return left
+    }
+
+    /// Work for the reader is refused at once during a pause, rather than sent to a server that
+    /// asked for quiet.
+    private func refuseWhilePaused() throws {
+        guard pauseRemaining() != nil, let pause = imapPause else { return }
+        throw MailServiceError(kind: pause.kind, account: account, detail: "paused until \(ISO8601DateFormatter.archive.string(from: pause.until))",
+                               retryAfter: pause.until, isOneOff: true)
     }
 
     private func connectedSyncClient() async throws -> IMAPClient {
@@ -250,12 +281,14 @@ public actor AccountSyncer {
     }
 
     /// Runs `work` as one unit on the op connection. A connection that fails is discarded so
-    /// the next call opens a fresh one. One that had sat unused may have been closed by the
-    /// server or the network meanwhile, so when `repeatable` the work is tried once more on a
-    /// fresh connection; work that must not happen twice, such as an APPEND, is not, and nor is
+    /// the next call opens a fresh one. Work that found it already gone when its turn came sent
+    /// nothing, and is always tried once more on a fresh connection. So is work on one that had
+    /// sat unused, which the server or the network may have closed meanwhile, when
+    /// `repeatable`; work that must not happen twice, such as an APPEND, is not, and nor is
     /// anything after a throttle or any other refusal that a new connection would only repeat.
     private func withOpConnection<T: Sendable>(repeatable: Bool = true,
                                                _ work: @Sendable (IMAPClient) async throws -> T) async throws -> T {
+        try refuseWhilePaused()
         let (client, reused) = try await connectedOpClient()
         do {
             return try await client.exclusively(work)
@@ -263,7 +296,8 @@ public actor AccountSyncer {
             guard await !client.isConnected else { throw error }
             dropOpClient(client)
             let lost = MailServiceError.classify(error, account: account)
-            guard reused, repeatable, lost.kind == .connectionDropped, !Task.isCancelled else { throw error }
+            let unsent = error is IMAPNotSent
+            guard unsent || (reused && repeatable), lost.kind == .connectionDropped, !Task.isCancelled else { throw error }
             Log.info("sync", "\(account.email): op connection lost (\(Log.redacted(lost.detail, keeping: account.email))), reconnecting")
             let fresh = try await connectedOpClient().client
             do {
@@ -285,15 +319,20 @@ public actor AccountSyncer {
     }
 
     static func signIn(_ account: AccountInfo, tokens: TokenStore) async throws -> IMAPClient {
-        let c = IMAPClient(host: account.imapHost, port: account.imapPort, label: account.email)
-        try await c.connect()
-        do {
-            if account.usesPassword {
-                try await c.login(user: account.loginName, password: try await tokens.password(for: account.id))
-            } else {
-                let token = try await tokens.validAccessToken(for: account.id)
-                try await c.authenticateXOAuth2(user: account.email, accessToken: token)
+        let connect: @Sendable () async throws -> IMAPClient = {
+            let c = IMAPClient(host: account.imapHost, port: account.imapPort, label: account.email)
+            try await c.connect()
+            return c
+        }
+        guard account.usesPassword else {
+            let id = account.id
+            return try await signIn(user: account.email, isGoogle: account.provider == "google", connect: connect) { force in
+                try await tokens.validAccessToken(for: id, forceRefresh: force)
             }
+        }
+        let c = try await connect()
+        do {
+            try await c.login(user: account.loginName, password: try await tokens.password(for: account.id))
         } catch {
             await c.logout()
             throw error
@@ -301,14 +340,51 @@ public actor AccountSyncer {
         return c
     }
 
-    /// The failure as the owner should see it, logged with the server's own words. A message
-    /// or folder the server no longer has, or a folder renumbered, gets that folder brought up
-    /// to date so the list stops offering it.
+    /// Signs in with an access token. One the server turns down although it has not expired,
+    /// revoked early or cut short by a clock that is off, is refreshed once and tried once more
+    /// before the owner is asked to sign in again.
+    static func signIn(user: String, isGoogle: Bool, connect: @Sendable () async throws -> IMAPClient,
+                       accessToken: @Sendable (_ forceRefresh: Bool) async throws -> String) async throws -> IMAPClient {
+        func attempt(forceRefresh: Bool) async throws -> IMAPClient {
+            let c = try await connect()
+            do {
+                try await c.authenticateXOAuth2(user: user, accessToken: try await accessToken(forceRefresh))
+            } catch {
+                await c.logout()
+                throw error
+            }
+            return c
+        }
+        do {
+            return try await attempt(forceRefresh: false)
+        } catch let refusal as IMAPServerError
+                    where MailServiceError.classify(refusal, email: user, isGoogle: isGoogle).kind == .needsSignIn {
+            Log.info("sync", "\(user): the server turned down the access token (\(refusal.codeName ?? "no code")); refreshing it once")
+            return try await attempt(forceRefresh: true)
+        }
+    }
+
+    /// The failure of one thing the owner asked for, as they should see it, logged with the
+    /// server's own words. Nothing retries it, so its sentence promises no retry. A throttle or
+    /// a refused connection pauses the account as it would on the sync connection, so that
+    /// what the owner does next waits instead of asking the server again. A message or folder
+    /// the server no longer has, or a folder renumbered, gets that folder brought up to date so
+    /// the list stops offering it.
     private func failed(_ doing: String, _ error: Error, folder: FolderInfo?) async -> Error {
         if error is CancellationError { return error }
-        let failure = MailServiceError.classify(error, account: account)
+        var failure = MailServiceError.classify(error, account: account)
+        failure.isOneOff = true
         Log.info("sync", Log.redacted("\(account.email): \(doing) failed: \(failure.kind.rawValue): \(failure.detail)", keeping: account.email))
         switch failure.kind {
+        case .throttled, .tooManyConnections:
+            // Only the server's own word starts a pause; the refusal given during one must
+            // not make it longer.
+            guard !(error is MailServiceError) else { break }
+            let until = pauseIMAP(for: failure.kind)
+            failure.retryAfter = until
+            var status = failure
+            status.isOneOff = false
+            events.yield(.error(accountID: account.id, message: status.sentence))
         case .messageGone, .mailboxRenumbered:
             if let folder { await requestSync(folderID: folder.id) }
         case .folderGone:
@@ -328,6 +404,8 @@ public actor AccountSyncer {
         let folders = try await store.reconcileFolders(accountID: account.id, listed: listed)
         for f in folders where f.isSelectable && f.role != .all {
             try Task.checkCancellation()
+            // Paused by a throttle met on the op connection: the rest waits for the pass after.
+            guard pauseRemaining() == nil else { return }
             events.yield(.progress(accountID: account.id, text: "Checking \(f.name) in \(account.email)"))
             try await syncFolder(f, client: client)
         }
@@ -336,19 +414,30 @@ public actor AccountSyncer {
     public var fullSyncInterval: TimeInterval = 5 * 60
     private var lastFullSync = Date()
 
+    private var wantsSync: Bool { syncRequested || !requestedFolders.isEmpty }
+
     private func idleLoop(_ client: IMAPClient) async throws {
         guard let inbox = await store.folder(accountID: account.id, role: .inbox) else { return }
         while !Task.isCancelled {
             var changed = false
-            if !syncRequested && requestedFolders.isEmpty {
+            if pauseRemaining() != nil || !wantsSync {
                 _ = try await client.select(inbox.path)
-                let wait = max(30, fullSyncInterval - Date().timeIntervalSince(lastFullSync))
-                changed = try await client.idle(maxWait: min(wait, 20 * 60))
+                // A request made from here on ends the IDLE as soon as it starts, and one made
+                // during the SELECT is seen just below, so none waits for IDLE to time out.
+                await client.prepareIdle()
+                let paused = pauseRemaining()
+                if paused != nil || !wantsSync {
+                    let wait = paused ?? max(30, fullSyncInterval - Date().timeIntervalSince(lastFullSync))
+                    changed = try await client.idle(maxWait: min(wait, 20 * 60))
+                }
             }
+            // Nothing is fetched during a pause; the pass after it catches up.
+            guard pauseRemaining() == nil else { continue }
             let due = Date().timeIntervalSince(lastFullSync) >= fullSyncInterval
             if syncRequested || due {
                 try await syncAll(client)
                 lastFullSync = Date()
+                if pauseRemaining() == nil { setHealth(.online) }
                 events.yield(.finished(accountID: account.id))
                 continue
             }
@@ -360,21 +449,43 @@ public actor AccountSyncer {
                 guard let fresh = await store.folder(id), fresh.isSelectable else { continue }
                 try await syncFolder(fresh, client: client)
             }
+            if pauseRemaining() == nil { setHealth(.online) }
             events.yield(.finished(accountID: account.id))
         }
     }
 
     public func syncFolder(_ input: FolderInfo, client: IMAPClient) async throws {
-        var folder = input
-        let status = try await client.select(folder.path)
-        let fs = try await store.folderStore(folder)
-        if folder.uidValidity != 0, folder.uidValidity != status.uidValidity {
-            try await fs.removeAll()
-            folder.lastSyncedUID = 0
-            folder.oldestSyncedUID = 0
+        let status = try await client.select(input.path)
+        let fs = try await store.folderStore(input)
+        // The record as it is now the store is loaded, not the copy passed in: loading a store
+        // whose index was set aside resets the cursors, so that its messages are listed again.
+        guard var folder = await store.folder(input.id) else { return }
+        if folder.uidValidity != status.uidValidity {
+            let renumbered = folder.uidValidity != 0
+            if renumbered {
+                try await fs.removeAll()
+                // They name UIDs of the old numbering. Kept, they would keep out whichever new
+                // rows now carry those UIDs; the actions behind them are cancelled when they run.
+                suppressedUIDs[folder.id] = nil
+                folder.lastSyncedUID = 0
+                folder.oldestSyncedUID = 0
+            }
+            // Recorded as soon as any old rows are gone and before a new one arrives, so a row
+            // in the store always belongs to the UIDVALIDITY recorded for its folder.
+            let numbering = status.uidValidity
+            try await store.updateFolder(folder.id) { current in
+                current.uidValidity = numbering
+                if renumbered {
+                    current.lastSyncedUID = 0
+                    current.oldestSyncedUID = 0
+                }
+            }
         }
         folder.uidValidity = status.uidValidity
         folder.uidNext = status.uidNext
+        // Mail found in a folder listed before is news; a folder listed from scratch, the first
+        // time, after a renumbering or with its index set aside, brings none.
+        let listedBefore = folder.lastSyncedUID > 0
 
         var newMessages: [MessageSummary] = []
         if status.exists > 0 {
@@ -432,7 +543,17 @@ public actor AccountSyncer {
         }
 
         folder.lastSyncDate = Date()
-        try await store.updateFolder(folder)
+        let pass = folder
+        try await store.updateFolder(folder.id) { current in
+            // A pass that met a newer numbering owns the record now.
+            guard current.uidValidity == 0 || current.uidValidity == pass.uidValidity else { return }
+            current.uidValidity = pass.uidValidity
+            current.uidNext = pass.uidNext
+            current.lastSyncedUID = max(current.lastSyncedUID, pass.lastSyncedUID)
+            // Load older may have reached further back while this pass ran.
+            current.oldestSyncedUID = [current.oldestSyncedUID, pass.oldestSyncedUID].filter { $0 > 0 }.min() ?? 0
+            current.lastSyncDate = pass.lastSyncDate
+        }
         try await store.refreshCounts(folderID: folder.id)
         await store.notifyMessagesChanged(folderID: folder.id)
         events.yield(.folderSynced(folderID: folder.id))
@@ -442,11 +563,11 @@ public actor AccountSyncer {
         try await prefetchBodies(folder: folder, fs: fs, client: client, preferred: newMessages)
 
         var survivors = newMessages
-        if folder.role == .inbox, input.lastSyncedUID > 0, !newMessages.isEmpty {
-            let relocated = await applyRules(to: newMessages, folder: folder, fs: fs, client: client)
+        if folder.role == .inbox, listedBefore, !newMessages.isEmpty {
+            let relocated = await applyRules(to: newMessages, folder: folder, fs: fs) { work in try await work(client) }
             survivors.removeAll { relocated.contains($0.uid) }
         }
-        if folder.role == .inbox, input.lastSyncedUID > 0, !survivors.isEmpty {
+        if folder.role == .inbox, listedBefore, !survivors.isEmpty {
             events.yield(.newMessages(accountID: account.id, folderID: folder.id, messages: survivors))
         }
     }
@@ -488,48 +609,66 @@ public actor AccountSyncer {
         await store.notifyMessagesChanged(folderID: folder.id)
     }
 
+    /// Runs one piece of server work with the folder being ruled on selected.
+    private typealias RuleRunner = (@Sendable (IMAPClient) async throws -> Void) async throws -> Void
+
+    /// Runs the rules on `messages`, each action through `run`. A failure about the account or
+    /// the connection rather than one message stops the rest, since every later action would
+    /// only meet it again.
     @discardableResult
-    private func applyRules(to messages: [MessageSummary], folder: FolderInfo, fs: FolderStore, client: IMAPClient) async -> Set<UInt32> {
+    private func applyRules(to messages: [MessageSummary], folder: FolderInfo, fs: FolderStore, run: RuleRunner) async -> Set<UInt32> {
         let defs = await rules.all().filter { $0.isEnabled }
         guard !defs.isEmpty else { return [] }
         var relocated = Set<UInt32>()
-        for m in messages {
+        var stopped = false
+        for m in messages where !stopped {
             let bodyText = await fs.body(uid: m.uid).map { MIMEParser.parse($0).bestText } ?? ""
             let actions = RuleEngine.actions(for: defs, accountID: account.id, subject: RuleSubject(summary: m, body: bodyText))
             var flags = m.flags
             var flagsChanged = false
             var moved = false
+            let uids = [m.uid]
             for a in actions {
                 do {
                     switch a.kind {
                     case .markRead:
-                        try await client.store(uids: [m.uid], add: true, flags: ["\\Seen"])
+                        try await run { try await $0.store(uids: uids, add: true, flags: ["\\Seen"]) }
                         flags.insert(.seen)
                         flagsChanged = true
                     case .flag:
-                        try await client.store(uids: [m.uid], add: true, flags: ["\\Flagged"])
+                        try await run { try await $0.store(uids: uids, add: true, flags: ["\\Flagged"]) }
                         flags.insert(.flagged)
                         flagsChanged = true
                     case .delete:
                         if let trash = await store.folder(accountID: account.id, role: .trash) {
-                            try await client.move(uids: [m.uid], to: trash.path)
+                            let path = trash.path
+                            try await run { try await $0.move(uids: uids, to: path) }
                             moved = true
                         }
                     case .archive:
-                        try await archiveOnServer(uids: [m.uid], client: client)
+                        let target = await archiveTarget()
+                        try await run { try await AccountSyncer.archive(uids: uids, to: target, client: $0) }
                         moved = true
                     case .moveToFolder:
                         if !a.value.isEmpty {
-                            try await client.move(uids: [m.uid], to: a.value)
+                            let path = a.value
+                            try await run { try await $0.move(uids: uids, to: path) }
                             moved = true
                         }
                     case .copyToFolder:
-                        if !a.value.isEmpty { try await client.copy(uids: [m.uid], to: a.value) }
+                        if !a.value.isEmpty {
+                            let path = a.value
+                            try await run { try await $0.copy(uids: uids, to: path) }
+                        }
                     case .stopProcessing: break
                     }
                 } catch {
                     let failure = await failed("rule", error, folder: nil)
                     events.yield(.error(accountID: account.id, message: "A rule could not run. \(failure.localizedDescription)"))
+                    if let known = failure as? MailServiceError, AccountSyncer.stopsRules(known.kind) {
+                        stopped = true
+                        break
+                    }
                 }
                 if moved { break }
             }
@@ -546,6 +685,14 @@ public actor AccountSyncer {
         await store.notifyMessagesChanged(folderID: folder.id)
         await requestSync()
         return relocated
+    }
+
+    /// A rule failure that is not about the message it was running on.
+    private static func stopsRules(_ kind: MailServiceError.Kind) -> Bool {
+        switch kind {
+        case .messageGone, .folderGone, .expungeRefused, .refused, .recipientRefused, .local: return false
+        default: return true
+        }
     }
 
     private func withoutMuted(_ messages: [MessageSummary], folder: FolderInfo, fs: FolderStore,
@@ -637,6 +784,12 @@ public actor AccountSyncer {
     public func body(for message: MessageSummary) async throws -> Data {
         guard let folder = await store.folder(message.folderID) else { throw FalconError.storage("folder missing") }
         let fs = try await store.folderStore(folder)
+        // Checked against the store only after the folder's UIDVALIDITY was read above: a row
+        // that still matches then was listed under that numbering, and the server is asked
+        // under it too, so neither a stale row nor a renumbering in between opens another message.
+        guard await !stillCurrent([message], in: folder, fs: fs).isEmpty else {
+            throw await failed("opening a message in \(folder.path)", gone(), folder: folder)
+        }
         if let cached = await fs.body(uid: message.uid) { return cached }
         let raw: Data
         do {
@@ -661,13 +814,43 @@ public actor AccountSyncer {
         return MIMEParser.parse(raw)
     }
 
+    /// The rows of `group` that still name the message they were read for, in the store of a
+    /// folder whose record was read first. One read before the folder was renumbered, or since
+    /// removed, carries a UID that now names another message or none, so it is left out, and
+    /// the folder is brought up to date for the list to catch up.
+    private func stillCurrent(_ group: [MessageSummary], in folder: FolderInfo, fs: FolderStore) async -> [MessageSummary] {
+        let current = await fs.current(group)
+        if current.count < group.count {
+            Log.info("sync", "\(account.email) \(folder.path): \(group.count - current.count) of \(group.count) rows no longer name their message; left alone")
+            await requestSync(folderID: folder.id)
+        }
+        return current
+    }
+
+    private func gone() -> MailServiceError {
+        MailServiceError(kind: .messageGone, account: account, detail: "the row no longer names the message it was read for", isOneOff: true)
+    }
+
+    /// The records of what was done. When nothing was, because every row asked about had gone
+    /// stale, that is the owner's answer rather than silence.
+    private func acted(_ outcomes: [MailActionRecord?]) throws -> [MailActionRecord] {
+        let records = outcomes.compactMap { $0 }
+        if records.isEmpty, outcomes.contains(where: { $0 == nil }) { throw gone() }
+        return records
+    }
+
     @discardableResult
     public func setFlag(_ flag: MessageFlags, on messages: [MessageSummary], enabled: Bool,
                         silent: Bool = false) async throws -> [MailActionRecord] {
-        var records: [MailActionRecord] = []
-        for (folderID, group) in Dictionary(grouping: messages, by: { $0.folderID }) {
+        var outcomes: [MailActionRecord?] = []
+        for (folderID, all) in Dictionary(grouping: messages, by: { $0.folderID }) {
             guard let folder = await store.folder(folderID) else { continue }
             let fs = try await store.folderStore(folder)
+            let group = await stillCurrent(all, in: folder, fs: fs)
+            guard !group.isEmpty else {
+                outcomes.append(nil)
+                continue
+            }
             var updates: [(uid: UInt32, flags: MessageFlags)] = []
             for m in group {
                 var f = m.flags
@@ -691,25 +874,25 @@ public actor AccountSyncer {
             let kind = MailActionKind.forFlag(flag, enabled: enabled)
             let record = MailActionRecord(id: pending.id, kind: kind, accountID: account.id, folderID: folder.id,
                                           messages: group, destinationName: "", date: Date(), isAutomatic: silent)
-            records.append(record)
+            outcomes.append(record)
             hold(record: record, pending: pending)
         }
-        return records
+        return try acted(outcomes)
     }
 
     @discardableResult
     public func move(_ messages: [MessageSummary], to destination: FolderInfo) async throws -> [MailActionRecord] {
-        try await move(messages, to: destination, kind: .move)
+        try acted(await move(messages, to: destination, kind: .move))
     }
 
-    private func move(_ messages: [MessageSummary], to destination: FolderInfo, kind: MailActionKind) async throws -> [MailActionRecord] {
-        var records: [MailActionRecord] = []
+    private func move(_ messages: [MessageSummary], to destination: FolderInfo, kind: MailActionKind) async throws -> [MailActionRecord?] {
+        var outcomes: [MailActionRecord?] = []
         for (folderID, group) in Dictionary(grouping: messages, by: { $0.folderID }) where folderID != destination.id {
             guard let folder = await store.folder(folderID) else { continue }
-            records.append(try await removeLocally(group, in: folder, kind: kind, verb: .move,
-                                                   destinationPath: destination.path, destinationName: destination.name))
+            outcomes.append(try await removeLocally(group, in: folder, kind: kind, verb: .move,
+                                                    destinationPath: destination.path, destinationName: destination.name))
         }
-        return records
+        return outcomes
     }
 
     @discardableResult
@@ -719,42 +902,45 @@ public actor AccountSyncer {
         }
         let alreadyTrashed = messages.filter { $0.folderID == trash.id }
         let rest = messages.filter { $0.folderID != trash.id }
-        var records: [MailActionRecord] = []
-        if !rest.isEmpty { records.append(contentsOf: try await move(rest, to: trash, kind: .delete)) }
+        var outcomes: [MailActionRecord?] = []
+        if !rest.isEmpty { outcomes += try await move(rest, to: trash, kind: .delete) }
         if !alreadyTrashed.isEmpty {
-            records.append(try await removeLocally(alreadyTrashed, in: trash, kind: .delete, verb: .expunge,
-                                                   destinationPath: "", destinationName: trash.name))
+            outcomes.append(try await removeLocally(alreadyTrashed, in: trash, kind: .delete, verb: .expunge,
+                                                    destinationPath: "", destinationName: trash.name))
         }
-        return records
+        return try acted(outcomes)
     }
 
     @discardableResult
     public func purge(_ messages: [MessageSummary]) async throws -> [MailActionRecord] {
-        var records: [MailActionRecord] = []
+        var outcomes: [MailActionRecord?] = []
         for (folderID, group) in Dictionary(grouping: messages, by: { $0.folderID }) {
             guard let folder = await store.folder(folderID) else { continue }
-            records.append(try await removeLocally(group, in: folder, kind: .delete, verb: .expunge,
-                                                   destinationPath: "", destinationName: folder.name))
+            outcomes.append(try await removeLocally(group, in: folder, kind: .delete, verb: .expunge,
+                                                    destinationPath: "", destinationName: folder.name))
         }
-        return records
+        return try acted(outcomes)
     }
 
     @discardableResult
     public func archive(_ messages: [MessageSummary]) async throws -> [MailActionRecord] {
         let name = await archiveDestinationName()
-        var records: [MailActionRecord] = []
+        var outcomes: [MailActionRecord?] = []
         for (folderID, group) in Dictionary(grouping: messages, by: { $0.folderID }) {
             guard let folder = await store.folder(folderID) else { continue }
-            records.append(try await removeLocally(group, in: folder, kind: .archive, verb: .archive,
-                                                   destinationPath: "", destinationName: name))
+            outcomes.append(try await removeLocally(group, in: folder, kind: .archive, verb: .archive,
+                                                    destinationPath: "", destinationName: name))
         }
-        return records
+        return try acted(outcomes)
     }
 
-    private func removeLocally(_ group: [MessageSummary], in folder: FolderInfo, kind: MailActionKind,
+    /// Nil when none of `all` still names its message.
+    private func removeLocally(_ all: [MessageSummary], in folder: FolderInfo, kind: MailActionKind,
                                verb: PendingServerVerb, destinationPath: String,
-                               destinationName: String) async throws -> MailActionRecord {
+                               destinationName: String) async throws -> MailActionRecord? {
         let fs = try await store.folderStore(folder)
+        let group = await stillCurrent(all, in: folder, fs: fs)
+        guard !group.isEmpty else { return nil }
         let pending = PendingServerOperation(accountID: account.id, folderID: folder.id, verb: verb,
                                              uids: group.map { $0.uid }, uidValidity: folder.uidValidity,
                                              destinationPath: destinationPath)
@@ -790,26 +976,26 @@ public actor AccountSyncer {
         guard let action = held.removeValue(forKey: id) else { return }
         do {
             try await run(action.pending)
-            unsuppress(action.pending)
+            await release(action.pending)
             await pendingActions.remove(action.pending.id)
             if action.pending.verb == .move { await requestSync() }
         } catch {
-            unsuppress(action.pending)
+            await release(action.pending)
             await pendingActions.remove(action.pending.id)
             let failure = await failed("\(action.record.kind.rawValue) of \(action.pending.uids.count)", error,
                                        folder: await store.folder(action.pending.folderID))
             guard !action.record.isAutomatic else { return }
-            await restore(action.record)
+            let restored = await restore(action.record, queuedAs: action.pending)
             events.yield(.actionFailed(accountID: account.id,
-                                       message: "\(action.record.failurePrefix): \(failure.localizedDescription) Restored."))
+                                       message: "\(action.record.failurePrefix): \(failure.localizedDescription)\(restored ? " Restored." : "")"))
         }
     }
 
     public func undo(_ recordID: UUID) async -> Bool {
         guard let action = held.removeValue(forKey: recordID) else { return false }
         action.task?.cancel()
-        unsuppress(action.pending)
-        await restore(action.record)
+        await release(action.pending)
+        await restore(action.record, queuedAs: action.pending)
         await pendingActions.remove(action.pending.id)
         return true
     }
@@ -844,8 +1030,13 @@ public actor AccountSyncer {
         }
     }
 
-    private func restore(_ record: MailActionRecord) async {
-        guard let folder = await store.folder(record.folderID), let fs = try? await store.folderStore(folder) else { return }
+    /// Puts back the rows an action took out of the list. Not into a folder renumbered since
+    /// the action was queued: its rows now belong to the new numbering, and one put back from
+    /// before would stand at a UID that names another message.
+    @discardableResult
+    private func restore(_ record: MailActionRecord, queuedAs pending: PendingServerOperation) async -> Bool {
+        guard let folder = await store.folder(record.folderID), pending.appliesTo(folder),
+              let fs = try? await store.folderStore(folder) else { return false }
         switch record.kind {
         case .flag, .unflag, .read, .unread:
             let previous: [(uid: UInt32, flags: MessageFlags)] = record.messages.map { (uid: $0.uid, flags: $0.flags) }
@@ -858,6 +1049,7 @@ public actor AccountSyncer {
         }
         await store.notifyMessagesChanged(folderID: folder.id)
         try? await store.refreshCounts(folderID: folder.id)
+        return true
     }
 
     private func replayPendingOperations() async {
@@ -894,10 +1086,11 @@ public actor AccountSyncer {
         guard let folder = await store.folder(pending.folderID), let fs = try? await store.folderStore(folder) else { return }
         do {
             let uids = pending.uids
-            let envelopes = try await withMailbox(folder.path, uidValidity: pending.uidValidity ?? folder.uidValidity) {
+            let validity = pending.uidValidity ?? folder.uidValidity
+            let envelopes = try await withMailbox(folder.path, uidValidity: validity) {
                 try await $0.fetchEnvelopes(uids: uids)
             }
-            guard !envelopes.isEmpty else { return }
+            guard !envelopes.isEmpty, await stillNumbered(folder.id, as: validity) else { return }
             let rows = envelopes.map { AccountSyncer.summary(from: $0, accountID: account.id, folderID: folder.id) }
             let summaries = await AccountSyncer.thread(rows, in: fs)
             try await fs.upsert(summaries)
@@ -910,8 +1103,21 @@ public actor AccountSyncer {
         }
     }
 
+    /// Whether the folder is still numbered as it was when rows were fetched from it. Rows
+    /// fetched just before the sync found it renumbered must not join the new numbering's.
+    private func stillNumbered(_ folderID: UUID, as validity: UInt32) async -> Bool {
+        await store.folder(folderID)?.uidValidity == validity
+    }
+
     private func suppress(_ pending: PendingServerOperation) {
         for uid in pending.uids { suppressedUIDs[pending.folderID, default: [:]][uid, default: 0] += 1 }
+    }
+
+    /// Lifts a finished action's hold on its rows, unless the folder was renumbered since: its
+    /// holds were dropped then, and any there now are for the new numbering's rows.
+    private func release(_ pending: PendingServerOperation) async {
+        guard let folder = await store.folder(pending.folderID), pending.appliesTo(folder) else { return }
+        unsuppress(pending)
     }
 
     private func unsuppress(_ pending: PendingServerOperation) {
@@ -960,6 +1166,9 @@ public actor AccountSyncer {
                 // One unit per batch, so a message opened meanwhile does not wait for them all.
                 let batch = Array(window[start..<min(start + batchSize, window.count)])
                 let envelopes = try await withMailbox(folder.path, uidValidity: folder.uidValidity) { try await $0.fetchEnvelopes(uids: batch) }
+                guard await stillNumbered(folder.id, as: folder.uidValidity) else {
+                    throw MailServiceError(kind: .mailboxRenumbered, account: account, detail: "renumbered during Load older", name: folder.name)
+                }
                 var summaries = await AccountSyncer.thread(envelopes.map { AccountSyncer.summary(from: $0, accountID: account.id, folderID: folder.id) }, in: fs)
                 summaries.removeAll { isSuppressed(folderID: folder.id, uid: $0.uid) }
                 try await fs.upsert(summaries)
@@ -969,10 +1178,13 @@ public actor AccountSyncer {
         } catch {
             throw await failed("loading older messages in \(folder.path)", error, folder: folder)
         }
-        // Read again rather than write back the copy from before: a sync may have moved on.
-        if var current = await store.folder(folder.id), current.uidValidity == folder.uidValidity, let first = window.first {
-            current.oldestSyncedUID = current.oldestSyncedUID == 0 ? first : min(current.oldestSyncedUID, first)
-            try await store.updateFolder(current)
+        // Only the cursor it moved, on the record as it is now: a sync may have moved on.
+        if let first = window.first {
+            let validity = folder.uidValidity
+            try await store.updateFolder(folder.id) { current in
+                guard current.uidValidity == validity else { return }
+                current.oldestSyncedUID = current.oldestSyncedUID == 0 ? first : min(current.oldestSyncedUID, first)
+            }
         }
         try await store.refreshCounts(folderID: folder.id)
         await store.notifyMessagesChanged(folderID: folder.id)
@@ -987,12 +1199,12 @@ public actor AccountSyncer {
         guard let inbox = await store.folder(accountID: account.id, role: .inbox) else { return }
         let fs = try await store.folderStore(inbox)
         let all = await fs.all()
-        do {
-            _ = try await withMailbox(inbox.path, uidValidity: inbox.uidValidity) { client in
-                await self.applyRules(to: all, folder: inbox, fs: fs, client: client)
-            }
-        } catch {
-            throw await failed("running rules on \(inbox.path)", error, folder: inbox)
+        let path = inbox.path
+        let validity = inbox.uidValidity
+        // Each action a unit of its own, so that a message opened meanwhile waits for one
+        // command rather than for the whole run.
+        await applyRules(to: all, folder: inbox, fs: fs) { work in
+            try await self.withMailbox(path, uidValidity: validity, work)
         }
         await requestSync()
     }
@@ -1001,6 +1213,7 @@ public actor AccountSyncer {
     /// otherwise hold up every message the reader opens.
     public func openArchiveSourceClient() async throws -> IMAPClient {
         do {
+            try refuseWhilePaused()
             return try await connector(account)
         } catch {
             throw await failed("connecting for an archive", error, folder: nil)

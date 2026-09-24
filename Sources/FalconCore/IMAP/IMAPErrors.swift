@@ -73,3 +73,11 @@ public struct IMAPExpungeRefused: Error, LocalizedError, Sendable, Equatable {
         "Nothing was deleted: another message in this folder is marked for deletion, and this server can only delete them all at once."
     }
 }
+
+/// The connection had already failed when this work's turn on it came, so none of it reached
+/// the server and it can be tried again on a new connection without doing anything twice.
+public struct IMAPNotSent: Error, LocalizedError, Sendable, Equatable {
+    public init() {}
+
+    public var errorDescription: String? { "The connection to the mail server was lost." }
+}

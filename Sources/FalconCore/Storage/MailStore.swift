@@ -200,6 +200,17 @@ public actor MailStore {
         emit(.foldersChanged(accountID: folder.accountID))
     }
 
+    /// Changes the stored record as it is now. Anyone who read a copy, awaited something and
+    /// then saved that whole copy would put back whatever another caller changed meanwhile,
+    /// such as the cursors a sync pass or Load older moved.
+    public func updateFolder(_ id: UUID, _ change: (inout FolderInfo) -> Void) throws {
+        guard var f = folder(id) else { return }
+        let before = f
+        change(&f)
+        guard f != before else { return }
+        try updateFolder(f)
+    }
+
     private func refuseIfFolderListUnread(_ accountID: UUID) throws {
         guard let problem = folderListProblems[accountID] else { return }
         throw FalconError.storage("The folder list could not be read and was kept as \(problem.fileName), so it is not written again.")
@@ -213,19 +224,24 @@ public actor MailStore {
         let s = FolderStore(accountID: folder.accountID, folderID: folder.id,
                             directory: layout.folderDirectory(accountID: folder.accountID, folderID: folder.id),
                             name: "\(folder.path) of \(account(folder.accountID)?.email ?? "an account")")
-        let loading = Task { try await s.load(); return s }
+        let loading = Task { () async throws -> FolderStore in
+            try await s.load()
+            if await s.snapshotSetAside != nil {
+                // The messages it listed are fetched again from the server rather than left
+                // missing: with the cursors kept, the next sync would look only for mail newer
+                // than them. Done before anyone waiting for this load carries on, so that none
+                // of them reads the old cursors.
+                try self.updateFolder(folder.id) { current in
+                    current.lastSyncedUID = 0
+                    current.oldestSyncedUID = 0
+                }
+            }
+            self.folderStores[folder.id] = s
+            return s
+        }
         folderStoreLoads[folder.id] = loading
         defer { folderStoreLoads[folder.id] = nil }
-        _ = try await loading.value
-        folderStores[folder.id] = s
-        if await s.snapshotSetAside != nil, var current = self.folder(folder.id) {
-            // The messages it listed are fetched again from the server rather than left missing:
-            // with the cursors kept, the next sync would look only for mail newer than them.
-            current.lastSyncedUID = 0
-            current.oldestSyncedUID = 0
-            try updateFolder(current)
-        }
-        return s
+        return try await loading.value
     }
 
     public func messages(in folderID: UUID) async throws -> [MessageSummary] {
@@ -290,14 +306,14 @@ public actor MailStore {
     }
 
     public func refreshCounts(folderID: UUID) async throws {
-        guard var f = folder(folderID) else { return }
+        guard let f = folder(folderID) else { return }
         let store = try await folderStore(f)
         let total = await store.count
         let unread = await store.unreadCount()
-        guard f.totalCount != total || f.unreadCount != unread else { return }
-        f.totalCount = total
-        f.unreadCount = unread
-        try updateFolder(f)
+        try updateFolder(folderID) { current in
+            current.totalCount = total
+            current.unreadCount = unread
+        }
     }
 
     public func cacheSizeBytes() async -> Int {

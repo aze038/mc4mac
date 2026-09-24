@@ -101,7 +101,17 @@ final class OpConnectionTests: XCTestCase {
         XCTAssertEqual(server.loginCount, loginsBefore + 1, "the new connection is kept")
     }
 
-    func testByeOnTheOpConnectionDiscardsItAndTheNextCallReconnects() async throws {
+    func testByeOnAUsedOpConnectionIsTriedOnceMoreOnANewOne() async throws {
+        let server = harness.server
+        _ = try await harness.syncer.body(for: try await harness.message(uid: 1, in: "INBOX"))
+        let loginsBefore = server.loginCount
+        server.byeOnNextCommand("Session expired", close: false)
+        let body = try await within(10) { try await self.harness.syncer.body(for: try await self.harness.message(uid: 2, in: "INBOX")) }
+        XCTAssertEqual(body, FakeIMAPServer.message("inbox-2"))
+        XCTAssertEqual(server.loginCount, loginsBefore + 1, "the connection that said BYE was replaced once")
+    }
+
+    func testThrottleByeOnTheOpConnectionPausesWhatFollows() async throws {
         let server = harness.server
         _ = try await harness.syncer.body(for: try await harness.message(uid: 1, in: "INBOX"))
         let loginsBefore = server.loginCount
@@ -113,9 +123,172 @@ final class OpConnectionTests: XCTestCase {
             XCTAssertEqual(failure.kind, .throttled)
             XCTAssertFalse(failure.sentence.contains("Protocol error"))
         }
-        let body = try await within(10) { try await self.harness.syncer.body(for: try await self.harness.message(uid: 2, in: "INBOX")) }
-        XCTAssertEqual(body, FakeIMAPServer.message("inbox-2"))
-        XCTAssertEqual(server.loginCount, loginsBefore + 1)
+        server.resetCounters()
+        do {
+            _ = try await within(10) { try await self.harness.syncer.body(for: try await self.harness.message(uid: 3, in: "INBOX")) }
+            XCTFail("Gmail asked for quiet")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .throttled)
+        }
+        XCTAssertTrue(server.commands.isEmpty, "nothing is asked of the server during the pause: \(server.commands)")
+        XCTAssertEqual(server.loginCount, loginsBefore)
+    }
+
+    func testAStaleRowAfterARenumberingOpensAndActsOnNothing() async throws {
+        let server = harness.server
+        await harness.syncer.setUndoWindow(0)
+        let stale = try await harness.message(uid: 1, in: "INBOX")
+        // Renumbered on the server and synced: UID 1 now names inbox-6, while a message tab or
+        // a selection still holds the row read for inbox-1.
+        server.renumber("INBOX")
+        try await harness.syncOnce()
+        let now = try await harness.message(uid: 1, in: "INBOX")
+        XCTAssertEqual(now.messageID, "<inbox-6@example.com>")
+
+        do {
+            _ = try await harness.syncer.body(for: stale)
+            XCTFail("the row names a message that is no longer at that UID")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .messageGone)
+        }
+        for act in [{ try await self.harness.syncer.archive([stale]) },
+                    { try await self.harness.syncer.setFlag(.flagged, on: [stale], enabled: true) },
+                    { try await self.harness.syncer.delete([stale]) }] as [@Sendable () async throws -> [MailActionRecord]] {
+            do {
+                _ = try await act()
+                XCTFail("nothing may be done to whichever message now has the UID")
+            } catch let failure as MailServiceError {
+                XCTAssertEqual(failure.kind, .messageGone)
+            }
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(server.messages(in: "INBOX").count, 6)
+        XCTAssertTrue(server.messages(in: "[Gmail]/All Mail").isEmpty)
+        XCTAssertTrue(server.messages(in: "[Gmail]/Trash").isEmpty)
+        XCTAssertFalse(server.messages(in: "INBOX").contains { $0.flags.contains("\\Flagged") })
+        let untouched = try await harness.message(uid: 1, in: "INBOX")
+        XCTAssertFalse(untouched.isFlagged, "the row now at UID 1 keeps its own flags")
+        let queued = await harness.pending.all()
+        XCTAssertTrue(queued.isEmpty)
+    }
+
+    func testOnlyTheRowsStillCurrentAreActedOn() async throws {
+        let server = harness.server
+        await harness.syncer.setUndoWindow(0)
+        let kept = try await harness.message(uid: 2, in: "INBOX")
+        let gone = try await harness.message(uid: 3, in: "INBOX")
+        server.remove(uid: 3, from: "INBOX")
+        try await harness.syncOnce()
+        let records = try await harness.syncer.archive([kept, gone])
+        XCTAssertEqual(records.flatMap(\.messages).map(\.uid), [2])
+        await assertEventually { server.messages(in: "[Gmail]/All Mail").count == 1 }
+        XCTAssertEqual(server.messages(in: "[Gmail]/All Mail").first?.data, FakeIMAPServer.message("inbox-2"))
+    }
+
+    func testAStaleTrashRowIsNeverPurged() async throws {
+        let server = harness.server
+        for n in 1...3 { server.add(FakeIMAPServer.message("trash-\(n)"), to: "[Gmail]/Trash") }
+        try await harness.syncOnce()
+        await harness.syncer.setUndoWindow(0)
+        let stale = try await harness.message(uid: 1, in: "[Gmail]/Trash")
+        server.renumber("[Gmail]/Trash")
+        try await harness.syncOnce()
+        do {
+            _ = try await harness.syncer.purge([stale])
+            XCTFail("UID 1 now names trash-3")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .messageGone)
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(server.messages(in: "[Gmail]/Trash").count, 3, "nothing deleted for good")
+        XCTAssertFalse(server.commands.contains { $0.contains("EXPUNGE") })
+    }
+
+    func testAnActionThatFailsAfterARenumberingPutsBackNoStaleRow() async throws {
+        let server = harness.server
+        await harness.syncer.setUndoWindow(0.5)
+        let target = try await harness.message(uid: 1, in: "INBOX")
+        _ = try await harness.syncer.archive([target])
+        server.renumber("INBOX")
+        try await harness.syncOnce()
+        await assertEventually { await !self.harness.events.actionFailures.isEmpty }
+        let row = try await harness.message(uid: 1, in: "INBOX")
+        XCTAssertEqual(row.messageID, "<inbox-6@example.com>", "the row the renumbering put at UID 1 is not replaced by the one from before")
+        XCTAssertTrue(server.messages(in: "[Gmail]/All Mail").isEmpty)
+    }
+
+    func testRulesRunOneActionAtATimeSoAnOpenGetsIn() async throws {
+        let server = harness.server
+        for n in 7...150 { server.add(FakeIMAPServer.message("inbox-\(n)"), to: "INBOX") }
+        try await harness.syncOnce()
+        try await harness.rules.save([RuleDefinition(name: "Flag", conditions: [RuleCondition(field: .subject, op: .contains, value: "Message")],
+                                                     actions: [RuleAction(kind: .flag)])])
+        let sent = try await harness.message(uid: 1, in: "[Gmail]/Sent Mail")
+        let syncer = harness.syncer
+        server.resetCounters()
+        let run = Task { try await syncer.runRulesOnInbox() }
+        await assertEventually { server.commands.filter { $0.contains("UID STORE") }.count >= 3 }
+        let started = Date()
+        let body = try await within(10) { try await syncer.body(for: sent) }
+        let waited = Date().timeIntervalSince(started)
+        let storesBefore = server.commands.filter { $0.contains("UID STORE") }.count
+        XCTAssertEqual(body, FakeIMAPServer.message("sent-1", from: "owner@example.com", to: "ana@example.com"))
+        XCTAssertLessThan(storesBefore, 150, "the open went in while the rules still ran")
+        XCTAssertLessThan(waited, 0.5)
+        try await within(20) { try await run.value }
+        await assertEventually { server.messages(in: "INBOX").filter { $0.flags.contains("\\Flagged") }.count == 150 }
+    }
+
+    func testWorkQueuedBehindAConnectionThatDiedIsTriedOnANewOne() async throws {
+        let server = harness.server
+        await harness.syncer.setUndoWindow(0)
+        let opens = try await (1...3).asyncMap { try await self.harness.message(uid: UInt32($0), in: "INBOX") }
+        let archived = try await harness.message(uid: 4, in: "INBOX")
+        server.resetCounters()
+        // Everything asks while the op connection is still signing in, so all share it, new;
+        // then its first command is in flight when the link drops.
+        server.stallNext("AUTHENTICATE", seconds: 0.4)
+        server.stallNext("SELECT", seconds: 0.8)
+        let syncer = harness.syncer
+        let results = opens.map { m in Task { try await syncer.body(for: m) } }
+        _ = try await syncer.archive([archived])
+        await assertEventually { server.commands.contains { $0.contains(" SELECT ") } }
+        server.dropAllConnections()
+
+        var failed = 0
+        for (i, task) in results.enumerated() {
+            do {
+                let body = try await within(10) { try await task.value }
+                XCTAssertEqual(body, FakeIMAPServer.message("inbox-\(i + 1)"))
+            } catch {
+                failed += 1
+            }
+        }
+        await assertEventually {
+            if server.messages(in: "[Gmail]/All Mail").count == 1 { return true }
+            let failures = await self.harness.events.actionFailures
+            return !failures.isEmpty
+        }
+        failed += await harness.events.actionFailures.count
+        XCTAssertEqual(failed, 1, "only the command in flight when the link dropped fails; what waited behind it sent nothing and is tried again")
+    }
+
+    func testLoadOlderDuringAPassKeepsItsCursor() async throws {
+        let server = harness.server
+        for n in 7...12 { server.add(FakeIMAPServer.message("inbox-\(n)"), to: "INBOX") }
+        try await harness.syncOnce()
+        try await harness.store.updateFolder(try await harness.folder("INBOX").id) { $0.oldestSyncedUID = 5 }
+        server.resetCounters()
+        server.stallNext("UID SEARCH", seconds: 0.8)
+        let pass = Task { try await self.harness.syncOnce() }
+        await assertEventually { server.commands.contains { $0.contains("UID SEARCH") } }
+        try await harness.syncer.loadOlder(folder: try await harness.folder("INBOX"))
+        let loaded = try await harness.folder("INBOX")
+        XCTAssertEqual(loaded.oldestSyncedUID, 1)
+        try await within(10) { try await pass.value }
+        let after = try await harness.folder("INBOX")
+        XCTAssertEqual(after.oldestSyncedUID, 1, "the pass that ran meanwhile does not put back the cursor it started with")
+        XCTAssertEqual(after.lastSyncedUID, 12)
     }
 
     func testMessageGoneFromTheServerSaysSoAndSyncsOnlyThatFolder() async throws {
@@ -189,5 +362,13 @@ final class OpConnectionTests: XCTestCase {
         let made = await harness.store.folder(accountID: harness.account.id, path: "Receipts")
         XCTAssertNotNil(made)
         XCTAssertEqual(server.loginCount, logins, "no short-lived connection of its own")
+    }
+}
+
+extension Sequence {
+    func asyncMap<T>(_ transform: (Element) async throws -> T) async rethrows -> [T] {
+        var out: [T] = []
+        for element in self { out.append(try await transform(element)) }
+        return out
     }
 }

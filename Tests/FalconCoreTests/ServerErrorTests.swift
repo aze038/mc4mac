@@ -115,7 +115,158 @@ final class ServerErrorTests: XCTestCase {
         await client.logout()
     }
 
+    func testARequestMadeDuringTheSelectBeforeIdleIsNotLost() async throws {
+        let h = try await started()
+        try await h.syncOnce()
+        await h.syncer.start()
+        await assertEventually { h.server.idlingCount == 1 }
+        let inbox = try await h.folder("INBOX")
+        let sent = try await h.folder("[Gmail]/Sent Mail")
+        h.server.resetCounters()
+        // The first stall holds the INBOX sync the first request starts, the second the SELECT
+        // the loop sends before idling again; the second request arrives during that one.
+        h.server.stallNext("SELECT", seconds: 0.4)
+        h.server.stallNext("SELECT", seconds: 0.6)
+        await h.syncer.requestSync(folderID: inbox.id)
+        await assertEventually { h.server.commands.filter { $0.contains("SELECT \"INBOX\"") }.count == 2 }
+        await h.syncer.requestSync(folderID: sent.id)
+        await assertEventually("Sent is synced without waiting for IDLE to time out", within: 4) {
+            h.server.commands.contains { $0.contains("SELECT \"[Gmail]/Sent Mail\"") }
+        }
+    }
+
+    func testAFailedOpenPromisesNoRetryAndPausesTheAccount() async throws {
+        let h = try await started()
+        try await h.syncOnce()
+        let message = try await h.message(uid: 1, in: "INBOX")
+        h.server.greetWithBye("Too many simultaneous connections. (Failure)")
+        do {
+            _ = try await h.syncer.body(for: message)
+            XCTFail("the server refused the connection")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .tooManyConnections)
+            XCTAssertTrue(failure.isOneOff)
+            XCTAssertFalse(failure.sentence.contains("Retrying"), failure.sentence)
+            XCTAssertTrue(failure.sentence.hasPrefix("Other apps are using owner@example.com's connections. Try again after "), failure.sentence)
+        }
+        await assertEventually { await h.events.healths.contains { if case .imapPaused = $0 { return true }; return false } }
+        let status = await h.events.errors.last ?? ""
+        XCTAssertTrue(status.hasPrefix("Other apps are using owner@example.com's connections. Retrying in "), "the account's status says what it does: \(status)")
+
+        let logins = h.server.loginCount
+        h.server.resetCounters()
+        do {
+            _ = try await h.syncer.body(for: message)
+            XCTFail("paused")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .tooManyConnections)
+            XCTAssertFalse(failure.sentence.contains("Retrying"), failure.sentence)
+        }
+        XCTAssertEqual(h.server.loginCount, logins, "the next open waits instead of asking Gmail again")
+        XCTAssertTrue(h.server.commands.isEmpty)
+    }
+
+    func testAThrottleMetOpeningAMessagePausesTheAccount() async throws {
+        let h = try await started()
+        h.server.add(FakeIMAPServer.message("second"), to: "INBOX")
+        try await h.syncOnce()
+        h.server.refuseNext("UID FETCH", code: nil, text: "Account exceeded command or bandwidth limits.")
+        do {
+            _ = try await h.syncer.body(for: try await h.message(uid: 1, in: "INBOX"))
+            XCTFail("refused")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .throttled)
+            XCTAssertFalse(failure.sentence.contains("shortly"), failure.sentence)
+            XCTAssertTrue(failure.sentence.hasPrefix("Gmail asked FalconMail to slow down for owner@example.com. Try again after "), failure.sentence)
+        }
+        let paused = await h.events.healths.last
+        guard case .imapPaused(let until) = paused else { return XCTFail("\(String(describing: paused))") }
+        XCTAssertGreaterThanOrEqual(until.timeIntervalSinceNow, 1700)
+        h.server.resetCounters()
+        do {
+            _ = try await h.syncer.body(for: try await h.message(uid: 2, in: "INBOX"))
+            XCTFail("paused")
+        } catch let failure as MailServiceError {
+            XCTAssertEqual(failure.kind, .throttled)
+        }
+        XCTAssertTrue(h.server.commands.isEmpty, "\(h.server.commands)")
+    }
+
+    func testARefusedAccessTokenIsRefreshedOnceAndTriedAgain() async throws {
+        let h = try await started()
+        let port = h.server.port
+        let asked = Recorder<Bool>()
+        h.server.refuseNext("AUTHENTICATE", code: "AUTHENTICATIONFAILED", text: "Invalid credentials (Failure)")
+        let client = try await AccountSyncer.signIn(user: "owner@example.com", isGoogle: true, connect: {
+            let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: "owner@example.com")
+            try await c.connect()
+            return c
+        }, accessToken: { force in
+            asked.append(force)
+            return force ? "fresh-token" : "rejected-token"
+        })
+        XCTAssertEqual(asked.all, [false, true])
+        let connected = await client.isConnected
+        XCTAssertTrue(connected)
+        await client.logout()
+    }
+
+    func testAnAccessTokenRefusedAfterItsRefreshStops() async throws {
+        let h = try await started()
+        let port = h.server.port
+        let asked = Recorder<Bool>()
+        h.server.refuseLogins(code: "AUTHENTICATIONFAILED", text: "Invalid credentials (Failure)")
+        do {
+            _ = try await AccountSyncer.signIn(user: "owner@example.com", isGoogle: true, connect: {
+                let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: "owner@example.com")
+                try await c.connect()
+                return c
+            }, accessToken: { force in
+                asked.append(force)
+                return "token"
+            })
+            XCTFail("refused twice")
+        } catch {
+            XCTAssertEqual(MailServiceError.classify(error, email: "owner@example.com", isGoogle: true).kind, .needsSignIn)
+        }
+        XCTAssertEqual(asked.all, [false, true], "one refresh, then the owner is asked")
+    }
+
     // MARK: Classification
+
+    /// RFC 3501 gives a NO to LOGIN one meaning, "user name or password rejected"; a server
+    /// with a passing problem says so with a code of its own.
+    func testARefusedLoginIsASignInProblemUnlessItsCodeSaysOtherwise() {
+        func kind(_ code: String?, _ text: String, _ command: String = "LOGIN") -> MailServiceError.Kind {
+            MailServiceError.classify(IMAPServerError(status: .no, code: code, text: text, command: command),
+                                      email: "owner@example.com", isGoogle: false).kind
+        }
+        XCTAssertEqual(kind(nil, "LOGIN failed."), .needsSignIn)
+        XCTAssertEqual(kind("AUTHENTICATIONFAILED", "Authentication failed."), .needsSignIn)
+        XCTAssertEqual(kind("UNAVAILABLE", "Temporary authentication failure"), .temporary)
+        XCTAssertEqual(kind("INUSE", "Mailbox in use"), .temporary)
+        XCTAssertEqual(kind(nil, "Too many simultaneous connections. (Failure)", "AUTHENTICATE"), .tooManyConnections)
+        XCTAssertEqual(kind(nil, "Account exceeded command or bandwidth limits.", "AUTHENTICATE"), .throttled)
+    }
+
+    func testOneOffFailuresPromiseNothingTheEngineDoesNotDo() {
+        let later = Date().addingTimeInterval(1800)
+        let laterText = DateFormatter.localizedString(from: later, dateStyle: .none, timeStyle: .short)
+        func said(_ kind: MailServiceError.Kind, retryAfter: Date? = nil) -> String {
+            MailServiceError(kind: kind, email: "owner@example.com", isGoogle: true, retryAfter: retryAfter, isOneOff: true).sentence
+        }
+        XCTAssertEqual(said(.throttled, retryAfter: later), "Gmail asked FalconMail to slow down for owner@example.com. Try again after \(laterText).")
+        XCTAssertEqual(said(.throttled), "Gmail asked FalconMail to slow down for owner@example.com. Try again later.")
+        XCTAssertEqual(said(.tooManyConnections), "Other apps are using owner@example.com's connections. Try again in a few minutes.")
+        XCTAssertEqual(said(.webSignInRequired), "Google wants you to sign in to owner@example.com in a web browser first.")
+        XCTAssertEqual(said(.connectionDropped), "FalconMail lost the connection to owner@example.com. Try again in a moment.")
+        XCTAssertEqual(said(.temporary), "Gmail had a temporary problem. Try again in a moment.")
+        for kind in MailServiceError.Kind.allCases where kind != .local {
+            let sentence = said(kind, retryAfter: later)
+            XCTAssertFalse(sentence.contains("Retrying") || sentence.contains("will retry") || sentence.contains("Reconnecting")
+                           || sentence.contains("resume"), sentence)
+        }
+    }
 
     func testClassificationNeverReadsDisplayText() {
         func kind(_ e: Error) -> MailServiceError.Kind { MailServiceError.classify(e, email: "owner@example.com", isGoogle: true).kind }
@@ -213,4 +364,13 @@ final class ServerErrorTests: XCTestCase {
 private struct DisplayOnly: LocalizedError {
     let text: String
     var errorDescription: String? { text }
+}
+
+/// Collects values from closures that may run on any thread.
+final class Recorder<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Value] = []
+
+    func append(_ value: Value) { lock.withLock { values.append(value) } }
+    var all: [Value] { lock.withLock { values } }
 }

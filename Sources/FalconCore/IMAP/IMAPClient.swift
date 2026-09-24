@@ -117,9 +117,14 @@ public actor IMAPClient {
         for r in try await run("CAPABILITY") { if case .capability(let list) = r { capabilities = list } }
     }
 
-    /// Runs `work` as one unit on this connection: nothing else is sent until it returns.
+    /// Runs `work` as one unit on this connection: nothing else is sent until it returns. When
+    /// the connection failed while `work` waited behind another caller, `IMAPNotSent` says
+    /// that none of it went out.
     public func exclusively<T: Sendable>(_ work: @Sendable (IMAPClient) async throws -> T) async throws -> T {
-        try await locked { try await work(self) }
+        try await locked {
+            guard connection != nil else { throw IMAPNotSent() }
+            return try await work(self)
+        }
     }
 
     /// Runs `work` with `mailbox` selected, as one unit from the SELECT to its last reply. When
@@ -323,6 +328,14 @@ public actor IMAPClient {
         _ = try await run("NOOP")
     }
 
+    /// Forgets any earlier call to `finishIdle`. One made from now on ends the next `idle` as
+    /// soon as the server agrees to it, even if it comes before that IDLE is sent, so a caller
+    /// that calls this, then checks whether it still wants to idle, then idles, misses no
+    /// wake-up in between.
+    public func prepareIdle() {
+        idleStopRequested = false
+    }
+
     /// Waits in IDLE until the selected mailbox changes, `finishIdle` is called or `maxWait`
     /// passes. True when the server reported a change, including one it sent before agreeing
     /// to idle.
@@ -336,9 +349,11 @@ public actor IMAPClient {
             let tag = nextTag()
             idleTag = tag
             idleContinued = false
-            idleStopRequested = false
             idleDoneSent = false
-            defer { idleTag = nil }
+            defer {
+                idleTag = nil
+                idleStopRequested = false
+            }
             try await sendLine("\(tag) IDLE")
             var changed = false
             waiting: while true {
@@ -378,10 +393,10 @@ public actor IMAPClient {
     }
 
     /// Ends an IDLE in progress. DONE may only follow the server's "+", so a call that comes
-    /// before it is remembered and DONE is sent as soon as the "+" arrives.
+    /// before it, or before the IDLE itself (see `prepareIdle`), is remembered and DONE is sent
+    /// as soon as the "+" arrives.
     public func finishIdle() async throws {
-        guard idleTag != nil, !idleDoneSent else { return }
-        guard idleContinued else {
+        guard idleTag != nil, idleContinued else {
             idleStopRequested = true
             return
         }

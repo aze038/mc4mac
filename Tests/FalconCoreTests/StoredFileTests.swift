@@ -100,6 +100,97 @@ final class StoredFileTests: XCTestCase {
         await second.finish()
     }
 
+    /// The index of a folder nobody has opened is first loaded by the sync pass itself.
+    func testASetAsideIndexOfAFolderNotYetOpenedIsListedAgainByTheSync() async throws {
+        let server = try EngineHarness.gmailServer()
+        for n in 1...3 { server.add(FakeIMAPServer.message("sent-\(n)", from: "owner@example.com", to: "ana@example.com"), to: "[Gmail]/Sent Mail") }
+        let first = try await EngineHarness(server: server, root: root)
+        try await first.syncOnce()
+        let sent = try await first.folder("[Gmail]/Sent Mail")
+        await first.store.flushAll()
+        await first.syncer.stop()
+        let index = layout.folderDirectory(accountID: first.account.id, folderID: sent.id).appendingPathComponent("index.plist")
+        try garbage.write(to: index)
+
+        let second = try await EngineHarness(server: server, root: root)
+        try await second.syncOnce()
+        XCTAssertEqual(try setAside(beside: index).count, 1)
+        let listed = try await second.uids(in: "[Gmail]/Sent Mail")
+        XCTAssertEqual(listed, [1, 2, 3])
+        let record = try await second.folder("[Gmail]/Sent Mail")
+        XCTAssertEqual(record.lastSyncedUID, 3)
+        XCTAssertEqual(record.oldestSyncedUID, 1)
+        await second.finish()
+    }
+
+    func testTheSyncLoopListsAgainAFolderWhoseIndexWasSetAside() async throws {
+        let server = try EngineHarness.gmailServer()
+        for n in 1...3 { server.add(FakeIMAPServer.message("m\(n)"), to: "INBOX") }
+        let first = try await EngineHarness(server: server, root: root)
+        try await first.syncOnce()
+        let inbox = try await first.folder("INBOX")
+        await first.store.flushAll()
+        await first.syncer.stop()
+        let index = layout.folderDirectory(accountID: first.account.id, folderID: inbox.id).appendingPathComponent("index.plist")
+        try garbage.write(to: index)
+        server.add(FakeIMAPServer.message("m4"), to: "INBOX")
+
+        let second = try await EngineHarness(server: server, root: root)
+        await second.syncer.start()
+        // Nothing here may load the folder's store before the pass does, as the list on screen
+        // would: the pass has to find the reset by itself.
+        await assertEventually { await second.events.all.contains { if case .finished = $0 { return true }; return false } }
+        let listed = try await second.uids(in: "INBOX")
+        XCTAssertEqual(listed, [1, 2, 3, 4])
+        let record = try await second.folder("INBOX")
+        XCTAssertEqual(record.oldestSyncedUID, 1)
+        XCTAssertEqual(record.lastSyncedUID, 4)
+        let announced = await second.events.all.contains { if case .newMessages = $0 { return true }; return false }
+        XCTAssertFalse(announced, "mail listed again is not new mail")
+        await second.finish()
+    }
+
+    func testCountingAFolderKeepsTheCursorsItsSetAsideIndexReset() async throws {
+        let server = try EngineHarness.gmailServer()
+        for n in 1...3 { server.add(FakeIMAPServer.message("m\(n)"), to: "INBOX") }
+        let first = try await EngineHarness(server: server, root: root)
+        try await first.syncOnce()
+        let inbox = try await first.folder("INBOX")
+        await first.store.flushAll()
+        await first.syncer.stop()
+        try garbage.write(to: layout.folderDirectory(accountID: first.account.id, folderID: inbox.id).appendingPathComponent("index.plist"))
+
+        let store = MailStore(layout: layout)
+        try await store.load()
+        try await store.refreshCounts(folderID: inbox.id)
+        let counted = await store.folder(inbox.id)
+        XCTAssertEqual(counted?.lastSyncedUID, 0, "counting loaded the store; the reset it made must stay")
+        XCTAssertEqual(counted?.oldestSyncedUID, 0)
+        XCTAssertEqual(counted?.totalCount, 0)
+        server.stop()
+    }
+
+    func testFilesSetAsideDuringAPassAreNotedBeforeItFinishes() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.add(FakeIMAPServer.message("sent-1", from: "owner@example.com"), to: "[Gmail]/Sent Mail")
+        let first = try await EngineHarness(server: server, root: root)
+        try await first.syncOnce()
+        let sent = try await first.folder("[Gmail]/Sent Mail")
+        await first.store.flushAll()
+        await first.syncer.stop()
+        try garbage.write(to: layout.folderDirectory(accountID: first.account.id, folderID: sent.id).appendingPathComponent("index.plist"))
+        try garbage.write(to: layout.pendingActionsFile)
+
+        let second = try await EngineHarness(server: server, root: root)
+        XCTAssertTrue(StoredFileNotices.take().isEmpty, "neither file has been read yet at launch")
+        await second.syncer.start()
+        await assertEventually { await second.events.all.contains { if case .finished = $0 { return true }; return false } }
+        let noted = StoredFileNotices.take()
+        XCTAssertTrue(noted.contains("the actions waiting to reach the server"), "\(noted)")
+        XCTAssertTrue(noted.contains { $0.contains("[Gmail]/Sent Mail") }, "\(noted)")
+        await second.finish()
+    }
+
     func testAnAccountListSetAsideIsNeverReplacedByNewAccounts() async throws {
         let server = try EngineHarness.gmailServer()
         let first = try await EngineHarness(server: server, root: root)

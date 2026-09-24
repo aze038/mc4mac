@@ -19,19 +19,26 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
     public var retryAfter: Date?
     /// The folder, address or file the sentence names.
     public var name: String?
+    /// Said about one thing the owner asked for, such as opening a message or saving a draft,
+    /// which nothing tries again by itself: the sentence promises no retry. Otherwise it is the
+    /// account's status, and the engine does retry as it says.
+    public var isOneOff: Bool
 
-    public init(kind: Kind, email: String, isGoogle: Bool, detail: String = "", retryAfter: Date? = nil, name: String? = nil) {
+    public init(kind: Kind, email: String, isGoogle: Bool, detail: String = "", retryAfter: Date? = nil, name: String? = nil,
+                isOneOff: Bool = false) {
         self.kind = kind
         self.email = email
         self.isGoogle = isGoogle
         self.detail = detail
         self.retryAfter = retryAfter
         self.name = name
+        self.isOneOff = isOneOff
     }
 
-    public init(kind: Kind, account: AccountInfo, detail: String = "", retryAfter: Date? = nil, name: String? = nil) {
+    public init(kind: Kind, account: AccountInfo, detail: String = "", retryAfter: Date? = nil, name: String? = nil,
+                isOneOff: Bool = false) {
         self.init(kind: kind, email: account.email, isGoogle: account.provider == "google", detail: detail,
-                  retryAfter: retryAfter, name: name)
+                  retryAfter: retryAfter, name: name, isOneOff: isOneOff)
     }
 
     public var errorDescription: String? { sentence }
@@ -39,6 +46,7 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
     public var sentence: String {
         let service = isGoogle ? "Gmail" : "The mail server"
         let folder = name.map { "“\($0)”" } ?? "the folder"
+        if isOneOff, let said = oneOffSentence(service: service) { return said }
         switch kind {
         case .throttled:
             return "\(service) asked FalconMail to slow down for \(email). Mail on this Mac stays available; downloads resume \(MailServiceError.when(retryAfter))."
@@ -76,6 +84,26 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
         }
     }
 
+    /// The wording for a failure that is not retried, where the account's status would promise
+    /// that it is. Nil where the two say the same.
+    private func oneOffSentence(service: String) -> String? {
+        let later = retryAfter.map { "Try again \(MailServiceError.when($0, "after"))." }
+        switch kind {
+        case .throttled:
+            return "\(service) asked FalconMail to slow down for \(email). \(later ?? "Try again later.")"
+        case .tooManyConnections:
+            return "Other apps are using \(email)'s connections. \(later ?? "Try again in a few minutes.")"
+        case .webSignInRequired:
+            return "\(isGoogle ? "Google" : "The mail server") wants you to sign in to \(email) in a web browser first."
+        case .connectionDropped:
+            return "FalconMail lost the connection to \(email). Try again in a moment."
+        case .temporary:
+            return "\(service) had a temporary problem. Try again in a moment."
+        default:
+            return nil
+        }
+    }
+
     /// Worth trying again by itself, later, without the owner doing anything.
     public var isTransient: Bool {
         switch kind {
@@ -84,12 +112,12 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
         }
     }
 
-    private static func when(_ date: Date?) -> String {
+    private static func when(_ date: Date?, _ preposition: String = "at") -> String {
         guard let date else { return "shortly" }
         let f = DateFormatter()
         f.dateStyle = Calendar.current.isDate(date, inSameDayAs: Date()) ? .none : .medium
         f.timeStyle = .short
-        return "at " + f.string(from: date)
+        return preposition + " " + f.string(from: date)
     }
 
     public static func classify(_ error: Error, account: AccountInfo) -> MailServiceError {
@@ -113,6 +141,8 @@ public struct MailServiceError: Error, LocalizedError, Sendable, Equatable {
             return make(.mailboxRenumbered, "UIDVALIDITY \(e.expected) is now \(e.found)", name: e.mailbox)
         case let e as IMAPMessageMissing:
             return make(.messageGone, "UID \(e.uid) not returned")
+        case is IMAPNotSent:
+            return make(.connectionDropped, "connection lost before the work was sent")
         case let e as IMAPExpungeRefused:
             return make(.expungeRefused, "\(e.others.count) other messages marked \\Deleted and no UIDPLUS", name: e.mailbox)
         case let e as SMTPServerError:

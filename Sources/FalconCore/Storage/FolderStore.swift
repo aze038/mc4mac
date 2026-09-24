@@ -207,6 +207,13 @@ public actor FolderStore {
 
     public func message(uid: UInt32) -> MessageSummary? { messages[uid] }
 
+    /// Those of `rows` that still name the message they were read for. A row read before the
+    /// folder was renumbered, or since removed, carries a UID that now names another message
+    /// or none, and acting on it would reach the wrong one.
+    public func current(_ rows: [MessageSummary]) -> [MessageSummary] {
+        rows.filter { row in messages[row.uid].map { $0.isSameMessage(as: row) } ?? false }
+    }
+
     public func uids() -> Set<UInt32> { Set(messages.keys) }
 
     public func uid(forMessageID id: String) -> UInt32? { byMessageID[id] }
@@ -379,5 +386,14 @@ public actor FolderStore {
         journalHandle = nil
         try? FileManager.default.removeItem(at: journalURL)
         journalOps = 0
+    }
+}
+
+extension MessageSummary {
+    /// Whether the two rows describe one message: what the server sent for it, not its flags,
+    /// its snippet or whether its body is kept, all of which change as it is read and marked.
+    func isSameMessage(as other: MessageSummary) -> Bool {
+        uid == other.uid && messageID == other.messageID && size == other.size && subject == other.subject
+            && from.address.caseInsensitiveCompare(other.from.address) == .orderedSame
     }
 }
