@@ -87,6 +87,7 @@ final class ConnectionTests: XCTestCase {
         let again = await second.events.pauses
         let resumed = try XCTUnwrap(again.first)
         XCTAssertEqual(resumed.timeIntervalSince1970, until.timeIntervalSince1970, accuracy: 1)
+        await assertEventually { await !second.events.errors.isEmpty }
         let told = await second.events.errors.last ?? ""
         XCTAssertTrue(told.hasPrefix("Gmail asked FalconMail to slow down for owner@example.com."), told)
         try await Task.sleep(nanoseconds: 400_000_000)
@@ -123,6 +124,7 @@ final class ConnectionTests: XCTestCase {
 
         server.blackHole(false)
         await assertEventually(within: 5) { server.idlingCount == 1 }
+        await h.settled()
         let health = await h.events.healths.last
         XCTAssertEqual(health, .online)
         let errors = await h.events.errors
@@ -138,6 +140,7 @@ final class ConnectionTests: XCTestCase {
         let logins = kept.server.loginCount
         try await Task.sleep(nanoseconds: 2_000_000_000)
         XCTAssertEqual(kept.server.loginCount, logins, "IDLE begun again before the silence runs out keeps the connection")
+        await kept.settled()
         let keptErrors = await kept.events.errors
         XCTAssertTrue(keptErrors.isEmpty)
         await kept.finish()
@@ -148,6 +151,7 @@ final class ConnectionTests: XCTestCase {
         await assertEventually { dropped.server.idlingCount == 1 }
         let before = dropped.server.loginCount
         await assertEventually(within: 3) { dropped.server.loginCount > before && dropped.server.idlingCount == 1 }
+        await dropped.settled()
         let errors = await dropped.events.errors
         XCTAssertTrue(errors.isEmpty, "a connection dropped in silence is replaced without a word: \(errors)")
         let healths = await dropped.events.healths
@@ -160,6 +164,7 @@ final class ConnectionTests: XCTestCase {
         let server = h.server
         await h.syncer.start()
         await assertEventually { await h.events.healths.contains { if case .blocked = $0 { return true }; return false } }
+        await assertEventually { await !h.events.errors.isEmpty }
         let shown = await h.events.errors.last ?? ""
         XCTAssertEqual(shown, "Google wants you to sign in to owner@example.com in a web browser first. FalconMail will retry after that.")
         try await Task.sleep(nanoseconds: 500_000_000)
@@ -169,6 +174,7 @@ final class ConnectionTests: XCTestCase {
         server.acceptLogins()
         await h.syncer.requestSync()
         await assertEventually { server.idlingCount == 1 }
+        await h.settled()
         let health = await h.events.healths.last
         XCTAssertEqual(health, .online, "asking for mail tries again")
     }
@@ -185,6 +191,7 @@ final class ConnectionTests: XCTestCase {
         await h.syncer.reconnect(reason: "the Mac woke")
         await assertEventually(within: 3) { server.loginCount == logins + 1 && server.idlingCount == 1 }
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(asked), 0.3, "never sooner than the least interval after the last attempt")
+        await h.settled()
         let errors = await h.events.errors
         XCTAssertTrue(errors.isEmpty)
 

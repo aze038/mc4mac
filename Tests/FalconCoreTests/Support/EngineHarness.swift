@@ -18,6 +18,7 @@ final class EngineHarness: @unchecked Sendable {
     let syncer: AccountSyncer
     let events = EventLog()
     private let listener: Task<Void, Never>
+    private let continuation: AsyncStream<SyncEvent>.Continuation
 
     /// A Gmail-like server: INBOX, Sent, Trash and All Mail with their special-use attributes.
     static func gmailServer(capabilities: [String]? = nil, latency: TimeInterval = 0.002) throws -> FakeIMAPServer {
@@ -51,6 +52,7 @@ final class EngineHarness: @unchecked Sendable {
         meter = TrafficMeter(layout: layout, limits: limits, now: clock)
         rules = RuleStore(layout: layout)
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream()
+        self.continuation = continuation
         let port = server.port
         syncer = AccountSyncer(account: account, store: store,
                                tokens: TokenStore(keychain: KeychainStore(service: "com.falconmail.tests.unused"), clientConfigProvider: { nil }),
@@ -75,6 +77,16 @@ final class EngineHarness: @unchecked Sendable {
         let folders = try await store.reconcileFolders(accountID: account.id, listed: try await c.listFolders())
         for f in folders where f.isSelectable && f.role != .all { try await syncer.syncFolder(f, client: c) }
         await c.logout()
+    }
+
+    /// Waits until every event the syncer gave before this call has reached `events`. The
+    /// stream hands them on in order, so a marker given now arrives after all of them: a test
+    /// that reads the events once a call has returned, or once the server has seen what the
+    /// engine does after giving them, reads them whole rather than racing the listener.
+    func settled() async {
+        let marker = UUID()
+        continuation.yield(.progress(accountID: marker, text: EventLog.marker))
+        await events.reached(marker)
     }
 
     func folder(_ path: String) async throws -> FolderInfo {
@@ -105,9 +117,25 @@ final class EngineHarness: @unchecked Sendable {
 }
 
 actor EventLog {
+    /// The text of the marker `EngineHarness.settled` sends through the stream; never logged.
+    static let marker = "\u{0}settled"
     private(set) var all: [SyncEvent] = []
+    private var markersArrived: Set<UUID> = []
+    private var markersAwaited: [UUID: CheckedContinuation<Void, Never>] = [:]
 
-    func append(_ e: SyncEvent) { all.append(e) }
+    func append(_ e: SyncEvent) {
+        if case .progress(let id, let text) = e, text == EventLog.marker {
+            if let waiter = markersAwaited.removeValue(forKey: id) { waiter.resume() } else { markersArrived.insert(id) }
+            return
+        }
+        all.append(e)
+    }
+
+    /// Returns once the marker `id` has come through the stream.
+    func reached(_ id: UUID) async {
+        guard markersArrived.remove(id) == nil else { return }
+        await withCheckedContinuation { markersAwaited[id] = $0 }
+    }
 
     var errors: [String] {
         all.compactMap { if case .error(_, let message) = $0 { return message }; return nil }

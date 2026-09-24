@@ -167,8 +167,8 @@ final class CatchUpTests: XCTestCase {
         try await h.syncOnce()
         let rows = try await h.uids(in: "INBOX")
         XCTAssertEqual(rows.count, 27)
-        await assertEventually { await !h.events.announced.isEmpty }
-        try await Task.sleep(nanoseconds: 200_000_000)
+        // Every announcement of the pass was given before it returned.
+        await h.settled()
         let told = await h.events.announced.map(\.messageID)
         XCTAssertEqual(told, ["<today@example.com>"], "no notification or sound for old mail without a date")
         XCTAssertEqual(server.commands.filter { $0.contains("UID STORE") }.count, 1, "the rule ran on today's message alone")
@@ -187,13 +187,16 @@ final class CatchUpTests: XCTestCase {
         server.resetCounters()
         await h.syncer.start()
         await assertEventually(within: 120) { ((try? await h.uids(in: "INBOX")) ?? []).count == 24_005 }
+        // The pass that stored the last of them is over once the loop idles again, and every
+        // announcement and rule of it has been given.
+        await assertEventually { server.idlingCount == 1 }
+        await h.settled()
 
         XCTAssertFalse(server.commands.contains { $0.contains("UID STORE") || $0.contains("UID MOVE") }, "no rule ran")
         let announced = await h.events.announced
         XCTAssertTrue(announced.isEmpty, "no notification for old mail")
 
         // Mail sent now still gets both.
-        await assertEventually { server.idlingCount == 1 }
         server.deliver(FakeIMAPServer.message("today", date: Date()), to: "INBOX")
         await assertEventually { await !h.events.announced.isEmpty }
         let told = await h.events.announced.map(\.messageID)

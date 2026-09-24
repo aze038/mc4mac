@@ -49,6 +49,7 @@ final class StoredFileTests: XCTestCase {
 
         await second.syncer.start()
         await assertEventually { await second.events.healths.contains { if case .blocked = $0 { return true }; return false } }
+        await assertEventually { await !second.events.errors.isEmpty }
         let shown = await second.events.errors.last ?? ""
         XCTAssertTrue(shown.contains("could not read the folder list for owner@example.com"), shown)
         do {

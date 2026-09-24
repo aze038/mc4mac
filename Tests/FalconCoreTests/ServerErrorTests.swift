@@ -63,6 +63,8 @@ final class ServerErrorTests: XCTestCase {
         h.server.refuseLogins(code: "AUTHENTICATIONFAILED", text: "Invalid credentials (Failure)")
         await h.syncer.start()
         await assertEventually { await h.events.healths.contains(.needsSignIn) }
+        // The sentence follows the status.
+        await assertEventually { await !h.events.errors.isEmpty }
         let errors = await h.events.errors
         XCTAssertEqual(errors.last, "owner@example.com needs you to sign in again.")
         let attempts = h.server.commands.filter { $0.contains(" LOGIN ") || $0.contains(" AUTHENTICATE ") }.count
@@ -79,6 +81,7 @@ final class ServerErrorTests: XCTestCase {
         await assertEventually {
             await h.events.healths.contains { if case .imapPaused = $0 { return true }; return false }
         }
+        await assertEventually { await !h.events.errors.isEmpty }
         let errors = await h.events.errors
         let shown = try XCTUnwrap(errors.last)
         XCTAssertTrue(shown.hasPrefix("Gmail asked FalconMail to slow down for owner@example.com."), shown)
@@ -94,6 +97,7 @@ final class ServerErrorTests: XCTestCase {
         h.server.deliverBeforeIdling(FakeIMAPServer.message("queued"), to: "INBOX")
         h.server.deliver(FakeIMAPServer.message("second"), to: "INBOX")
         await assertEventually { ((try? await h.uids(in: "INBOX")) ?? []).count == 3 }
+        await h.settled()
         let errors = await h.events.errors
         XCTAssertTrue(errors.isEmpty, "\(errors)")
         let stillOnline = await h.events.healths.last
@@ -149,7 +153,10 @@ final class ServerErrorTests: XCTestCase {
             XCTAssertFalse(failure.sentence.contains("Retrying"), failure.sentence)
             XCTAssertTrue(failure.sentence.hasPrefix("Other apps are using owner@example.com's connections. Try again after "), failure.sentence)
         }
-        await assertEventually { await h.events.healths.contains { if case .imapPaused = $0 { return true }; return false } }
+        // Both were given before the open failed.
+        await h.settled()
+        let paused = await h.events.healths.contains { if case .imapPaused = $0 { return true }; return false }
+        XCTAssertTrue(paused)
         let status = await h.events.errors.last ?? ""
         XCTAssertTrue(status.hasPrefix("Other apps are using owner@example.com's connections. Retrying in "), "the account's status says what it does: \(status)")
 
@@ -179,6 +186,8 @@ final class ServerErrorTests: XCTestCase {
             XCTAssertFalse(failure.sentence.contains("shortly"), failure.sentence)
             XCTAssertTrue(failure.sentence.hasPrefix("Gmail asked FalconMail to slow down for owner@example.com. Try again after "), failure.sentence)
         }
+        // The pause was given before the open failed; the listener may not have heard it yet.
+        await h.settled()
         let paused = await h.events.healths.last
         guard case .imapPaused(let until) = paused else { return XCTFail("\(String(describing: paused))") }
         XCTAssertGreaterThanOrEqual(until.timeIntervalSinceNow, 1700)

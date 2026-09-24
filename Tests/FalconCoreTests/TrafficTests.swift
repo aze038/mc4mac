@@ -280,6 +280,7 @@ final class TrafficTests: XCTestCase {
         let outcome = try await within(15) { try await job.value }
         XCTAssertEqual(outcome.manifest.messageCount, 10, "the job carries on once the pause is over")
         XCTAssertEqual(server.loginCount, logins + 1)
+        await h.settled()
         let pauses = await h.events.pauses
         XCTAssertEqual(pauses.count, 1)
     }
@@ -376,6 +377,7 @@ final class TrafficTests: XCTestCase {
         let ids = importedIDs(server)
         XCTAssertEqual(ids.count, 8, "the refused message went in once the pause was over")
         XCTAssertEqual(Set(ids).count, 8)
+        await h.settled()
         let pauses = await h.events.pauses
         XCTAssertEqual(pauses.count, 1, "the account paused, as for a throttle on any connection")
     }
