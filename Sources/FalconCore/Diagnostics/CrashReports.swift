@@ -104,10 +104,10 @@ public enum CrashReportDigest {
         var message = "FalconMail crashed (\(code.replacingOccurrences(of: ".", with: ", ")))"
         if let indicator = body["termination"]?["indicator"]?.stringValue { message += ": \(indicator)" }
         if let reason = applicationSpecificInformation(body) { message += "\n" + reason }
-        let context = redactor.redact(digest(header: header, body: body))
+        let context = redactor.redactCrashReport(digest(header: header, body: body))
         let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("ips:\(install):\(incident)"), kind: .crash,
                                      signature: signature, title: DiagnosticsTitle.make(kind: .crash, area: "crash", code: code),
-                                     area: "crash", firstAt: when, message: redactor.redact(message), context: context)
+                                     area: "crash", firstAt: when, message: redactor.redactCrashReport(message), context: context)
         return (event, app(of: report), header["os_version"]?.stringValue)
     }
 

@@ -277,7 +277,29 @@ final class DiagnosticsRedactorTests: XCTestCase {
                      "Fatal error: 'try!' expression unexpectedly raised an error",
                      "Could not cast value of type 'NSTaggedPointerString' (0x1f0b3a8) to 'Swift.Optional<Swift.Int>' (0x1f0b400)."] {
             XCTAssertEqual(redactor.redact(text), text)
+            XCTAssertEqual(redactor.redactCrashReport(text), text)
         }
+        // An exception's reason is often plain English, and its name need not look like code.
+        for text in ["*** Terminating app due to uncaught exception 'NSInternalInconsistencyException', reason: 'Invalid parameter not satisfying: row >= 0'",
+                     "*** Terminating app due to uncaught exception 'NSGenericException', reason: 'The window has been marked as needing another Update Constraints in Window pass'",
+                     "*** Terminating app due to uncaught exception 'Account Sync Failure', reason: 'Tried to save a message after its folder was deleted'"] {
+            XCTAssertEqual(redactor.redactCrashReport(text), text)
+        }
+    }
+
+    /// Kept between its quotes, a reason is still redacted like any other text.
+    func testAnExceptionsReasonLosesAddressesPathsAndSecrets() {
+        let text = "*** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason: 'No account for "
+            + "ana@example.com in /Users/kmuradoff/Library/Mail with Bearer c2VjcmV0LXRva2Vu'"
+        let out = redactor.redactCrashReport(text)
+        for secret in ["ana@example.com", "kmuradoff", "c2VjcmV0LXRva2Vu"] {
+            XCTAssertFalse(out.contains(secret), "“\(secret)” survived in: \(out)")
+        }
+        XCTAssertTrue(out.contains("reason: 'No account for <addr:"), out)
+        XCTAssertTrue(out.contains("in ~/Library/Mail with Bearer <token>'"), out)
+        XCTAssertEqual(redactor.redactCrashReport(out), out, "redacting twice changes nothing")
+        XCTAssertEqual(redactor.redact("The server's reason: 'Ana Lima left'"), "The server's reason: '…'",
+                       "outside a crash report, quoted words still go")
     }
 
     func testSignatureShapeIgnoresEveryKindOfQuotedText() {

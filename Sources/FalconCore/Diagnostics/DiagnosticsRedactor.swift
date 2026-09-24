@@ -78,6 +78,28 @@ public struct DiagnosticsRedactor: Sendable {
     // MARK: Redaction
 
     public func redact(_ text: String) -> String {
+        redact(text, crashReport: false)
+    }
+
+    /// Every string in the value, and any key that could hold an address or a path.
+    public func redact(_ value: JSONValue) -> JSONValue {
+        redact(value, crashReport: false)
+    }
+
+    /// A crash report's text, redacted as any other except that an exception's name and reason
+    /// stay between their single quotes, as the runtime writes them:
+    /// `uncaught exception 'NSInternalInconsistencyException', reason: 'Invalid parameter not
+    /// satisfying: row >= 0'`. They are the words of the code that crashed, and the triage needs
+    /// them; addresses, paths, secrets and folder names inside them are still taken out.
+    public func redactCrashReport(_ text: String) -> String {
+        redact(text, crashReport: true)
+    }
+
+    public func redactCrashReport(_ value: JSONValue) -> JSONValue {
+        redact(value, crashReport: true)
+    }
+
+    private func redact(_ text: String, crashReport: Bool) -> String {
         guard !text.isEmpty else { return text }
         var s = text
         if s.contains("{") { s = stripLiterals(s) }
@@ -88,22 +110,21 @@ public struct DiagnosticsRedactor: Sendable {
         if s.contains(":") { s = stripHeaderLines(s) }
         s = stripIMAPArguments(s)
         if s.contains("@") { s = stripAddresses(s) }
-        if s.unicodeScalars.contains(where: Rx.quotationMarks.contains) { s = stripQuoted(s) }
+        if s.unicodeScalars.contains(where: Rx.quotationMarks.contains) { s = stripQuoted(s, crashReport: crashReport) }
         s = stripFolderNames(s)
         s = stripIPs(s)
         return s
     }
 
-    /// Every string in the value, and any key that could hold an address or a path.
-    public func redact(_ value: JSONValue) -> JSONValue {
+    private func redact(_ value: JSONValue, crashReport: Bool) -> JSONValue {
         switch value {
-        case .string(let s): return .string(redact(s))
-        case .array(let a): return .array(a.map(redact))
+        case .string(let s): return .string(redact(s, crashReport: crashReport))
+        case .array(let a): return .array(a.map { redact($0, crashReport: crashReport) })
         case .object(let o):
             var out: [String: JSONValue] = [:]
             for (k, v) in o {
-                let key = k.contains("@") || k.contains("/") ? redact(k) : k
-                out[key] = redact(v)
+                let key = k.contains("@") || k.contains("/") ? redact(k, crashReport: crashReport) : k
+                out[key] = redact(v, crashReport: crashReport)
             }
             return .object(out)
         default: return value
@@ -367,7 +388,8 @@ public struct DiagnosticsRedactor: Sendable {
     /// is kept is only what reads like a code, such as `"invalid_grant"`, and only between the
     /// straight quotes code and servers write. Between the marks a Mac writes in its own
     /// language, „…“, «…», 「…」 and the rest, is a file or a name, and it always goes.
-    private func stripQuoted(_ text: String) -> String {
+    /// In a crash report, an exception's name and reason stay too.
+    private func stripQuoted(_ text: String, crashReport: Bool) -> String {
         var s = Rx.quoted.replace(in: text) { m, ns in
             DiagnosticsRedactor.keepsQuoted(ns.substring(with: m.range(at: 1))) ? ns.substring(with: m.range) : "\"…\""
         }
@@ -378,9 +400,18 @@ public struct DiagnosticsRedactor: Sendable {
             return "\(open)…\(close)"
         }
         s = Rx.singleQuoted.replace(in: s) { m, ns in
-            DiagnosticsRedactor.keepsSingleQuoted(ns.substring(with: m.range(at: 1))) ? ns.substring(with: m.range) : "'…'"
+            if DiagnosticsRedactor.keepsSingleQuoted(ns.substring(with: m.range(at: 1))) { return ns.substring(with: m.range) }
+            if crashReport, DiagnosticsRedactor.followsExceptionLeadIn(ns, at: m.range.location) { return ns.substring(with: m.range) }
+            return "'…'"
         }
         return s
+    }
+
+    /// Whether the quotation mark at `location` opens an exception's name or reason:
+    /// `uncaught exception '…'` or `reason: '…'`.
+    private static func followsExceptionLeadIn(_ text: NSString, at location: Int) -> Bool {
+        let start = max(0, location - 24)
+        return Rx.matches(Rx.exceptionLeadIn, text.substring(with: NSRange(location: start, length: location - start)))
     }
 
     /// A code such as `invalid_grant` stays; a file name such as `report.pdf` does not.
@@ -532,6 +563,8 @@ private enum Rx {
     /// `.pdf` or `.XLSX`, but not the `.Int` of `Swift.Int`.
     static let fileExtension = rx(#"\.(?:[a-z][a-z0-9]{0,4}|[A-Z][A-Z0-9]{0,4})$"#)
     static let quotationMarks = Set("\"'“”„‘’‚«»‹›「『".unicodeScalars)
+    /// What the runtime writes just before an exception's name or reason.
+    static let exceptionLeadIn = rx(#"(?:\breason:|\bexception)[ \t]*$"#, [.caseInsensitive])
     /// Words a server or FalconMail puts just before a folder's name: `No folder HR`,
     /// `Unknown Mailbox: HR`, `Mailbox doesn't exist: HR`, `Could not move to HR`.
     static let folderLeadIn = #"((?<!<)\b(?:folder|mailbox|label)[ \t]*:?[ \t]*|\bexists?[ \t]*:[ \t]*|\b(?:move|moved|copy|copied)[ \t]+to[ \t]+|\binto[ \t]+)(["'“„‘«]?)"#

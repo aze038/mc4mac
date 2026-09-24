@@ -24,7 +24,7 @@ final class CrashReportTests: XCTestCase {
     /// A report shaped like the ones macOS writes: a one-line header, then the body.
     static func ips(bundle: String = "com.falconmail.app", incident: String = UUID().uuidString, threads: Int = 3,
                     framesPerThread: Int = 20, home: String = "/Users/kmuradoff",
-                    appPath: String = "/Applications/FalconMail.app") -> String {
+                    appPath: String = "/Applications/FalconMail.app", asi: String? = nil) -> String {
         let header = """
         {"app_name":"FalconMail","timestamp":"2026-09-20 10:11:12.00 +0100","app_version":"1.9.0","slice_uuid":"0B1C2D3E-0000-1111-2222-333344445555","build_version":"45","platform":1,"bundleID":"\(bundle)","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.6 (25G5023)","roots_installed":0,"name":"FalconMail","incident_id":"\(incident)"}
         """
@@ -59,7 +59,7 @@ final class CrashReportTests: XCTestCase {
          "crashReporterKey":"D4F2E1C0-SECRET-KEY","sleepWakeUUID":"ABCDEF","bootSessionUUID":"123456",
          "exception":{"codes":"0x0000000000000001, 0x0000000000000000","rawCodes":[1,0],"type":"EXC_BREAKPOINT","signal":"SIGTRAP"},
          "termination":{"flags":0,"code":5,"namespace":"SIGNAL","indicator":"Trace/BPT trap: 5","byProc":"exc handler","byPid":4242},
-         "asi":{"libswiftCore.dylib":["FalconMail/AppModel.swift:42: Fatal error: no account for ana@example.com in \(home)/Library/x"]},
+         "asi":\(asi ?? #"{"libswiftCore.dylib":["FalconMail/AppModel.swift:42: Fatal error: no account for ana@example.com in \#(home)/Library/x"]}"#),
          "faultingThread":1,"threads":[\(threadList)],"usedImages":\(images),
          "sharedCache":{"base":6442450944,"size":4000000000,"uuid":"99999999-8888-7777-6666-555555555555"},
          "vmSummary":"ReadOnly portion of Libraries: Total=1.5G resident=0K(0%) swapped_out_or_unallocated=1.5G(100%)",
@@ -211,6 +211,26 @@ final class CrashReportTests: XCTestCase {
         let first = try XCTUnwrap(threads[1]["frames"]?.arrayValue?.first)
         let image = try XCTUnwrap(first["imageIndex"]?.intValue)
         XCTAssertEqual(images[Int(image)]["name"], .string("libsystem_kernel.dylib"), "frames point at the renumbered images")
+    }
+
+    /// An uncaught exception's name and reason are what the triage reads first, in the message
+    /// and in the report alike; the addresses and paths inside them still go.
+    func testAnUncaughtExceptionKeepsItsNameAndReason() throws {
+        let reason = "*** Terminating app due to uncaught exception 'NSInternalInconsistencyException', "
+            + "reason: 'Invalid parameter not satisfying: row >= 0 for ana@example.com in /Users/kmuradoff/Library/x'"
+        try write("FalconMail-2026-09-20-101112.ips", Self.ips(asi: #"{"CoreFoundation":["\#(reason)"]}"#), modified: now.addingTimeInterval(-60))
+        let center = makeCenter(clock: ManualClock(now))
+        center.start()
+        let crash = try XCTUnwrap(center.pendingRecords.first { $0.event.kind == .crash }?.event)
+        let kept = "*** Terminating app due to uncaught exception 'NSInternalInconsistencyException', "
+            + "reason: 'Invalid parameter not satisfying: row >= 0 for <addr:"
+        XCTAssertTrue(crash.message.contains(kept), crash.message)
+        XCTAssertTrue(crash.message.contains(" in ~/Library/x'"), crash.message)
+        let line = try XCTUnwrap(crash.context["asi"]?["CoreFoundation"]?.arrayValue?.first?.stringValue)
+        XCTAssertTrue(line.hasPrefix(kept), line)
+        let text = String(decoding: crash.context.serialised, as: UTF8.self) + crash.message
+        XCTAssertFalse(text.contains("ana@example.com"))
+        XCTAssertFalse(text.contains("kmuradoff"))
     }
 
     func testAHugeReportStillFitsAnEvent() throws {

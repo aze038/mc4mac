@@ -60,8 +60,8 @@ public enum MetricKitDiagnostics {
         let event = DiagnosticsEvent(id: DiagnosticsEvent.stableID("metrickit:\(install):\(String(decoding: diagnostic.serialised, as: UTF8.self))"),
                                      kind: kind, signature: DiagnosticsSignature.make(area: area, code: code, place: place(in: tree)),
                                      title: DiagnosticsTitle.make(kind: kind, area: area, code: code), area: area.lowercased(),
-                                     firstAt: begin, lastAt: end, message: redactor.redact(message),
-                                     context: redactor.redact(.object(context)))
+                                     firstAt: begin, lastAt: end, message: redactor.redactCrashReport(message),
+                                     context: redactor.redactCrashReport(.object(context)))
         let app = meta["appVersion"]?.stringValue.map {
             DiagnosticsApp(version: $0, build: meta["appBuildVersion"]?.stringValue ?? "", channel: "release")
         }
