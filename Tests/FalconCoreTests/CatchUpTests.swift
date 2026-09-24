@@ -44,6 +44,8 @@ final class CatchUpTests: XCTestCase {
         server.resetCounters()
         await h.syncer.start()
         await assertEventually(within: 120) { ((try? await h.uids(in: "INBOX")) ?? []).count == 25_010 }
+        // The pass that stored the last batch moves the cursor over it just after.
+        await assertEventually("the cursor reached the newest message") { await self.cursor(h) == 25_010 }
 
         let fetched = FakeIMAPServer.headerFetchUIDs(server.exchanges)
         XCTAssertEqual(fetched.count, 25_000, "every new message fetched once")
@@ -59,8 +61,12 @@ final class CatchUpTests: XCTestCase {
             let gap = later[0].at.timeIntervalSince(earlier.last!.at)
             XCTAssertGreaterThanOrEqual(gap, 0.2, "one pass per catch-up interval")
         }
-        let inbox = try await h.folder("INBOX")
-        XCTAssertEqual(inbox.lastSyncedUID, 25_010)
+    }
+
+    /// Where INBOX's cursor stands. A pass stores each batch before it moves and saves the
+    /// cursor over it, so a test that has seen the rows waits for the cursor too.
+    private func cursor(_ h: EngineHarness) async -> UInt32 {
+        (try? await h.folder("INBOX").lastSyncedUID) ?? 0
     }
 
     func testACatchUpAlreadyDueWhenAPassEndsGoesOnAtOnce() async throws {
@@ -103,13 +109,12 @@ final class CatchUpTests: XCTestCase {
         server.cutAfter("UID FETCH", count: 8)
         await h.syncer.start()
         await assertEventually(within: 30, file: file, line: line) { ((try? await h.uids(in: "INBOX")) ?? []).count == 3_010 }
+        await assertEventually("the cursor reached the newest message", file: file, line: line) { await self.cursor(h) == 3_010 }
 
         let fetched = FakeIMAPServer.headerFetchUIDs(server.exchanges)
         XCTAssertEqual(Set(fetched).count, 3_000, file: file, line: line)
         XCTAssertEqual(fetched.count, 3_000, "nothing stored before the drop was fetched again", file: file, line: line)
         XCTAssertGreaterThanOrEqual(server.loginCount, 3, "the pass was cut and the loop connected again", file: file, line: line)
-        let inbox = try await h.folder("INBOX")
-        XCTAssertEqual(inbox.lastSyncedUID, 3_010, file: file, line: line)
     }
 
     func testTheCursorMovesOnlyOverStoredMessagesAndIsSavedEachBatch() async throws {
