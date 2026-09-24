@@ -262,6 +262,8 @@ final class EngineSoundTests: XCTestCase {
                                                actions: [RuleAction(kind: .flag)])])
         // Three messages half a minute apart, the rule refused on each.
         for n in 1...3 {
+            // The fake tells only a connection in IDLE of what arrives.
+            await assertEventually { h.server.idlingCount == 1 }
             h.server.refuseNext("UID STORE", code: nil, text: "Could not store flags (Failure)")
             let before = await h.events.announced.count
             h.server.deliver(fresh("news-\(n)"), to: "INBOX")
@@ -283,9 +285,13 @@ final class EngineSoundTests: XCTestCase {
 
     func testTheNewMessageSoundSkipsYourOwnMailAndOldMail() async throws {
         let (h, clock) = try await started()
-        h.server.deliver(fresh("mine", from: "owner@example.com"), to: "INBOX")
+        // Both are on the server before the idling connection hears of the second, so one
+        // pass of INBOX brings them together.
+        h.server.add(fresh("mine", from: "owner@example.com"), to: "INBOX")
         h.server.deliver(fresh("imported", from: "bob@example.com", daysOld: 3), to: "INBOX")
         await assertEventually { ((try? await h.uids(in: "INBOX")) ?? []).count == 3 }
+        // The fake tells only a connection in IDLE of what arrives.
+        await assertEventually { h.server.idlingCount == 1 }
         await h.settled()
         let quiet = Listener(start: clock)
         quiet.hear(await h.events.timed)
