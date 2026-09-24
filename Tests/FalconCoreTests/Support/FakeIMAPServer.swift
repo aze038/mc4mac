@@ -83,6 +83,7 @@ final class FakeIMAPServer: @unchecked Sendable {
     private var searchesToEmpty = 0
     private var flagFetchesToEmpty = 0
     private var appendRepliesToLose = 0
+    private var hooks: [(verb: String, action: @Sendable () -> Void)] = []
     private var exchangeLog: [Exchange] = []
 
     init(capabilities: [String] = ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE"],
@@ -209,6 +210,13 @@ final class FakeIMAPServer: @unchecked Sendable {
     /// The next command whose name starts with `verb` is answered only after `seconds`.
     func stallNext(_ verb: String, seconds: TimeInterval) {
         lock.withLock { stalls.append((verb.uppercased(), seconds)) }
+    }
+
+    /// Runs `action` once, just before the next command whose name starts with `verb` is
+    /// answered, as another program changing the mailbox at that moment would: mail arriving
+    /// between a pass's SELECT and its search, say.
+    func beforeAnswering(_ verb: String, _ action: @escaping @Sendable () -> Void) {
+        lock.withLock { hooks.append((verb.uppercased(), action)) }
     }
 
     /// From now on nothing is answered and nothing is closed, like a link that has gone dead;
@@ -447,6 +455,13 @@ final class FakeIMAPServer: @unchecked Sendable {
     fileprivate var offersCondstore: Bool { lock.withLock { capabilities.contains { $0.uppercased() == "CONDSTORE" } } }
     fileprivate var offersESearch: Bool { lock.withLock { capabilities.contains { $0.uppercased() == "ESEARCH" } } }
 
+    fileprivate func takeHook(for command: String) -> (@Sendable () -> Void)? {
+        lock.withLock {
+            guard let i = hooks.firstIndex(where: { command.hasPrefix($0.verb) }) else { return nil }
+            return hooks.remove(at: i).action
+        }
+    }
+
     fileprivate func takeStall(for command: String) -> TimeInterval? {
         lock.withLock {
             guard let i = stalls.firstIndex(where: { command.hasPrefix($0.verb) }) else { return nil }
@@ -543,6 +558,7 @@ private final class Session: @unchecked Sendable {
                 continue
             }
             if let seconds = server.takeStall(for: command) { Thread.sleep(forTimeInterval: seconds) }
+            server.takeHook(for: command)?()
             Thread.sleep(forTimeInterval: server.latency)
             let started = Date()
             let before = sent

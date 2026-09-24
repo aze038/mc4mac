@@ -1244,11 +1244,16 @@ public actor AccountSyncer {
         // With actions on their way the server still holds rows taken out here, and the counts
         // cannot agree; the pass after they finish looks again.
         let settled = suppressedUIDs[folder.id]?.isEmpty ?? true
+        // What the server's count, made at SELECT, can include: mail that arrived after it, which
+        // the search made after it listed and the pass may have stored, is not in it, and would
+        // otherwise be taken for as many messages missing from it.
+        let counted = { (uid: UInt32) in status.uidNext == 0 || uid < status.uidNext }
+        let unfetchedCounted = unfetched.filter(counted).count
         // How many messages the server's count says it no longer has; nil before the folder has
         // been counted, or while actions are on their way, when a check takes nothing. A check
         // that would take more rows than that is not believed, however few, since nothing
         // brings back a row below the cursor: the search that follows finds which went.
-        let missingOnServer = settled ? state.belowWindow.map { known.count + $0 + unfetched.count - status.exists } : nil
+        let missingOnServer = settled ? state.belowWindow.map { known.filter(counted).count + $0 + unfetchedCounted - status.exists } : nil
         // How far a search that lists the whole folder may fall short of the server's count and
         // still be believed: messages deleted between the two.
         let slack = max(10, status.exists / 100)
@@ -1320,7 +1325,7 @@ public actor AccountSyncer {
         if settled {
             func expected() async -> Int? {
                 guard let below = state.belowWindow else { return nil }
-                return await fs.count + below + unfetched.count
+                return await fs.uids().filter(counted).count + below + unfetchedCounted
             }
             if let count = await expected(), status.exists < count, !newestChecked, let bound = newest.first {
                 // Most deletions are of recent mail, which a short search finds.

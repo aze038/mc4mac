@@ -210,6 +210,29 @@ final class FlagRescanTests: XCTestCase {
         XCTAssertTrue(h.server.commands.contains { $0.contains("UID FETCH 1:5 (UID FLAGS)") }, "the older slice was asked for")
     }
 
+    /// Mail that arrives between a pass's SELECT, whose count does not include it, and the
+    /// search that lists it, is not taken for messages missing from that count: a flag reply
+    /// that lists nothing takes no row for it, neither the new mail nor any below the cursor.
+    func testMailArrivingBetweenTheCountAndItsSearchIsNotCountedAsMissing() async throws {
+        let server = try EngineHarness.gmailServer()
+        let old = server.addMany(50, to: "INBOX") { FakeIMAPServer.message("old-\($0)") }
+        let h = try await EngineHarness(server: server)
+        harness = h
+        try await h.syncOnce()
+        // A filter files 1,200 messages into INBOX just after the next pass has counted it.
+        server.beforeAnswering("UID SEARCH") {
+            server.addMany(1_200, to: "INBOX") { FakeIMAPServer.message("filed-\($0)") }
+        }
+        server.emptyNextFlagFetches(1)
+        try await h.syncOnce()
+        var rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 1_250, "a flag reply that listed nothing took no row")
+        XCTAssertTrue(Set(old).isSubset(of: rows))
+        for _ in 1...2 { try await h.syncOnce() }
+        rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows, Set(server.messages(in: "INBOX").map(\.uid)), "and every message on the server is here")
+    }
+
     func testAFlagReplyListingNothingTakesNoRowsWhileAnActionIsOnItsWay() async throws {
         let h = try await listed(3_000)
         await h.syncer.setUndoWindow(60)

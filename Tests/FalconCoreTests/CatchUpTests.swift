@@ -278,6 +278,22 @@ final class CatchUpTests: XCTestCase {
         XCTAssertEqual(h.server.messages(in: "INBOX").count, 66, "and nothing on the server was touched")
     }
 
+    func testACheckDuringAHoldWhileMailArrivesAfterItsCountTakesNoRowsForAFlagReplyThatListsNothing() async throws {
+        let (h, old, taken, _) = try await heldBack()
+        // Two hundred more arrive just after the pass has counted INBOX, before its search.
+        let server = h.server
+        server.beforeAnswering("UID SEARCH") {
+            server.addMany(200, to: "INBOX") { FakeIMAPServer.message("late-\($0)", date: Date()) }
+        }
+        server.emptyNextFlagFetches(1)
+        await passRuns(h, check: true)
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(old.subtracting(stored), [], "no row below the cursor is taken off")
+        XCTAssertTrue(taken.isSubset(of: stored), "nor any the catch-up took")
+        XCTAssertEqual(stored.count, 30 + 35 + 35, "and the newest 35 that arrived join them")
+        XCTAssertEqual(server.messages(in: "INBOX").count, 335, "nothing on the server was touched")
+    }
+
     func testACheckThatTakesTheWholeBacklogEndsTheHold() async throws {
         let (h, old, taken, held) = try await heldBack(bulk: 45)
         XCTAssertEqual(held.count, 10)
