@@ -68,8 +68,9 @@ write `update.json`, and publish both assets on a GitHub Release whose tag is
 
 ## Workflows
 
-- `.github/workflows/ci.yml` builds the app and runs the FalconCore tests on
-  every push.
+- `.github/workflows/ci.yml` builds the app and, on every push, runs the
+  FalconCore tests, the diagnostics web app's and triage tools' tests, and the
+  test of `scripts/embed-google-client.sh`.
 - `.github/workflows/release.yml` runs on a `v*` tag or by hand from the
   Actions tab (with a "mandatory" checkbox). It builds Release, signs and
   notarizes when the secrets exist, zips the app, writes `update.json` with

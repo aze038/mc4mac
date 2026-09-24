@@ -47,17 +47,8 @@ jobs:
         env:
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
-        run: |
-          if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ]; then
-            plutil -replace FalconGoogleClientID -string "$GOOGLE_OAUTH_CLIENT_ID" App/FalconMail/Info.plist
-            plutil -replace FalconGoogleClientSecret -string "${GOOGLE_OAUTH_CLIENT_SECRET:-}" App/FalconMail/Info.plist
-            PREFIX="${GOOGLE_OAUTH_CLIENT_ID%.apps.googleusercontent.com}"
-            SCHEME="com.googleusercontent.apps.$PREFIX"
-            plutil -replace CFBundleURLTypes -json "[{\"CFBundleURLName\":\"Google Sign-In\",\"CFBundleURLSchemes\":[\"$SCHEME\"]}]" App/FalconMail/Info.plist
-            echo "Google sign-in embedded with URL scheme $SCHEME"
-          else
-            echo "::warning::GOOGLE_OAUTH_CLIENT_ID secret is not set; this build has no Google sign-in"
-          fi
+        # Adds the Google URL scheme beside the mailto one project.yml declares, never in its place.
+        run: scripts/embed-google-client.sh App/FalconMail/Info.plist
 
       - name: Embed diagnostics endpoint
         env:

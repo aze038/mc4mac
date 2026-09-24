@@ -11,3 +11,5 @@ build/
 App/FalconMail/Config/GoogleOAuth.plist
 # macOS
 .DS_Store
+# Python
+__pycache__/

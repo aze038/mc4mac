@@ -67,7 +67,8 @@ Add one repository secret on GitHub (Settings → Secrets and variables →
 Actions): `GOOGLE_OAUTH_CLIENT_ID`. CI and Release builds write it into the
 app's `Info.plist` and register the matching URL scheme
 `com.googleusercontent.apps.<id>` so Google's sign-in page can return to the
-app. There is nothing confidential in the build: a native-app client ID is
+app, beside the `mailto` scheme that lets FalconMail be the default mail app
+(`scripts/embed-google-client.sh`). There is nothing confidential in the build: a native-app client ID is
 public by design, like the client ID of any website.
 
 `GOOGLE_OAUTH_CLIENT_SECRET` is only needed if you use a Desktop-type client

@@ -225,7 +225,7 @@ the 4 MB read page keep well clear of trouble. Apps Script answers with a 302 re
 
 ## Tests
 
-All run offline; nothing talks to Google or any real server.
+All run offline; nothing talks to Google or any real server. CI runs them on every push.
 
 ```sh
 node --test tools/diagnostics/apps-script/test/

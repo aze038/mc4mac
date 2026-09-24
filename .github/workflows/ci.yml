@@ -33,22 +33,21 @@ jobs:
         env:
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
-        run: |
-          if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ]; then
-            plutil -replace FalconGoogleClientID -string "$GOOGLE_OAUTH_CLIENT_ID" App/FalconMail/Info.plist
-            plutil -replace FalconGoogleClientSecret -string "${GOOGLE_OAUTH_CLIENT_SECRET:-}" App/FalconMail/Info.plist
-            PREFIX="${GOOGLE_OAUTH_CLIENT_ID%.apps.googleusercontent.com}"
-            SCHEME="com.googleusercontent.apps.$PREFIX"
-            plutil -replace CFBundleURLTypes -json "[{\"CFBundleURLName\":\"Google Sign-In\",\"CFBundleURLSchemes\":[\"$SCHEME\"]}]" App/FalconMail/Info.plist
-            echo "Google sign-in embedded with URL scheme $SCHEME"
-          else
-            echo "::warning::GOOGLE_OAUTH_CLIENT_ID secret is not set; this build has no Google sign-in"
-          fi
+        # Adds the Google URL scheme beside the mailto one project.yml declares, never in its place.
+        run: scripts/embed-google-client.sh App/FalconMail/Info.plist
 
       - name: FalconCore tests
         run: |
           set -o pipefail
           swift test 2>&1 | tee swift-test.log
+
+      - name: Diagnostics backend and tool tests
+        run: |
+          set -o pipefail
+          command -v node >/dev/null || brew install node
+          node --test tools/diagnostics/apps-script/test/ 2>&1 | tee node-test.log
+          python3 -m unittest discover -s tools/diagnostics/test 2>&1 | tee python-test.log
+          python3 -m unittest discover -s scripts/test 2>&1 | tee -a python-test.log
 
       - name: Build FalconMail app
         run: |
@@ -69,6 +68,7 @@ jobs:
           echo "## Build errors" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           { grep -E "error:" xcodebuild.log swift-test.log 2>/dev/null || true; } | sort -u | head -200 >> "$GITHUB_STEP_SUMMARY"
+          { grep -E "^not ok|^FAIL:|^ERROR:" node-test.log python-test.log 2>/dev/null || true; } | head -100 >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload logs
@@ -79,4 +79,6 @@ jobs:
           path: |
             xcodebuild.log
             swift-test.log
+            node-test.log
+            python-test.log
           if-no-files-found: ignore
