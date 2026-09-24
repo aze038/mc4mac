@@ -1050,23 +1050,53 @@ public actor AccountSyncer {
     /// over UIDs stored without a gap below them, and is saved after every batch, so a pass cut
     /// short leaves no hole behind it and the next fetches nothing twice. It stays a cursor an
     /// earlier build understands: at worst that build fetches again what is stored above it.
+    ///
+    /// While a catch-up is held back, every pass still makes its one search above the cursor,
+    /// and keeps as the backlog only what the server still lists there. A message that left the
+    /// folder meanwhile is not counted as still to come: counted, it would let a flag reply that
+    /// lists nothing take rows off the Mac. A backlog wholly gone ends the hold, and the pass
+    /// takes what is new. A search that lists nothing at all, where the folder holds messages,
+    /// is the server losing track for a moment: that pass counts nothing as still to come, which
+    /// can only keep rows, and the hold stays as it was.
+    ///
     /// A pass the owner asked for with Send & Receive, while an inbox's catch-up is held back,
     /// takes what arrived there since the newest message stored, and leaves the backlog below
     /// it and the cursor as they are for the catch-up's next pass.
     private func fetchNewMessages(_ folder: inout FolderInfo, client: IMAPClient, fs: FolderStore) async throws -> NewMail {
-        var backlog: [UInt32]?
-        if let catchUp = catchUps[folder.id], catchUp.notBefore > Date() {
-            guard passAnswersCheck, folder.role == .inbox else { return NewMail(unfetched: catchUp.unfetched) }
-            backlog = catchUp.unfetched
-        }
         var have = await fs.uids()
-        // Where a check's search during a hold begins: above the newest stored.
-        let top = max(have.max() ?? 0, folder.lastSyncedUID)
+        let after = folder.lastSyncedUID
+        // What the one search of a pass during a hold listed, and the backlog still on the
+        // server when the pass answers a check.
+        var listing: [UInt32]?
+        var backlog: [UInt32]?
+        if let held = catchUps[folder.id], held.notBefore > Date() {
+            let listed = try await client.uidSearch(after == 0 ? "ALL" : "UID \(after + 1):*")
+            // A range up to * always lists the newest message, so nothing at all is no answer.
+            guard !listed.isEmpty else {
+                Log.info("sync", "\(account.email) \(folder.path): a search during a catch-up listed nothing; counting no backlog this pass")
+                return NewMail(unfetched: [])
+            }
+            let present = Set(listed)
+            let waiting = held.unfetched.filter { present.contains($0) && !have.contains($0) }
+            listing = listed.filter { $0 > after }
+            if waiting.isEmpty {
+                // The backlog is gone: nothing is held back, and this pass takes what is new.
+                catchUps[folder.id] = nil
+            } else if passAnswersCheck, folder.role == .inbox {
+                backlog = waiting
+            } else {
+                catchUps[folder.id] = (held.notBefore, waiting)
+                return NewMail(unfetched: waiting)
+            }
+        }
+        // Where a check's fetch during a hold begins: above the newest stored.
+        let top = max(have.max() ?? 0, after)
         let candidates: [UInt32]
-        if backlog != nil {
-            candidates = try await client.uidSearch("UID \(top + 1):*").filter { $0 > top }
-        } else if folder.lastSyncedUID == 0 {
-            let all = try await client.uidSearch("ALL")
+        if backlog != nil, let listing {
+            candidates = listing.filter { $0 > top }
+        } else if after == 0 {
+            let all: [UInt32]
+            if let listing { all = listing } else { all = try await client.uidSearch("ALL") }
             var start = all.suffix(pacing.initialWindow).first ?? 0
             // A first pass cut short saved where its window began. Taken again, the window
             // begins there at the latest: mail that arrived meanwhile pushes the newest thousand
@@ -1076,8 +1106,9 @@ public actor AccountSyncer {
             folder.oldestSyncedUID = candidates.first ?? 0
             let below = all.count - candidates.count
             extras.updateFolder(folder.id, uidValidity: folder.uidValidity) { $0.belowWindow = below }
+        } else if let listing {
+            candidates = listing
         } else {
-            let after = folder.lastSyncedUID
             candidates = try await client.uidSearch("UID \(after + 1):*").filter { $0 > after }
         }
         let folderID = folder.id
@@ -1118,14 +1149,12 @@ public actor AccountSyncer {
         }
         if let backlog, let held = catchUps[folder.id] {
             // The catch-up keeps its time; whatever this window left joins its backlog, each
-            // message once. With the newest stored gone from INBOX the search began below the
-            // backlog and listed it again: what it took is stored or gone, and what it no longer
-            // lists above where it began is gone. Only what the server holds and FalconMail does
-            // not may count as still to fetch, or the count that keeps a reply listing nothing
-            // from removing rows would reckon on messages that are not there.
-            let listed = Set(candidates)
-            let waiting = backlog.filter { $0 <= top || listed.contains($0) }
-            result.unfetched = Set(waiting + later).subtracting(have).subtracting(taking).sorted()
+            // message once. The backlog is what the search still listed, and with the newest
+            // stored gone from INBOX part of it lay above where the window began: what the
+            // window took is stored or gone. Only what the server holds and FalconMail does not
+            // may count as still to fetch, or the count that keeps a reply listing nothing from
+            // removing rows would reckon on messages that are not there.
+            result.unfetched = Set(backlog + later).subtracting(have).subtracting(taking).sorted()
             catchUps[folder.id] = (held.notBefore, result.unfetched)
             return result
         }

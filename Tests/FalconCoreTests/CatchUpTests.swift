@@ -148,6 +148,122 @@ final class CatchUpTests: XCTestCase {
         }
     }
 
+    // MARK: - A backlog held back
+
+    private func finishedCount(_ h: EngineHarness) async -> Int {
+        await h.events.all.filter { if case .finished = $0 { return true }; return false }.count
+    }
+
+    private func checkAnswers(_ h: EngineHarness) async -> [Bool] {
+        await h.events.all.compactMap { if case .checked(_, let found) = $0 { return found }; return nil }
+    }
+
+    /// Asks for a whole pass and waits until it is over and the loop idles again.
+    private func passRuns(_ h: EngineHarness, check: Bool = false) async {
+        let before = await finishedCount(h)
+        await h.syncer.requestSync(check: check)
+        await assertEventually { await self.finishedCount(h) > before && h.server.idlingCount == 1 }
+        await h.settled()
+    }
+
+    /// Thirty old messages stored in INBOX, the loop idling, and then 105 more that another
+    /// program files there at once: a pass takes the newest 35 and holds the other 70 back
+    /// for the catch-up interval, an hour here.
+    private func heldBack() async throws -> (h: EngineHarness, old: Set<UInt32>, taken: Set<UInt32>, held: [UInt32]) {
+        var pacing = SyncPacing()
+        pacing.catchUpWindow = 35
+        pacing.catchUpInterval = 3600
+        pacing.fullSyncInterval = 3600
+        pacing.idleRefresh = 3600
+        pacing.minimumReconnectInterval = 0.05
+        let server = try EngineHarness.gmailServer()
+        let old = server.addMany(30, to: "INBOX") { FakeIMAPServer.message("old-\($0)") }
+        let h = try await EngineHarness(server: server, pacing: pacing)
+        harness = h
+        await h.syncer.start()
+        await assertEventually { await self.finishedCount(h) == 1 && server.idlingCount == 1 }
+        let bulk = server.addMany(105, to: "INBOX") { FakeIMAPServer.message("bulk-\($0)") }
+        await passRuns(h)
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored, Set(old + bulk.suffix(35)), "the newest 35 are taken and 70 held back")
+        return (h, Set(old), Set(bulk.suffix(35)), Array(bulk.prefix(70)))
+    }
+
+    func testABacklogThatLeavesTheInboxDuringItsHoldTakesNoRowsForAFlagReplyThatListsNothing() async throws {
+        let (h, old, taken, held) = try await heldBack()
+        // Another program takes the 70 held back out of INBOX while they wait.
+        for uid in held { h.server.remove(uid: uid, from: "INBOX") }
+        // A pass during the hold, when the server loses track of INBOX for one flag fetch.
+        h.server.emptyNextFlagFetches(1)
+        await passRuns(h)
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(old.subtracting(stored), [], "no row below the cursor, which nothing would fetch again, is taken off")
+        XCTAssertEqual(stored, old.union(taken), "nor any other, for a flag reply that listed nothing")
+        XCTAssertEqual(h.server.messages(in: "INBOX").count, 65, "and nothing on the server was touched")
+
+        // Nothing is held back any more, so mail that arrives now is fetched at once.
+        let next = h.server.deliver(FakeIMAPServer.message("next", date: Date()), to: "INBOX")
+        await assertEventually("the hold ended with its backlog") { ((try? await h.uids(in: "INBOX")) ?? []).contains(next) }
+    }
+
+    func testABacklogPartlyGoneDuringItsHoldCountsOnlyWhatIsLeft() async throws {
+        let (h, old, taken, held) = try await heldBack()
+        // Sixty of the seventy leave INBOX; ten still wait.
+        for uid in held.prefix(60) { h.server.remove(uid: uid, from: "INBOX") }
+        h.server.resetCounters()
+        h.server.emptyNextFlagFetches(1)
+        await passRuns(h)
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored, old.union(taken), "no row is taken off for a flag reply that listed nothing")
+        let searches = h.server.commands.filter { $0.contains("UID SEARCH UID ") }
+        XCTAssertEqual(searches.count, 1, "the backlog is listed again with one search: \(searches)")
+        XCTAssertTrue(FakeIMAPServer.headerFetchUIDs(h.server.exchanges).isEmpty, "and nothing of it is fetched during the hold")
+
+        // Asked, the pass says mail is on its way: the ten still wait.
+        await passRuns(h, check: true)
+        let answers = await checkAnswers(h)
+        XCTAssertEqual(answers, [true])
+        let after = try await h.uids(in: "INBOX")
+        XCTAssertEqual(after, old.union(taken))
+    }
+
+    func testACheckDuringAHoldWhoseBacklogLeftTheInboxTakesNoRowsForAFlagReplyThatListsNothing() async throws {
+        let (h, old, taken, held) = try await heldBack()
+        for uid in held { h.server.remove(uid: uid, from: "INBOX") }
+        // Send & Receive for a message the owner is waiting for, and the server loses track of
+        // INBOX for one flag fetch.
+        let urgent = h.server.add(FakeIMAPServer.message("urgent", date: Date()), to: "INBOX")
+        h.server.emptyNextFlagFetches(1)
+        await passRuns(h, check: true)
+        let stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(old.subtracting(stored), [], "no row below the cursor is taken off")
+        XCTAssertEqual(stored, old.union(taken).union([urgent]), "the one asked for joins every row already there")
+        let answers = await checkAnswers(h)
+        XCTAssertEqual(answers, [true])
+        XCTAssertEqual(h.server.messages(in: "INBOX").count, 66, "and nothing on the server was touched")
+    }
+
+    func testASearchDuringAHoldThatListsNothingTakesNoRowsAndLosesNoBacklog() async throws {
+        let (h, old, taken, held) = try await heldBack()
+        // A pass and then a check during the hold, each meeting a server that lists nothing for
+        // one search and one flag fetch, while the backlog is still there.
+        h.server.emptyNextSearches(1)
+        h.server.emptyNextFlagFetches(1)
+        await passRuns(h)
+        var stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored, old.union(taken), "no row is taken off")
+
+        h.server.emptyNextSearches(1)
+        h.server.emptyNextFlagFetches(1)
+        await passRuns(h, check: true)
+        stored = try await h.uids(in: "INBOX")
+        XCTAssertEqual(stored, old.union(taken), "no row is taken off, and the backlog still waits for its turn")
+        let answers = await checkAnswers(h)
+        XCTAssertEqual(answers, [true], "mail is still on its way")
+        let cursor = try await h.folder("INBOX").lastSyncedUID
+        XCTAssertLessThan(cursor, held[0], "the cursor stays below the backlog, so the pass after the hold lists it again")
+    }
+
     /// A message from an old mailbox, with no Date header or one in `date`'s words.
     private func undated(_ tag: String, date: String? = nil) -> Data {
         Data(("From: ana@example.com\r\nTo: owner@example.com\r\nSubject: Message \(tag)\r\n" + (date.map { "Date: \($0)\r\n" } ?? "")
