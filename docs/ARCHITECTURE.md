@@ -128,9 +128,9 @@ What becomes an event:
 - Every `Log.warning` and `Log.error` line, never `Log.info`. Each error alert and banner
   the app shows is one, under the area `Alert`.
 - Crashes, from the app's own reports in `~/Library/Logs/DiagnosticReports` at launch and
-  from MetricKit, which also reports hangs, heavy CPU use and heavy disk writes. A crash
-  both report is sent once, from the `.ips` report, which says more. A build run from
-  Xcode's build folder is never reported.
+  from MetricKit, which also reports hangs, heavy CPU use and heavy disk writes. When macOS
+  and MetricKit both report the same crash, it is sent once, from the `.ips` report, which
+  says more. A build run from Xcode's build folder is never reported.
 - A `launch` event at each start, saying whether the last session quit normally, and a
   `health` event once a day.
 
