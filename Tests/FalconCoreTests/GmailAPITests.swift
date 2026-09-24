@@ -119,6 +119,50 @@ final class GmailAPITests: XCTestCase {
         XCTAssertEqual(recovered, 3_000)
     }
 
+    func testRefusalsFromOneBurstHalveTheBudgetOnce() async {
+        let clock = VirtualClock()
+        let limiter = clock.limiter()
+        let sent = clock.now
+        clock.advance(0.2)
+        for _ in 0..<8 { await limiter.throttled(retryAfter: nil, sentAt: sent) }
+        let afterBurst = await limiter.currentLimit
+        XCTAssertEqual(afterBurst, 1_500)
+        clock.advance(1)
+        await limiter.throttled(retryAfter: nil, sentAt: clock.now)
+        await limiter.throttled(retryAfter: nil, sentAt: clock.now)
+        let afterRetry = await limiter.currentLimit
+        XCTAssertEqual(afterRetry, 752, "a call sent after the halving and refused again halves it again")
+        for _ in 0..<5 {
+            clock.advance(1)
+            await limiter.throttled(retryAfter: nil, sentAt: clock.now)
+        }
+        let lowest = await limiter.currentLimit
+        XCTAssertGreaterThanOrEqual(lowest, 750, "a quarter of the budget, enough for a page of 25 results, is always kept")
+    }
+
+    func testTheLastRateRefusalStillHoldsTheNextCallBack() async throws {
+        let mailbox = FakeGmailMailbox()
+        mailbox.add(subject: "x")
+        mailbox.inject(.status(429, reason: "rateLimitExceeded", retryAfter: "1"), for: .messagesList, times: 3)
+        mailbox.inject(.status(429, reason: "rateLimitExceeded", retryAfter: "5"), for: .messagesList)
+        let clock = VirtualClock()
+        let client = GmailTestKit.client(mailbox, clock: clock)
+        do {
+            _ = try await client.list(query: "x")
+            XCTFail("expected a refusal")
+        } catch let error as GoogleAPIError {
+            XCTAssertEqual(error.kind, .rateLimited)
+            XCTAssertEqual(error.retryAfter, 5)
+        }
+        let before = clock.slept
+        let list = try await client.list(query: "x")
+        XCTAssertEqual(list.messages?.count, 1)
+        XCTAssertEqual(clock.slept - before, 5, accuracy: 0.01, "the next call waits out the last Retry-After")
+        XCTAssertEqual(mailbox.attempts[.messagesList], 5)
+        let limit = await client.limiter.currentLimit
+        XCTAssertGreaterThanOrEqual(limit, 750)
+    }
+
     func testUserRateLimitOn403IsRetried() async throws {
         let mailbox = FakeGmailMailbox()
         mailbox.add(subject: "Busy")

@@ -142,7 +142,7 @@ public struct GmailAPIClient: Sendable {
         var refreshNow = false
         var attempt = 0
         while true {
-            try await limiter.acquire(method, maxWait: maxWait)
+            let sentAt = try await limiter.acquire(method, maxWait: maxWait)
             let data: Data
             let http: HTTPURLResponse
             do {
@@ -176,14 +176,19 @@ public struct GmailAPIClient: Sendable {
                 refreshed = true
                 refreshNow = true
                 continue
-            case .rateLimited where attempt < retries:
-                await limiter.throttled(retryAfter: refusal.retryAfter ?? pow(2, Double(attempt)))
+            case .rateLimited:
+                // The last refusal is recorded too, so the next call keeps to its Retry-After.
+                await limiter.throttled(retryAfter: refusal.retryAfter ?? pow(2, Double(attempt)), sentAt: sentAt)
+                guard attempt < retries else { throw refusal }
                 attempt += 1
                 continue
             case .temporary where attempt < retries:
                 await limiter.backOff(pow(2, Double(attempt)) * 0.5)
                 attempt += 1
                 continue
+            case .quotaExhausted, .apiDisabled:
+                await limiter.hold(refusal)
+                throw refusal
             default:
                 throw refusal
             }
