@@ -57,6 +57,7 @@ public actor IMAPClient {
     private var idleDoneSent = false
     private let turn = AsyncMutex()
     private nonisolated let turnID = UUID()
+    private var turnTaking = TurnTaking.whole
     public private(set) var capabilities: [String] = []
     public private(set) var selectedMailbox: String?
     private var selectedStatus: IMAPMailboxStatus?
@@ -73,6 +74,20 @@ public actor IMAPClient {
 
     /// False once the connection has failed or been closed; a failed connection is never used again.
     public var isConnected: Bool { connection != nil }
+
+    /// How much of the connection's turn its callers take. FalconMail always takes all of it.
+    /// The others are for the tests alone, which show what the turn prevents by running the
+    /// engine's own calls without it: `perCommand` holds the turn from sending a command to its
+    /// tagged reply, but lets another caller in between a SELECT and the commands that depend on
+    /// it, as when they were separate awaits; `none` takes no turn at all, as before there was one.
+    enum TurnTaking: Sendable {
+        case whole, perCommand, none
+    }
+
+    /// For tests only; see `TurnTaking`.
+    func takeTurns(_ taking: TurnTaking) {
+        turnTaking = taking
+    }
 
     public func connect() async throws {
         try await locked {
@@ -149,7 +164,7 @@ public actor IMAPClient {
     /// the connection failed while `work` waited behind another caller, `IMAPNotSent` says
     /// that none of it went out.
     public func exclusively<T: Sendable>(_ work: @Sendable (IMAPClient) async throws -> T) async throws -> T {
-        try await locked {
+        try await locked(unit: true) {
             guard connection != nil else { throw IMAPNotSent() }
             return try await work(self)
         }
@@ -160,7 +175,7 @@ public actor IMAPClient {
     /// UID `work` was given would name a different message.
     public func withMailbox<T: Sendable>(_ mailbox: String, uidValidity: UInt32?,
                                          _ work: @Sendable (IMAPClient) async throws -> T) async throws -> T {
-        try await locked {
+        try await locked(unit: true) {
             let status: IMAPMailboxStatus
             if selectedMailbox == mailbox, let current = selectedStatus {
                 status = current
@@ -304,7 +319,7 @@ public actor IMAPClient {
     public func move(uids: [UInt32], to mailbox: String) async throws {
         guard !uids.isEmpty else { return }
         let set = IMAPClient.sequenceSet(uids)
-        try await locked {
+        try await locked(unit: true) {
             if hasCapability("MOVE") {
                 _ = try await run("UID MOVE \(set) \(quote(mailbox))", mailbox: mailbox)
                 return
@@ -329,7 +344,7 @@ public actor IMAPClient {
     /// message is marked; otherwise nothing is marked and `IMAPExpungeRefused` is thrown.
     public func expunge(uids: [UInt32]) async throws {
         guard !uids.isEmpty else { return }
-        try await locked {
+        try await locked(unit: true) {
             let set = IMAPClient.sequenceSet(uids)
             if hasCapability("UIDPLUS") {
                 try await store(uids: uids, add: true, flags: ["\\Deleted"])
@@ -499,7 +514,14 @@ public actor IMAPClient {
         if connection === c { forget() }
     }
 
-    private func locked<T>(_ body: () async throws -> T) async throws -> T {
+    /// Runs `body` holding the connection's turn: one command from sending it to its tagged
+    /// reply, or a `unit` of several that must go out with nothing in between.
+    private func locked<T>(unit: Bool = false, _ body: () async throws -> T) async throws -> T {
+        switch turnTaking {
+        case .whole: break
+        case .perCommand: if unit { return try await body() }
+        case .none: return try await body()
+        }
         if IMAPTurn.held.contains(turnID) { return try await body() }
         try await turn.acquire()
         defer { turn.release() }

@@ -31,8 +31,10 @@ final class EngineHarness: @unchecked Sendable {
         return server
     }
 
+    /// `turns` is how much of each connection's turn the syncer's connections take: always all
+    /// of it but in the tests that show what the turn prevents.
     init(server: FakeIMAPServer, email: String = "owner@example.com", root existing: URL? = nil, pacing: SyncPacing = .standard,
-         deadlines: IMAPDeadlines = .standard, limits: TrafficLimits = .standard,
+         deadlines: IMAPDeadlines = .standard, limits: TrafficLimits = .standard, turns: IMAPClient.TurnTaking = .whole,
          clock: @escaping @Sendable () -> Date = { Date() }) async throws {
         self.server = server
         root = existing ?? FileManager.default.temporaryDirectory.appendingPathComponent("falcon-engine-\(UUID().uuidString)", isDirectory: true)
@@ -61,6 +63,7 @@ final class EngineHarness: @unchecked Sendable {
                                connector: { account, traffic in
                                    let c = IMAPClient(host: "127.0.0.1", port: port, tls: false, label: account.email, traffic: traffic,
                                                       deadlines: deadlines)
+                                   await c.takeTurns(turns)
                                    try await c.connect()
                                    try await c.login(user: account.email, password: "not-a-password")
                                    return c

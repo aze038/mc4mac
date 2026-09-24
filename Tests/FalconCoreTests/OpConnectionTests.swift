@@ -5,6 +5,7 @@ import XCTest
 /// owner "Protocol error", hangs, and actions landing on the wrong message.
 final class OpConnectionTests: XCTestCase {
     private var harness: EngineHarness!
+    private var raced: EngineHarness?
 
     override func setUp() async throws {
         let server = try EngineHarness.gmailServer(latency: 0.004)
@@ -15,57 +16,143 @@ final class OpConnectionTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        await raced?.finish()
         await harness.finish()
     }
 
-    func testConcurrentOpensReturnIntactBodiesAndNoneHangs() async throws {
-        let syncer = harness.syncer
-        var list: [(expected: Data, message: MessageSummary)] = []
+    // MARK: The races the connection's turn prevents
+    //
+    // Each is run many times with the turn, as FalconMail always takes it, and must never go
+    // wrong; and then with the same calls taking less of it, as the engine did before, where it
+    // must go wrong, so that the test is known to catch the race at all.
+
+    /// An account like the one `setUp` makes, whose op connections take `turns` of the turn and
+    /// give up on a second's silence, since without the turn a reply can go to the wrong reader
+    /// and leave the right one waiting.
+    private func account(turns: IMAPClient.TurnTaking) async throws -> EngineHarness {
+        let server = try EngineHarness.gmailServer(latency: 0.004)
+        for n in 1...6 { server.add(FakeIMAPServer.message("inbox-\(n)"), to: "INBOX") }
+        for n in 1...6 { server.add(FakeIMAPServer.message("sent-\(n)", from: "owner@example.com", to: "ana@example.com"), to: "[Gmail]/Sent Mail") }
+        let h = try await EngineHarness(server: server, deadlines: IMAPDeadlines(connect: 5, response: 1, idleGrace: 1), turns: turns)
+        raced = h
+        try await h.syncOnce()
+        return h
+    }
+
+    private enum Opened: Equatable {
+        case whole, anotherMessage, broken, hung
+    }
+
+    /// Opens UIDs 1 to 6 of INBOX and of Sent, which name different messages, all at once on
+    /// one op connection, none of them kept from an earlier open.
+    private func openTwelveAtOnce(_ h: EngineHarness) async throws -> [Opened] {
+        for path in ["INBOX", "[Gmail]/Sent Mail"] { try await h.store.folderStore(try await h.folder(path)).clearBodies() }
+        var opens: [(expected: Data, message: MessageSummary)] = []
         for uid in UInt32(1)...6 {
-            list.append((FakeIMAPServer.message("inbox-\(uid)"), try await harness.message(uid: uid, in: "INBOX")))
-            list.append((FakeIMAPServer.message("sent-\(uid)", from: "owner@example.com", to: "ana@example.com"),
-                         try await harness.message(uid: uid, in: "[Gmail]/Sent Mail")))
+            opens.append((FakeIMAPServer.message("inbox-\(uid)"), try await h.message(uid: uid, in: "INBOX")))
+            opens.append((FakeIMAPServer.message("sent-\(uid)", from: "owner@example.com", to: "ana@example.com"),
+                          try await h.message(uid: uid, in: "[Gmail]/Sent Mail")))
         }
-        let opens = list
-        let bodies = try await within(20) {
-            try await withThrowingTaskGroup(of: (Int, Data).self) { group in
-                for (i, open) in opens.enumerated() {
-                    group.addTask { (i, try await syncer.body(for: open.message)) }
-                }
-                var out: [Int: Data] = [:]
-                for try await (i, body) in group { out[i] = body }
-                return out
+        let everyBody = Set(opens.map(\.expected))
+        let syncer = h.syncer
+        let tasks = opens.map { open in Task { try await syncer.body(for: open.message) } }
+        var outcomes: [Opened] = []
+        for (task, open) in zip(tasks, opens) {
+            do {
+                let body = try await within(5) { try await task.value }
+                outcomes.append(body == open.expected ? .whole : everyBody.contains(body) ? .anotherMessage : .broken)
+            } catch is TimedOut {
+                task.cancel()
+                outcomes.append(.hung)
+            } catch {
+                outcomes.append(.broken)
             }
         }
-        for (i, open) in opens.enumerated() {
-            XCTAssertEqual(bodies[i], open.expected, "open \(i) got another message's body or a broken one")
+        return outcomes
+    }
+
+    func testConcurrentOpensReturnIntactBodiesAndNoneHangs() async throws {
+        let logins = harness.server.loginCount
+        for round in 1...20 {
+            let outcomes = try await openTwelveAtOnce(harness)
+            XCTAssertEqual(outcomes, Array(repeating: .whole, count: 12), "round \(round)")
         }
-        XCTAssertEqual(harness.server.loginCount, 2, "one sync connection for the setup and one op connection for every open")
+        XCTAssertEqual(harness.server.loginCount, logins + 1, "one op connection for every open of every round")
+    }
+
+    func testWithoutTheTurnConcurrentOpensMixUpTheirReplies() async throws {
+        let h = try await account(turns: .none)
+        var outcomes: [Opened] = []
+        for _ in 1...10 where outcomes.allSatisfy({ $0 == .whole }) {
+            outcomes = try await openTwelveAtOnce(h)
+        }
+        XCTAssertTrue(outcomes.contains { $0 != .whole },
+                      "with nothing keeping two conversations apart on one connection, opens get another's reply, a broken one or none")
+    }
+
+    func testWithoutTheUnitAnOpenGetsTheOtherFoldersMessage() async throws {
+        let h = try await account(turns: .perCommand)
+        var outcomes: [Opened] = []
+        for _ in 1...10 where !outcomes.contains(.anotherMessage) {
+            outcomes = try await openTwelveAtOnce(h)
+        }
+        XCTAssertTrue(outcomes.contains(.anotherMessage),
+                      "with another folder selected between an open's SELECT and its FETCH, the open gets the message with its UID there: \(outcomes)")
+    }
+
+    private struct ArchiveDuringOpen {
+        var archivedTheRightMessage: Bool
+        var movedTheOpenMessage: Bool
+        var opened: Data?
+    }
+
+    /// Archives INBOX's message with a UID that Sent has too, and while its SELECT of INBOX is on
+    /// its way opens Sent's message with that UID: a MOVE run with Sent selected takes the
+    /// message being opened instead.
+    private func archiveDuringAnOpen(_ h: EngineHarness, uid: UInt32) async throws -> ArchiveDuringOpen {
+        let server = h.server
+        let inboxData = FakeIMAPServer.message("inbox-\(uid)")
+        let sentData = FakeIMAPServer.message("sent-\(uid)")
+        server.add(inboxData, to: "INBOX", uid: uid)
+        server.add(sentData, to: "[Gmail]/Sent Mail", uid: uid)
+        try await h.syncOnce()
+        await h.syncer.setUndoWindow(0)
+        let inboxMessage = try await h.message(uid: uid, in: "INBOX")
+        let sentMessage = try await h.message(uid: uid, in: "[Gmail]/Sent Mail")
+        server.resetCounters()
+
+        server.stallNext("SELECT", seconds: 0.3)
+        let syncer = h.syncer
+        _ = try await syncer.archive([inboxMessage])
+        await assertEventually { server.commands.contains { $0.contains("SELECT \"INBOX\"") } }
+        let open = Task { try await syncer.body(for: sentMessage) }
+        let opened = try? await within(10) { try await open.value }
+        await assertEventually { await h.pending.all().isEmpty }
+        let archived = server.messages(in: "[Gmail]/All Mail").map(\.data)
+        return ArchiveDuringOpen(archivedTheRightMessage: archived.contains(inboxData) && !server.messages(in: "INBOX").contains { $0.data == inboxData },
+                                 movedTheOpenMessage: archived.contains(sentData) || !server.messages(in: "[Gmail]/Sent Mail").contains { $0.data == sentData },
+                                 opened: opened)
     }
 
     func testArchiveCommittedDuringAnOpenInAnotherFolderLandsInTheRightMailbox() async throws {
-        let server = harness.server
-        // The same UID in both folders: a MOVE run in the wrong mailbox takes the wrong message.
-        server.add(FakeIMAPServer.message("inbox-42"), to: "INBOX", uid: 42)
-        server.add(FakeIMAPServer.message("sent-42"), to: "[Gmail]/Sent Mail", uid: 42)
-        try await harness.syncOnce()
-        await harness.syncer.setUndoWindow(0)
-        let inboxMessage = try await harness.message(uid: 42, in: "INBOX")
-        let sentMessage = try await harness.message(uid: 42, in: "[Gmail]/Sent Mail")
+        for round in UInt32(1)...10 {
+            let uid = 100 + round
+            let outcome = try await archiveDuringAnOpen(harness, uid: uid)
+            XCTAssertTrue(outcome.archivedTheRightMessage, "round \(round): the archived message is in All Mail")
+            XCTAssertFalse(outcome.movedTheOpenMessage, "round \(round): the message open in Sent stays where it is")
+            XCTAssertEqual(outcome.opened, FakeIMAPServer.message("sent-\(uid)"), "round \(round)")
+        }
+    }
 
-        server.stallNext("UID FETCH", seconds: 0.4)
-        let syncer = harness.syncer
-        let open = Task { try await syncer.body(for: sentMessage) }
-        await assertEventually { server.commands.contains { $0.contains("UID FETCH 42") } }
-        _ = try await syncer.archive([inboxMessage])
-        let body = try await within(10) { try await open.value }
-        XCTAssertEqual(body, FakeIMAPServer.message("sent-42"))
-
-        await assertEventually { !server.messages(in: "INBOX").contains { $0.data == FakeIMAPServer.message("inbox-42") } }
-        XCTAssertTrue(server.messages(in: "[Gmail]/Sent Mail").contains { $0.data == FakeIMAPServer.message("sent-42") },
-                      "the message open in Sent must stay where it is")
-        XCTAssertTrue(server.messages(in: "[Gmail]/All Mail").contains { $0.data == FakeIMAPServer.message("inbox-42") })
-        XCTAssertFalse(server.messages(in: "[Gmail]/All Mail").contains { $0.data == FakeIMAPServer.message("sent-42") })
+    func testWithoutTheUnitAnArchiveDuringAnOpenMovesTheWrongMessage() async throws {
+        let h = try await account(turns: .perCommand)
+        var outcomes: [ArchiveDuringOpen] = []
+        for round in UInt32(1)...5 where !outcomes.contains(where: \.movedTheOpenMessage) {
+            outcomes.append(try await archiveDuringAnOpen(h, uid: 100 + round))
+        }
+        let wrong = try XCTUnwrap(outcomes.last)
+        XCTAssertTrue(wrong.movedTheOpenMessage, "with Sent selected between the archive's SELECT and its MOVE, the MOVE takes Sent's message")
+        XCTAssertFalse(wrong.archivedTheRightMessage, "and leaves the one archived in INBOX")
     }
 
     func testUIDValidityChangeBetweenQueueAndRunCancelsTheAction() async throws {
