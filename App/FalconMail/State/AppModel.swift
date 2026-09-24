@@ -584,6 +584,9 @@ final class AppModel {
         listeners.append(Task { [weak self] in
             guard let self else { return }
             for await event in self.coordinator.events {
+                // The sync error and No new messages sounds follow the engine's own view of each
+                // account, so a quiet reconnect or a pause it keeps on purpose plays nothing.
+                self.play(self.soundGate.hear(event, uptime: ProcessInfo.processInfo.systemUptime, now: Date()))
                 switch event {
                 case .started(let id):
                     self.syncingAccounts.insert(id)
@@ -593,17 +596,14 @@ final class AppModel {
                     self.statusText = text
                 case .finished(let id):
                     self.syncingAccounts.remove(id)
-                    self.soundGate.syncSucceeded(id)
                     self.statusText = "Up to date"
                     self.noteUnreadableFiles()
                     await self.refreshBandwidth()
-                case .checked(let id, let found):
-                    self.play(self.soundGate.checkFinished(id, foundNewMail: found, at: Date()))
+                case .checked: break
                 case .error(let id, let message):
                     self.syncingAccounts.remove(id)
                     self.statusText = message
                     self.accountStatus.apply(event)
-                    self.play(self.soundGate.syncFailed(id, uptime: ProcessInfo.processInfo.systemUptime))
                     self.noteUnreadableFiles()
                 case .problem(_, let message): self.statusText = message
                 case .actionFailed(_, let message): self.showActionError(message)
@@ -611,6 +611,7 @@ final class AppModel {
                     self.accountStatus.apply(event)
                     self.online[id] = health.isReachable
                     if health == .needsSignIn { self.accountsNeedingSignIn.insert(id) } else { self.accountsNeedingSignIn.remove(id) }
+                    if health.isFailing { self.soundIfFailureLasts(id) }
                 case .newMessages(let id, let folderID, let list):
                     self.announce(list, accountID: id, folderID: folderID)
                 case .folderSynced: break
@@ -654,6 +655,16 @@ final class AppModel {
 
     private func play(_ sound: MailSoundEvent?) {
         if let sound { SoundLibrary.play(sound) }
+    }
+
+    /// An account the engine says cannot sync may say nothing more by itself, as one waiting to
+    /// be signed in again does, so the gate is asked once more when its failure may have lasted.
+    private func soundIfFailureLasts(_ id: UUID) {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((MailSoundGate.lastingFailure + 1) * 1_000_000_000))
+            guard let self, self.accounts.contains(where: { $0.id == id && $0.isEnabled }) else { return }
+            self.play(self.soundGate.failureLasted(id, uptime: ProcessInfo.processInfo.systemUptime))
+        }
     }
 
     func setNotifyMode(_ mode: NotifyMode, for accountID: UUID) {

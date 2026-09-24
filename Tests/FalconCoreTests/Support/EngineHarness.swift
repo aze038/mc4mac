@@ -123,6 +123,8 @@ actor EventLog {
     /// The text of the marker `EngineHarness.settled` sends through the stream; never logged.
     static let marker = "\u{0}settled"
     private(set) var all: [SyncEvent] = []
+    /// When each of `all` arrived, as the app would have heard it.
+    private(set) var arrivals: [Date] = []
     private var markersArrived: Set<UUID> = []
     private var markersAwaited: [UUID: CheckedContinuation<Void, Never>] = [:]
 
@@ -132,6 +134,11 @@ actor EventLog {
             return
         }
         all.append(e)
+        arrivals.append(Date())
+    }
+
+    var timed: [(event: SyncEvent, at: Date)] {
+        zip(all, arrivals).map { (event: $0, at: $1) }
     }
 
     /// Returns once the marker `id` has come through the stream.
