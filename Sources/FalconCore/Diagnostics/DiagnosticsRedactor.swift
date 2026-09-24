@@ -110,7 +110,9 @@ public struct DiagnosticsRedactor: Sendable {
 
     private func takingOut(_ names: [String], from text: String) -> String {
         var forms: [(form: String, name: String)] = []
-        for name in Set(names) where !name.trimmingCharacters(in: .whitespaces).isEmpty && !DiagnosticsRedactor.isStandardMailbox(name) {
+        // An address, such as a refused recipient's, goes by the address rule, with the name beside it.
+        for name in Set(names) where !name.trimmingCharacters(in: .whitespaces).isEmpty && !name.contains("@")
+            && !DiagnosticsRedactor.isStandardMailbox(name) {
             forms.append((name, name))
             let wire = ModifiedUTF7.encode(name)
             if wire != name { forms.append((wire, name)) }

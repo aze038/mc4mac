@@ -314,7 +314,7 @@ public enum DiagnosticsTitle {
         "imap.tooManyConnections": "The mail server refused a connection: other apps were using all it allows",
         "imap.dailyLimit": "Downloads paused: today's safe download limit was reached",
         "imap.uploadLimit": "Uploads paused: today's safe upload limit was reached",
-        "imap.webSignIn": "The mail server wants the account signed in to in a web browser first",
+        "imap.webSignIn": "The mail server wants a sign-in in a web browser first",
         "sync.dailyLimit": "Offline copies paused: today's safe download limit was reached",
         "sync.folderListUnreadable": "Syncing stopped: the folder list kept on this Mac could not be read",
         "store.setAside": "A file FalconMail keeps could not be read, so it was set aside and kept",
@@ -356,7 +356,7 @@ public enum DiagnosticsTitle {
         case "drive": return "Using Google Drive"
         case "open": return "Opening a message"
         case "search": return "Searching on the server"
-        case "outbox": return "Keeping the Outbox"
+        case "outbox": return "Saving the Outbox"
         case "folders": return "Creating a folder"
         case "older": return "Loading older messages"
         case "save": return "Saving a message on the server"
@@ -411,7 +411,7 @@ public enum DiagnosticsTitle {
         "invalidInput": "a setting or value was not accepted",
         "uploadLimit": "today's safe upload limit was reached",
         "tooManyConnections": "other apps were using all the connections the server allows",
-        "webSignIn": "the server wants the account signed in to in a web browser first",
+        "webSignIn": "the server wants a sign-in in a web browser first",
         "expungeRefused": "another message in the folder was marked for deletion",
         "temporary": "the server had a temporary problem",
         "sendingLimit": "the daily sending limit was reached",

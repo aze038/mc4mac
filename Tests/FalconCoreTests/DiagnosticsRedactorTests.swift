@@ -413,6 +413,11 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertEqual(redactor.redact(out, naming: ["label", "addr"]), out, "naming again changes nothing")
     }
 
+    func testAnAddressHandedOverAsANameStaysAnAddressReference() {
+        let out = redactor.redact("550 5.1.1 <bo.smith@example.org>: Recipient address rejected", naming: ["bo.smith@example.org"])
+        XCTAssertEqual(out, "550 5.1.1 <addr:\(redactor.ref("bo.smith@example.org"))>: Recipient address rejected")
+    }
+
     func testNamesAreTakenOutOfTheContextToo() {
         let context: JSONValue = .object(["health": .string("online"), "where": .string("HR, then Clients/ACME")])
         let out = redactor.redact(context, naming: ["HR", "Clients/ACME"])

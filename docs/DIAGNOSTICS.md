@@ -129,7 +129,7 @@ failed as `health` (`connecting`, `online`, `offline`, `imapPaused`, `needsSignI
 | The server asked FalconMail to slow down (`IMAP.throttled` reads *The mail server paused the connection: too many requests*) | `throttled` | the server asked FalconMail to slow down |
 | The day's download or upload allowance is used | `dailyLimit`, `uploadLimit` | today's safe download (upload) limit was reached |
 | The server allows no more connections | `tooManyConnections` | other apps were using all the connections the server allows |
-| The server wants a sign-in in a web browser | `webSignIn` | the server wants the account signed in to in a web browser first |
+| The server wants a sign-in in a web browser | `webSignIn` | the server wants a sign-in in a web browser first |
 | The connection dropped or stalled | `connectionClosed` | the connection dropped |
 | The sign-in was refused | `notSignedIn` (`wrongPassword` while an account is set up) | the account needs to sign in again |
 | The message was moved or deleted | `messageGone` | the message was no longer there |
