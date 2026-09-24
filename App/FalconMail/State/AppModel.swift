@@ -384,6 +384,7 @@ final class AppModel {
     @ObservationIgnored private var serverSearchDebounce: Task<Void, Never>?
     @ObservationIgnored var serverSearch: ServerSearchRun?
     @ObservationIgnored var gmailClients: [UUID: GmailAPIClient] = [:]
+    @ObservationIgnored var gmailOpeners: [UUID: GmailOpener] = [:]
     /// Rows found only on the server, by id, so a tab or window can show one after the search moves on.
     @ObservationIgnored var serverRows: [String: MessageSummary] = [:]
     /// Messages opened from Gmail, held in memory only and never written to disk.
@@ -708,32 +709,40 @@ final class AppModel {
                 return
             }
             let window = listWindow
-            switch selection {
+            let shown = selection
+            let loaded: [MessageSummary]
+            let stored: Int
+            switch shown {
             case .unified:
-                messages = try await store.unifiedInbox(limit: window)
-                storedInSelection = try await store.unifiedCount()
+                loaded = try await store.unifiedInbox(limit: window)
+                stored = try await store.unifiedCount()
             case .smart(let kind):
                 let scope = kind.scope
-                messages = try await store.unifiedInbox(limit: window, scope: scope)
-                storedInSelection = try await store.unifiedCount(scope: scope)
+                loaded = try await store.unifiedInbox(limit: window, scope: scope)
+                stored = try await store.unifiedCount(scope: scope)
             case .folder(let id):
-                messages = try await store.messages(in: id, limit: window)
-                storedInSelection = try await store.storedCount(in: id)
+                loaded = try await store.messages(in: id, limit: window)
+                stored = try await store.storedCount(in: id)
             default:
-                messages = []
-                storedInSelection = 0
+                loaded = []
+                stored = 0
             }
+            // A search submitted, or another mailbox chosen, while the store was read has its own
+            // rows on screen by now, and they are not to be replaced with this mailbox's.
+            guard submittedSearchQuery == nil, selection == shown else { return }
+            messages = loaded
+            storedInSelection = stored
             rebuildThreads()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func matchesNeedle(_ message: MessageSummary) -> Bool {
-        if message.subject.localizedCaseInsensitiveContains(liveSearchNeedle) { return true }
-        if message.from.name.localizedCaseInsensitiveContains(liveSearchNeedle) { return true }
-        if message.from.address.localizedCaseInsensitiveContains(liveSearchNeedle) { return true }
-        return message.snippet.localizedCaseInsensitiveContains(liveSearchNeedle)
+    private func matches(_ message: MessageSummary, _ needle: String) -> Bool {
+        if message.subject.localizedCaseInsensitiveContains(needle) { return true }
+        if message.from.name.localizedCaseInsensitiveContains(needle) { return true }
+        if message.from.address.localizedCaseInsensitiveContains(needle) { return true }
+        return message.snippet.localizedCaseInsensitiveContains(needle)
     }
 
     private var visibleMessages: [MessageSummary] {
@@ -745,7 +754,7 @@ final class AppModel {
             list = list.filter { isFocused($0) == (focusedTab == .focused) }
         }
         guard !liveSearchNeedle.isEmpty else { return list }
-        return list.filter { matchesNeedle($0) }
+        return list.filter { matches($0, liveSearchNeedle) }
     }
 
     /// Mail from someone in the address book, or addressed to the reader by name, counts as Focused.
@@ -789,6 +798,7 @@ final class AppModel {
         serverSearchDebounce = nil
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
+        let needle = liveSearchNeedle
         liveSearchNeedle = ""
         let q = searchText.trimmed
         guard !q.isEmpty else {
@@ -796,6 +806,16 @@ final class AppModel {
             cancelServerSearch()
             await reloadMessages()
             return
+        }
+        // Return after the pause has already asked Gmail would only ask again, at twice the units.
+        if submittedSearchQuery == q, let run = serverSearch {
+            let scopes = searchScopes()
+            if run.status.repeats(query: q, scopes: scopes, viaGmail: gmailAccounts(in: scopes)) { return }
+        }
+        // What typing filtered stays on screen until the first results replace it.
+        if !needle.isEmpty {
+            messages = messages.filter { matches($0, needle) }
+            rebuildThreads()
         }
         submittedSearchQuery = q
         await startSearch(q)

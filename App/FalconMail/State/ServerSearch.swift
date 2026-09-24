@@ -1,27 +1,28 @@
 import Foundation
 import FalconCore
 
-/// One submitted search: each account's share of it, which accounts have more to show, and why
-/// any account's results come from this Mac instead of Gmail.
+/// One submitted search: each account's share of it and where it stands.
 @MainActor
 final class ServerSearchRun {
-    let query: String
+    var status: MailSearchStatus
+    let scopes: [MailSearchScope]
     var searches: [UUID: any MailAccountSearch] = [:]
-    var hasMore: [UUID: Bool] = [:]
-    var fallbacks: [UUID: (email: String, error: GoogleAPIError)] = [:]
-    var spotlightIDs: [String]?
     var task: Task<Void, Never>?
+    private var spotlight: Task<[String], Never>?
 
-    init(query: String) {
-        self.query = query
+    init(query: String, scopes: [MailSearchScope], viaGmail: Set<UUID>) {
+        status = MailSearchStatus(query: query, scopes: scopes, viaGmail: viaGmail)
+        self.scopes = scopes
     }
 
-    /// One line for every account that fell back, however many there are.
-    var notice: String? {
-        let list = fallbacks.values.sorted { $0.email < $1.email }
-        guard let first = list.first else { return nil }
-        if list.count == 1 || list.allSatisfy({ $0.error.kind == .offline }) { return first.error.searchNotice(email: first.email) }
-        return "Gmail search isn't available for \(list.map(\.email).joined(separator: ", ")) right now; showing matches on this Mac."
+    var query: String { status.query }
+
+    /// Spotlight's matches for the query, asked for once however many accounts need them.
+    func spotlightIDs(_ indexer: SpotlightIndexer) async -> [String] {
+        let query = status.query
+        let running = spotlight ?? Task { await indexer.search(query) }
+        spotlight = running
+        return await running.value
     }
 }
 
@@ -39,6 +40,14 @@ extension AppModel {
         let client = GmailAPIClient(api: GoogleAPI(tokens: tokens, accountID: accountID))
         gmailClients[accountID] = client
         return client
+    }
+
+    func gmailOpener(for accountID: UUID) -> GmailOpener? {
+        guard let client = gmailClient(for: accountID) else { return nil }
+        if let opener = gmailOpeners[accountID] { return opener }
+        let opener = GmailOpener(client: client)
+        gmailOpeners[accountID] = opener
+        return opener
     }
 
     /// Where a search looks, from the Search settings: every mailbox, the current account, or the
@@ -64,36 +73,49 @@ extension AppModel {
         }
     }
 
+    /// The accounts in these scopes that search through Gmail rather than on this Mac.
+    func gmailAccounts(in scopes: [MailSearchScope]) -> Set<UUID> {
+        Set(scopes.filter { usesGmailAPI($0.account) }.map(\.account.id))
+    }
+
     /// Runs a submitted search. Each account answers on its own and its first page shows the
-    /// moment it arrives, merged with the others by date.
+    /// moment it arrives, merged with the others by date. The rows on screen stay until then, so
+    /// the list never goes blank while Gmail is asked.
     func startSearch(_ query: String) async {
         cancelServerSearch()
-        let run = ServerSearchRun(query: query)
+        let scopes = searchScopes()
+        let viaGmail = gmailAccounts(in: scopes)
+        let run = ServerSearchRun(query: query, scopes: scopes, viaGmail: viaGmail)
         serverSearch = run
-        forgetServerRows()
-        messages = []
-        searchNotice = nil
-        searchHasMore = false
-        rebuildThreads()
         let includeDeleted = Preferences.bool("searchIncludeDeleted", default: true)
-        for scope in searchScopes() {
-            if usesGmailAPI(scope.account), let client = gmailClient(for: scope.account.id) {
+        for scope in scopes {
+            if viaGmail.contains(scope.account.id), let client = gmailClient(for: scope.account.id) {
                 run.searches[scope.account.id] = GmailAccountSearch(client: client, store: store, scope: scope, query: query,
                                                                     includeSpamTrash: scope.folder == nil && includeDeleted)
             } else {
                 run.searches[scope.account.id] = LocalAccountSearch(store: store, scope: scope, query: query)
             }
         }
-        isSearching = !run.searches.isEmpty
+        guard !run.searches.isEmpty else {
+            messages = []
+            rebuildThreads()
+            return
+        }
+        // Spotlight runs alongside Gmail rather than after it for accounts known to search here.
+        if run.searches.values.contains(where: { $0 is LocalAccountSearch }) {
+            Task { _ = await run.spotlightIDs(indexer) }
+        }
+        isSearching = true
         await fetchPages(of: Array(run.searches.keys), in: run)
         if serverSearch === run { isSearching = false }
     }
 
     /// The next page from every account that has more, for "Show more" and for reaching the end
-    /// of the list.
+    /// of the list. A second request while one is loading is ignored, so a click and the last row
+    /// scrolling in never fetch the same page twice.
     func loadMoreSearchResults() {
-        guard let run = serverSearch, run.task == nil, !isSearching else { return }
-        let waiting = run.hasMore.filter(\.value).map(\.key)
+        guard let run = serverSearch, run.task == nil, !isSearching, !isLoadingMoreResults else { return }
+        let waiting = run.status.accountsWithMore
         guard !waiting.isEmpty else { return }
         isLoadingMoreResults = true
         Task { await fetchPages(of: waiting, in: run) }
@@ -115,7 +137,7 @@ extension AppModel {
                 for search in searches { group.addTask { await search.nextPage() } }
                 for await page in group {
                     guard !Task.isCancelled, let self else { continue }
-                    await self.absorb(page, into: run)
+                    self.absorb(page, into: run)
                     if self.serverSearch === run { self.isSearching = false }
                 }
             }
@@ -127,31 +149,51 @@ extension AppModel {
         isLoadingMoreResults = false
     }
 
-    private func absorb(_ page: MailSearchPage, into run: ServerSearchRun) async {
-        var rows = page.messages
-        if page.isLocal { rows += await spotlightHits(for: page.accountID, in: run) }
+    private func absorb(_ page: MailSearchPage, into run: ServerSearchRun) {
         guard serverSearch === run else { return }
-        run.hasMore[page.accountID] = page.hasMore
+        let email = accountName(page.accountID)
+        let first = run.status.pagesReceived == 0
+        run.status.record(page, email: email)
         if let error = page.fallback {
-            let email = accountName(page.accountID)
-            run.fallbacks[page.accountID] = (email, error)
             Log.info("search", "\(email) searched on this Mac: \(error.kind.rawValue) \(error.httpStatus) \(error.reason ?? "-") \(error.detail)")
+        } else if let error = page.paused {
+            Log.info("search", "\(email) paused by Gmail after \(page.messages.count) rows: \(error.kind.rawValue) \(error.httpStatus) \(error.reason ?? "-") \(error.detail)")
         }
+        if first {
+            forgetServerRows()
+            messages = []
+        }
+        show(page.messages, in: run)
+        if page.isLocal { addSpotlightHits(for: page.accountID, in: run) }
+    }
+
+    private func show(_ rows: [MessageSummary], in run: ServerSearchRun) {
         for row in rows where row.isServerOnly { serverRows[row.id] = row }
         messages = MailSearchResults.merge(messages, rows)
-        searchNotice = run.notice
-        searchHasMore = run.hasMore.values.contains(true)
+        searchNotice = run.status.notice
+        searchHasMore = run.status.anyMore
         rebuildThreads()
+    }
+
+    /// Spotlight's matches join the list when they come, so a slow Spotlight query never holds
+    /// back another account's page.
+    private func addSpotlightHits(for accountID: UUID, in run: ServerSearchRun) {
+        Task { [weak self] in
+            guard let self else { return }
+            let rows = await self.spotlightHits(for: accountID, in: run)
+            guard self.serverSearch === run, !rows.isEmpty else { return }
+            self.show(rows, in: run)
+        }
     }
 
     /// Spotlight matches message text the store's own index may not hold, for accounts searched
     /// on this Mac, as the local search always did.
     private func spotlightHits(for accountID: UUID, in run: ServerSearchRun) async -> [MessageSummary] {
-        if run.spotlightIDs == nil { run.spotlightIDs = await indexer.search(run.query) }
+        let ids = await run.spotlightIDs(indexer)
         let prefix = accountID.uuidString + ":"
-        let scopeFolder = searchScopes().first { $0.account.id == accountID }?.folder
+        let scopeFolder = run.scopes.first { $0.account.id == accountID }?.folder
         var out: [MessageSummary] = []
-        for id in run.spotlightIDs ?? [] where id.hasPrefix(prefix) {
+        for id in ids where id.hasPrefix(prefix) {
             guard let m = try? await store.message(id: id) else { continue }
             if let scopeFolder, scopeFolder.role != .all, m.folderID != scopeFolder.id { continue }
             out.append(m)
@@ -187,25 +229,32 @@ extension AppModel {
 
     // MARK: - Opening messages found only on the server
 
-    /// The text of a message found only on the server, fetched into memory. Its attachments are
-    /// fetched only when opened, saved or forwarded.
+    /// The text of a message found only on the server, for Reply and Forward, which the reader
+    /// asked for, so a refusal is told as an alert.
     func serverBody(for message: MessageSummary) async -> MIMEMessage? {
-        if let opened = openedServerMessages[message.id] { return opened.message }
-        guard let reference = GmailServerRow.reference(from: message.id) else { return nil }
-        guard let client = gmailClient(for: reference.accountID) else {
-            errorMessage = GoogleAPIError(kind: .offline).localizedDescription
-            return nil
-        }
         do {
-            let opened = try await client.openText(id: reference.gmailID)
-            remember(opened, for: message.id)
-            return opened.message
+            return try await openServerMessage(message)
         } catch is CancellationError {
             return nil
         } catch {
-            reportServerError(error, accountID: reference.accountID, doing: "open")
+            reportServerError(error, accountID: message.accountID, doing: "open")
             return nil
         }
+    }
+
+    /// Opens a message found only on the server into memory: its text now, its attachments only
+    /// when opened, saved or forwarded. A refusal is thrown as `GoogleAPIError` for the caller to
+    /// show where it belongs.
+    func openServerMessage(_ message: MessageSummary) async throws -> MIMEMessage {
+        if let opened = openedServerMessages[message.id] { return opened.message }
+        guard let reference = GmailServerRow.reference(from: message.id) else {
+            throw GoogleAPIError(kind: .other, detail: "not a row found on the server")
+        }
+        guard let opener = gmailOpener(for: reference.accountID) else { throw GoogleAPIError(kind: .offline) }
+        let opened = try await opener.openText(id: reference.gmailID)
+        // Inline pictures fetched meanwhile by another caller are kept.
+        if openedServerMessages[message.id] == nil { remember(opened, for: message.id) }
+        return openedServerMessages[message.id]?.message ?? opened.message
     }
 
     /// The same text with the small pictures it shows inline, or nil when there are none to fetch.
@@ -223,12 +272,7 @@ extension AppModel {
 
     /// Attachments to list under the header: everything except pictures the text shows inline.
     func serverAttachments(for message: MessageSummary) -> [GmailAttachmentStub] {
-        guard let opened = openedServerMessages[message.id] else { return [] }
-        let html = opened.message.textHTML?.lowercased() ?? ""
-        return opened.attachments.filter { stub in
-            guard let cid = stub.contentID else { return true }
-            return !html.contains("cid:" + cid.lowercased())
-        }
+        openedServerMessages[message.id]?.listedAttachments ?? []
     }
 
     func serverAttachmentData(_ message: MessageSummary, _ stub: GmailAttachmentStub) async -> Data? {
@@ -247,12 +291,12 @@ extension AppModel {
         }
     }
 
-    /// A forward carries the original's attachments, so a message found only on the server has
-    /// them fetched first.
+    /// A forward carries the original's attachments and the pictures its text refers to, so a
+    /// message found only on the server has them all fetched first.
     func parsedBodyForForwarding(_ message: MessageSummary) async -> MIMEMessage? {
         let parsed = await parsedBody(for: message)
         guard message.isServerOnly, var opened = openedServerMessages[message.id] else { return parsed }
-        for stub in serverAttachments(for: message) {
+        for stub in opened.unfetchedAttachments {
             guard let data = await serverAttachmentData(message, stub) else { continue }
             opened.add(data, for: stub)
         }

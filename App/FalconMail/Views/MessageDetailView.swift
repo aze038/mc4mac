@@ -22,9 +22,12 @@ struct MessageReaderView: View {
     @State private var hasRemote = false
     @State private var showDetails = false
     @State private var originalColours = false
+    /// Why a message found only on the server could not be fetched, shown in place of its text.
+    @State private var serverProblem: String?
+    @State private var attempt = 0
     @Environment(\.colorScheme) private var colorScheme
 
-    private var renderKey: String { "\(message.id)|\(allowRemoteImages)|\(model.loadRemoteImages)|\(originalColours)|\(colorScheme == .dark)" }
+    private var renderKey: String { "\(message.id)|\(allowRemoteImages)|\(model.loadRemoteImages)|\(originalColours)|\(colorScheme == .dark)|\(attempt)" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -245,7 +248,24 @@ struct MessageReaderView: View {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                Text(message.snippet).foregroundStyle(.secondary).padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 12) {
+                    if let serverProblem {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "exclamationmark.circle")
+                            Text(serverProblem).fixedSize(horizontal: false, vertical: true)
+                            Button("Try Again") {
+                                self.serverProblem = nil
+                                attempt += 1
+                            }
+                            .buttonStyle(.link)
+                        }
+                        .font(.system(size: OL.statusFont))
+                        .foregroundStyle(OLColor.textMuted)
+                    }
+                    Text(message.snippet).foregroundStyle(.secondary)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -253,7 +273,7 @@ struct MessageReaderView: View {
     private func load() async {
         if parsed == nil {
             loading = true
-            parsed = await model.parsedBody(for: message)
+            parsed = message.isServerOnly ? await openFromServer() : await model.parsedBody(for: message)
             loading = false
         }
         guard let parsed else { return }
@@ -263,6 +283,21 @@ struct MessageReaderView: View {
             self.parsed = richer
             await render(richer)
         }
+    }
+
+    /// Gmail's refusal shows as a line in the pane instead of an alert, so moving through results
+    /// while Gmail is busy never stacks up alerts.
+    private func openFromServer() async -> MIMEMessage? {
+        do {
+            let body = try await model.openServerMessage(message)
+            serverProblem = nil
+            return body
+        } catch let error as GoogleAPIError {
+            serverProblem = error.localizedDescription
+        } catch {
+            // Cancelled: the reader moved on before the fetch began or ended.
+        }
+        return nil
     }
 
     private func render(_ parsed: MIMEMessage) async {
