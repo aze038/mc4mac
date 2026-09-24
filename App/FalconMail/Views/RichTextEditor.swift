@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import FalconCore
 
 struct RichTextEditor: NSViewRepresentable {
     @Binding var rtf: Data?
@@ -10,14 +11,16 @@ struct RichTextEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
-        let text = ComposeTextView(frame: .zero)
         let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true
-        let layout = NSLayoutManager()
+        // Draws the marks ¶ shows, which are never part of the text that is saved or sent.
+        let layout = FormattingMarksLayoutManager()
         let storage = NSTextStorage()
         storage.addLayoutManager(layout)
         layout.addTextContainer(container)
-        text.replaceTextContainer(container)
+        // Made on this text system from the start: a container put into a view made without one
+        // joins the view's own layout manager, and this one would never draw.
+        let text = ComposeTextView(frame: .zero, textContainer: container)
         text.autoresizingMask = [.width]
         text.isVerticallyResizable = true
         text.isHorizontallyResizable = false

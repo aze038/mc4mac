@@ -4,8 +4,9 @@ import AppKit
 import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
-/// Table picker idle and with a size and text to convert, the address suggestions over a
-/// compose window's header, the alert on closing an unsent message, the main window's Home ribbon,
+/// ribbon over a body with ¶ showing its marks, the Table picker idle and with a size and text to
+/// convert, the address suggestions over a compose window's header, the alert on closing an
+/// unsent message, the main window's Home ribbon,
 /// which shares the compose ribbon's tiles, the Settings window's icon grid, its Signatures pane
 /// with two stand-in signatures, with none and with its notice of a damaged file set aside, its
 /// Notifications and Sounds pane and every other pane, and a signature's editor window for a
@@ -29,6 +30,8 @@ enum ComposeSnapshot {
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")
+            render(composeWithMarks(), size: NSSize(width: OL.composeWindowWidth, height: 380), appearance: appearance,
+                   to: "\(directory)/compose-marks-\(name).png")
             let menu = NSSize(width: TableGrid.width, height: 272)
             render(picker(hovering: nil, converts: false), size: menu, appearance: appearance, to: "\(directory)/table-\(name).png")
             render(picker(hovering: TableSize(columns: 3, rows: 4), converts: true), size: menu, appearance: appearance,
@@ -175,6 +178,32 @@ enum ComposeSnapshot {
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
             OLColor.sidebar
         }
+    }
+
+    /// The ribbon over the body a compose window writes in, ¶ turned on through the formatter
+    /// before the body is attached to it, as when SwiftUI makes a body again: the button lit and
+    /// the body's paragraph ends, spaces and tabs marked.
+    @MainActor private static func composeWithMarks() -> some View {
+        let formatter = TextFormatter()
+        formatter.toggleFormattingMarks()
+        let body = NSMutableAttributedString(string: "Hello Sam,\n\nThe figures for this week are below.\n", attributes: RichText.bodyAttributes)
+        body.append(NSAttributedString(string: "North\t1,240\nSouth\t985\n\n", attributes: RichText.bodyAttributes))
+        body.append(NSAttributedString(string: "The full report is at ", attributes: RichText.bodyAttributes))
+        body.append(NSAttributedString(string: "example.com", attributes: RichText.bodyAttributes.merging([
+            .link: URL(string: "https://example.com")!]) { $1 }))
+        body.append(NSAttributedString(string: ".\n\nBest wishes,\nAlex", attributes: RichText.bodyAttributes))
+        return VStack(spacing: 0) {
+            OLColor.chrome.frame(height: OL.titleRow)
+            ComposeRibbon(tab: .constant(.message), formatter: formatter, showsBcc: .constant(false),
+                          importance: .constant("normal"), canSend: false, onSend: {}, onAttachFile: {},
+                          onAttachFromDrive: {}, signatures: [], onInsertSignature: { _ in }, onEditSignatures: {},
+                          onInsertTableDialog: {}, onCycleBackground: {})
+            Rectangle().fill(OLColor.chromeLine).frame(height: 1)
+            RichTextEditor(rtf: .constant(RichText.rtf(from: body)), plain: .constant(body.string)) { view in
+                Task { @MainActor in formatter.attach(view) }
+            }
+        }
+        .background(OLColor.reading)
     }
 
     @MainActor private static func picker(hovering size: TableSize?, converts: Bool) -> some View {

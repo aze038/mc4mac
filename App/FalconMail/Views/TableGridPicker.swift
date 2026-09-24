@@ -47,7 +47,9 @@ enum TableGrid {
     static let litLine = OLColor.unread
     static let separator = OLColor.dynamic(light: 0xD9D9D9, dark: 0x464646)
     static let iconGrey = OLColor.dynamic(light: 0x5A5A5A, dark: 0xD4D4D4)
-    static let iconBlue = OLColor.dynamic(light: 0x2F78C4, dark: 0x5698D6)
+    /// The capture's 0x5698D6 is in its screen's profile, which is Display P3's; this is the
+    /// same blue in sRGB.
+    static let iconBlue = OLColor.dynamic(light: 0x2F78C4, dark: 0x3B9ADB)
 }
 
 /// The size the grid is showing, shared by the pointer and the arrow keys.

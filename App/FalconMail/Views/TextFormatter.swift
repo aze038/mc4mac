@@ -24,6 +24,9 @@ final class TextFormatter {
     private(set) var alignment = NSTextAlignment.natural
     var textColour = Color.primary
     var highlight = Color.yellow
+    /// ¶ is on. The marks are only drawn over the body, so the text that is saved and sent
+    /// never holds them.
+    private(set) var showsFormattingMarks = false
 
     static let families: [String] = {
         let common = ["System", "Aptos", "Helvetica Neue", "Arial", "Times New Roman", "Georgia", "Courier New", "Menlo", "Verdana"]
@@ -53,6 +56,9 @@ final class TextFormatter {
             compose.onSelectionChange = { [weak self] in self?.selectionChanged() }
             compose.onMouseSelection = { [weak self] in self?.paintFormat() }
         }
+        // SwiftUI can make the body's text view again while the formatter lives on, and the new
+        // one should show ¶ as the ribbon does.
+        (view.layoutManager as? FormattingMarksLayoutManager)?.showsMarks = showsFormattingMarks
         selectionChanged()
     }
 
@@ -221,18 +227,11 @@ final class TextFormatter {
         editor.didChangeText()
     }
 
-    func cycleLineSpacing() {
-        guard let editor, let storage = editor.textStorage else { return }
-        let range = (editor.string as NSString).paragraphRange(for: effectiveRange())
-        guard range.length > 0 else { return }
-        let existing = (storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?.lineHeightMultiple ?? 1
-        let next: CGFloat = existing < 1.15 ? 1.5 : (existing < 1.75 ? 2 : 1)
-        storage.enumerateAttribute(.paragraphStyle, in: range) { value, sub, _ in
-            let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
-            style.lineHeightMultiple = next
-            storage.addAttribute(.paragraphStyle, value: style, range: sub)
-        }
-        editor.didChangeText()
+    /// ¶: shows or hides the marks for what does not print, as Outlook's does, leaving the text
+    /// itself and its undo history alone.
+    func toggleFormattingMarks() {
+        showsFormattingMarks.toggle()
+        (editor?.layoutManager as? FormattingMarksLayoutManager)?.showsMarks = showsFormattingMarks
     }
 
     func align(_ alignment: NSTextAlignment) {

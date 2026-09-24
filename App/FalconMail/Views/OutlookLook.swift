@@ -192,6 +192,9 @@ enum OLColor {
     static let fieldBorder = dynamic(light: 0xC8C8C8, dark: 0x343434)
     static let fieldBandLine = dynamic(light: 0xB8B8B8, dark: 0x585858)
     static let hover = Color.primary.opacity(0.08)
+    /// The square behind a format button that is on, as Outlook's compose ribbon puts one behind
+    /// its chosen alignment.
+    static let ribbonChosen = dynamic(light: 0xDADADA, dark: 0x4E4E4D)
 
     // Ribbon icon accents, the colours Outlook draws into its otherwise grey glyphs.
     static let replyPurple = dynamic(light: 0x8E44AD, dark: 0xB56AD8)

@@ -8,7 +8,8 @@ import AppKit
 /// current one, would get the new ones. These are the old ones drawn to Outlook's pixels. The
 /// dark colours were read off captures of Outlook's windows at 2x, over a wallpaper that tints
 /// them slightly blue as macOS does; the light ones are the same surfaces in the system's light
-/// colours.
+/// colours. The captures are in Display P3, so their blues are converted to the sRGB these values
+/// are read in; the greys, tinted or not, move by a unit at most and are kept as read.
 enum Classic {
     static func colour(light: Int, dark: Int) -> Color { OLColor.dynamic(light: light, dark: dark) }
 
@@ -43,12 +44,14 @@ enum Classic {
     static let boxBorder = colour(light: 0xCACACA, dark: 0x444651)
 
     // Checkboxes and radio buttons: the accent when on, from the top of the box to the bottom.
-    static let onTop = nsColour(light: 0x2A8BFF, dark: 0x3267DD)
-    static let onBottom = nsColour(light: 0x0A6FF0, dark: 0x2D5DC7)
+    // The captures' 0x3267DD and 0x2D5DC7, and below the mark's 0xDEE7F7 and the small cap's
+    // 0x6A95E8, are Display P3; these are the same colours in sRGB.
+    static let onTop = nsColour(light: 0x2A8BFF, dark: 0x1769E5)
+    static let onBottom = nsColour(light: 0x0A6FF0, dark: 0x155ECE)
     static let offTop = nsColour(light: 0xFFFFFF, dark: 0x4B4D57)
     static let offBottom = nsColour(light: 0xFFFFFF, dark: 0x676871)
     static let offRim = nsColour(light: 0xB9B9B9, dark: 0x6D6E76)
-    static let mark = nsColour(light: 0xFFFFFF, dark: 0xDEE7F7)
+    static let mark = nsColour(light: 0xFFFFFF, dark: 0xDCE7F9)
     static let controlShadow = nsColour(light: 0xC8C8C8, dark: 0x22242E)
 
     // Pop-ups and push buttons.
@@ -60,7 +63,7 @@ enum Classic {
     static let smallCapRingTop = nsColour(light: 0xC8C8C8, dark: 0x51535B)
     static let smallCapRingBottom = nsColour(light: 0xB4B4B4, dark: 0x47484F)
     static let smallCapShade = nsColour(light: 0xCFCFCF, dark: 0x55575F)
-    static let smallCapTop = nsColour(light: 0x5AA2FF, dark: 0x6A95E8)
+    static let smallCapTop = nsColour(light: 0x5AA2FF, dark: 0x5D96EF)
     static let buttonText = nsColour(light: 0x262626, dark: 0xE3E3E4)
 }
 

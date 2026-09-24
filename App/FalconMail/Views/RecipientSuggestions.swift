@@ -273,7 +273,9 @@ enum SuggestionLook {
     static let line = OLColor.dynamic(light: 0xC4C4C4, dark: 0x424242)
     static let header = OLColor.dynamic(light: 0xFFFFFF, dark: 0x1E1E1E)
     static let row = OLColor.dynamic(light: 0xF5F5F5, dark: 0x3C3C3C)
-    static let selected = OLColor.dynamic(light: 0x0064E1, dark: 0x2458CA)
+    /// The capture's 0x2458CA is in its screen's profile, which is Display P3's; in sRGB it is
+    /// this, the system's own dark selection.
+    static let selected = OLColor.dynamic(light: 0x0064E1, dark: 0x0059D1)
     static let text = OLColor.dynamic(light: 0x000000, dark: 0xFFFFFF)
     static let removeGlyph = OLColor.dynamic(light: 0x8C8C8C, dark: 0xB8B8B8)
 }

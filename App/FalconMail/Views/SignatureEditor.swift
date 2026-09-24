@@ -73,7 +73,9 @@ enum SignatureEditorLook {
     static let popupFill = Classic.colour(light: 0xFFFFFF, dark: 0x333333)
     static let popupEdge = Classic.colour(light: 0xC8C8C8, dark: 0x3B3A3B)
     static let chosen = Classic.colour(light: 0xDADADA, dark: 0x4F4E4D)
-    static let accent = Classic.colour(light: 0x2F74C9, dark: 0x5697D7)
+    /// The capture's 0x5697D7 is in Display P3, as it was taken on such a screen; this is the
+    /// same blue in sRGB, the space these values are read in.
+    static let accent = Classic.colour(light: 0x2F74C9, dark: 0x3B99DD)
     static let title = Classic.colour(light: 0x3C3C3C, dark: 0xDFDFDF)
     /// Save, Undo and Redo are white while they can act, as in Outlook's editor.
     static let quick = Classic.colour(light: 0x3C3C3C, dark: 0xFFFFFF)
@@ -86,10 +88,11 @@ enum SignatureEditorLook {
     static let overflow = Classic.colour(light: 0xDCDCDC, dark: 0x0A0A0A)
     static let overflowEdge = Classic.colour(light: 0xC8C8C8, dark: 0x333333)
     static let overflowArrow = Classic.colour(light: 0x6E6E6E, dark: 0x9D9D9D)
-    /// The colours Text colour and Highlight start with, Outlook's red and yellow as its
-    /// capture shows them.
-    static let firstTextColour = Color(red: 0xEB / 255, green: 0x33 / 255, blue: 0x23 / 255)
-    static let firstHighlight = Color(red: 1, green: 1, blue: 0x53 / 255)
+    /// The colours Text colour and Highlight start with, Outlook's pure red and yellow. Its
+    /// Display P3 capture holds them as 0xEB3323 and 0xFFFF53, which read as sRGB would be a
+    /// duller red and a paler yellow than it applies.
+    static let firstTextColour = Color(.sRGB, red: 1, green: 0, blue: 0)
+    static let firstHighlight = Color(.sRGB, red: 1, green: 1, blue: 0)
 
     static let titleRow: CGFloat = 28
 }
@@ -212,8 +215,6 @@ struct SignatureEditorView: View {
 /// Outlook's black strip and arrow at its right end.
 struct SignatureRibbon: View {
     let formatter: TextFormatter
-    /// ¶ only shows what does not print; the signature itself is never changed by it.
-    @State private var showsMarks = false
 
     static let contentWidth: CGFloat = 512
 
@@ -299,12 +300,10 @@ struct SignatureRibbon: View {
             }
                 .at(x: 367, y: 8.5)
             separator(height: 18).at(x: 399, y: 12)
-            FmtButton("paragraphsign", "Show paragraph marks", ink: ink, size: 13, box: 24) {
-                showsMarks.toggle()
-                (formatter.editor?.layoutManager as? SignatureLayoutManager)?.showsMarks = showsMarks
-            }
-            .background(showsMarks ? SignatureEditorLook.chosen : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-            .at(x: 408, y: 9)
+            FmtButton("paragraphsign", "Show paragraph marks", ink: ink, size: 13, box: 24) { formatter.toggleFormattingMarks() }
+                .background(formatter.showsFormattingMarks ? SignatureEditorLook.chosen : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                .accessibilityAddTraits(formatter.showsFormattingMarks ? .isSelected : [])
+                .at(x: 408, y: 9)
 
             FmtButton("bold", "Bold", ink: ink, size: 14, box: 24) { formatter.toggleBold() }.at(x: 93.5, y: 39.75)
             FmtButton("italic", "Italic", ink: ink, size: 14, box: 24) { formatter.toggleItalic() }.at(x: 119, y: 39.75)
@@ -551,61 +550,21 @@ struct SignatureTextEditor: NSViewRepresentable {
 
 /// Draws the signature as Outlook's editor shows it, without changing what is saved: text in
 /// the automatic colour a shade brighter in dark than the system's label colour, and, while ¶ is
-/// on, Word's marks for what does not print.
-final class SignatureLayoutManager: NSLayoutManager {
+/// on, Word's marks for what does not print, as the composer draws them.
+final class SignatureLayoutManager: FormattingMarksLayoutManager {
     /// Outlook's automatic text in its dark editor.
     private static let automaticDark = NSColor(hex: 0xF6F6F6)
-
-    var showsMarks = false {
-        didSet {
-            guard showsMarks != oldValue, let storage = textStorage else { return }
-            invalidateDisplay(forCharacterRange: NSRange(location: 0, length: storage.length))
-        }
-    }
 
     override func showCGGlyphs(_ glyphs: UnsafePointer<CGGlyph>, positions: UnsafePointer<CGPoint>, count glyphCount: Int,
                                font: NSFont, textMatrix: CGAffineTransform, attributes: [NSAttributedString.Key: Any] = [:],
                                in context: CGContext) {
-        if let colour = attributes[.foregroundColor] as? NSColor, colour == NSColor.labelColor,
+        // A link keeps the label colour it was typed in, but the text view draws it in its link
+        // colour, which is already the fill here and must not be brightened over.
+        if attributes[.link] == nil, let colour = attributes[.foregroundColor] as? NSColor, colour == NSColor.labelColor,
            NSAppearance.currentDrawing().bestMatch(from: [.aqua, .darkAqua]) == .darkAqua {
             context.setFillColor(Self.automaticDark.cgColor)
         }
         super.showCGGlyphs(glyphs, positions: positions, count: glyphCount, font: font, textMatrix: textMatrix,
                            attributes: attributes, in: context)
-    }
-
-    /// A ¶ where each paragraph ends, a · for each space and a → for each tab, drawn in the
-    /// text's size over the gap the character leaves.
-    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
-        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
-        guard showsMarks, let storage = textStorage, storage.length > 0 else { return }
-        let text = storage.string as NSString
-        let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
-        for index in characters.location..<NSMaxRange(characters) {
-            let mark: String
-            switch text.character(at: index) {
-            case 0x0A, 0x2029: mark = "¶"
-            case 0x20: mark = "·"
-            case 0x09: mark = "→"
-            default: continue
-            }
-            draw(mark, glyph: glyphIndexForCharacter(at: index), character: index, origin: origin)
-        }
-        // The last paragraph has no line break to show, but Word marks its end too.
-        if NSMaxRange(characters) == storage.length, text.character(at: storage.length - 1) != 0x0A {
-            draw("¶", glyph: numberOfGlyphs - 1, character: storage.length - 1, origin: origin, after: true)
-        }
-    }
-
-    private func draw(_ mark: String, glyph: Int, character: Int, origin: NSPoint, after: Bool = false) {
-        guard let storage = textStorage, let container = textContainer(forGlyphAt: glyph, effectiveRange: nil) else { return }
-        let font = storage.attribute(.font, at: character, effectiveRange: nil) as? NSFont ?? RichText.defaultFont
-        let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        let x = after ? boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).maxX
-                      : line.minX + location(forGlyphAt: glyph).x
-        let baseline = line.maxY - typesetter.baselineOffset(in: self, glyphIndex: glyph)
-        let top = baseline - font.ascender
-        NSAttributedString(string: mark, attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor])
-            .draw(at: NSPoint(x: origin.x + x, y: origin.y + top))
     }
 }

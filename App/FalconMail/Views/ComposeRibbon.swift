@@ -134,7 +134,13 @@ struct ComposeRibbon: View {
                 FmtButton("decrease.indent", "Decrease indent") { formatter.changeIndent(by: -24) }.padding(.leading, 1.5)
                 FmtButton("increase.indent", "Increase indent") { formatter.changeIndent(by: 24) }.padding(.leading, 4)
                 FmtSeparator().padding(.leading, 0.5)
-                FmtButton("paragraphsign", "Show paragraph marks") { formatter.cycleLineSpacing() }.padding(.leading, 1)
+                // Lit as Outlook lights a chosen format button, on its twenty-four point grey
+                // square, a point wider all round than the button.
+                FmtButton("paragraphsign", "Show paragraph marks") { formatter.toggleFormattingMarks() }
+                    .background(formatter.showsFormattingMarks ? OLColor.ribbonChosen : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 4).inset(by: -1))
+                    .accessibilityAddTraits(formatter.showsFormattingMarks ? .isSelected : [])
+                    .padding(.leading, 1)
             }
             HStack(spacing: 0) {
                 HStack(spacing: 4) {
@@ -455,34 +461,22 @@ struct FmtButton: View {
 struct FmtMenuButton<Content: View>: View {
     let symbol: String
     let title: String
-    var ink = OLColor.ribbonIcon
-    var accent: Color?
-    var chevronInk = OLColor.ribbonLabel
-    var size: CGFloat = 13
-    var box: CGFloat = 22
     let action: () -> Void
     @ViewBuilder var menu: () -> Content
 
-    init(_ symbol: String, _ title: String, ink: Color = OLColor.ribbonIcon, accent: Color? = nil,
-         chevronInk: Color = OLColor.ribbonLabel, size: CGFloat = 13, box: CGFloat = 22, action: @escaping () -> Void,
-         @ViewBuilder menu: @escaping () -> Content) {
+    init(_ symbol: String, _ title: String, action: @escaping () -> Void, @ViewBuilder menu: @escaping () -> Content) {
         self.symbol = symbol
         self.title = title
-        self.ink = ink
-        self.accent = accent
-        self.chevronInk = chevronInk
-        self.size = size
-        self.box = box
         self.action = action
         self.menu = menu
     }
 
     var body: some View {
         HStack(spacing: 2) {
-            FmtButton(symbol, title, ink: ink, accent: accent, size: size, box: box, action: action)
+            FmtButton(symbol, title, action: action)
             Menu { menu() } label: {
-                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(chevronInk)
-                    .frame(width: 10, height: box).contentShape(Rectangle())
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                    .frame(width: 10, height: 22).contentShape(Rectangle())
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
@@ -498,25 +492,13 @@ struct FmtColourButton: View {
     let title: String
     let colour: Color
     let palette: [(String, Color)]
-    var ink = OLColor.ribbonIcon
-    var chevronInk = OLColor.ribbonLabel
-    var size: CGFloat = 12
-    var box: CGFloat = 22
-    var glyphHeight: CGFloat = 15
     let apply: (Color) -> Void
 
-    init(_ symbol: String, _ title: String, colour: Color, palette: [(String, Color)], ink: Color = OLColor.ribbonIcon,
-         chevronInk: Color = OLColor.ribbonLabel, size: CGFloat = 12, box: CGFloat = 22, glyphHeight: CGFloat = 15,
-         apply: @escaping (Color) -> Void) {
+    init(_ symbol: String, _ title: String, colour: Color, palette: [(String, Color)], apply: @escaping (Color) -> Void) {
         self.symbol = symbol
         self.title = title
         self.colour = colour
         self.palette = palette
-        self.ink = ink
-        self.chevronInk = chevronInk
-        self.size = size
-        self.box = box
-        self.glyphHeight = glyphHeight
         self.apply = apply
     }
 
@@ -524,10 +506,10 @@ struct FmtColourButton: View {
         HStack(spacing: 2) {
             Button { apply(colour) } label: {
                 VStack(spacing: 1) {
-                    Image(systemName: symbol).font(.system(size: size, weight: .regular)).foregroundStyle(ink).frame(height: glyphHeight)
+                    Image(systemName: symbol).font(.system(size: 12, weight: .regular)).foregroundStyle(OLColor.ribbonIcon).frame(height: 15)
                     RoundedRectangle(cornerRadius: 1).fill(colour).frame(width: 16, height: 3)
                 }
-                .frame(width: box, height: box)
+                .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -537,8 +519,8 @@ struct FmtColourButton: View {
                     Button(entry.0) { apply(entry.1) }
                 }
             } label: {
-                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(chevronInk)
-                    .frame(width: 10, height: box).contentShape(Rectangle())
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold)).foregroundStyle(OLColor.ribbonLabel)
+                    .frame(width: 10, height: 22).contentShape(Rectangle())
             }
             .menuStyle(.button)
             .buttonStyle(.plain)
