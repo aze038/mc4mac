@@ -12,7 +12,8 @@ import Network
 /// refused sign-in, a stalled command, a black hole, a close after a silence, a connection cut
 /// after a given command, a renumbered mailbox, a flag fetch or search that lists nothing, an
 /// APPEND whose reply is lost, and news sent before "+ idling". Given the
-/// capabilities, it answers CONDSTORE's CHANGEDSINCE and ESEARCH as Gmail does.
+/// capabilities, it answers CONDSTORE's CHANGEDSINCE and ESEARCH as Gmail does. It can also
+/// leave mailboxes out of a LIST reply, or give an empty one, and delete a mailbox.
 final class FakeIMAPServer: @unchecked Sendable {
     struct Message {
         var uid: UInt32
@@ -84,6 +85,7 @@ final class FakeIMAPServer: @unchecked Sendable {
     private var flagFetchesToEmpty = 0
     private var appendRepliesToLose = 0
     private var hooks: [(verb: String, action: @Sendable () -> Void)] = []
+    private var listOmissions: [Set<String>?] = []
     private var exchangeLog: [Exchange] = []
 
     init(capabilities: [String] = ["IMAP4rev1", "AUTH=PLAIN", "IDLE", "MOVE", "UIDPLUS", "SPECIAL-USE"],
@@ -160,6 +162,11 @@ final class FakeIMAPServer: @unchecked Sendable {
         }
     }
 
+    /// Deletes a mailbox and everything in it, as another program would.
+    func removeMailbox(_ name: String) {
+        lock.withLock { mailboxes.removeAll { $0.name == name } }
+    }
+
     /// Gives the mailbox a new UIDVALIDITY and numbers its messages afresh, as a server does
     /// when a mailbox is rebuilt: every UID the client knows now means something else.
     func renumber(_ mailbox: String) {
@@ -229,6 +236,12 @@ final class FakeIMAPServer: @unchecked Sendable {
     /// a moment might say.
     func emptyNextSearches(_ count: Int) {
         lock.withLock { searchesToEmpty = count }
+    }
+
+    /// The next `times` LIST replies leave out these mailboxes, or every one when nil, as a
+    /// server that has lost track of them for a moment answers.
+    func leaveOutOfNextLists(_ names: [String]?, times: Int = 1) {
+        lock.withLock { listOmissions += Array(repeating: names.map(Set.init), count: times) }
     }
 
     /// The next `count` fetches of flags alone list no message, as a server that has lost track
@@ -455,6 +468,11 @@ final class FakeIMAPServer: @unchecked Sendable {
     fileprivate var offersCondstore: Bool { lock.withLock { capabilities.contains { $0.uppercased() == "CONDSTORE" } } }
     fileprivate var offersESearch: Bool { lock.withLock { capabilities.contains { $0.uppercased() == "ESEARCH" } } }
 
+    /// Which mailboxes the LIST being answered leaves out: none, some, or all when nil.
+    fileprivate func takeListOmission() -> Set<String>?? {
+        lock.withLock { listOmissions.isEmpty ? .none : .some(listOmissions.removeFirst()) }
+    }
+
     fileprivate func takeHook(for command: String) -> (@Sendable () -> Void)? {
         lock.withLock {
             guard let i = hooks.firstIndex(where: { command.hasPrefix($0.verb) }) else { return nil }
@@ -597,7 +615,11 @@ private final class Session: @unchecked Sendable {
             _ = write("* BYE LOGOUT Requested\r\n\(tag) OK completed\r\n")
             return false
         case "LIST":
-            let lines = server.with { $0.allMailboxes }.map { box -> String in
+            var boxes = server.with { $0.allMailboxes }
+            if let omitted = server.takeListOmission() {
+                boxes = omitted.map { names in boxes.filter { !names.contains($0.name) } } ?? []
+            }
+            let lines = boxes.map { box -> String in
                 "* LIST (\((["\\HasNoChildren"] + box.attributes).joined(separator: " "))) \"/\" \(Session.quoted(box.name))\r\n"
             }
             return write(lines.joined() + "\(tag) OK LIST completed\r\n")

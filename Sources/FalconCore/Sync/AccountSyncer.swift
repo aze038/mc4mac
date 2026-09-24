@@ -37,6 +37,9 @@ public struct SyncPacing: Sendable {
     /// A folder the server reports empty, where many messages are listed, is emptied only when
     /// a pass at least this much later finds it empty too.
     public var emptyFolderConfirmation: TimeInterval = 60
+    /// A folder the server's list leaves out is taken off the Mac, with everything stored for
+    /// it, only when a list at least this much later leaves it out too.
+    public var folderGoneConfirmation: TimeInterval = 60
     /// The least time between two attempts to connect, so that flapping Wi-Fi cannot make a
     /// burst of sign-ins.
     public var minimumReconnectInterval: TimeInterval = 30
@@ -796,9 +799,7 @@ public actor AccountSyncer {
                 checkFoundNewMail = checkFoundNewMail || passArrivals > 0
             }
         }
-        let listed = try await client.listFolders()
-        let folders = try await store.reconcileFolders(accountID: account.id, listed: listed)
-        extras.keepFolders(Set(folders.map(\.id)))
+        let folders = try await reconciled(try await client.listFolders())
         for f in folders where f.isSelectable && f.role != .all {
             try Task.checkCancellation()
             // Paused by a throttle met on the op connection: the rest waits for the pass after.
@@ -813,6 +814,19 @@ public actor AccountSyncer {
             checkFoundNewMail = false
             answered = true
         }
+    }
+
+    /// The folders a list from the server names, reconciled with those stored (see
+    /// `MailStore.reconcileFolders`); what the engine kept about a folder no longer stored goes.
+    func reconciled(_ listed: [IMAPFolderInfo]) async throws -> [FolderInfo] {
+        let named = try await store.reconcileFolders(accountID: account.id, listed: listed, goneAfter: pacing.folderGoneConfirmation)
+        let stored = Set(await store.folders(for: account.id).map(\.id))
+        extras.keepFolders(stored)
+        catchUps = catchUps.filter { stored.contains($0.key) }
+        unannounced = unannounced.filter { stored.contains($0.key) }
+        reportedEmpty = reportedEmpty.filter { stored.contains($0.key) }
+        requestedFolders.removeAll { !stored.contains($0) }
+        return named
     }
 
     private var lastFullSync = Date()
@@ -2114,7 +2128,7 @@ public actor AccountSyncer {
                 try await client.createFolder(name)
                 return try await client.listFolders()
             }
-            _ = try await store.reconcileFolders(accountID: account.id, listed: listed)
+            _ = try await reconciled(listed)
         } catch {
             throw await failed("Folders", "creating a folder", error, folder: nil)
         }

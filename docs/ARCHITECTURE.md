@@ -89,6 +89,13 @@ directories at once.
 The app model listens and reloads only the folder that changed. Full-text
 search of bodies goes through Core Spotlight, header search runs in memory.
 
+Each whole pass reconciles the stored folder list with the server's `LIST`. A
+folder the list leaves out keeps its record and everything stored for it, and
+is not synced, until a list at least a minute later leaves it out too; only
+then is it taken off the Mac. A list without `INBOX`, or an empty one, takes
+nothing off, since every IMAP server lists `INBOX` and one that does not has
+lost track of the account for a moment.
+
 ## Archives and local space
 
 `ArchiveWriter` accumulates one zip chunk in memory (default 256 MB) and streams

@@ -77,7 +77,7 @@ final class EngineHarness: @unchecked Sendable {
     /// loop would, without starting the loop.
     func syncOnce() async throws {
         let c = try await server.client(label: account.email, traffic: meter.tap(for: account.id))
-        let folders = try await store.reconcileFolders(accountID: account.id, listed: try await c.listFolders())
+        let folders = try await syncer.reconciled(try await c.listFolders())
         for f in folders where f.isSelectable && f.role != .all { try await syncer.syncFolder(f, client: c) }
         await c.logout()
     }

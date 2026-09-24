@@ -39,6 +39,8 @@ public actor MailStore {
     private var accountListProblem: String?
     private var folders: [UUID: [FolderInfo]] = [:]
     private var folderListProblems: [UUID: FolderListProblem] = [:]
+    /// Folders a list from the server left out, and when the first such list came.
+    private var missingSince: [UUID: Date] = [:]
     private var folderStores: [UUID: FolderStore] = [:]
     private var folderStoreLoads: [UUID: Task<FolderStore, Error>] = [:]
     private var changeContinuations: [UUID: AsyncStream<StoreChange>.Continuation] = [:]
@@ -165,32 +167,61 @@ public actor MailStore {
         folders[accountID]?.first { $0.path == path }
     }
 
-    public func reconcileFolders(accountID: UUID, listed: [IMAPFolderInfo]) throws -> [FolderInfo] {
+    /// Brings the account's stored folders into line with a list the server gave, and returns
+    /// the folders that list named, as stored, which are the ones to sync.
+    ///
+    /// A folder the list leaves out keeps its record and everything stored for it, its rows,
+    /// offline copies and what Load older brought, until a list at least `goneAfter` later leaves
+    /// it out too: a server can leave folders out of one reply, or give none at all, and a folder
+    /// dropped for that would have to be listed again from scratch while the server still held
+    /// all of it. A list without INBOX, which every IMAP server lists, leaves nothing out.
+    public func reconcileFolders(accountID: UUID, listed: [IMAPFolderInfo], goneAfter: TimeInterval = 60,
+                                 now: Date = Date()) throws -> [FolderInfo] {
         try refuseIfFolderListUnread(accountID)
-        var existing = folders[accountID] ?? []
+        var unlisted = folders[accountID] ?? []
         var result: [FolderInfo] = []
-        for l in listed {
-            if var f = existing.first(where: { $0.path == l.path }) {
+        var named = Set<UUID>()
+        for l in listed where !result.contains(where: { $0.path == l.path }) {
+            if var f = unlisted.first(where: { $0.path == l.path }) {
                 f.name = l.displayName
                 f.attributes = l.attributes
                 f.role = l.role
                 f.isSelectable = l.isSelectable
                 f.delimiter = l.delimiter
                 result.append(f)
-                existing.removeAll { $0.id == f.id }
+                named.insert(f.id)
+                unlisted.removeAll { $0.id == f.id }
+                missingSince[f.id] = nil
             } else {
-                result.append(FolderInfo(accountID: accountID, path: l.path, name: l.displayName, delimiter: l.delimiter,
-                                         role: l.role, attributes: l.attributes, isSelectable: l.isSelectable))
+                let f = FolderInfo(accountID: accountID, path: l.path, name: l.displayName, delimiter: l.delimiter,
+                                   role: l.role, attributes: l.attributes, isSelectable: l.isSelectable)
+                result.append(f)
+                named.insert(f.id)
             }
         }
-        for gone in existing {
-            folderStores[gone.id] = nil
-            try? FileManager.default.removeItem(at: layout.folderDirectory(accountID: accountID, folderID: gone.id))
+        let believed = listed.contains { $0.role == .inbox }
+        let email = account(accountID)?.email ?? "an account"
+        if !believed, !unlisted.isEmpty {
+            Log.info("store", "\(email): a folder list without INBOX (\(listed.count) folders) takes no folder off this Mac")
+        }
+        for f in unlisted {
+            if believed, let since = missingSince[f.id], now.timeIntervalSince(since) >= goneAfter {
+                Log.info("store", "\(email) \(f.path): left out of the server's folder lists since \(ISO8601DateFormatter.archive.string(from: since)); removed")
+                missingSince[f.id] = nil
+                folderStores[f.id] = nil
+                try? FileManager.default.removeItem(at: layout.folderDirectory(accountID: accountID, folderID: f.id))
+                continue
+            }
+            if believed, missingSince[f.id] == nil {
+                missingSince[f.id] = now
+                Log.info("store", "\(email) \(f.path): left out of the server's folder list; kept until a later list leaves it out too")
+            }
+            result.append(f)
         }
         folders[accountID] = result
         try AtomicFile.writeJSON(result, to: layout.foldersFile(accountID))
         emit(.foldersChanged(accountID: accountID))
-        return folders(for: accountID)
+        return folders(for: accountID).filter { named.contains($0.id) }
     }
 
     public func updateFolder(_ folder: FolderInfo) throws {
