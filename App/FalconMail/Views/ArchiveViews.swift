@@ -166,6 +166,7 @@ struct ArchiveSheet: View {
             } catch {
                 let failure = MailServiceError.classify(error, account: account)
                 Log.info("archive", "\(account.email): archive failed: \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: account.email))")
+                Log.error("Archive", "Archiving to the cloud failed: \(failure.sentence)", error: failure, account: account)
                 status = "Failed: \(failure.sentence)"
                 running = false
             }
@@ -240,7 +241,10 @@ struct OpenArchiveSheet: View {
             do {
                 found = try await GoogleDriveStorage(tokens: model.tokens, accountID: id).listArchives()
                 status = found.isEmpty ? "No archives found. Only archives created by FalconMail are visible." : ""
-            } catch { status = error.localizedDescription }
+            } catch {
+                Log.warning("Archive", "Listing archives on Google Drive failed: \(error.localizedDescription)", error: error)
+                status = error.localizedDescription
+            }
         }
     }
 
@@ -383,6 +387,7 @@ struct ArchiveBrowserView: View {
                 needsPassword = true
                 status = error.localizedDescription
             } else {
+                Log.warning("Archive", "Opening an archive failed: \(error.localizedDescription)", error: error)
                 status = error.localizedDescription
             }
         }

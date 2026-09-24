@@ -35,6 +35,7 @@ final class DriveBrowser {
                 .map { DriveEntry(id: $0.id, name: $0.name, isFolder: $0.isFolder, size: $0.size) }
                 .sorted { ($0.isFolder ? 0 : 1, $0.name.lowercased()) < ($1.isFolder ? 0 : 1, $1.name.lowercased()) }
         } catch {
+            Log.warning("Drive", "Listing a Google Drive folder failed: \(error.localizedDescription)", error: error)
             failure = error.localizedDescription
         }
     }
@@ -174,6 +175,7 @@ struct DrivePicker: View {
                 }
                 dismiss()
             } catch {
+                Log.warning("Drive", "Opening or saving a file on Google Drive failed: \(error.localizedDescription)", error: error)
                 failure = error.localizedDescription
             }
         }

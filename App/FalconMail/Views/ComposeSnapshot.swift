@@ -9,10 +9,12 @@ import FalconCore
 /// unsent message, the main window's Home ribbon,
 /// which shares the compose ribbon's tiles, the Settings window's icon grid, its Signatures pane
 /// with two stand-in signatures, with none and with its notice of a damaged file set aside, its
-/// Notifications and Sounds pane and every other pane, and a signature's editor window for a
-/// signature, for a new one and with ¶ showing the marks for what does not print, in both
-/// appearances into PNGs at twice their size in that directory, writes down beside them the words
-/// and buttons of the question asked before a signature is deleted, then quits.
+/// Notifications and Sounds pane and every other pane, the Privacy pane with its diagnostics
+/// section as a release build shows it and the sheet of data waiting to be sent, and a
+/// signature's editor window for a signature, for a new one and with ¶ showing the marks for
+/// what does not print, in both appearances into PNGs at twice their size in that directory,
+/// writes down beside them the words and buttons of the question asked before a signature is
+/// deleted, then quits.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -43,6 +45,8 @@ enum ComposeSnapshot {
                    to: "\(directory)/home-\(name).png")
         }
         signatures(model, to: directory)
+        // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
+        privacy(model, to: directory)
         for (name, appearance) in appearances {
             captureSettings(nil, model: model, active: false, appearance: appearance, to: "\(directory)/settings-grid-\(name).png")
             captureSettings(.notifications, model: model, active: true, appearance: appearance,
@@ -81,6 +85,51 @@ enum ComposeSnapshot {
         window.appearance = NSAppearance(named: appearance)
         guard let frame = window.contentView?.superview else { return }
         capture(frame, appearance: appearance, to: path)
+    }
+
+    /// As a release build shows it. The waiting data is what a real diagnostics centre makes of
+    /// a few warnings, kept in a temporary folder and never started on the network: it reads no
+    /// crash reports, its session refuses every request, and it is stopped before its first
+    /// upload is due a minute later.
+    @MainActor private static func privacy(_ model: AppModel, to directory: String) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("FalconMailSnapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let center = DiagnosticsCenter(
+            directory: folder,
+            gate: DiagnosticsGate(endpoint: URL(string: "https://example.invalid/exec"), key: "snapshot", isReleaseBuild: true,
+                                  bundleIdentifier: DiagnosticsGate.releaseBundleIdentifier, userEnabled: true),
+            environment: DiagnosticsEnvironment(app: DiagnosticsApp(version: "1.10.0", build: "123", channel: "release"),
+                                                os: "macOS 26.6 (25G5023)", hardware: "MacBookPro18,3", locale: "en_GB",
+                                                homePath: NSHomeDirectory()),
+            crashReportsDirectory: nil,
+            session: DiagnosticsUploader.makeSession(protocolClasses: [NoNetwork.self]))
+        let logging = Log.isEnabled
+        Log.isEnabled = false
+        center.start()
+        let account = AccountInfo.google(email: "alex@example.com", displayName: "Alex Example")
+        let throttled = FalconError.network("server closed session: Account exceeded command or bandwidth limits.")
+        for _ in 0..<3 {
+            Log.warning("IMAP", "alex@example.com: \(throttled.localizedDescription)", error: throttled, account: account)
+        }
+        Log.error("Alert", "The file “Invoice ACME.pdf” couldn’t be opened because there is no such file.")
+        center.waitUntilIdle()
+        let waiting = center.pendingDescription()
+        center.stop()
+        Log.isEnabled = logging
+
+        DiagnosticsService.shared = DiagnosticsService(standInID: center.diagnosticsID)
+        for (name, appearance) in appearances {
+            render(DiagnosticsPendingSheet(text: waiting).background(Color(nsColor: .windowBackgroundColor)),
+                   size: NSSize(width: 640, height: 520), appearance: appearance, to: "\(directory)/privacy-waiting-\(name).png")
+        }
+    }
+
+    /// Fails every request, so nothing the snapshot builds can reach a network.
+    private final class NoNetwork: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() { client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)) }
+        override func stopLoading() {}
     }
 
     @MainActor private static func signatures(_ model: AppModel, to directory: String) {

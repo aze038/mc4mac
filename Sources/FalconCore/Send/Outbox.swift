@@ -208,13 +208,16 @@ public actor Outbox {
                 item.attempts = attempts
                 item.error = failure.sentence
                 if failure.kind == .sendingLimit {
+                    Log.error("SMTP", "Sending failed, the message is held in the Outbox: \(failure.sentence)", error: failure)
                     item.status = .failed
                     item.heldBack = true
                 } else if failure.isTransient && attempts < 30 {
+                    Log.warning("SMTP", "Sending failed on attempt \(attempts), trying again: \(failure.sentence)", error: failure)
                     item.status = .queued
                     item.sendAt = Date().addingTimeInterval(min(600, 15 * pow(2, Double(min(attempts, 6)))))
                     item.undoUntil = Date()
                 } else {
+                    Log.error("SMTP", "Sending failed after \(attempts) attempts: \(failure.sentence)", error: failure)
                     item.status = .failed
                 }
             }

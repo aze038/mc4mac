@@ -168,7 +168,9 @@ final class AppModel {
     var accountStatus = AccountStatusBoard()
     var outboxItems: [OutboxItem] = []
     var archiveRecords: [ArchiveRecord] = []
-    var errorMessage: String?
+    var errorMessage: String? {
+        didSet { if let errorMessage, errorMessage != oldValue { Log.error("Alert", errorMessage) } }
+    }
     var actionError: String?
     var actionErrorNeedsDismissal = false
     var pendingUndo: PendingUndo?
@@ -595,6 +597,7 @@ final class AppModel {
                     self.syncingAccounts.insert(id)
                     self.statusText = text
                 case .finished(let id):
+                    DiagnosticsService.shared.noteSyncPass()
                     self.syncingAccounts.remove(id)
                     self.statusText = "Up to date"
                     self.noteUnreadableFiles()
@@ -1279,6 +1282,7 @@ final class AppModel {
     }
 
     private func showActionError(_ message: String) {
+        Log.error("Alert", message)
         actionErrorTask?.cancel()
         actionErrorTask = nil
         actionError = message
@@ -1949,6 +1953,7 @@ final class AppModel {
                         count += 1
                     }
                 } catch {
+                    Log.error("Import", "Importing a .\(url.pathExtension.lowercased()) file failed: \(error.localizedDescription)", error: error)
                     errorMessage = error.localizedDescription
                 }
             }

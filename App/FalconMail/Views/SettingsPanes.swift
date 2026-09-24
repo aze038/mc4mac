@@ -940,6 +940,7 @@ struct PrivacySettings: View {
                     reload()
                 }
             }
+            DiagnosticsPrivacySection()
         }
         .onAppear { reload() }
     }

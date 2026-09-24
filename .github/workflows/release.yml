@@ -59,6 +59,19 @@ jobs:
             echo "::warning::GOOGLE_OAUTH_CLIENT_ID secret is not set; this build has no Google sign-in"
           fi
 
+      - name: Embed diagnostics endpoint
+        env:
+          FALCON_DIAGNOSTICS_URL: ${{ secrets.FALCON_DIAGNOSTICS_URL }}
+          FALCON_DIAGNOSTICS_KEY: ${{ secrets.FALCON_DIAGNOSTICS_KEY }}
+        run: |
+          if [ -n "$FALCON_DIAGNOSTICS_URL" ] && [ -n "$FALCON_DIAGNOSTICS_KEY" ]; then
+            plutil -replace FalconDiagnosticsURL -string "$FALCON_DIAGNOSTICS_URL" App/FalconMail/Info.plist
+            plutil -replace FalconDiagnosticsKey -string "$FALCON_DIAGNOSTICS_KEY" App/FalconMail/Info.plist
+            echo "Diagnostics endpoint embedded"
+          else
+            echo "::warning::FALCON_DIAGNOSTICS_URL or FALCON_DIAGNOSTICS_KEY secret is not set; this build sends no diagnostics"
+          fi
+
       - name: Import signing certificate
         if: env.HAS_CERT == 'true'
         env:
@@ -84,6 +97,25 @@ jobs:
           xcodebuild -project FalconMail.xcodeproj -scheme FalconMail -configuration Release \
             -destination 'platform=macOS,arch=arm64' -derivedDataPath build "${SIGNING[@]}" build 2>&1 | tee xcodebuild.log | grep -E "error:|\*\* BUILD" || true
           grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
+
+      # The runner is the owner's Mac; the daily triage symbolicates crash reports from here.
+      # The dSYM is kept on this Mac only and never uploaded. Each build keeps its own folder
+      # under its version, named by its build number, so building a version again never
+      # replaces the symbols of copies already handed out; the triage matches them by UUID.
+      - name: Keep dSYM for crash symbolication
+        run: |
+          DSYM="build/Build/Products/Release/FalconMail.app.dSYM"
+          BUILD="${{ github.run_number }}"
+          if [ "${{ github.run_attempt }}" != "1" ]; then BUILD="$BUILD-attempt-${{ github.run_attempt }}"; fi
+          DEST="$HOME/Library/Application Support/FalconMail Symbols/$APP_VERSION/$BUILD"
+          if [ -d "$DSYM" ]; then
+            mkdir -p "$DEST"
+            cp -R "$DSYM" "$DEST/"
+            dwarfdump --uuid "$DSYM" > "$DEST/uuids.txt"
+            echo "dSYM kept in $DEST"
+          else
+            echo "::warning::No dSYM at $DSYM; crashes from this build cannot be symbolicated"
+          fi
 
       - name: Notarize
         if: env.HAS_CERT == 'true' && env.HAS_NOTARY == 'true'

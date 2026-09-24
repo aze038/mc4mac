@@ -348,6 +348,11 @@ public actor AccountSyncer {
                 }
                 let failure = MailServiceError.classify(error, account: account)
                 Log.info("sync", "\(account.email): \(failure.kind.rawValue): \(Log.redacted(failure.detail, keeping: account.email))")
+                if failure.isTransient {
+                    Log.warning("IMAP", "\(account.email): \(failure.sentence)", error: failure, account: account)
+                } else {
+                    Log.error("IMAP", "\(account.email): \(failure.sentence)", error: failure, account: account)
+                }
                 guard handle(failure) else { return }
             }
         }
@@ -1381,6 +1386,7 @@ public actor AccountSyncer {
                     budgetNoticeGiven = true
                     let used = meter.used(.background, by: account.id) / 1_000_000
                     Log.info("sync", "\(account.email): \(used) MB of offline copies in the last 24 hours, pausing them")
+                    Log.warning("Sync", "\(account.email): \(used) MB of offline copies in the last 24 hours, pausing them", account: account)
                     events.yield(.progress(accountID: account.id, text: "\(account.email) has downloaded \(used) MB for offline reading in the last day; new mail still arrives and messages open on demand"))
                 }
                 break
@@ -1457,6 +1463,7 @@ public actor AccountSyncer {
                     }
                 } catch {
                     let failure = await failed("rule", error, folder: nil)
+                    Log.error("Rules", "A rule could not run: \(failure.localizedDescription)", error: failure, account: account)
                     events.yield(.problem(accountID: account.id, message: "A rule could not run. \(failure.localizedDescription)"))
                     if let known = failure as? MailServiceError, AccountSyncer.stopsRules(known.kind) {
                         stopped = true
@@ -1511,6 +1518,7 @@ public actor AccountSyncer {
             try await fs.remove(uids: uids)
         } catch {
             let failure = await failed("filing a muted conversation", error, folder: folder)
+            Log.error("Mute", "Could not file a muted conversation: \(failure.localizedDescription)", error: failure, account: account)
             events.yield(.problem(accountID: account.id, message: "Could not file a muted conversation. \(failure.localizedDescription)"))
             return messages
         }
@@ -1779,6 +1787,7 @@ public actor AccountSyncer {
             await pendingActions.remove(action.pending.id)
             let failure = await failed("\(action.record.kind.rawValue) of \(action.pending.uids.count)", error,
                                        folder: await store.folder(action.pending.folderID))
+            Log.error("Actions", "\(action.record.failurePrefix): \(failure.localizedDescription)", error: failure, account: account)
             guard !action.record.isAutomatic else { return }
             let restored = await restore(action.record, queuedAs: action.pending)
             events.yield(.actionFailed(accountID: account.id,
@@ -1865,6 +1874,8 @@ public actor AccountSyncer {
             } catch {
                 let failure = await failed("replaying \(pending.verb.rawValue) of \(pending.uids.count)", error,
                                            folder: await store.folder(pending.folderID))
+                Log.error("Actions", "Could not finish an action from the last session: \(failure.localizedDescription)",
+                          error: failure, account: account)
                 events.yield(.actionFailed(accountID: account.id,
                                            message: "Could not finish an action from the last session. \(failure.localizedDescription)"))
             }
@@ -1894,6 +1905,7 @@ public actor AccountSyncer {
             await store.notifyMessagesChanged(folderID: folder.id)
         } catch {
             let failure = await failed("restoring rows of a stale action", error, folder: folder)
+            Log.error("Actions", "Could not restore messages of an expired action: \(failure.localizedDescription)", error: failure, account: account)
             events.yield(.problem(accountID: account.id, message: failure.localizedDescription))
         }
     }

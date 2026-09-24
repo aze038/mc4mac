@@ -1,0 +1,799 @@
+{
+  "ips": {
+    "asi": {
+      "CoreFoundation": [
+        "*** Terminating app due to uncaught exception 'NSInternalInconsistencyException', reason: 'Invalid parameter not satisfying: row >= 0'"
+      ],
+      "libsystem_c.dylib": [ "abort() called" ]
+    },
+    "cpuType": "ARM-64",
+    "exception": {
+      "codes": "0x0000000000000000, 0x0000000000000000",
+      "rawCodes": [ 0, 0 ],
+      "signal": "SIGABRT",
+      "type": "EXC_CRASH"
+    },
+    "faultingThread": 0,
+    "header": {
+      "app_version": "1.9.0",
+      "bug_type": "309",
+      "build_version": "45",
+      "bundleID": "com.falconmail.app",
+      "os_version": "macOS 26.6 (25G5023)"
+    },
+    "lastExceptionBacktrace": [
+      {
+        "imageIndex": 6,
+        "imageOffset": 20000,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:0]",
+        "symbolLocation": 0
+      },
+      {
+        "imageIndex": 24,
+        "imageOffset": 20032,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:1]",
+        "symbolLocation": 4
+      },
+      { "imageIndex": 2, "imageOffset": 100227 },
+      {
+        "imageIndex": 8,
+        "imageOffset": 20096,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:3]",
+        "symbolLocation": 12
+      },
+      {
+        "imageIndex": 9,
+        "imageOffset": 20128,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:4]",
+        "symbolLocation": 16
+      },
+      {
+        "imageIndex": 10,
+        "imageOffset": 20160,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:5]",
+        "symbolLocation": 20
+      },
+      {
+        "imageIndex": 25,
+        "imageOffset": 20192,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:6]",
+        "symbolLocation": 24
+      },
+      { "imageIndex": 2, "imageOffset": 100547 },
+      {
+        "imageIndex": 12,
+        "imageOffset": 20256,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:8]",
+        "symbolLocation": 32
+      },
+      {
+        "imageIndex": 13,
+        "imageOffset": 20288,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:9]",
+        "symbolLocation": 36
+      },
+      {
+        "imageIndex": 14,
+        "imageOffset": 20320,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:10]",
+        "symbolLocation": 40
+      },
+      {
+        "imageIndex": 26,
+        "imageOffset": 20352,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:11]",
+        "symbolLocation": 44
+      },
+      { "imageIndex": 2, "imageOffset": 100867 },
+      {
+        "imageIndex": 16,
+        "imageOffset": 20416,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:13]",
+        "symbolLocation": 52
+      },
+      {
+        "imageIndex": 17,
+        "imageOffset": 20448,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:14]",
+        "symbolLocation": 56
+      },
+      {
+        "imageIndex": 18,
+        "imageOffset": 20480,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:15]",
+        "symbolLocation": 60
+      },
+      {
+        "imageIndex": 27,
+        "imageOffset": 20512,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:16]",
+        "symbolLocation": 64
+      },
+      { "imageIndex": 2, "imageOffset": 101187 },
+      {
+        "imageIndex": 20,
+        "imageOffset": 20576,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:18]",
+        "symbolLocation": 72
+      },
+      {
+        "imageIndex": 21,
+        "imageOffset": 20608,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:19]",
+        "symbolLocation": 76
+      },
+      {
+        "imageIndex": 22,
+        "imageOffset": 20640,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:20]",
+        "symbolLocation": 80
+      },
+      {
+        "imageIndex": 28,
+        "imageOffset": 20672,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:21]",
+        "symbolLocation": 84
+      },
+      { "imageIndex": 2, "imageOffset": 101507 },
+      {
+        "imageIndex": 29,
+        "imageOffset": 20736,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:23]",
+        "symbolLocation": 92
+      },
+      {
+        "imageIndex": 30,
+        "imageOffset": 20768,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:24]",
+        "symbolLocation": 96
+      },
+      {
+        "imageIndex": 31,
+        "imageOffset": 20800,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:25]",
+        "symbolLocation": 100
+      },
+      {
+        "imageIndex": 32,
+        "imageOffset": 20832,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:26]",
+        "symbolLocation": 104
+      },
+      { "imageIndex": 2, "imageOffset": 101827 },
+      {
+        "imageIndex": 33,
+        "imageOffset": 20896,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:28]",
+        "symbolLocation": 112
+      },
+      {
+        "imageIndex": 34,
+        "imageOffset": 20928,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:29]",
+        "symbolLocation": 116
+      },
+      {
+        "imageIndex": 35,
+        "imageOffset": 20960,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:30]",
+        "symbolLocation": 120
+      },
+      {
+        "imageIndex": 36,
+        "imageOffset": 20992,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:31]",
+        "symbolLocation": 124
+      },
+      { "imageIndex": 2, "imageOffset": 102147 },
+      {
+        "imageIndex": 37,
+        "imageOffset": 21056,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:33]",
+        "symbolLocation": 132
+      },
+      {
+        "imageIndex": 38,
+        "imageOffset": 21088,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:34]",
+        "symbolLocation": 136
+      },
+      {
+        "imageIndex": 39,
+        "imageOffset": 21120,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:35]",
+        "symbolLocation": 140
+      },
+      {
+        "imageIndex": 40,
+        "imageOffset": 21152,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:36]",
+        "symbolLocation": 144
+      },
+      { "imageIndex": 2, "imageOffset": 102467 },
+      {
+        "imageIndex": 41,
+        "imageOffset": 21216,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:38]",
+        "symbolLocation": 152
+      },
+      {
+        "imageIndex": 42,
+        "imageOffset": 21248,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:39]",
+        "symbolLocation": 156
+      },
+      {
+        "imageIndex": 43,
+        "imageOffset": 21280,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:40]",
+        "symbolLocation": 160
+      },
+      {
+        "imageIndex": 44,
+        "imageOffset": 21312,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:41]",
+        "symbolLocation": 164
+      },
+      { "imageIndex": 2, "imageOffset": 102787 },
+      {
+        "imageIndex": 45,
+        "imageOffset": 21376,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:43]",
+        "symbolLocation": 172
+      },
+      {
+        "imageIndex": 46,
+        "imageOffset": 21408,
+        "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:44]",
+        "symbolLocation": 176
+      }
+    ],
+    "source": "ips",
+    "termination": {
+      "byPid": 4242,
+      "byProc": "FalconMail",
+      "code": 6,
+      "flags": 0,
+      "indicator": "Abort trap: 6",
+      "namespace": "SIGNAL"
+    },
+    "threads": [
+      {
+        "frames": [
+          {
+            "imageIndex": 0,
+            "imageOffset": 20000,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:0]",
+            "symbolLocation": 0
+          },
+          {
+            "imageIndex": 1,
+            "imageOffset": 20032,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:1]",
+            "symbolLocation": 4
+          },
+          { "imageIndex": 2, "imageOffset": 100128 },
+          {
+            "imageIndex": 3,
+            "imageOffset": 20096,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:3]",
+            "symbolLocation": 12
+          },
+          {
+            "imageIndex": 4,
+            "imageOffset": 20128,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:4]",
+            "symbolLocation": 16
+          },
+          {
+            "imageIndex": 5,
+            "imageOffset": 20160,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:5]",
+            "symbolLocation": 20
+          },
+          {
+            "imageIndex": 6,
+            "imageOffset": 20192,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:6]",
+            "symbolLocation": 24
+          },
+          { "imageIndex": 2, "imageOffset": 100448 },
+          {
+            "imageIndex": 7,
+            "imageOffset": 20256,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:8]",
+            "symbolLocation": 32
+          },
+          {
+            "imageIndex": 8,
+            "imageOffset": 20288,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:9]",
+            "symbolLocation": 36
+          },
+          {
+            "imageIndex": 9,
+            "imageOffset": 20320,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:10]",
+            "symbolLocation": 40
+          },
+          {
+            "imageIndex": 10,
+            "imageOffset": 20352,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:11]",
+            "symbolLocation": 44
+          },
+          { "imageIndex": 2, "imageOffset": 100768 },
+          {
+            "imageIndex": 11,
+            "imageOffset": 20416,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:13]",
+            "symbolLocation": 52
+          },
+          {
+            "imageIndex": 12,
+            "imageOffset": 20448,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:14]",
+            "symbolLocation": 56
+          },
+          {
+            "imageIndex": 13,
+            "imageOffset": 20480,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:15]",
+            "symbolLocation": 60
+          },
+          {
+            "imageIndex": 14,
+            "imageOffset": 20512,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:16]",
+            "symbolLocation": 64
+          },
+          { "imageIndex": 2, "imageOffset": 101088 },
+          {
+            "imageIndex": 15,
+            "imageOffset": 20576,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:18]",
+            "symbolLocation": 72
+          },
+          {
+            "imageIndex": 16,
+            "imageOffset": 20608,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:19]",
+            "symbolLocation": 76
+          },
+          {
+            "imageIndex": 17,
+            "imageOffset": 20640,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:20]",
+            "symbolLocation": 80
+          },
+          {
+            "imageIndex": 18,
+            "imageOffset": 20672,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:21]",
+            "symbolLocation": 84
+          },
+          { "imageIndex": 2, "imageOffset": 101408 },
+          {
+            "imageIndex": 19,
+            "imageOffset": 20736,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:23]",
+            "symbolLocation": 92
+          },
+          {
+            "imageIndex": 20,
+            "imageOffset": 20768,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:24]",
+            "symbolLocation": 96
+          },
+          {
+            "imageIndex": 21,
+            "imageOffset": 20800,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:25]",
+            "symbolLocation": 100
+          },
+          {
+            "imageIndex": 22,
+            "imageOffset": 20832,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:26]",
+            "symbolLocation": 104
+          },
+          { "imageIndex": 2, "imageOffset": 101728 },
+          {
+            "imageIndex": 23,
+            "imageOffset": 20896,
+            "symbol": "-[NSSomeLongSystemClassName performSomethingWithObject:context:28]",
+            "symbolLocation": 112
+          },
+          { "omitted": 3 },
+          { "imageIndex": 2, "imageOffset": 102048 },
+          { "omitted": 4 },
+          { "imageIndex": 2, "imageOffset": 102368 },
+          { "omitted": 4 },
+          { "imageIndex": 2, "imageOffset": 102688 },
+          { "omitted": 4 },
+          { "imageIndex": 2, "imageOffset": 103008 },
+          { "omitted": 4 },
+          { "imageIndex": 2, "imageOffset": 103328 },
+          { "omitted": 4 },
+          { "imageIndex": 2, "imageOffset": 103648 },
+          { "omitted": 2 }
+        ],
+        "index": 0,
+        "queue": "com.apple.main-thread",
+        "threadState": {
+          "cpsr": { "value": 1073741824 },
+          "esr": { "description": "(Syscall)", "value": 1442840704 },
+          "far": { "value": 0 },
+          "flavor": "ARM_THREAD_STATE64",
+          "fp": { "value": 6100000100 },
+          "lr": { "value": 4295000000 },
+          "pc": { "value": 4295012345 },
+          "sp": { "value": 6100000000 }
+        },
+        "triggered": true
+      }
+    ],
+    "translated": false,
+    "trimmed": true,
+    "usedImages": [
+      {
+        "arch": "arm64e",
+        "base": 6443499520,
+        "name": "SystemFramework1",
+        "uuid": "00000001-0000-4000-8000-000000001EEF"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6450839552,
+        "name": "SystemFramework8",
+        "uuid": "00000008-0000-4000-8000-00000000F778"
+      },
+      {
+        "arch": "arm64",
+        "base": 4294967296,
+        "name": "FalconMail",
+        "uuid": "70B89F27-1634-3580-A695-57CDB41D7743"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6465519616,
+        "name": "SystemFramework22",
+        "uuid": "00000016-0000-4000-8000-00000002A88A"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6472859648,
+        "name": "SystemFramework29",
+        "uuid": "0000001D-0000-4000-8000-000000038113"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6480199680,
+        "name": "libsystem_framework_36.dylib",
+        "uuid": "00000024-0000-4000-8000-00000004599C"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6487539712,
+        "name": "SystemFramework43",
+        "uuid": "0000002B-0000-4000-8000-000000053225"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6502219776,
+        "name": "libsystem_framework_57.dylib",
+        "uuid": "00000039-0000-4000-8000-00000006E337"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6509559808,
+        "name": "SystemFramework64",
+        "uuid": "00000040-0000-4000-8000-00000007BBC0"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6516899840,
+        "name": "SystemFramework71",
+        "uuid": "00000047-0000-4000-8000-000000089449"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6524239872,
+        "name": "libsystem_framework_78.dylib",
+        "uuid": "0000004E-0000-4000-8000-000000096CD2"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6538919936,
+        "name": "SystemFramework92",
+        "uuid": "0000005C-0000-4000-8000-0000000B1DE4"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6546259968,
+        "name": "libsystem_framework_99.dylib",
+        "uuid": "00000063-0000-4000-8000-0000000BF66D"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6553600000,
+        "name": "SystemFramework106",
+        "uuid": "0000006A-0000-4000-8000-0000000CCEF6"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6560940032,
+        "name": "SystemFramework113",
+        "uuid": "00000071-0000-4000-8000-0000000DA77F"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6575620096,
+        "name": "SystemFramework127",
+        "uuid": "0000007F-0000-4000-8000-0000000F5891"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6582960128,
+        "name": "SystemFramework134",
+        "uuid": "00000086-0000-4000-8000-00000010311A"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6590300160,
+        "name": "libsystem_framework_141.dylib",
+        "uuid": "0000008D-0000-4000-8000-0000001109A3"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6597640192,
+        "name": "SystemFramework148",
+        "uuid": "00000094-0000-4000-8000-00000011E22C"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6612320256,
+        "name": "libsystem_framework_162.dylib",
+        "uuid": "000000A2-0000-4000-8000-00000013933E"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6619660288,
+        "name": "SystemFramework169",
+        "uuid": "000000A9-0000-4000-8000-000000146BC7"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6627000320,
+        "name": "SystemFramework176",
+        "uuid": "000000B0-0000-4000-8000-000000154450"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6634340352,
+        "name": "libsystem_framework_183.dylib",
+        "uuid": "000000B7-0000-4000-8000-000000161CD9"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6649020416,
+        "name": "SystemFramework197",
+        "uuid": "000000C5-0000-4000-8000-00000017CDEB"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6494879744,
+        "name": "SystemFramework50",
+        "uuid": "00000032-0000-4000-8000-000000060AAE"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6531579904,
+        "name": "SystemFramework85",
+        "uuid": "00000055-0000-4000-8000-0000000A455B"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6568280064,
+        "name": "libsystem_framework_120.dylib",
+        "uuid": "00000078-0000-4000-8000-0000000E8008"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6604980224,
+        "name": "SystemFramework155",
+        "uuid": "0000009B-0000-4000-8000-00000012BAB5"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6641680384,
+        "name": "SystemFramework190",
+        "uuid": "000000BE-0000-4000-8000-00000016F562"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6656360448,
+        "name": "libsystem_framework_204.dylib",
+        "uuid": "000000CC-0000-4000-8000-00000018A674"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6663700480,
+        "name": "SystemFramework211",
+        "uuid": "000000D3-0000-4000-8000-000000197EFD"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6671040512,
+        "name": "SystemFramework218",
+        "uuid": "000000DA-0000-4000-8000-0000001A5786"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6678380544,
+        "name": "libsystem_framework_225.dylib",
+        "uuid": "000000E1-0000-4000-8000-0000001B300F"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6693060608,
+        "name": "SystemFramework239",
+        "uuid": "000000EF-0000-4000-8000-0000001CE121"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6700400640,
+        "name": "libsystem_framework_246.dylib",
+        "uuid": "000000F6-0000-4000-8000-0000001DB9AA"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6446645248,
+        "name": "SystemFramework4",
+        "uuid": "00000004-0000-4000-8000-000000007BBC"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6453985280,
+        "name": "SystemFramework11",
+        "uuid": "0000000B-0000-4000-8000-000000015445"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6468665344,
+        "name": "SystemFramework25",
+        "uuid": "00000019-0000-4000-8000-000000030557"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6476005376,
+        "name": "SystemFramework32",
+        "uuid": "00000020-0000-4000-8000-00000003DDE0"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6483345408,
+        "name": "libsystem_framework_39.dylib",
+        "uuid": "00000027-0000-4000-8000-00000004B669"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6490685440,
+        "name": "SystemFramework46",
+        "uuid": "0000002E-0000-4000-8000-000000058EF2"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6505365504,
+        "name": "libsystem_framework_60.dylib",
+        "uuid": "0000003C-0000-4000-8000-000000074004"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6512705536,
+        "name": "SystemFramework67",
+        "uuid": "00000043-0000-4000-8000-00000008188D"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6520045568,
+        "name": "SystemFramework74",
+        "uuid": "0000004A-0000-4000-8000-00000008F116"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6527385600,
+        "name": "libsystem_framework_81.dylib",
+        "uuid": "00000051-0000-4000-8000-00000009C99F"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6542065664,
+        "name": "SystemFramework95",
+        "uuid": "0000005F-0000-4000-8000-0000000B7AB1"
+      },
+      {
+        "arch": "arm64e",
+        "base": 6549405696,
+        "name": "libsystem_framework_102.dylib",
+        "uuid": "00000066-0000-4000-8000-0000000C533A"
+      }
+    ]
+  },
+  "metrickit": {
+    "callStackTree": {
+      "callStackPerThread": true,
+      "callStacks": [
+        {
+          "frames": [
+            { "address": 4295003000, "binaryName": "SystemFramework0", "binaryUUID": "00000000-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103000, "sampleCount": 1 },
+            { "address": 4295003001, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103001, "sampleCount": 1 },
+            { "address": 4295003002, "binaryName": "SystemFramework2", "binaryUUID": "00000002-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103002, "sampleCount": 1 },
+            { "address": 4295003003, "binaryName": "SystemFramework3", "binaryUUID": "00000003-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103003, "sampleCount": 1 },
+            { "address": 4295003004, "binaryName": "SystemFramework4", "binaryUUID": "00000004-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103004, "sampleCount": 1 },
+            { "address": 4295003005, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103005, "sampleCount": 1 },
+            { "address": 4295003006, "binaryName": "SystemFramework6", "binaryUUID": "00000006-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103006, "sampleCount": 1 },
+            { "address": 4295003007, "binaryName": "SystemFramework7", "binaryUUID": "00000007-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103007, "sampleCount": 1 },
+            { "address": 4295003008, "binaryName": "SystemFramework8", "binaryUUID": "00000008-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103008, "sampleCount": 1 },
+            { "address": 4295003009, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103009, "sampleCount": 1 },
+            { "address": 4295003010, "binaryName": "SystemFramework10", "binaryUUID": "0000000A-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103010, "sampleCount": 1 },
+            { "address": 4295003011, "binaryName": "SystemFramework11", "binaryUUID": "0000000B-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103011, "sampleCount": 1 },
+            { "address": 4295003012, "binaryName": "SystemFramework12", "binaryUUID": "0000000C-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103012, "sampleCount": 1 },
+            { "address": 4295003013, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103013, "sampleCount": 1 },
+            { "address": 4295003014, "binaryName": "SystemFramework14", "binaryUUID": "0000000E-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103014, "sampleCount": 1 },
+            { "address": 4295003015, "binaryName": "SystemFramework15", "binaryUUID": "0000000F-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103015, "sampleCount": 1 },
+            { "address": 4295003016, "binaryName": "SystemFramework16", "binaryUUID": "00000010-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103016, "sampleCount": 1 },
+            { "address": 4295003017, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103017, "sampleCount": 1 },
+            { "address": 4295003018, "binaryName": "SystemFramework18", "binaryUUID": "00000012-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103018, "sampleCount": 1 },
+            { "address": 4295003019, "binaryName": "SystemFramework19", "binaryUUID": "00000013-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103019, "sampleCount": 1 },
+            { "address": 4295003020, "binaryName": "SystemFramework20", "binaryUUID": "00000014-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103020, "sampleCount": 1 },
+            { "address": 4295003021, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103021, "sampleCount": 1 },
+            { "address": 4295003022, "binaryName": "SystemFramework22", "binaryUUID": "00000016-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103022, "sampleCount": 1 },
+            { "address": 4295003023, "binaryName": "SystemFramework23", "binaryUUID": "00000017-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103023, "sampleCount": 1 },
+            { "address": 4295003024, "binaryName": "SystemFramework24", "binaryUUID": "00000018-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103024, "sampleCount": 1 },
+            { "address": 4295003025, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103025, "sampleCount": 1 },
+            { "address": 4295003026, "binaryName": "SystemFramework26", "binaryUUID": "0000001A-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103026, "sampleCount": 1 },
+            { "address": 4295003027, "binaryName": "SystemFramework27", "binaryUUID": "0000001B-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103027, "sampleCount": 1 },
+            { "address": 4295003028, "binaryName": "SystemFramework28", "binaryUUID": "0000001C-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103028, "sampleCount": 1 },
+            { "address": 4295003029, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103029, "sampleCount": 1 },
+            { "address": 4295003030, "binaryName": "SystemFramework30", "binaryUUID": "0000001E-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103030, "sampleCount": 1 },
+            { "address": 4295003031, "binaryName": "SystemFramework31", "binaryUUID": "0000001F-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103031, "sampleCount": 1 },
+            { "address": 4295003032, "binaryName": "SystemFramework32", "binaryUUID": "00000020-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103032, "sampleCount": 1 },
+            { "address": 4295003033, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103033, "sampleCount": 1 },
+            { "address": 4295003034, "binaryName": "SystemFramework34", "binaryUUID": "00000022-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103034, "sampleCount": 1 },
+            { "address": 4295003035, "binaryName": "SystemFramework35", "binaryUUID": "00000023-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103035, "sampleCount": 1 },
+            { "address": 4295003036, "binaryName": "SystemFramework36", "binaryUUID": "00000024-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103036, "sampleCount": 1 },
+            { "address": 4295003037, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103037, "sampleCount": 1 },
+            { "address": 4295003038, "binaryName": "SystemFramework38", "binaryUUID": "00000026-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103038, "sampleCount": 1 },
+            { "address": 4295003039, "binaryName": "SystemFramework39", "binaryUUID": "00000027-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103039, "sampleCount": 1 },
+            { "address": 4295003040, "binaryName": "SystemFramework40", "binaryUUID": "00000028-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103040, "sampleCount": 1 },
+            { "address": 4295003041, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103041, "sampleCount": 1 },
+            { "address": 4295003042, "binaryName": "SystemFramework42", "binaryUUID": "0000002A-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103042, "sampleCount": 1 },
+            { "address": 4295003043, "binaryName": "SystemFramework43", "binaryUUID": "0000002B-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103043, "sampleCount": 1 },
+            { "address": 4295003044, "binaryName": "SystemFramework44", "binaryUUID": "0000002C-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103044, "sampleCount": 1 },
+            { "address": 4295003045, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103045, "sampleCount": 1 },
+            { "address": 4295003046, "binaryName": "SystemFramework46", "binaryUUID": "0000002E-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103046, "sampleCount": 1 },
+            { "address": 4295003047, "binaryName": "SystemFramework47", "binaryUUID": "0000002F-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103047, "sampleCount": 1 },
+            { "address": 4295003048, "binaryName": "SystemFramework48", "binaryUUID": "00000030-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103048, "sampleCount": 1 },
+            { "address": 4295003049, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103049, "sampleCount": 1 },
+            { "address": 4295003050, "binaryName": "SystemFramework50", "binaryUUID": "00000032-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103050, "sampleCount": 1 },
+            { "address": 4295003051, "binaryName": "SystemFramework51", "binaryUUID": "00000033-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103051, "sampleCount": 1 },
+            { "address": 4295003052, "binaryName": "SystemFramework52", "binaryUUID": "00000034-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103052, "sampleCount": 1 },
+            { "address": 4295003053, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103053, "sampleCount": 1 },
+            { "address": 4295003054, "binaryName": "SystemFramework54", "binaryUUID": "00000036-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103054, "sampleCount": 1 },
+            { "address": 4295003055, "binaryName": "SystemFramework55", "binaryUUID": "00000037-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103055, "sampleCount": 1 },
+            { "address": 4295003056, "binaryName": "SystemFramework56", "binaryUUID": "00000038-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103056, "sampleCount": 1 },
+            { "address": 4295003057, "binaryName": "FalconMail", "binaryUUID": "70B89F27-1634-3580-A695-57CDB41D7743", "offsetIntoBinaryTextSegment": 103057, "sampleCount": 1 },
+            { "address": 4295003058, "binaryName": "SystemFramework58", "binaryUUID": "0000003A-0000-4000-8000-000000000003", "offsetIntoBinaryTextSegment": 103058, "sampleCount": 1 },
+            { "address": 6442454944, "binaryName": "dyld", "binaryUUID": "11111111-2222-3333-4444-555555555555", "offsetIntoBinaryTextSegment": 4000, "sampleCount": 1 }
+          ],
+          "threadAttributed": true
+        }
+      ],
+      "callStacksOmitted": 29
+    },
+    "diagnosticMetaData": { "appBuildVersion": "45", "appVersion": "1.9.0", "exceptionType": 1, "osVersion": "macOS 26.6 (25G5023)", "signal": 11 },
+    "source": "metrickit",
+    "trimmed": true
+  }
+}

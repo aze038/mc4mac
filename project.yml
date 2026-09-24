@@ -44,6 +44,9 @@ targets:
         FalconUpdateRepository: aze038/mc4mac
         FalconGoogleClientID: ""
         FalconGoogleClientSecret: ""
+        # Filled in by the release workflow; empty in every other build, which then never sends diagnostics.
+        FalconDiagnosticsURL: ""
+        FalconDiagnosticsKey: ""
     entitlements:
       path: App/FalconMail/FalconMail.entitlements
       properties:

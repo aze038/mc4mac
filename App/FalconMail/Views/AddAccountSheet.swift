@@ -114,6 +114,7 @@ struct AddAccountSheet: View {
                 try await model.addGoogleAccount()
                 dismiss()
             } catch {
+                Log.warning("SignIn", "Adding a Google account failed: \(error.localizedDescription)", error: error)
                 self.error = error.localizedDescription
             }
         }
@@ -129,6 +130,7 @@ struct AddAccountSheet: View {
                 try await model.addCustomAccount(email: email.trimmed.lowercased(), displayName: displayName, settings: settings)
                 dismiss()
             } catch {
+                Log.warning("SignIn", "Adding an account on \(settings.imapHost) failed: \(error.localizedDescription)", error: error)
                 self.error = error.localizedDescription
             }
         }

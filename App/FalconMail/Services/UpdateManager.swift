@@ -79,6 +79,7 @@ final class UpdateManager: ObservableObject {
                 phase = .idle
             }
         } catch {
+            Log.warning("Update", "Checking for updates failed: \(error.localizedDescription)", error: error)
             phase = userInitiated ? .failed(error.localizedDescription) : .idle
         }
     }
@@ -115,8 +116,10 @@ final class UpdateManager: ObservableObject {
                 let current = Bundle.main.bundleURL
                 let target = UpdateInstaller.isReplaceable(current) ? current : UpdateInstaller.preferredInstallLocation(named: current.lastPathComponent)
                 try UpdateInstaller.scheduleInstallAfterQuit(newApp: newApp, target: target)
+                DiagnosticsService.shared.endSession()
                 exit(0)
             } catch {
+                Log.error("Update", "Installing the update failed: \(error.localizedDescription)", error: error)
                 phase = .failed(error.localizedDescription)
             }
         }

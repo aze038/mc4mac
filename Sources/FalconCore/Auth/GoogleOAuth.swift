@@ -206,7 +206,8 @@ public actor TokenStore {
             let fresh: OAuthToken
             do {
                 fresh = try await refresher(token, client)
-            } catch FalconError.http(let status, _) where status == 400 || status == 401 {
+            } catch FalconError.http(let status, let text) where status == 400 || status == 401 {
+                Log.warning("OAuth", "Google refused to renew the sign-in (HTTP \(status)): \(text)", error: FalconError.notAuthenticated)
                 throw FalconError.notAuthenticated
             }
             return try self.keep(fresh, refreshing: token, for: accountID)
