@@ -17,20 +17,22 @@ final class TokenRefreshTests: XCTestCase {
 
         var vault: TokenVault {
             TokenVault(load: { [self] id in lock.withLock { tokens[id] } },
-                       save: { [self] token, id in lock.withLock { tokens[id] = token } })
+                       save: { [self] token, id in lock.withLock { tokens[id] = token } },
+                       forget: { [self] id in lock.withLock { tokens[id] = nil } })
         }
 
         func token(_ id: UUID) -> OAuthToken? { lock.withLock { tokens[id] } }
     }
 
     private func store(_ token: OAuthToken, known: [OAuthClientConfig], vault: Vault? = nil, refreshes: Recorder<String>,
-                       delay: TimeInterval = 0) -> (TokenStore, Vault) {
+                       delay: TimeInterval = 0, refusal: Error? = nil) -> (TokenStore, Vault) {
         let held = vault ?? Vault([account: token])
         let current = current
         let tokens = TokenStore(keychain: KeychainStore(service: "com.falconmail.tests.unused"), vault: held.vault,
                                 clientConfigProvider: { current }, knownClientConfigs: { known }) { old, client in
             refreshes.append(client.clientID)
             if delay > 0 { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            if let refusal { throw refusal }
             return OAuthToken(accessToken: "fresh-\(refreshes.all.count)", refreshToken: old.refreshToken,
                               expiresAt: Date().addingTimeInterval(3600), scope: old.scope, clientID: client.clientID)
         }
@@ -100,6 +102,62 @@ final class TokenRefreshTests: XCTestCase {
         XCTAssertEqual(access, "fresh-1", "nothing waits: the token was already fresh")
         XCTAssertEqual(refreshes.all.count, 1)
         await tokens.stopKeepingFresh(account)
+    }
+
+    func testASignInSavedDuringARefreshIsKept() async throws {
+        let refreshes = Recorder<String>()
+        let (tokens, vault) = store(expiring(clientID: current.clientID), known: [current], refreshes: refreshes, delay: 0.3)
+        let account = account
+        let asking = Task { try await tokens.validAccessToken(for: account) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let signIn = OAuthToken(accessToken: "signed-in", refreshToken: "new-refresh", expiresAt: Date().addingTimeInterval(3600),
+                                scope: GoogleScopes.mail, clientID: current.clientID)
+        try await tokens.save(signIn, for: account)
+        let access = try await asking.value
+        XCTAssertEqual(access, "signed-in", "a refresh of the grant it replaced is not handed out")
+        XCTAssertEqual(vault.token(account)?.refreshToken, "new-refresh", "nor saved over it")
+        XCTAssertEqual(vault.token(account)?.accessToken, "signed-in")
+        XCTAssertEqual(refreshes.all.count, 1)
+    }
+
+    func testAnAccountRemovedDuringARefreshKeepsNoToken() async throws {
+        let refreshes = Recorder<String>()
+        let (tokens, vault) = store(expiring(clientID: current.clientID), known: [current], refreshes: refreshes, delay: 0.3)
+        let account = account
+        let asking = Task { try await tokens.validAccessToken(for: account) }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await tokens.remove(accountID: account)
+        do {
+            _ = try await asking.value
+            XCTFail("the account is gone")
+        } catch {
+            XCTAssertEqual(MailServiceError.classify(error, email: "owner@example.com", isGoogle: true).kind, .needsSignIn)
+        }
+        XCTAssertNil(vault.token(account), "the refresh did not write the token back")
+    }
+
+    func testEveryoneWaitingOnARefusedRefreshIsAskedToSignIn() async throws {
+        let refreshes = Recorder<String>()
+        let (tokens, _) = store(expiring(clientID: current.clientID), known: [current], refreshes: refreshes, delay: 0.2,
+                                refusal: FalconError.http(400, #"{"error": "invalid_grant"}"#))
+        let account = account
+        let kinds = await withTaskGroup(of: MailServiceError.Kind.self) { group in
+            for _ in 1...4 {
+                group.addTask {
+                    do {
+                        _ = try await tokens.validAccessToken(for: account)
+                        return .local
+                    } catch {
+                        return MailServiceError.classify(error, email: "owner@example.com", isGoogle: true).kind
+                    }
+                }
+            }
+            var out: [MailServiceError.Kind] = []
+            for await kind in group { out.append(kind) }
+            return out
+        }
+        XCTAssertEqual(refreshes.all.count, 1)
+        XCTAssertEqual(kinds, Array(repeating: .needsSignIn, count: 4), "those who joined the refresh hear the same as the one who began it")
     }
 
     // MARK: Stored tokens

@@ -110,10 +110,16 @@ public struct GoogleOAuth: Sendable {
 struct TokenVault: Sendable {
     var load: @Sendable (UUID) throws -> OAuthToken?
     var save: @Sendable (OAuthToken, UUID) throws -> Void
+    /// Removes the account's token and its password, if it had one.
+    var forget: @Sendable (UUID) -> Void
 
     static func keychain(_ keychain: KeychainStore) -> TokenVault {
         TokenVault(load: { try keychain.loadCodable(OAuthToken.self, account: "oauth.\($0.uuidString)") },
-                   save: { try keychain.saveCodable($0, account: "oauth.\($1.uuidString)") })
+                   save: { try keychain.saveCodable($0, account: "oauth.\($1.uuidString)") },
+                   forget: { id in
+                       keychain.delete(account: "oauth.\(id.uuidString)")
+                       keychain.delete(account: "password.\(id.uuidString)")
+                   })
     }
 }
 
@@ -169,8 +175,7 @@ public actor TokenStore {
     public func remove(accountID: UUID) {
         stopKeepingFresh(accountID)
         cache[accountID] = nil
-        keychain.delete(account: "oauth.\(accountID.uuidString)")
-        keychain.delete(account: "password.\(accountID.uuidString)")
+        vault.forget(accountID)
     }
 
     public func savePassword(_ password: String, for accountID: UUID) throws {
@@ -191,21 +196,32 @@ public actor TokenStore {
     }
 
     /// A fresh token for the account. However many ask at once, one refresh is made and all
-    /// of them get its result.
+    /// of them get its result, a refusal included.
     private func refreshed(_ accountID: UUID) async throws -> OAuthToken {
         if let running = refreshing[accountID] { return try await running.value }
         guard let token = try token(for: accountID) else { throw FalconError.notAuthenticated }
         let client = try issuer(of: token, accountID: accountID)
         let refresher = refresher
-        let running = Task { try await refresher(token, client) }
+        let running = Task { () throws -> OAuthToken in
+            let fresh: OAuthToken
+            do {
+                fresh = try await refresher(token, client)
+            } catch FalconError.http(let status, _) where status == 400 || status == 401 {
+                throw FalconError.notAuthenticated
+            }
+            return try self.keep(fresh, refreshing: token, for: accountID)
+        }
         refreshing[accountID] = running
         defer { refreshing[accountID] = nil }
-        let fresh: OAuthToken
-        do {
-            fresh = try await running.value
-        } catch FalconError.http(let status, _) where status == 400 || status == 401 {
-            throw FalconError.notAuthenticated
-        }
+        return try await running.value
+    }
+
+    /// Saves a refreshed token, unless the account's sign-in changed while it was refreshed:
+    /// a new sign-in is kept rather than overwritten by a refresh of the grant it replaced, and
+    /// an account removed meanwhile gets nothing back.
+    private func keep(_ fresh: OAuthToken, refreshing old: OAuthToken, for accountID: UUID) throws -> OAuthToken {
+        guard let stored = try token(for: accountID) else { throw FalconError.notAuthenticated }
+        guard stored.refreshToken == old.refreshToken, stored.clientID == old.clientID else { return stored }
         try save(fresh, for: accountID)
         return fresh
     }
