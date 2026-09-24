@@ -108,8 +108,7 @@ class Environment {
           return spreadsheet;
         },
         openById: id => {
-          const file = env.drive.files.get(id);
-          if (!file || file.deleted || !env.spreadsheets.has(id)) throw new Error('Unable to open the file ' + id);
+          if (!env.spreadsheets.has(id)) throw new Error('Unable to open the file ' + id);
           return env.spreadsheets.get(id);
         },
         flush: () => {},
@@ -351,8 +350,6 @@ class FakeRange {
     return out;
   }
 
-  getValue() { return this.sheet.value(this.row, this.column); }
-
   setValues(values) {
     if (values.length !== this.rows || values.some(row => row.length !== this.columns)) {
       throw new Error('The number of rows or columns in the data does not match the range.');
@@ -434,8 +431,8 @@ class FakeDrive {
     this.folders = new Map();
   }
 
-  addFile(id, name, mimeType, parent = 'root', owner = this.env.email) {
-    const file = new FakeFile(this, id, name, mimeType, parent, owner);
+  addFile(id, name, mimeType, parent = 'root') {
+    const file = new FakeFile(id, name, mimeType, parent);
     this.files.set(id, file);
     return file;
   }
@@ -457,9 +454,8 @@ class FakeDrive {
         return this.folders.get(id);
       },
       getFileById: id => {
-        const file = this.files.get(id);
-        if (!file || file.deleted) throw new Error('No item with the given ID could be found.');
-        return file;
+        if (!this.files.has(id)) throw new Error('No item with the given ID could be found.');
+        return this.files.get(id);
       },
     };
   }
@@ -480,24 +476,21 @@ class FakeFolder {
   getUrl() { return 'https://drive.google.com/drive/folders/' + this.id; }
   getOwner() { return { getEmail: () => this.owner }; }
   isTrashed() { return this.trashed; }
-  setTrashed(trashed) { this.trashed = trashed; return this; }
   setSharing(access, permission) { this.sharing = { access, permission }; return this; }
 
   getFilesByType(mimeType) {
     return iterate(Array.from(this.drive.files.values())
-      .filter(file => file.parent === this.id && file.mimeType === mimeType && !file.deleted));
+      .filter(file => file.parent === this.id && file.mimeType === mimeType));
   }
 }
 
 class FakeFile {
-  constructor(drive, id, name, mimeType, parent, owner) {
-    Object.assign(this, { drive, id, name, mimeType, parent, owner, trashed: false, deleted: false, sharing: null });
+  constructor(id, name, mimeType, parent) {
+    Object.assign(this, { id, name, mimeType, parent, trashed: false, sharing: null });
   }
 
   getId() { return this.id; }
   getName() { return this.name; }
-  getUrl() { return 'https://docs.google.com/spreadsheets/d/' + this.id + '/edit'; }
-  getOwner() { return { getEmail: () => this.owner }; }
   isTrashed() { return this.trashed; }
   setTrashed(trashed) { this.trashed = trashed; return this; }
   setSharing(access, permission) { this.sharing = { access, permission }; return this; }
