@@ -310,7 +310,7 @@ extension AppModel {
         let apiError = error as? GoogleAPIError ?? GoogleAPIError(kind: .other, detail: String(describing: error))
         Log.warning("Open", "\(accountName(accountID)) could not \(action) a message found on the server: \(apiError.kind.rawValue) \(apiError.httpStatus) \(apiError.reason ?? "-")",
                     error: apiError, account: accounts.first { $0.id == accountID }, logAs: "search")
-        errorMessage = apiError.localizedDescription
+        showAlert(for: apiError)
     }
 
     /// Keeps the twenty most recently opened messages; their fetched attachments go with them.

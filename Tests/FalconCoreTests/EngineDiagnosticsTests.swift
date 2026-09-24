@@ -173,6 +173,91 @@ final class EngineDiagnosticsTests: XCTestCase {
         for word in ["ACME", "Contracts", "Clients", "HR", "ana.lima", "partner.example", "owner@example.com"] {
             XCTAssertFalse(event.message.contains(word), "\(word) in \(event.message)")
         }
+
+        // The app's alert about it goes to diagnostics with the folder names from the event.
+        let alerts = await h.events.actionAlerts
+        let alert = try XCTUnwrap(alerts.first)
+        XCTAssertTrue(Set(alert.names).isSuperset(of: ["Clients/ACME Contracts", "ACME Contracts"]), "\(alert.names)")
+        Log.error("Alert", alert.message, names: alert.names)
+        let upload = try await uploaded()
+        XCTAssertTrue(upload.contains("Alert."), upload)
+        for word in ["ACME", "Contracts", "Clients", "\"HR", " HR", "ana.lima", "partner.example", "owner@example.com"] {
+            XCTAssertFalse(upload.contains(word), "\(word) reached the upload")
+        }
+    }
+
+    /// Folder and file names in an error's sentence, which the app's alert gives diagnostics.
+    func testTheNamesInAnErrorsSentenceAreKnownForItsAlert() {
+        let unreadable = FolderIndexUnreadable(folder: "HR of ana@example.com", names: ["HR", "HR"], detail: "no permission")
+        XCTAssertEqual(Log.names(heldBy: unreadable), ["HR", "HR"])
+        // Classified as the engine's failure, its sentence is the same, with the folder's path.
+        let classified = MailServiceError.classify(unreadable, email: "ana@example.com", isGoogle: true)
+        XCTAssertTrue(classified.localizedDescription.contains("listed for HR of"), classified.localizedDescription)
+        XCTAssertEqual(Log.names(heldBy: classified), ["HR"])
+        let gone = MailServiceError(kind: .folderGone, email: "ana@example.com", isGoogle: true, name: "Clients/ACME")
+        XCTAssertEqual(Log.names(heldBy: gone), ["Clients/ACME"])
+        // A folder list set aside is FalconMail's own file, whose name stays.
+        let setAside = MailServiceError(kind: .folderListUnreadable, email: "ana@example.com", isGoogle: true,
+                                        name: "folders.unreadable.json")
+        XCTAssertEqual(Log.names(heldBy: setAside), [])
+        XCTAssertEqual(Log.names(heldBy: FalconError.storage("disk full")), [])
+        XCTAssertEqual(Log.names(heldBy: nil), [])
+    }
+
+    /// When the owner selects a folder whose stored list cannot be read, or uses Load older on
+    /// it, the app shows the error's sentence, which names the folder. The alert goes to
+    /// diagnostics with the names in that error, so a short name such as HR stays out of the
+    /// upload, as it does from the engine's own lines.
+    func testAnAlertAboutAFolderWhoseIndexCannotBeReadLeavesItsNameOut() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.addMailbox("HR")
+        server.add(FakeIMAPServer.message("review"), to: "HR")
+        let h = try await started(server)
+        try await h.syncOnce()
+        await h.store.flushAll()
+        let hr = try await h.folder("HR")
+        let index = h.layout.folderDirectory(accountID: hr.accountID, folderID: hr.id).appendingPathComponent("index.plist")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: index.path))
+        await h.syncer.stop()
+        // The app launched again, with HR's list unreadable and older mail left on the server.
+        let again = try await EngineHarness(server: server, root: h.root)
+        harness = again
+        try await again.store.updateFolder(hr.id) { $0.oldestSyncedUID = 5 }
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: index.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: index.path) }
+        _ = StoredFileNotices.take()
+        startCenter()
+
+        // As the app does it: the error's sentence, with the names in the error.
+        func alert(_ error: Error) -> String {
+            Log.error("Alert", error.localizedDescription, names: Log.names(heldBy: error))
+            return error.localizedDescription
+        }
+        var shown: [String] = []
+        do {
+            _ = try await again.store.messages(in: hr.id, limit: 50)
+            XCTFail("the list of HR cannot be read")
+        } catch {
+            XCTAssertTrue(error is FolderIndexUnreadable, "\(error)")
+            shown.append(alert(error))
+        }
+        do {
+            try await again.syncer.loadOlder(folder: hr)
+            XCTFail("Load older cannot read the list of HR either")
+        } catch {
+            shown.append(alert(error))
+        }
+        for text in shown {
+            XCTAssertTrue(text.contains("The messages listed for HR of owner@example.com could not be read"), "the owner is told which: \(text)")
+        }
+
+        center?.waitUntilIdle()
+        let signatures = Set((center?.pendingRecords ?? []).map(\.event.signature))
+        XCTAssertTrue(signatures.contains { $0.hasPrefix("Alert.") }, "\(signatures.sorted())")
+        let upload = try await uploaded()
+        for word in ["\"HR", " HR ", " HR;", "for HR", "owner@"] {
+            XCTAssertFalse(upload.contains(word), "\(word) reached the upload")
+        }
     }
 
     func testAFailedImportIsAnErrorOfTheImport() async throws {

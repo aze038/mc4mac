@@ -313,12 +313,8 @@ public final class DiagnosticsCenter: @unchecked Sendable {
     /// and title are made only from the area, the code and the place in the code, and the code
     /// from a typed error where there is one, so no server's words can reach either.
     private func makeEvent(_ entry: LogRecord) -> DiagnosticsEvent {
-        var names = entry.names
-        // The folder or address a failure names; a folder list set aside is FalconMail's own file.
-        if let failure = entry.error as? MailServiceError, let name = failure.name, failure.kind != .folderListUnreadable {
-            names.append(name)
-        }
-        if let unreadable = entry.error as? FolderIndexUnreadable { names += unreadable.names }
+        // The folder or address a failure names, besides those the line was written about.
+        let names = entry.names + Log.names(heldBy: entry.error)
         let message = redactor.redact(entry.message, naming: names)
         let code = entry.code.map(DiagnosticsSignature.word) ?? DiagnosticsSignature.code(for: entry.error, message: message)
         let kind: DiagnosticsKind = entry.level == .error ? .error : .warning

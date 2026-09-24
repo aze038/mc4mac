@@ -12,7 +12,9 @@ public enum SyncEvent: Sendable {
     /// rows of an action that no longer applies, while the pass itself went on: worth telling
     /// the owner, but no failed sync.
     case problem(accountID: UUID, message: String)
-    case actionFailed(accountID: UUID, message: String)
+    /// Something the owner asked for failed on the server, in the sentence to show, with the
+    /// folder names that sentence holds, which diagnostics take out of it.
+    case actionFailed(accountID: UUID, message: String, names: [String])
     case health(accountID: UUID, AccountHealth)
     case finished(accountID: UUID)
     /// A pass the reader asked for (see requestSync(check:)) is done, and whether any inbox got
@@ -715,6 +717,12 @@ public actor AccountSyncer {
             Log.info("sync", "\(user): the server turned down the access token (\(refusal.codeName ?? "no code")); refreshing it once")
             return try await attempt(forceRefresh: true)
         }
+    }
+
+    /// The folder's path and name, and those in the failure's sentence, for an alert that shows
+    /// the owner that sentence.
+    static func names(of folder: FolderInfo?, heldBy failure: Error) -> [String] {
+        (folder.map { [$0.path, $0.name] } ?? []) + Log.names(heldBy: failure)
     }
 
     /// The failure of one thing the owner asked for, as they should see it, logged with the
@@ -1829,12 +1837,13 @@ public actor AccountSyncer {
         } catch {
             await release(action.pending)
             await pendingActions.remove(action.pending.id)
-            let failure = await failed("Actions", "\(action.record.kind.rawValue) of \(action.pending.uids.count)", error,
-                                       folder: await store.folder(action.pending.folderID))
+            let folder = await store.folder(action.pending.folderID)
+            let failure = await failed("Actions", "\(action.record.kind.rawValue) of \(action.pending.uids.count)", error, folder: folder)
             guard !action.record.isAutomatic else { return }
             let restored = await restore(action.record, queuedAs: action.pending)
             events.yield(.actionFailed(accountID: account.id,
-                                       message: "\(action.record.failurePrefix): \(failure.localizedDescription)\(restored ? " Restored." : "")"))
+                                       message: "\(action.record.failurePrefix): \(failure.localizedDescription)\(restored ? " Restored." : "")",
+                                       names: Self.names(of: folder, heldBy: failure)))
         }
     }
 
@@ -1915,10 +1924,11 @@ public actor AccountSyncer {
                 try await run(pending)
                 await pendingActions.remove(pending.id)
             } catch {
-                let failure = await failed("Actions", "replaying \(pending.verb.rawValue) of \(pending.uids.count)", error,
-                                           folder: await store.folder(pending.folderID))
+                let folder = await store.folder(pending.folderID)
+                let failure = await failed("Actions", "replaying \(pending.verb.rawValue) of \(pending.uids.count)", error, folder: folder)
                 events.yield(.actionFailed(accountID: account.id,
-                                           message: "Could not finish an action from the last session. \(failure.localizedDescription)"))
+                                           message: "Could not finish an action from the last session. \(failure.localizedDescription)",
+                                           names: Self.names(of: folder, heldBy: failure)))
             }
         }
     }

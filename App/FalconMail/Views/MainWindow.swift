@@ -237,7 +237,7 @@ struct StatusBar: View {
 
     private func signInAgain(_ account: AccountInfo) {
         Task {
-            do { try await model.addGoogleAccount(loginHint: account.email) } catch { model.errorMessage = error.localizedDescription }
+            do { try await model.addGoogleAccount(loginHint: account.email) } catch { model.showAlert(for: error) }
         }
     }
 

@@ -152,7 +152,12 @@ actor EventLog {
     }
 
     var actionFailures: [String] {
-        all.compactMap { if case .actionFailed(_, let message) = $0 { return message }; return nil }
+        all.compactMap { if case .actionFailed(_, let message, _) = $0 { return message }; return nil }
+    }
+
+    /// Each failed action's sentence with the folder names it holds, as the app is handed them.
+    var actionAlerts: [(message: String, names: [String])] {
+        all.compactMap { if case .actionFailed(_, let message, let names) = $0 { return (message, names) }; return nil }
     }
 
     var healths: [AccountHealth] {

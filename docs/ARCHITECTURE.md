@@ -135,7 +135,9 @@ The contract with the backend is in `DIAGNOSTICS.md`. On the app's side:
 What becomes an event:
 
 - Every `Log.warning` and `Log.error` line, never `Log.info`. Each error alert and banner
-  the app shows is one, under the area `Alert`.
+  the app shows is one, under the area `Alert`. It goes with the folder and file names in
+  the error it shows (`Log.names(heldBy:)`), such as HR in "The messages listed for HR of
+  ana@example.com could not be read", and the redactor takes them out, however short.
 - Every failure of the mail engine that the owner could notice, through `Log.failure`, which
   takes the engine's typed `MailServiceError`: a warning when it passes by itself (a
   throttle, a connection limit, a dropped connection, a message moved or deleted), an error

@@ -168,14 +168,23 @@ final class AppModel {
     var accountStatus = AccountStatusBoard()
     var outboxItems: [OutboxItem] = []
     var archiveRecords: [ArchiveRecord] = []
+    /// The alert on screen. Set it with `showAlert`, which tells diagnostics which folder names
+    /// the sentence holds. When set directly, the sentence is taken to hold none.
     var errorMessage: String? {
         didSet {
-            if let errorMessage, errorMessage != oldValue { Log.error("Alert", errorMessage, names: alertNames) }
+            if errorMessage == nil {
+                shownAlertNames = []
+            } else if let errorMessage, errorMessage != oldValue {
+                Log.error("Alert", errorMessage, names: alertNames)
+                shownAlertNames = alertNames
+            }
             alertNames = []
         }
     }
-    /// The folder names the next `errorMessage` holds, which diagnostics take out of it.
+    /// The folder and file names in the next `errorMessage`, which diagnostics take out of it.
     @ObservationIgnored private var alertNames: [String] = []
+    /// The names in the alert on screen, kept for a notice added to it.
+    @ObservationIgnored private var shownAlertNames: [String] = []
     var actionError: String?
     var actionErrorNeedsDismissal = false
     var pendingUndo: PendingUndo?
@@ -482,7 +491,7 @@ final class AppModel {
     func bootstrap() async {
         SoundLibrary.carryOverEarlierChoices()
         play(soundGate.launched())
-        do { try await store.load() } catch { errorMessage = error.localizedDescription }
+        do { try await store.load() } catch { showAlert(for: error) }
         restoredState = session.load()
         for d in session.loadDrafts() { drafts[d.id] = d }
         if let s = restoredState {
@@ -521,8 +530,25 @@ final class AppModel {
     /// them: the actions waiting for the server, and the index of a folder not yet opened.
     private func noteUnreadableFiles() {
         guard let notice = StoredFileNotices.takeNotice() else { return }
-        alertNames = notice.names
-        errorMessage = errorMessage.map { $0 + "\n\n" + notice.text } ?? notice.text
+        if let shown = errorMessage {
+            showAlert(shown + "\n\n" + notice.text, names: shownAlertNames + notice.names)
+        } else {
+            showAlert(notice.text, names: notice.names)
+        }
+    }
+
+    /// Shows the owner `text`. `names` are the folder and file names in it, which diagnostics
+    /// take out of the alert it is told about.
+    func showAlert(_ text: String, names: [String] = []) {
+        alertNames = names
+        errorMessage = text
+    }
+
+    /// Shows the owner what went wrong. The folder names in the error's sentence, such as HR in
+    /// "The messages listed for HR of ana@example.com could not be read", are kept out of
+    /// diagnostics.
+    func showAlert(for error: any Error) {
+        showAlert(error.localizedDescription, names: Log.names(heldBy: error))
     }
 
     var windowsToRestore: [String] {
@@ -612,7 +638,7 @@ final class AppModel {
                     self.accountStatus.apply(event)
                     self.noteUnreadableFiles()
                 case .problem(_, let message): self.statusText = message
-                case .actionFailed(_, let message): self.showActionError(message)
+                case .actionFailed(_, let message, let names): self.showActionError(message, names: names)
                 case .health(let id, let health):
                     self.accountStatus.apply(event)
                     self.online[id] = health.isReachable
@@ -827,7 +853,7 @@ final class AppModel {
             storedInSelection = stored
             rebuildThreads()
         } catch {
-            errorMessage = error.localizedDescription
+            showAlert(for: error)
         }
     }
 
@@ -1222,7 +1248,7 @@ final class AppModel {
                 parts.append(OutgoingAttachment(filename: name + ".eml", mimeType: "message/rfc822", data: raw))
             }
             guard !parts.isEmpty else {
-                errorMessage = "Could not read the original message to attach it."
+                showAlert("Could not read the original message to attach it.")
                 return
             }
             let signature = signature(for: account, .replies)
@@ -1248,7 +1274,7 @@ final class AppModel {
             if bodyCache.count > 200 { bodyCache.removeAll() }
             return parsed
         } catch {
-            errorMessage = error.localizedDescription
+            showAlert(for: error)
             return nil
         }
     }
@@ -1265,27 +1291,29 @@ final class AppModel {
         guard !messages.isEmpty else { return }
         Task {
             var records: [MailActionRecord] = []
-            var failure: String?
+            var failure: (any Error)?
             for (accountID, group) in Dictionary(grouping: messages, by: { $0.accountID }) {
                 guard let syncer = await coordinator.syncer(for: accountID) else { continue }
                 do {
                     records.append(contentsOf: try await op(syncer, group))
                 } catch {
                     Log.info("action", "\(self.accountName(accountID)): \(error.localizedDescription)")
-                    failure = error.localizedDescription
+                    failure = error
                 }
             }
             guard announcing else { return }
             if let failure {
-                showActionError(failure)
+                showActionError(failure.localizedDescription, names: Log.names(heldBy: failure))
                 await reloadMessages()
             }
             offerUndo(records)
         }
     }
 
-    private func showActionError(_ message: String) {
-        Log.error("Alert", message)
+    /// Shows `message` under the toolbar for a while. `names` are the folder names in it, which
+    /// diagnostics take out.
+    private func showActionError(_ message: String, names: [String] = []) {
+        Log.error("Alert", message, names: names)
         actionErrorTask?.cancel()
         actionErrorTask = nil
         actionError = message
@@ -1611,14 +1639,14 @@ final class AppModel {
     func createFolder(named name: String, in account: AccountInfo) {
         Task {
             guard let syncer = await coordinator.syncer(for: account.id) else {
-                errorMessage = "\(account.email) is not connected yet."
+                showAlert("\(account.email) is not connected yet.")
                 return
             }
             do {
                 try await syncer.createMailbox(named: name)
                 await refreshAccounts()
             } catch {
-                errorMessage = error.localizedDescription
+                showAlert(for: error)
             }
         }
     }
@@ -1657,7 +1685,7 @@ final class AppModel {
         Task {
             guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }
             statusText = "Loading older messages in \(folder.name)"
-            do { try await syncer.loadOlder(folder: folder) } catch { errorMessage = error.localizedDescription }
+            do { try await syncer.loadOlder(folder: folder) } catch { showAlert(for: error) }
             statusText = "Up to date"
         }
     }
@@ -1709,7 +1737,7 @@ final class AppModel {
                 statusText = "Draft saved to \(folder.name)"
             } catch {
                 drafts[id] = draft
-                showActionError("Could not save the draft: \(error.localizedDescription)")
+                showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
             }
         }
     }
@@ -1753,7 +1781,7 @@ final class AppModel {
                 try? await contacts.recordUse(accountID: account.id, addresses: message.to + message.cc + message.bcc)
                 contactList = await contacts.all()
             } catch {
-                errorMessage = error.localizedDescription
+                showAlert(for: error)
             }
         }
         drafts[draft.id] = nil
@@ -1929,7 +1957,7 @@ final class AppModel {
             statusText = "Applying rules to inboxes"
             for a in accounts {
                 guard let syncer = await coordinator.syncer(for: a.id) else { continue }
-                do { try await syncer.runRulesOnInbox() } catch { errorMessage = error.localizedDescription }
+                do { try await syncer.runRulesOnInbox() } catch { showAlert(for: error) }
             }
             statusText = "Rules applied"
         }
@@ -1947,7 +1975,7 @@ final class AppModel {
             guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }
             // Each failure has reached diagnostics once already, from the engine or the import.
             let outcome = await FileImport.run(urls, into: folder, syncer: syncer)
-            for failure in outcome.failures { errorMessage = failure.localizedDescription }
+            for failure in outcome.failures { showAlert(for: failure) }
             statusText = "Imported \(outcome.imported) messages into \(folder.name)"
         }
     }

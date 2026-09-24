@@ -92,6 +92,22 @@ extension Log {
                        names: names, details: details, file: file, function: function, line: line), logAs: engineArea, keeping: own)
     }
 
+    /// The folder and file names in an error's sentence. Diagnostics removes them from any line
+    /// that repeats the sentence, such as an alert that shows it to the owner. A short name
+    /// such as HR is removed too, even where no rule for folder names would find it.
+    public static func names(heldBy error: (any Error)?) -> [String] {
+        switch error {
+        case let failure as MailServiceError:
+            // A folder list set aside is FalconMail's own file, whose name says nothing of the owner's.
+            guard failure.kind != .folderListUnreadable, let name = failure.name else { return [] }
+            return [name]
+        case let unreadable as FolderIndexUnreadable:
+            return unreadable.names
+        default:
+            return []
+        }
+    }
+
     private static func emit(_ record: LogRecord, logAs engineArea: String?, keeping own: String?) {
         if let engineArea {
             info(engineArea, own.map { redacted(record.message, keeping: $0) } ?? record.message)
