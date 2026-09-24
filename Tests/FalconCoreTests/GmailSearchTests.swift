@@ -12,6 +12,8 @@ final class GmailSearchTests: XCTestCase {
     override func tearDown() {
         for root in roots { try? FileManager.default.removeItem(at: root) }
         roots = []
+        // The log is the whole process's: the engine's tests read what it says after these run.
+        Log.isEnabled = true
         super.tearDown()
     }
 

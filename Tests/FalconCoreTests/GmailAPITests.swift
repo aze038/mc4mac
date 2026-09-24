@@ -7,6 +7,12 @@ final class GmailAPITests: XCTestCase {
         Log.isEnabled = false
     }
 
+    /// The log is the whole process's: the engine's tests read what it says after these run.
+    override func tearDown() {
+        Log.isEnabled = true
+        super.tearDown()
+    }
+
     // MARK: - Query encoding and the session
 
     func testPlusIsPercentEncodedInQueries() {
