@@ -418,6 +418,49 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertEqual(out, "550 5.1.1 <addr:\(redactor.ref("bo.smith@example.org"))>: Recipient address rejected")
     }
 
+    /// A folder whose name is part of an address, a web address or a path, as a company's folder
+    /// named after its domain is, still lets that rule find it whole: nothing of the address,
+    /// the query or the user's folder is left beside the folder's reference.
+    func testANameInsideAnAddressURLOrPathLeavesItWhole() {
+        let cases: [(line: String, names: [String], lacks: [String])] = [
+            ("kamal.muradov@acme.example: opening a message in ACME failed: messageGone", ["ACME"], ["kamal", "muradov", "acme."]),
+            ("kamal.muradov@gmail.com: saving a draft in Gmail failed: refused", ["Gmail"], ["kamal", "muradov"]),
+            ("owner@icloud.com: moving to iCloud failed; Ana Lima <ana@partner.example> refused", ["iCloud", "Ana"],
+             ["owner", "partner.example", "Lima"]),
+            ("ana@partner.example: the server refused a request", ["Ana"], ["partner.example"]),
+            ("GET https://acme.example/oauth?code=4/0AbCdEf-secret&state=xyz failed", ["ACME"], ["0AbCdEf-secret", "state=xyz"]),
+            ("could not read /Users/kmuradoff/Library/Mail/x and /Users/ana/Documents/ACME/y", ["Users", "Library", "ACME"],
+             ["kmuradoff", "/ana"]),
+            ("skipped 3 unreadable journal lines of HR of kamal.muradov@hr.example", ["HR"], ["kamal", "muradov", "hr.example"]),
+        ]
+        for c in cases {
+            let out = redactor.redact(c.line, naming: c.names)
+            for gone in c.lacks {
+                XCTAssertFalse(out.localizedCaseInsensitiveContains(gone), "“\(gone)” survived in: \(out)")
+            }
+        }
+        let owner = redactor.redact("kamal.muradov@acme.example: opening a message in ACME failed", naming: ["ACME"])
+        XCTAssertEqual(owner, "<addr:\(redactor.ref("kamal.muradov@acme.example"))>: opening a message in <label:\(redactor.ref("label:ACME"))> failed")
+    }
+
+    /// A name with an address in it, as a store names its folder, is looked for as the address
+    /// rule leaves it, and the address stays an address reference.
+    func testANameWithAnAddressInItGoesAroundTheAddress() {
+        let out = redactor.redact("HR of kamal@acme.example: skipped 3 unreadable journal lines", naming: ["HR of kamal@acme.example"])
+        XCTAssertFalse(out.contains("HR"), out)
+        XCTAssertTrue(out.contains("<addr:\(redactor.ref("kamal@acme.example"))>"), out)
+    }
+
+    /// The account's own folder names, known to the redactor, leave every reference whole too.
+    func testKnownFolderNamesLeaveReferencesWhole() {
+        var known = redactor
+        known.labels = ["addr", "text", "ACME"]
+        let out = known.redact("From: <kamal@acme.example>\nSubject: Minutes\nsent to ACME, addr and text")
+        XCTAssertTrue(out.contains("<addr:\(redactor.ref("kamal@acme.example"))>"), out)
+        XCTAssertTrue(out.contains("Subject: <text>\n"), out)
+        XCTAssertFalse(out.contains("ACME") || out.contains(" addr ") || out.hasSuffix(" text"), out)
+    }
+
     func testNamesAreTakenOutOfTheContextToo() {
         let context: JSONValue = .object(["health": .string("online"), "where": .string("HR, then Clients/ACME")])
         let out = redactor.redact(context, naming: ["HR", "Clients/ACME"])

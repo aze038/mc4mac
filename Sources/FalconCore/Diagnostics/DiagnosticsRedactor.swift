@@ -86,13 +86,18 @@ public struct DiagnosticsRedactor: Sendable {
         redact(value, crashReport: false)
     }
 
-    /// `text` redacted as any other, after every one of `names` has been taken out wherever it
-    /// stands as a word, in any case, and in the modified UTF-7 a server writes a folder's name
-    /// in: they are the folder and file names the line was written about, so even a short one
-    /// such as HR, which the rules for the account's own folder names leave alone outside a
-    /// server's words, goes. A standard folder such as INBOX keeps its name.
+    /// `text` redacted as any other, with every one of `names` taken out wherever it stands as a
+    /// word, in any case, and in the modified UTF-7 a server writes a folder's name in: they are
+    /// the folder and file names the line was written about, so even a short one such as HR,
+    /// which the rules for the account's own folder names leave alone outside a server's words,
+    /// goes. A standard folder such as INBOX keeps its name.
+    ///
+    /// The names go only once addresses, web addresses, paths and secrets have been dealt with,
+    /// so a folder named as part of one of them, ACME in kamal@acme.example or Gmail in a Gmail
+    /// address, never splits it where its own rule could no longer find it whole.
     public func redact(_ text: String, naming names: [String]) -> String {
-        redact(takingOut(names, from: text))
+        guard !text.isEmpty else { return text }
+        return redactingRest(takingOut(names, from: redactingFirst(text)), crashReport: false)
     }
 
     public func redact(_ value: JSONValue, naming names: [String]) -> JSONValue {
@@ -108,36 +113,68 @@ public struct DiagnosticsRedactor: Sendable {
         }
     }
 
+    /// `names` taken out of `text`, which the rules for addresses, web addresses, paths and
+    /// secrets have already been through.
     private func takingOut(_ names: [String], from text: String) -> String {
         var forms: [(form: String, name: String)] = []
-        // An address, such as a refused recipient's, goes by the address rule, with the name beside it.
-        for name in Set(names) where !name.trimmingCharacters(in: .whitespaces).isEmpty && !name.contains("@")
-            && !DiagnosticsRedactor.isStandardMailbox(name) {
-            forms.append((name, name))
-            let wire = ModifiedUTF7.encode(name)
-            if wire != name { forms.append((wire, name)) }
+        for name in Set(names) {
+            let bare = name.trimmingCharacters(in: .whitespaces)
+            // An address, such as a refused recipient's, goes by the address rule, with the name beside it.
+            guard !bare.isEmpty, !DiagnosticsRedactor.isStandardMailbox(bare), !Rx.matches(Rx.wholeAddress, bare) else { continue }
+            // A name with an address in it, as "HR of ana@example.com", is looked for as those
+            // rules left the line: the parts of it around the address.
+            var looked = [name]
+            let first = redactingFirst(name)
+            if first != name { looked += DiagnosticsRedactor.pieces(outside: first) }
+            for form in looked where form.contains(where: { $0.isLetter || $0.isNumber }) && !DiagnosticsRedactor.isStandardMailbox(form) {
+                forms.append((form, name))
+                let wire = ModifiedUTF7.encode(form)
+                if wire != form { forms.append((wire, name)) }
+            }
         }
         var s = text
         for (form, name) in forms.sorted(by: { $0.form.count > $1.form.count }) {
-            // A reference already made, such as <label:…>, is left whole.
-            let ns = s as NSString
-            var out = ""
-            var cursor = 0
-            for m in Rx.anyPlaceholder.matches(in: s, range: NSRange(location: 0, length: ns.length)) {
-                out += replacing(form, with: label(name), in: ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)))
-                out += ns.substring(with: m.range)
-                cursor = NSMaxRange(m.range)
-            }
-            s = out + replacing(form, with: label(name), in: ns.substring(from: cursor))
+            s = outsideReferences(s) { replacing(form, with: label(name), in: $0, ignoringCase: true) }
         }
         return s
     }
 
-    /// `text` with `form` replaced wherever it stands as a word, in any case.
-    private func replacing(_ form: String, with replacement: String, in text: String) -> String {
+    /// The parts of `text` between the references in it, trimmed, that are not empty.
+    private static func pieces(outside text: String) -> [String] {
+        let ns = text as NSString
+        var out: [String] = []
+        var cursor = 0
+        func keep(_ piece: String) {
+            let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            if !trimmed.isEmpty { out.append(trimmed) }
+        }
+        for m in Rx.anyPlaceholder.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            keep(ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)))
+            cursor = NSMaxRange(m.range)
+        }
+        keep(ns.substring(from: cursor))
+        return out
+    }
+
+    /// `text` with `change` made to everything but the references already in it, such as
+    /// <addr:…> or <label:…>, which are left whole.
+    private func outsideReferences(_ text: String, _ change: (String) -> String) -> String {
+        let ns = text as NSString
+        var out = ""
+        var cursor = 0
+        for m in Rx.anyPlaceholder.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out += change(ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor)))
+            out += ns.substring(with: m.range)
+            cursor = NSMaxRange(m.range)
+        }
+        return out + change(ns.substring(from: cursor))
+    }
+
+    /// `text` with `form` replaced wherever it stands as a word.
+    private func replacing(_ form: String, with replacement: String, in text: String, ignoringCase: Bool) -> String {
         var out = ""
         var rest = text[...]
-        while let r = rest.range(of: form, options: .caseInsensitive) {
+        while let r = rest.range(of: form, options: ignoringCase ? .caseInsensitive : []) {
             let before = r.lowerBound > rest.startIndex ? rest[rest.index(before: r.lowerBound)] : nil
             let after = r.upperBound < rest.endIndex ? rest[r.upperBound] : nil
             let bounded = !(before?.isLetter ?? false) && !(before?.isNumber ?? false)
@@ -164,6 +201,13 @@ public struct DiagnosticsRedactor: Sendable {
 
     private func redact(_ text: String, crashReport: Bool) -> String {
         guard !text.isEmpty else { return text }
+        return redactingRest(redactingFirst(text), crashReport: crashReport)
+    }
+
+    /// The rules for what a folder's name can stand inside: IMAP literals, web addresses,
+    /// secrets, paths, encoded words, header lines, IMAP commands, addresses and IP addresses.
+    /// Each finds what it takes out whole, before any name is taken out of the line.
+    private func redactingFirst(_ text: String) -> String {
         var s = text
         if s.contains("{") { s = stripLiterals(s) }
         if s.contains(":") || s.contains("?") { s = stripURLs(s) }
@@ -173,9 +217,15 @@ public struct DiagnosticsRedactor: Sendable {
         if s.contains(":") { s = stripHeaderLines(s) }
         s = stripIMAPArguments(s)
         if s.contains("@") { s = stripAddresses(s) }
+        s = stripIPs(s)
+        return s
+    }
+
+    /// Quoted text and the account's own folder names, once the rules above have run.
+    private func redactingRest(_ text: String, crashReport: Bool) -> String {
+        var s = text
         if s.unicodeScalars.contains(where: Rx.quotationMarks.contains) { s = stripQuoted(s, crashReport: crashReport) }
         s = stripFolderNames(s)
-        s = stripIPs(s)
         return s
     }
 
@@ -502,18 +552,8 @@ public struct DiagnosticsRedactor: Sendable {
     private func stripFolderNames(_ text: String) -> String {
         var s = text
         for name in folders.words where s.contains(name) {
-            var out = ""
-            var rest = s[...]
-            while let r = rest.range(of: name) {
-                let before = r.lowerBound > rest.startIndex ? rest[rest.index(before: r.lowerBound)] : nil
-                let after = r.upperBound < rest.endIndex ? rest[r.upperBound] : nil
-                let bounded = !(before?.isLetter ?? false) && !(before?.isNumber ?? false)
-                    && !(after?.isLetter ?? false) && !(after?.isNumber ?? false)
-                out += rest[rest.startIndex..<r.lowerBound]
-                out += bounded ? label(name) : String(rest[r])
-                rest = rest[r.upperBound...]
-            }
-            s = out + rest
+            // A folder named text or addr leaves <text> and <addr:…> whole.
+            s = outsideReferences(s) { replacing(name, with: label(name), in: $0, ignoringCase: false) }
         }
         if let named = folders.named {
             s = named.replace(in: s) { m, ns in
@@ -601,7 +641,10 @@ private enum Rx {
     static let moveTarget = rx(#"\b((?:MOVE|COPY)\s+[0-9:,*]+\s+)([^\s"(){}]+)"#)
     static let gmailLabels = rx(#"(X-GM-LABELS\s*\()([^)]*)\)"#, [.caseInsensitive])
 
-    static let address = rx(#"(?<![\p{L}\p{N}\p{M}._%+\-!#$&'*?^`{|}~])(?:"[^"\r\n]{1,64}"|[\p{L}\p{N}\p{M}!#$%&'*+?^_`{|}~-]+(?:\.[\p{L}\p{N}\p{M}!#$%&'*+?^_`{|}~-]+)*)@(?:\[[0-9A-Fa-f:.]+\]|(?:[\p{L}\p{N}\p{M}](?:[\p{L}\p{N}\p{M}-]{0,61}[\p{L}\p{N}\p{M}])?\.)+[\p{L}\p{M}][\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])"#)
+    static let addressPattern = #"(?<![\p{L}\p{N}\p{M}._%+\-!#$&'*?^`{|}~])(?:"[^"\r\n]{1,64}"|[\p{L}\p{N}\p{M}!#$%&'*+?^_`{|}~-]+(?:\.[\p{L}\p{N}\p{M}!#$%&'*+?^_`{|}~-]+)*)@(?:\[[0-9A-Fa-f:.]+\]|(?:[\p{L}\p{N}\p{M}](?:[\p{L}\p{N}\p{M}-]{0,61}[\p{L}\p{N}\p{M}])?\.)+[\p{L}\p{M}][\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])"#
+    static let address = rx(addressPattern)
+    /// Text that is one address and nothing else.
+    static let wholeAddress = rx("^" + addressPattern + "$")
     static let addressComment = rx(#"\x{E001}[ \t]*\(([^()\r\n]{1,80})\)"#)
     static let bracketedAddress = rx(#"<\s*((?:"[^"\r\n]{1,64}"|[\p{L}\p{N}\p{M}!#$%&'*+?^_`{|}~.-]+)@[^\s<>]+?)\s*>"#)
 

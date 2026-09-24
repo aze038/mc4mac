@@ -474,6 +474,41 @@ final class EngineDiagnosticsTests: XCTestCase {
         }
     }
 
+    /// A folder named after the owner's domain, as a company's folder often is, or after their
+    /// mail service, is part of the owner's address in every line the engine writes: the address
+    /// still becomes a reference, and nothing of it reaches the upload.
+    func testAFolderNamedLikePartOfTheOwnersAddressLeavesTheAddressWhole() async throws {
+        for (email, folder) in [("kamal.muradov@acme.example", "ACME"), ("kamal.muradov@gmail.com", "Gmail")] {
+            FakeDiagnosticsServer.reset()
+            let server = try EngineHarness.gmailServer()
+            server.addMailbox(folder)
+            server.add(FakeIMAPServer.message("review", subject: "Salary review"), to: folder)
+            let h = try await EngineHarness(server: server, email: email)
+            harness = h
+            try await h.syncOnce()
+            let message = try await h.message(uid: 1, in: folder)
+            server.remove(uid: 1, from: folder)
+            let made = startCenter()
+            _ = try? await h.syncer.body(for: message)
+
+            let event = try XCTUnwrap(events(area: "Open").first, email)
+            XCTAssertEqual(event.signature, "Open.messageGone@AccountSyncer.swift:body")
+            XCTAssertNotNil(event.message.range(of: #"^<addr:[0-9a-f]{8}>: opening a message in <label:[0-9a-f]{8}> failed"#,
+                                                 options: .regularExpression), event.message)
+            let upload = try await uploaded()
+            for word in ["kamal", "muradov", "acme.", "@<label"] {
+                XCTAssertFalse(upload.localizedCaseInsensitiveContains(word), "\(word) reached the upload for \(email)")
+            }
+            // The account's kind, "gmail", is sent; the folder's name is not.
+            XCTAssertFalse(upload.contains(folder), "\(folder) reached the upload")
+            made.stop()
+            center = nil
+            Log.observer = nil
+            await h.finish()
+            harness = nil
+        }
+    }
+
     /// The same lines, fed to the observer as the app would hand them over with only the folder
     /// names it knows: the redactor still takes out every one that stands as a word.
     func testEngineLinesWithTheAppsFolderNamesAloneAreRedacted() throws {
