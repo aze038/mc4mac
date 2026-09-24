@@ -7,6 +7,8 @@ and a daily Claude session triages them (`docs/DAILY_TRIAGE.md`).
 | Piece | What it is |
 |---|---|
 | `apps-script/` | The Google Apps Script web app that receives the reports and keeps the spreadsheets tidy. |
+| `fetch-reports.sh` | Pulls new reports to `~/FalconMailReports/` and prints them grouped by problem. |
+| `symbolicate.py` | Turns the stack in a crash or hang report into function names and source lines. |
 | `docs/DIAGNOSTICS_SETUP.md` | The owner's one-time steps to put it live. |
 
 ## What the team sees
@@ -68,6 +70,45 @@ on the last page. `limit` defaults to 1,000 and is capped at 5,000.
 `example`, `area` and `signature`. A wrong key gets `{"ok":false,"error":"Not accepted"}` and
 nothing else.
 
+## The owner's tools
+
+Both need only the Mac's own `python3`, and read the endpoint and read key from
+`~/.config/falconmail/diagnostics.json` (see `docs/DIAGNOSTICS_SETUP.md`). They refuse to run if
+that file can be read by anyone else.
+
+```sh
+tools/diagnostics/fetch-reports.sh              # what arrived since the last run
+tools/diagnostics/fetch-reports.sh -v           # the same, with signatures, examples and event IDs
+tools/diagnostics/fetch-reports.sh --days 7     # everything saved in the last week
+tools/diagnostics/fetch-reports.sh --json       # the same summary as JSON, for the daily triage
+tools/diagnostics/symbolicate.py --event <ID>   # the stack of one crash or hang, with line numbers
+```
+
+`fetch-reports.sh` saves every new row to `~/FalconMailReports/YYYY-MM-DD.jsonl` and remembers
+where it stopped in `~/.config/falconmail/diagnostics.cursor`, so each run picks up exactly where
+the last one ended. It prints:
+
+```
+FalconMail diagnostics: 6 reports from 2 installs
+Received 24 Sep 2026 07:00 to 24 Sep 2026 09:00, local time
+
+Problems, newest first
+  Problem                                          Kind      Times  Installs  Versions        Last seen     Trend
+  ───────────────────────────────────────────────  ───────  ──────  ────────  ──────────────  ────────────  ──────
+  FalconMail stopped responding while showing a …  Hang          1         1  1.10.0          24 Sep 08:59  New
+  Gmail paused the connection: too many requests   Error         5         2  1.10.1, 1.10.0  24 Sep 08:40  Rising
+  FalconMail crashed while opening a message       Crash         1         1  1.10.0          24 Sep 06:30  Back
+```
+
+**Trend** compares with the reports saved before: **New** was never seen, **Back** was seen but
+not in the previous 7 days, and **Rising** happened at least 3 times and more than twice as often
+as its daily average over the previous 7 days.
+
+`symbolicate.py` finds a MetricKit call-stack tree or an `.ips` report anywhere in a row's context
+and looks up FalconMail's frames with `atos`, in the dSYM that the release build keeps at
+`~/Library/Application Support/FalconMail Symbols/<version>/`, matched by UUID. Without symbols
+for that build it says so and shows offsets.
+
 ## Quotas this is designed around
 
 From Google's [Apps Script quotas](https://developers.google.com/apps-script/guides/services/quotas)
@@ -94,12 +135,15 @@ the 4 MB read page keep well clear of trouble. Apps Script answers with a 302 re
 
 ## Tests
 
-All run offline; nothing talks to Google or any server.
+All run offline; nothing talks to Google or any real server.
 
 ```sh
 node --test tools/diagnostics/apps-script/test/
+python3 -m unittest discover -s tools/diagnostics/test
 ```
 
 The Node tests load `Code.gs` in a sandbox with in-memory stand-ins for SpreadsheetApp, DriveApp,
 PropertiesService, CacheService, LockService, ContentService, Session, Utilities and ScriptApp
-(`apps-script/test/harness.js`).
+(`apps-script/test/harness.js`). The Python tests run `fetch-reports.sh` against a fake service on
+127.0.0.1 that answers with Apps Script's redirect, and `symbolicate.py` against a small binary and
+dSYM built on the spot with the Xcode command line tools.
