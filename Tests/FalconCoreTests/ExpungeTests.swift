@@ -90,6 +90,40 @@ final class ExpungeTests: XCTestCase {
         XCTAssertFalse(server.commands.contains { $0.contains("UID COPY") })
     }
 
+    func testADraftSavedAgainAfterDraftsWasRenumberedLeavesTheDraftNowAtItsUIDAlone() async throws {
+        let server = try EngineHarness.gmailServer(capabilities: Self.withUIDPlus)
+        server.addMailbox("[Gmail]/Drafts", attributes: ["\\Drafts"], uidValidity: 1_700_000_400)
+        server.add(FakeIMAPServer.message("draft-A"), to: "[Gmail]/Drafts")
+        server.add(FakeIMAPServer.message("draft-B"), to: "[Gmail]/Drafts")
+        let h = try await EngineHarness(server: server)
+        harness = h
+        try await h.syncOnce()
+        await h.syncer.setUndoWindow(0)
+
+        // The owner opens draft B, and the draft keeps the row it was opened from.
+        let opened = try await h.message(uid: 2, in: "[Gmail]/Drafts")
+        XCTAssertEqual(opened.messageID, "<draft-B@example.com>")
+        let unchanged = await h.store.currentRow(of: opened)
+        XCTAssertEqual(unchanged?.messageID, "<draft-B@example.com>", "while nothing has changed, it is the row to remove")
+
+        // Drafts is renumbered and synced again: draft A now has the UID B had.
+        server.renumber("[Gmail]/Drafts")
+        try await h.syncOnce()
+        let atThatUID = try await h.message(uid: 2, in: "[Gmail]/Drafts")
+        XCTAssertEqual(atThatUID.messageID, "<draft-A@example.com>")
+        let stale = await h.store.currentRow(of: opened)
+        XCTAssertNil(stale, "the UID names another draft now, so saving or sending B removes nothing")
+
+        // Nor does the engine remove anything for the row B was opened from, if asked.
+        do {
+            _ = try await h.syncer.purge([opened])
+            XCTFail("a row whose UID names another message is refused")
+        } catch {}
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(server.messages(in: "[Gmail]/Drafts").count, 2, "both drafts are still on the server")
+        XCTAssertFalse(server.commands.contains { $0.contains("EXPUNGE") || $0.contains("UID STORE") })
+    }
+
     func testArchiveJobRemovesOnlyWhatItArchived() async throws {
         let server = try EngineHarness.gmailServer(capabilities: Self.withoutUIDPlus)
         let longAgo = Date(timeIntervalSince1970: 1_600_000_000)

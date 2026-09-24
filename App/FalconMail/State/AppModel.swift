@@ -1681,6 +1681,7 @@ final class AppModel {
             }
             var draft = ComposeDraft.from(parsed: parsed, accountID: message.accountID)
             draft.sourceMessageID = message.id
+            draft.sourceMessage = message
             openCompose(draft)
         }
     }
@@ -1697,7 +1698,7 @@ final class AppModel {
             do {
                 let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
                 try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
-                await purgeStoredDraft(draft.sourceMessageID)
+                await purgeStoredDraft(draft)
                 statusText = "Draft saved to \(folder.name)"
             } catch {
                 drafts[id] = draft
@@ -1706,8 +1707,13 @@ final class AppModel {
         }
     }
 
-    func purgeStoredDraft(_ messageID: String?) async {
-        guard let messageID, let stored = try? await store.message(id: messageID) else { return }
+    /// Removes the stored copy `draft` was opened from, now that it is saved again or sent. Only
+    /// the row it was opened from goes, and only while its UID still names that message: after
+    /// Drafts was renumbered the UID may name another draft, which is left alone, as is the copy
+    /// of a draft kept by an earlier build that did not record its row.
+    func purgeStoredDraft(_ draft: ComposeDraft) async {
+        guard let opened = draft.sourceMessage, opened.id == draft.sourceMessageID,
+              let stored = await store.currentRow(of: opened) else { return }
         removeFromList([stored])
         perform([stored], announcing: false) { try await $0.purge($1) }
     }
@@ -1736,7 +1742,7 @@ final class AppModel {
                 await outbox.setUndoWindow(TimeInterval(undoSendSeconds))
                 let item = try await outbox.enqueue(accountID: account.id, from: account.email, message: message, sendAt: draft.scheduledAt)
                 await writeSidecar(draft, for: item.id)
-                await purgeStoredDraft(draft.sourceMessageID)
+                await purgeStoredDraft(draft)
                 try? await contacts.recordUse(accountID: account.id, addresses: message.to + message.cc + message.bcc)
                 contactList = await contacts.all()
             } catch {

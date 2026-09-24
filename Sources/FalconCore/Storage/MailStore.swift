@@ -297,6 +297,14 @@ public actor MailStore {
         return try await folderStore(f).message(uid: uid)
     }
 
+    /// The row `read` was read from, as the store holds it now, or nil when its UID no longer
+    /// names that message: the folder was renumbered or the message removed since, and the row
+    /// now at that UID, if any, is another message that nothing done for `read` may touch.
+    public func currentRow(of read: MessageSummary) async -> MessageSummary? {
+        guard let f = folder(read.folderID), let fs = try? await folderStore(f) else { return nil }
+        return await fs.current([read]).isEmpty ? nil : await fs.message(uid: read.uid)
+    }
+
     /// Stored copies of messages in one account, by Message-ID, so a hit from a server search
     /// can be shown as the row the reader already has. A folder that cannot be loaded is skipped.
     public func storedMessages(withMessageIDs ids: Set<String>, accountID: UUID) async -> [String: [MessageSummary]] {

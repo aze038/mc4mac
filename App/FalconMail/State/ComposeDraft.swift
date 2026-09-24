@@ -17,6 +17,11 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     var historyPlain: String = ""
     var historyHTML: String = ""
     var sourceMessageID: String?
+    /// The row in Drafts this draft was opened from, as it was then. Saving or sending the
+    /// draft removes that row, but only while its UID still names that message: the folder may
+    /// have been renumbered since, and the UID given to another draft. Absent from drafts kept
+    /// by an earlier build, whose stored copy is then left where it is.
+    var sourceMessage: MessageSummary?
     var importance: String = "normal"
     /// A new message's body as its signature left it, so that changing the From account before
     /// the body is touched swaps the signature for the new account's.
