@@ -173,6 +173,43 @@ final class FlagRescanTests: XCTestCase {
         harness = nil
     }
 
+    /// A folder small enough that the newest slice covers it whole, where the server's count
+    /// says nothing is missing: a flag reply that lists nothing takes no row, however few there
+    /// are, nor does the search that follows if it lists nothing too. Rows below the cursor
+    /// would never be fetched again.
+    func testAFlagReplyListingNothingTakesNoRowsFromASmallFolder() async throws {
+        let h = try await listed(8)
+        h.server.emptyNextFlagFetches(1)
+        for _ in 1...4 { try await h.syncOnce() }
+        var rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 8, "the server's count says none is missing")
+
+        // The search above the cursor, and then the one over the whole folder.
+        h.server.emptyNextFlagFetches(1)
+        h.server.emptyNextSearches(2)
+        try await h.syncOnce()
+        rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 8, "a search that lists nothing where the server counts eight is no answer either")
+        XCTAssertTrue(h.logText().contains("a search listed 0 of 8 messages; left alone"))
+
+        // A real deletion still goes.
+        h.server.remove(uid: 3, from: "INBOX")
+        try await h.syncOnce()
+        rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows, Set(UInt32(1)...8).subtracting([3]))
+    }
+
+    /// The last older slice of a larger folder, a few rows, is taken for gone no more readily.
+    func testAFlagReplyListingNothingTakesNoRowsFromTheLastOlderSlice() async throws {
+        let h = try await listed(1_005)
+        // The newest thousand, and then the five below them.
+        h.server.emptyNextFlagFetches(2)
+        try await h.syncOnce()
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 1_005)
+        XCTAssertTrue(h.server.commands.contains { $0.contains("UID FETCH 1:5 (UID FLAGS)") }, "the older slice was asked for")
+    }
+
     func testAFlagReplyListingNothingTakesNoRowsWhileAnActionIsOnItsWay() async throws {
         let h = try await listed(3_000)
         await h.syncer.setUndoWindow(60)

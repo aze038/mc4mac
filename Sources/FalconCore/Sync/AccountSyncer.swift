@@ -1246,9 +1246,11 @@ public actor AccountSyncer {
         let settled = suppressedUIDs[folder.id]?.isEmpty ?? true
         // How many messages the server's count says it no longer has; nil before the folder has
         // been counted, or while actions are on their way, when a check takes nothing. A check
-        // that would take far more rows than that is not believed: nothing brings back a row
-        // below the cursor.
+        // that would take more rows than that is not believed, however few, since nothing
+        // brings back a row below the cursor: the search that follows finds which went.
         let missingOnServer = settled ? state.belowWindow.map { known.count + $0 + unfetched.count - status.exists } : nil
+        // How far a search that lists the whole folder may fall short of the server's count and
+        // still be believed: messages deleted between the two.
         let slack = max(10, status.exists / 100)
 
         func apply(_ flags: [(uid: UInt32, flags: [String])]) async throws {
@@ -1265,7 +1267,7 @@ public actor AccountSyncer {
         func removeIfCounted(_ gone: [UInt32]) async throws {
             let fresh = gone.filter { !removed.contains($0) }
             guard !fresh.isEmpty, let missingOnServer else { return }
-            guard removed.count + fresh.count <= max(0, missingOnServer) + slack else {
+            guard removed.count + fresh.count <= max(0, missingOnServer) else {
                 // The count itself may be what is wrong; the search below sets it right.
                 refused = true
                 Log.info("sync", "\(account.email) \(folder.path): a reply would remove \(fresh.count) rows where the count is short by \(missingOnServer); left alone")
@@ -1328,8 +1330,9 @@ public actor AccountSyncer {
             let count = await expected()
             if refused || count == nil || status.exists < count! {
                 let all = try await client.uidSearch("ALL")
-                if all.count + slack >= status.exists {
-                    // A search that lists what the server's own count says it holds is believed.
+                // A search that lists what the server's own count says it holds is believed; one
+                // that lists nothing, where the count says there are messages, never is.
+                if !all.isEmpty, all.count + slack >= status.exists {
                     let present = Set(all)
                     try await remove(known.filter { !present.contains($0) })
                     // What the server holds up to the cursor that is neither stored nor still to
