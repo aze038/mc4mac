@@ -6,7 +6,8 @@ import FalconCore
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
 /// Table picker, the main window's Home ribbon, which shares the compose ribbon's tiles, the
 /// Signatures pane with two stand-in signatures, with none and with its notice of a damaged
-/// file set aside, and a signature's editor window, in both appearances into PNGs at twice
+/// file set aside, a signature's editor window, and the Privacy pane with its diagnostics
+/// section and the sheet of data waiting to be sent, in both appearances into PNGs at twice
 /// their size in that directory, then quits. Nothing is ever put on screen or activated, so
 /// they can be measured against Outlook's while the Mac is in use. Run it with
 /// CFFIXED_USER_HOME pointing at an empty folder, so the model reads no mail; the stand-in
@@ -34,7 +35,45 @@ enum ComposeSnapshot {
                    to: "\(directory)/home-\(name).png")
         }
         signatures(model, to: directory)
+        privacy(model, to: directory)
         exit(0)
+    }
+
+    /// As a release build shows it, with a stand-in ID, so nothing is read from or sent to
+    /// anywhere.
+    @MainActor private static func privacy(_ model: AppModel, to directory: String) {
+        DiagnosticsService.shared = DiagnosticsService(standInID: "3F2A9C1B")
+        let waiting = """
+        {
+          "app" : { "build" : "123", "channel" : "release", "version" : "1.10.0" },
+          "events" : [
+            {
+              "account" : { "host" : "imap.gmail.com", "kind" : "workspace", "provider" : "google", "ref" : "5c1e09aa" },
+              "area" : "IMAP",
+              "context" : { "errorCode" : 1, "errorDomain" : "FalconCore.FalconError", "errorType" : "FalconError", "level" : "warning" },
+              "count" : 3,
+              "firstAt" : "2026-09-24T09:12:40Z",
+              "id" : "8E0B7C52-3F7A-4B8D-9C31-6D2E5A1F0B44",
+              "kind" : "warning",
+              "lastAt" : "2026-09-24T09:48:02Z",
+              "message" : "<addr:5c1e09aa>: Network error: server closed session: Account exceeded command or bandwidth limits.",
+              "signature" : "IMAP.throttled@AccountSyncer.swift:124",
+              "title" : "The mail server paused the connection: too many requests"
+            }
+          ],
+          "hw" : "MacBookPro18,3",
+          "install" : "3F2A9C1B-6E0D-4F57-9A21-8C4B2D7E1F60",
+          "locale" : "en_GB",
+          "os" : "macOS 26.6 (25G5023)",
+          "schema" : 1
+        }
+        """
+        for (name, appearance) in appearances {
+            render(SettingsView(pane: .privacy).environment(model), size: NSSize(width: 760, height: 620), appearance: appearance,
+                   to: "\(directory)/privacy-\(name).png")
+            render(DiagnosticsPendingSheet(text: waiting).background(Color(nsColor: .windowBackgroundColor)),
+                   size: NSSize(width: 640, height: 520), appearance: appearance, to: "\(directory)/privacy-waiting-\(name).png")
+        }
     }
 
     @MainActor private static func signatures(_ model: AppModel, to directory: String) {
