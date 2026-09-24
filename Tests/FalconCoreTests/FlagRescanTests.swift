@@ -203,6 +203,29 @@ final class FlagRescanTests: XCTestCase {
         XCTAssertEqual(later.count, 2_820, "and so does a later deletion smaller than the gap")
     }
 
+    func testAReplyTheCountCannotVouchForAsksForTheSearchInTheSamePass() async throws {
+        let h = try await listed(3_000)
+        // A gap here of 150 rows, more than the 100 deleted on the server among the newest: the
+        // count says the server holds more than is listed, so only the reply it refused to believe
+        // can ask for the search that finds them.
+        let stored = try await h.store.folderStore(try await h.folder("INBOX"))
+        try await stored.remove(uids: Array(1_000...1_149))
+        for uid in UInt32(2_901)...3_000 { h.server.remove(uid: uid, from: "INBOX") }
+        h.server.resetCounters()
+        try await h.syncOnce()
+        XCTAssertTrue(h.logText().contains("a reply would remove 100 rows where the count is short by -50; left alone"))
+        let rows = try await h.uids(in: "INBOX")
+        XCTAssertEqual(rows.count, 2_750, "the hundred deleted on the server went in the same pass")
+        XCTAssertTrue(rows.isDisjoint(with: Set(UInt32(2_901)...3_000)))
+        XCTAssertEqual(h.server.commands.filter { $0.contains("UID SEARCH ALL") }.count, 1)
+
+        h.server.resetCounters()
+        try await h.syncOnce()
+        XCTAssertFalse(h.server.commands.contains { $0.contains("SEARCH ALL") }, "the count agrees from then on")
+        let later = try await h.uids(in: "INBOX")
+        XCTAssertEqual(later.count, 2_750)
+    }
+
     func testAServerReportingNoMessagesForAMomentEmptiesNothing() async throws {
         let h = try await listed(30)
         let messages = h.server.messages(in: "INBOX")
