@@ -467,4 +467,36 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertEqual(out["health"], .string("online"))
         XCTAssertEqual(out["where"], .string("<label:\(redactor.ref("label:HR"))>, then <label:\(redactor.ref("label:Clients/ACME"))>"))
     }
+
+    // MARK: User names
+
+    /// A user name that is not an address, as a custom account may sign in with, goes wherever
+    /// a server repeats it, in any case. An address that holds it stays one whole reference.
+    func testAUserNameGoesWhereverItStandsAsAWord() {
+        var known = redactor
+        known.userNames = ["kmuradov", "", "  "]
+        let refusal = "AUTHENTICATE NO [AUTHENTICATIONFAILED] Invalid credentials for kmuradov (Failure)"
+        XCTAssertEqual(known.redact(refusal), "AUTHENTICATE NO [AUTHENTICATIONFAILED] Invalid credentials for <user> (Failure)")
+        XCTAssertEqual(known.redact("535 5.7.8 KMURADOV: authentication failed"), "535 5.7.8 <user>: authentication failed")
+        let out = known.redact("kmuradov@acme.example signed in as kmuradov; kmuradov2 is another")
+        XCTAssertEqual(out, "<addr:\(redactor.ref("kmuradov@acme.example"))> signed in as <user>; kmuradov2 is another")
+        XCTAssertEqual(known.redact("NO for kmuradov", naming: ["HR"]), "NO for <user>")
+        XCTAssertEqual(known.redact(.object(["said": .string("no kmuradov here")])), .object(["said": .string("no <user> here")]))
+        XCTAssertEqual(known.redactCrashReport("user kmuradov"), "user <user>")
+        // Without it, the same line keeps it: nothing but the accounts' own user names is guessed at.
+        XCTAssertEqual(redactor.redact(refusal), refusal)
+    }
+
+    /// A user name that is an address goes by the rule for addresses, and one handed over for a
+    /// single line is added to those the redactor knows already.
+    func testAUserNameThatIsAnAddressStaysAnAddressReference() {
+        var known = redactor
+        known.userNames = ["ana.lima@example.com"]
+        XCTAssertEqual(known.redact("NO for ana.lima@example.com"), "NO for <addr:\(redactor.ref("ana.lima@example.com"))>")
+        let one = redactor.signingInAs("kmuradov")
+        XCTAssertEqual(one.userNames, ["kmuradov"])
+        XCTAssertEqual(one.redact("NO for kmuradov"), "NO for <user>")
+        XCTAssertEqual(redactor.signingInAs(nil).userNames, [])
+        XCTAssertEqual(one.signingInAs("kmuradov").userNames, ["kmuradov"])
+    }
 }

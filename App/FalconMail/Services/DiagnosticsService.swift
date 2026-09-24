@@ -106,7 +106,8 @@ final class DiagnosticsService {
         withObservationTracking {
             let hosts = Set(model.accounts.flatMap { [$0.imapHost, $0.smtpHost] })
             let labels = model.folders.values.flatMap { $0.flatMap { [$0.path, $0.name] } }
-            center.updateRedaction(serverHosts: hosts, labels: labels)
+            let userNames = model.accounts.compactMap(\.username)
+            center.updateRedaction(serverHosts: hosts, labels: labels, userNames: userNames)
         } onChange: { [weak self] in
             Task { @MainActor in self?.followRedactionInputs() }
         }

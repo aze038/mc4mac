@@ -444,6 +444,37 @@ final class EngineDiagnosticsTests: XCTestCase {
         XCTAssertTrue(upload.contains("the account"), upload)
     }
 
+    /// A custom account that signs in with a user name that is not an address, and servers that
+    /// repeat it in a refusal while syncing or sending: the upload never holds it.
+    func testAServerRepeatingTheUserNameLeavesItOutOfTheUpload() async throws {
+        let server = try EngineHarness.gmailServer()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("falcon-engine-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let saved = MailStore(layout: FileLayout(root: root))
+        try await saved.load()
+        try await saved.saveAccount(AccountInfo(email: "owner@example.com", displayName: "Owner", provider: "imap", imapHost: "127.0.0.1",
+                                                imapPort: server.port, authMethod: "password", username: "kmuradov"))
+        let h = try await EngineHarness(server: server, root: root)
+        harness = h
+        XCTAssertEqual(h.account.username, "kmuradov")
+        startCenter()
+        server.refuseLogins(code: "AUTHENTICATIONFAILED", text: "Invalid credentials for kmuradov (Failure)")
+        await h.syncer.start()
+        await assertEventually { await !h.events.errors.isEmpty }
+        // The line about the account carries it, before the app has told the centre anything.
+        center?.waitUntilIdle()
+        let signatures = Set((center?.pendingRecords ?? []).map(\.event.signature))
+        XCTAssertTrue(signatures.contains("IMAP.notSignedIn@AccountSyncer.swift:loop"), "\(signatures.sorted())")
+        // A line about sending names only the sender; the app has told the centre its accounts' user names.
+        center?.updateRedaction(serverHosts: [], labels: [], userNames: ["kmuradov"])
+        Log.warning("SMTP", "owner@example.com: attempt 1 failed: needsSignIn: SMTP auth 535 5.7.8 Username kmuradov and password not accepted")
+
+        let upload = try await uploaded()
+        XCTAssertFalse(upload.localizedCaseInsensitiveContains("kmuradov"), "the user name reached the upload")
+        XCTAssertTrue(upload.contains("Invalid credentials for <user>"), upload)
+        XCTAssertTrue(upload.contains("Username <user> and password"), upload)
+    }
+
     /// Every kind of failure, in every area the engine reports under, has a title of its own that
     /// fits, and a code of its own that the server's words never change.
     func testEveryKindHasATitleAndACodeOfItsOwn() {

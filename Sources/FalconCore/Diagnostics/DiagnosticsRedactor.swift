@@ -15,6 +15,13 @@ public struct DiagnosticsRedactor: Sendable {
         didSet { folders = FolderNames(labels) }
     }
     private var folders: FolderNames
+    /// The user names the person's accounts sign in with, such as kmuradov, which a server can
+    /// repeat in its reply. Each is taken out of free text wherever it stands as a word. A user
+    /// name that is an address is left to the rule for addresses.
+    public var userNames: [String] = [] {
+        didSet { users = DiagnosticsRedactor.usable(userNames) }
+    }
+    private var users: [String] = []
 
     public init(salt: Data, homePath: String = NSHomeDirectory(), serverHosts: Set<String> = [], labels: [String] = []) {
         self.salt = salt
@@ -97,7 +104,34 @@ public struct DiagnosticsRedactor: Sendable {
     /// address, never splits it where its own rule could no longer find it whole.
     public func redact(_ text: String, naming names: [String]) -> String {
         guard !text.isEmpty else { return text }
-        return redactingRest(takingOut(names, from: redactingFirst(text)), crashReport: false)
+        return redactingRest(takingOut(names, from: takingOutUserNames(redactingFirst(text))), crashReport: false)
+    }
+
+    /// This redactor, taking out `user` as well when it is the user name an account signs in with.
+    public func signingInAs(_ user: String?) -> DiagnosticsRedactor {
+        guard let user, !user.isEmpty, !userNames.contains(user) else { return self }
+        var copy = self
+        copy.userNames.append(user)
+        return copy
+    }
+
+    /// The user names worth looking for, longest first: not empty, not an address, and with a
+    /// letter or a digit in them.
+    private static func usable(_ names: [String]) -> [String] {
+        let bare = Set(names.map { $0.trimmingCharacters(in: .whitespaces) })
+        return bare.filter { !$0.isEmpty && $0.contains(where: { $0.isLetter || $0.isNumber }) && !Rx.matches(Rx.wholeAddress, $0) }
+            .sorted { $0.count > $1.count }
+    }
+
+    /// The accounts' user names taken out of `text` as `<user>`. The rules for addresses, web
+    /// addresses, paths and secrets have already run, so a user name that is part of an address,
+    /// as kmuradov is in kmuradov@acme.example, never splits it.
+    private func takingOutUserNames(_ text: String) -> String {
+        var s = text
+        for user in users {
+            s = outsideReferences(s) { replacing(user, with: "<user>", in: $0, ignoringCase: true) }
+        }
+        return s
     }
 
     public func redact(_ value: JSONValue, naming names: [String]) -> JSONValue {
@@ -201,7 +235,7 @@ public struct DiagnosticsRedactor: Sendable {
 
     private func redact(_ text: String, crashReport: Bool) -> String {
         guard !text.isEmpty else { return text }
-        return redactingRest(redactingFirst(text), crashReport: crashReport)
+        return redactingRest(takingOutUserNames(redactingFirst(text)), crashReport: crashReport)
     }
 
     /// The rules for what a folder's name can stand inside: IMAP literals, web addresses,

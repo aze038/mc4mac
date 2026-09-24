@@ -248,11 +248,13 @@ public final class DiagnosticsCenter: @unchecked Sendable {
         restartLoop()
     }
 
-    /// Server names and folder names, so the redactor keeps the former and takes out the latter.
-    public func updateRedaction(serverHosts: Set<String>, labels: [String]) {
+    /// Server names, folder names and the user names accounts sign in with. The redactor keeps
+    /// the server names and takes out the rest.
+    public func updateRedaction(serverHosts: Set<String>, labels: [String], userNames: [String] = []) {
         work.async { [self] in
             redactor.serverHosts = Set(serverHosts.map { $0.lowercased() })
             redactor.labels = labels
+            redactor.userNames = userNames
         }
     }
 
@@ -313,8 +315,10 @@ public final class DiagnosticsCenter: @unchecked Sendable {
     /// and title are made only from the area, the code and the place in the code, and the code
     /// from a typed error where there is one, so no server's words can reach either.
     private func makeEvent(_ entry: LogRecord) -> DiagnosticsEvent {
-        // The folder or address a failure names, besides those the line was written about.
+        // The folder or address a failure names, besides those the line was written about, and
+        // the user name of the account the line is about, which a server's reply can repeat.
         let names = entry.names + Log.names(heldBy: entry.error)
+        let redactor = self.redactor.signingInAs(entry.account?.username)
         let message = redactor.redact(entry.message, naming: names)
         let code = entry.code.map(DiagnosticsSignature.word) ?? DiagnosticsSignature.code(for: entry.error, message: message)
         let kind: DiagnosticsKind = entry.level == .error ? .error : .warning
