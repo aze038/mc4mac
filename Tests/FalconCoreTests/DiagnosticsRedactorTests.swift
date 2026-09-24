@@ -259,6 +259,8 @@ final class DiagnosticsRedactorTests: XCTestCase {
         assertClean("Datei ‹Notiz.txt› fehlt", lacks: ["Notiz"])
         assertClean("ファイル「請求書ACME.pdf」を開けませんでした。『議事録』も同様です。", lacks: ["請求書", "ACME", "議事録"],
                     keeps: ["を開けませんでした"])
+        assertClean("לא ניתן לפתוח את הקובץ ״חשבונית ACME.pdf״ מכיוון שהוא לא קיים.", lacks: ["חשבונית", "ACME"],
+                    keeps: ["לא ניתן לפתוח את הקובץ ״…״ מכיוון שהוא לא קיים."])
     }
 
     func testSingleQuotesGoButApostrophesStay() {

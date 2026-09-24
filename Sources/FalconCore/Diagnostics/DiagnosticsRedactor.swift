@@ -387,7 +387,7 @@ public struct DiagnosticsRedactor: Sendable {
     /// Quoted text in a message is nearly always the person's: a name, a subject, a file. What
     /// is kept is only what reads like a code, such as `"invalid_grant"`, and only between the
     /// straight quotes code and servers write. Between the marks a Mac writes in its own
-    /// language, „…“, «…», 「…」 and the rest, is a file or a name, and it always goes.
+    /// language, „…“, «…», 「…」, ״…״ and the rest, is a file or a name, and it always goes.
     /// In a crash report, an exception's name and reason stay too.
     private func stripQuoted(_ text: String, crashReport: Bool) -> String {
         var s = Rx.quoted.replace(in: text) { m, ns in
@@ -544,10 +544,12 @@ private enum Rx {
 
     static let quoted = rx(#""((?:[^"\\\r\n]|\\.){0,500})""#)
     /// English “…”, German „…“, Swedish ”…”, French and Russian «…», Danish »…«, their single
-    /// forms, and Japanese 「…」 and 『…』, in one pass so no pair is read across another.
+    /// forms, Japanese 「…」 and 『…』, and Hebrew ״…״ (gershayim), in one pass so no pair is read
+    /// across another.
     static let typographicQuoted = rx([
         #"“[^”\r\n]{0,500}”"#, #"„[^“”\r\n]{0,500}[“”]"#, #"”[^”\r\n]{0,500}”"#, #"«[^»\r\n]{0,500}»"#, #"»[^«\r\n]{0,500}«"#,
         #"‹[^›\r\n]{0,500}›"#, #"›[^‹\r\n]{0,500}‹"#, #"「[^」\r\n]{0,500}」"#, #"『[^』\r\n]{0,500}』"#,
+        #"״[^״\r\n]{0,500}״"#,
         // ‘…’ and ‚…‘ end with the mark an apostrophe also uses, so a closing one is one that
         // no letter follows: ‘Ana’s notes.txt’ goes whole and couldn’t stays.
         #"(?<![\p{L}\p{N}])[‘‚][^\r\n]{0,500}?[‘’](?![\p{L}\p{N}])"#,
@@ -562,12 +564,12 @@ private enum Rx {
     static let codeName = rx(#"^(?=.*(?:[a-z0-9][A-Z]|[A-Z]{2}|[_!?<]))[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*[!?]?(?:<[^\s']*>)?$"#)
     /// `.pdf` or `.XLSX`, but not the `.Int` of `Swift.Int`.
     static let fileExtension = rx(#"\.(?:[a-z][a-z0-9]{0,4}|[A-Z][A-Z0-9]{0,4})$"#)
-    static let quotationMarks = Set("\"'“”„‘’‚«»‹›「『".unicodeScalars)
+    static let quotationMarks = Set("\"'“”„‘’‚«»‹›「『״".unicodeScalars)
     /// What the runtime writes just before an exception's name or reason.
     static let exceptionLeadIn = rx(#"(?:\breason:|\bexception)[ \t]*$"#, [.caseInsensitive])
     /// Words a server or FalconMail puts just before a folder's name: `No folder HR`,
     /// `Unknown Mailbox: HR`, `Mailbox doesn't exist: HR`, `Could not move to HR`.
-    static let folderLeadIn = #"((?<!<)\b(?:folder|mailbox|label)[ \t]*:?[ \t]*|\bexists?[ \t]*:[ \t]*|\b(?:move|moved|copy|copied)[ \t]+to[ \t]+|\binto[ \t]+)(["'“„‘«]?)"#
+    static let folderLeadIn = #"((?<!<)\b(?:folder|mailbox|label)[ \t]*:?[ \t]*|\bexists?[ \t]*:[ \t]*|\b(?:move|moved|copy|copied)[ \t]+to[ \t]+|\binto[ \t]+)(["'“„‘«״]?)"#
     static let ipv4 = rx(#"(?<!\d)(?<!\d\.)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d|\.\d)"#)
     static let ipv6Candidate = rx(#"(?<![0-9A-Za-z:.])[0-9A-Fa-f:]{2,39}(?![0-9A-Za-z:])"#)
 
