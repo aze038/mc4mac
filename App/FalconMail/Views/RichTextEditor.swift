@@ -96,8 +96,13 @@ enum RichText {
     /// turns them black (see ComposedHTML).
     static let tableLines = NSColor.labelColor
 
+    /// How the composer sets text that carries no formatting of its own.
+    static var bodyAttributes: [NSAttributedString.Key: Any] {
+        [.font: defaultFont, .foregroundColor: NSColor.labelColor]
+    }
+
     static func attributed(fromPlain text: String) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [.font: defaultFont, .foregroundColor: NSColor.labelColor])
+        NSAttributedString(string: text, attributes: bodyAttributes)
     }
 
     static func attributed(fromRTF data: Data) -> NSAttributedString? {
@@ -123,6 +128,9 @@ final class ComposeTextView: NSTextView {
     var onFocusChange: ((Bool) -> Void)?
     var onSelectionChange: (() -> Void)?
     var onMouseSelection: (() -> Void)?
+    /// A signature is often designed elsewhere and pasted in whole, so its editor keeps what is
+    /// pasted as it came; Paste and Match Style still takes the editor's own.
+    var pastesSourceFormatting = false
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
@@ -148,7 +156,7 @@ final class ComposeTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        pasteMatchingFalconMailStyle()
+        if pastesSourceFormatting { pasteKeepingSourceFormatting() } else { pasteMatchingFalconMailStyle() }
     }
 
     @objc func pasteMatchingFalconMailStyle() {

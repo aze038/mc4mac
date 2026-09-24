@@ -8,7 +8,7 @@ import FalconCore
 /// `-FalconMailDemoTablePicker 3x4` opens the Table picker with that size under the pointer;
 /// `-FalconMailDemoTable 3x2` inserts a table of that size with some figures in it;
 /// `-FalconMailDemoSelection YES` selects a word, so Cut and Copy light up;
-/// `-FalconMailDemoSignature YES` inserts a stand-in account's signature at the end, through
+/// `-FalconMailDemoSignature YES` inserts a stand-in signature at the end, through
 /// the Signature menu's own path, and `-FalconMailDemoUndo YES` then undoes the last insertion;
 /// `-FalconMailDemoSignatures YES` does what the menu's Signatures… does.
 enum ComposeRibbonDemo {
@@ -35,12 +35,10 @@ enum ComposeRibbonDemo {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
             if defaults.bool(forKey: "FalconMailDemoSignature") {
-                // Never saved and never connected to: it only lends the menu a signature.
-                let account = AccountInfo(email: "demo@example.invalid", displayName: "Demo", provider: "imap",
-                                          imapHost: "example.invalid", smtpHost: "example.invalid",
-                                          signature: "Alex Example\nExample Ltd")
+                // Never saved: it only lends the menu a signature.
+                let signature = Signature(name: "Demo", plain: "Alex Example\nExample Ltd")
                 editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
-                SignatureChoice.choices(from: [account], preferring: account.id).first.map { formatter.insertSignature($0.block) }
+                formatter.insertSignature(signature)
             }
             postStep()
         }

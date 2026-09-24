@@ -237,9 +237,9 @@ final class TextFormatter {
                                  font: RichText.defaultFont, lines: RichText.tableLines)
     }
 
-    func insertSignature(_ block: String) {
-        guard let editor else { return }
-        ComposedBody.insertSignature(block, into: editor, before: history)
+    func insertSignature(_ signature: Signature) {
+        guard let editor, !signature.isBlank else { return }
+        ComposedBody.insertSignature(signature.block, into: editor, before: history)
     }
 
     func insertLink() {
@@ -272,11 +272,10 @@ final class TextFormatter {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
-        let attachment = NSTextAttachment()
-        let cell = NSTextAttachmentCell(imageCell: image)
-        attachment.attachmentCell = cell
-        let body = NSAttributedString(attachment: attachment)
+        guard panel.runModal() == .OK, let url = panel.url, NSImage(contentsOf: url) != nil,
+              let file = try? FileWrapper(url: url, options: .immediate) else { return }
+        // Held as its file, which RTFD writes out with the text, so a signature keeps it.
+        let body = NSAttributedString(attachment: NSTextAttachment(fileWrapper: file))
         let range = editor.selectedRange()
         guard editor.shouldChangeText(in: range, replacementString: nil) else { return }
         storage.replaceCharacters(in: range, with: body)

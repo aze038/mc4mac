@@ -133,6 +133,8 @@ final class AppModel {
     let updates = UpdateManager()
     let session: SessionStore
     let moveTargets: MoveTargets
+    /// A variable only so the debug snapshots can show stand-in signatures.
+    var signatures: SignatureLibrary
 
     var accounts: [AccountInfo] = [] {
         didSet { myAddressCache = Set(accounts.map { $0.email.lowercased() }) }
@@ -414,6 +416,7 @@ final class AppModel {
         self.archives = ArchiveRecordStore(layout: layout)
         self.session = SessionStore(layout: layout)
         self.moveTargets = MoveTargets(layout: layout)
+        self.signatures = SignatureLibrary(store: SignatureStore(layout: layout))
     }
 
     func bootstrap() async {
@@ -474,6 +477,7 @@ final class AppModel {
 
     func prepareForRelaunch() async {
         saveSessionNow()
+        signatures.saveNow()
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
         let wind = Task {
@@ -637,6 +641,7 @@ final class AppModel {
 
     func refreshAccounts() async {
         accounts = await store.allAccounts()
+        signatures.adopt(accounts)
         var map: [UUID: [FolderInfo]] = [:]
         for a in accounts { map[a.id] = await store.folders(for: a.id) }
         folders = map
@@ -929,14 +934,15 @@ final class AppModel {
 
     func composeNew() {
         guard let account = accounts.first else { return }
-        openCompose(.blank(account: account))
+        openCompose(.blank(account: account, signature: signature(for: account, .newMessages)))
     }
 
     func replyToSelection(all: Bool) {
         guard let thread = currentThread, let account = account(for: thread.latest) else { return }
         Task {
             let parsed = await parsedBody(for: thread.latest)
-            openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all))
+            openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all,
+                               signature: signature(for: account, .replies)))
         }
     }
 
@@ -944,8 +950,13 @@ final class AppModel {
         guard let thread = currentThread, let account = account(for: thread.latest) else { return }
         Task {
             let parsed = await parsedBody(for: thread.latest)
-            openCompose(.forward(thread.latest, parsed: parsed, account: account))
+            openCompose(.forward(thread.latest, parsed: parsed, account: account, signature: signature(for: account, .replies)))
         }
+    }
+
+    /// The signature a message from the account starts with, as the Signatures pane sets it.
+    func signature(for account: AccountInfo, _ use: SignatureUse) -> Signature? {
+        signatures.signature(for: account.id, use)
     }
 
     func focusSearch() {
@@ -1067,13 +1078,14 @@ final class AppModel {
                 errorMessage = "Could not read the original message to attach it."
                 return
             }
+            let signature = signature(for: account, .replies)
             if parts.count == 1, let raw = await rawBody(for: first) {
-                openCompose(.forwardAsAttachment(first, raw: raw, account: account))
+                openCompose(.forwardAsAttachment(first, raw: raw, account: account, signature: signature))
                 return
             }
             var draft = ComposeDraft(accountID: account.id)
             draft.subject = "Fwd: \(parts.count) messages"
-            draft.body = "\n\n" + ComposeDraft.signatureBlock(account)
+            draft.open(lead: "\n\n", signature: signature)
             draft.attachments = parts
             openCompose(draft)
         }
@@ -1771,6 +1783,7 @@ final class AppModel {
         searchDebounceTask = nil
         await flushPendingActions()
         saveSessionNow()
+        signatures.saveNow()
         for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
         await coordinator.stopAll()

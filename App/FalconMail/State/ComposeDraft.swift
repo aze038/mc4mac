@@ -18,13 +18,23 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     var historyHTML: String = ""
     var sourceMessageID: String?
     var importance: String = "normal"
+    /// A new message's body as its signature left it, so that changing the From account before
+    /// the body is touched swaps the signature for the new account's.
+    var autoSignature: AutoSignature?
+
+    struct AutoSignature: Codable, Hashable, Sendable {
+        var lead: String
+        var body: String
+        var bodyRTF: Data?
+    }
 
     var isBlank: Bool {
         to.trimmed.isEmpty && cc.trimmed.isEmpty && bcc.trimmed.isEmpty && subject.trimmed.isEmpty && attachments.isEmpty
             && body.replacingOccurrences(of: historyPlain, with: "").trimmed.isEmpty
     }
 
-    static func reply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool) -> ComposeDraft {
+    static func reply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool,
+                      signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         let replyTarget = parsed?.replyTo.first ?? message.from
         d.to = replyTarget.rfc5322
@@ -38,25 +48,25 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         let h = history(message, parsed: parsed)
         d.historyPlain = h.plain
         d.historyHTML = h.html
-        d.body = "\n\n" + signatureBlock(account) + h.plain
+        d.open(lead: "\n\n", signature: signature, tail: h.plain)
         return d
     }
 
-    static func forward(_ message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo) -> ComposeDraft {
+    static func forward(_ message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         d.subject = message.subject.lowercased().hasPrefix("fwd:") ? message.subject : "Fwd: \(message.subject)"
         let h = history(message, parsed: parsed)
         d.historyPlain = h.plain
         d.historyHTML = h.html
-        d.body = "\n\n" + signatureBlock(account) + h.plain
+        d.open(lead: "\n\n", signature: signature, tail: h.plain)
         d.attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
         return d
     }
 
-    static func forwardAsAttachment(_ message: MessageSummary, raw: Data, account: AccountInfo) -> ComposeDraft {
+    static func forwardAsAttachment(_ message: MessageSummary, raw: Data, account: AccountInfo, signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         d.subject = message.subject.lowercased().hasPrefix("fwd:") ? message.subject : "Fwd: \(message.subject)"
-        d.body = "\n\n" + signatureBlock(account)
+        d.open(lead: "\n\n", signature: signature)
         var name = message.subject.trimmed.isEmpty ? "Forwarded message" : message.subject.trimmed
         name = name.replacingOccurrences(of: "[/:\\\\]", with: "-", options: .regularExpression)
         if name.count > 60 { name = String(name.prefix(60)) }
@@ -81,14 +91,33 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         parsed.attachments.filter { !$0.isInline }.map { OutgoingAttachment(filename: $0.filename, mimeType: $0.mimeType, data: $0.data) }
     }
 
-    static func blank(account: AccountInfo) -> ComposeDraft {
+    static func blank(account: AccountInfo, signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
-        d.body = "\n\n" + signatureBlock(account)
+        d.openNew(lead: "\n\n", signature: signature)
         return d
     }
 
-    static func signatureBlock(_ account: AccountInfo) -> String {
-        account.signature.trimmed.isEmpty ? "" : "-- \n\(account.signature)\n\n"
+    /// Starts the body with `lead`, the signature, then `tail`, a reply's quoted original. A
+    /// signature with formatting of its own makes the body rich text from the start, the rest
+    /// of it in the composer's own font.
+    mutating func open(lead: String, signature: Signature?, tail: String = "") {
+        let opened = ComposedBody.opening(lead: lead, signature: signature, tail: tail, attributes: RichText.bodyAttributes)
+        body = opened.plain
+        bodyRTF = opened.rich.flatMap { RichText.rtf(from: $0) }
+    }
+
+    /// A new message's start, remembered until the body is touched.
+    mutating func openNew(lead: String, signature: Signature?) {
+        open(lead: lead, signature: signature)
+        autoSignature = AutoSignature(lead: lead, body: body, bodyRTF: bodyRTF)
+    }
+
+    /// A new message nobody has typed in yet takes the new account's signature for new
+    /// messages in place of the old one's, as Outlook's does.
+    mutating func changeAccount(to account: AccountInfo, signature: Signature?) {
+        accountID = account.id
+        guard let auto = autoSignature, auto.body == body, auto.bodyRTF == bodyRTF else { return }
+        openNew(lead: auto.lead, signature: signature)
     }
 
     static let separatorLine = AttachmentReminder.separatorLine

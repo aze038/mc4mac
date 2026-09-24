@@ -13,6 +13,7 @@ public struct FileLayout: Sendable {
     }
 
     public var accountsFile: URL { root.appendingPathComponent("accounts.json") }
+    public var signaturesFile: URL { root.appendingPathComponent("signatures.json") }
     public var rulesFile: URL { root.appendingPathComponent("rules.json") }
     public var archivesFile: URL { root.appendingPathComponent("archives.json") }
     public var pendingActionsFile: URL { root.appendingPathComponent("pendingActions.json") }
