@@ -36,26 +36,34 @@ Make today's worktree and run the tools from it:
 DAY=$(date +%F)
 git -C /Users/kmuradoff/mc4mac worktree add --detach /Users/kmuradoff/wt/triage-$DAY claude/exciting-wozniak-ubuudv
 cd /Users/kmuradoff/wt/triage-$DAY
-tools/diagnostics/fetch-reports.sh                # new reports, saved to ~/FalconMailReports/
-tools/diagnostics/fetch-reports.sh --days 1 --no-fetch --json > "$TMPDIR/triage-$DAY.json"
+tools/diagnostics/fetch-reports.sh --json > "$TMPDIR/triage-$DAY.json"
 tools/diagnostics/fetch-reports.sh --issues --json > "$TMPDIR/issues-$DAY.json"
 ```
 
+The first command saves every new report to `~/FalconMailReports/` and summarises exactly those:
+everything since the last run, however long ago that was (a weekend with the Mac off included).
+
 - Exit code 2 means the config is missing or unsafe: put that under **Needs Kamal** and stop.
 - Exit code 1 means the service could not be read: note it under **Needs Kamal**, then triage
-  whatever is already saved (`--days 1 --no-fetch`).
+  whatever is already saved (`--no-fetch --days 3 --json`).
 
 ## 2. Group
 
-Each problem in the JSON has a `trend` and the Issues tab has the team's `status`:
+Each problem in the JSON has a `trend` and the Issues tab has the team's `status`. Take the first
+row that fits:
 
 | Trend or status | Goes under |
 |---|---|
-| `New` | New problems |
-| `Rising`, or `Back` (returned after a quiet week) | Getting worse |
-| Status `Fixed in X` but seen again in version X or later | Getting worse: "back after the fix in X" |
-| Status `Fixed in X`, seen only in versions before X | Technical detail only: old versions |
 | Status `Won't fix` | Leave out |
+| Status `Fixed in X` but seen again in version X or later (its Issues `versions` say "after the fix") | Getting worse: "back after the fix in X" |
+| Status `Fixed in X`, seen only in versions before X | Technical detail only: old versions |
+| Trend `New` | New problems |
+| Trend `Rising`, or `Back` (returned after a quiet week) | Getting worse |
+| No trend, status `New`, and not in an earlier report | New problems (an earlier run saw it but never reported it) |
+| No trend otherwise | Leave out |
+
+"An earlier report" means an earlier `~/FalconMailReports/triage-*.md`: search them for the
+problem's title. Something already listed there is never New again: treat it as having no trend.
 
 Match problems to Issues rows by `signature`; the row's `testers` says who hit it, by the names the
 team typed on the Installs tab. Work through problems in this order: crashes, hangs, then the rest
@@ -128,7 +136,7 @@ Most urgent: FalconMail crashed while opening a message (9 times on 4 installs).
 - Gmail paused the connection: too many requests: 41 times on 5 installs today, against about 6 a day last week. Not looked at yet.
 
 ## Fixed today (committed locally, not released)
-- A message with an empty body opens instead of crashing: branch triage/2026-09-24-reader-crash, commit 1a2b3c4. All tests pass; Debug and Release builds succeed.
+- FalconMail crashed while opening a message (9 times on 4 installs): fixed, a message with an empty body now opens. Branch triage/2026-09-24-reader-crash, commit 1a2b3c4; all tests pass, Debug and Release builds succeed.
 
 ## Needs Kamal
 - Symbols for 1.10.0 are missing from ~/Library/Application Support/FalconMail Symbols/, so crash stacks show offsets only.
@@ -138,7 +146,8 @@ Most urgent: FalconMail crashed while opening a message (9 times on 4 installs).
 ```
 
 The three lines at the top are always: the counts, the most urgent problem, and how many things
-need Kamal ("Nothing needs you today." when none).
+need Kamal ("Nothing needs you today." when none). **Fixed today** names the problem as people
+reported it, with its counts, then says what the fix changes.
 
 ## 6. Tidy up
 

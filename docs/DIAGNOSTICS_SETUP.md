@@ -40,6 +40,11 @@ before sending: no message content, subjects, addresses, names or passwords ever
    - `Read key (readKey in ~/.config/falconmail/diagnostics.json): …`
 
    Keep the tab open. If you close it, run **showKeys** to see them again.
+4. The log also shows two links:
+   - **This month's spreadsheet**: open it once and check that it opens on **Overview**, with
+     **Issues**, **Installs** and **Events** after it.
+   - **Folder**: send this link to the team. Each month's spreadsheet
+     (`FalconMail Diagnostics YYYY-MM`) appears there, and the newest one is the one to use.
 
 ## 3. Deploy the web app
 
@@ -49,13 +54,27 @@ before sending: no message content, subjects, addresses, names or passwords ever
    "Anyone with Google account": FalconMail uploads without signing in).
 3. Click **Deploy** and copy the **Web app URL**. It ends in `/exec`.
 
-If **Anyone** is not offered (only "Anyone within freightmasters.llc"), the Workspace admin
-settings block public web apps. In the [Admin console](https://admin.google.com) go to
-**Apps → Google Workspace → Drive and Docs → Sharing settings → Sharing options**, allow sharing
-outside freightmasters.llc and tick the option that lets users make files and published web content
-visible to anyone with the link. Save, wait a few minutes, then deploy again. The reports
-themselves stay shared with freightmasters.llc only; "Anyone" applies to the upload address, which
-answers only uploads that carry the ingest key.
+### If "Anyone" is not offered
+
+If you only see "Anyone within freightmasters.llc", the Workspace blocks public web apps. Allow
+them **for your account only**, never for the whole company:
+
+1. In the [Admin console](https://admin.google.com), go to **Directory → Organizational units**
+   and add a unit inside the one your account is in now (usually freightmasters.llc itself), for
+   example **Diagnostics owner**. Then open **Directory → Users**, choose your account, **Change
+   organizational unit**, and move it there. A new unit keeps every other setting of the one above
+   it, so nothing else changes for you.
+2. Go to **Apps → Google Workspace → Drive and Docs → Sharing settings**. **On the left, select
+   Diagnostics owner first.** Under **Sharing options**, allow sharing outside freightmasters.llc
+   and tick the option that lets users make files and published web content visible to anyone with
+   the link. Click **Override**.
+3. Wait a few minutes, then deploy again.
+
+**Never change this with any other unit selected, freightmasters.llc least of all.** It would let
+everyone in that unit share any Drive file with anyone who has the link.
+
+"Anyone" applies only to the upload address, which accepts nothing without the ingest key. The
+reports stay shared with freightmasters.llc, and nobody they are shared with can share them further.
 
 ## 4. Give the keys to GitHub and to this Mac
 
@@ -88,15 +107,17 @@ Check it works:
 tools/diagnostics/fetch-reports.sh
 ```
 
-It should print `No new reports.` The next FalconMail release sends reports. Each one appears on
-the **Events** tab of this month's spreadsheet in the Drive folder **FalconMail Diagnostics** as it
-arrives, and on **Overview** and **Issues** within the hour.
+It should print `No new reports.` The next FalconMail release sends reports. They appear on the
+**Events** tab of this month's spreadsheet as they arrive (its filter hides the routine health and
+launch reports), and on **Overview** and **Issues** within the hour.
 
 ## Good to know
 
 - **Who can change things**: the folder is shared with the domain as **view only**. To let the
   team fill in Status, Notes and Tester name themselves, change `SHARE_PERMISSION` at the top of
-  `Code.gs` to `DriveApp.Permission.EDIT`, save and run **setup** again.
+  `Code.gs` to `DriveApp.Permission.EDIT`, save and run **setup** again. Editors still cannot
+  share the reports with anyone else. Going back to view only works the same way, but anyone you
+  added by name in Drive's **Share** dialog keeps access until you remove them there.
 - **After changing `Code.gs`**: Deploy → **Manage deployments** → pencil → Version: **New version**
   → Deploy. The URL stays the same.
 - **A new key**: in Project Settings → Script properties, delete `INGEST_KEY` or `READ_KEY`, run
