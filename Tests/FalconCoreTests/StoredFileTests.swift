@@ -100,6 +100,64 @@ final class StoredFileTests: XCTestCase {
         await second.finish()
     }
 
+    func testAnAccountListSetAsideIsNeverReplacedByNewAccounts() async throws {
+        let server = try EngineHarness.gmailServer()
+        let first = try await EngineHarness(server: server, root: root)
+        let accountDirectory = layout.accountDirectory(first.account.id)
+        try await first.syncOnce()
+        await first.syncer.stop()
+        try garbage.write(to: layout.accountsFile)
+        _ = StoredFileNotices.take()
+
+        for launch in 1...2 {
+            let store = MailStore(layout: layout)
+            try await store.load()
+            let accounts = await store.allAccounts()
+            XCTAssertTrue(accounts.isEmpty)
+            XCTAssertTrue(StoredFileNotices.take().contains("the account list"), "launch \(launch)")
+            do {
+                try await store.saveAccount(AccountInfo(email: "owner@example.com", displayName: "Owner"))
+                XCTFail("launch \(launch): a new account would get a new id and orphan the old one's mail")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("accounts.json.unreadable-"), error.localizedDescription)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: layout.accountsFile.path), "launch \(launch): no new accounts.json")
+        }
+        let aside = try setAside(beside: layout.accountsFile)
+        XCTAssertEqual(aside.count, 1)
+        XCTAssertEqual(try Data(contentsOf: aside[0]), garbage)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: accountDirectory.path), "the old account's mail is still there")
+        server.stop()
+    }
+
+    func testAnAccountWhoseFolderListWasSetAsideStaysPausedAfterARelaunch() async throws {
+        let server = try EngineHarness.gmailServer()
+        server.add(FakeIMAPServer.message("one"), to: "INBOX")
+        let first = try await EngineHarness(server: server, root: root)
+        try await first.syncOnce()
+        await first.syncer.stop()
+        let foldersFile = layout.foldersFile(first.account.id)
+        try garbage.write(to: foldersFile)
+        let setAsideNow = try await EngineHarness(server: server, root: root)
+        let problem = await setAsideNow.store.folderListProblem(setAsideNow.account.id)
+        XCTAssertNotNil(problem)
+        await setAsideNow.syncer.stop()
+        await assertEventually { server.openConnections == 0 }
+        server.resetCounters()
+        _ = StoredFileNotices.take()
+
+        let relaunched = try await EngineHarness(server: server, root: root)
+        let stillThere = await relaunched.store.folderListProblem(relaunched.account.id)
+        XCTAssertEqual(stillThere?.fileName, try setAside(beside: foldersFile).first?.lastPathComponent)
+        XCTAssertTrue(StoredFileNotices.take().contains("the folder list for owner@example.com"))
+        await relaunched.syncer.start()
+        await assertEventually { await relaunched.events.healths.contains { if case .blocked = $0 { return true }; return false } }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(server.commands.isEmpty, "\(server.commands)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: foldersFile.path), "no new folder list")
+        await relaunched.finish()
+    }
+
     func testUnreadableAccountListIsLeftInPlaceAndNeverWrittenOver() async throws {
         let file = layout.accountsFile
         let original = Data("[]".utf8)

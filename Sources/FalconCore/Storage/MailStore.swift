@@ -33,7 +33,10 @@ public struct FolderListProblem: Sendable, Equatable {
 public actor MailStore {
     public let layout: FileLayout
     private var accounts: [AccountInfo] = []
-    private var accountsWritable = true
+    /// The name the account list is kept under when it could not be read. Accounts are neither
+    /// added nor removed meanwhile: a new list would give them new ids, orphaning the mail,
+    /// folders and sign-ins stored under the old ones, and download everything again.
+    private var accountListProblem: String?
     private var folders: [UUID: [FolderInfo]] = [:]
     private var folderListProblems: [UUID: FolderListProblem] = [:]
     private var folderStores: [UUID: FolderStore] = [:]
@@ -46,9 +49,23 @@ public actor MailStore {
 
     public func load() throws {
         try layout.ensureDirectory(layout.root)
-        let stored = AtomicFile.loadJSON([AccountInfo].self, from: layout.accountsFile, what: "the account list")
-        accounts = stored.value ?? []
-        accountsWritable = stored.canSave
+        let what = "the account list"
+        switch AtomicFile.loadJSON([AccountInfo].self, from: layout.accountsFile, what: what) {
+        case .loaded(let list):
+            accounts = list
+        case .missing:
+            // One set aside at an earlier launch still holds the ids that every account's
+            // stored mail is filed under.
+            if let aside = AtomicFile.setAsideCopies(of: layout.accountsFile).last {
+                Log.info("store", "no account list, and \(aside.lastPathComponent) is still set aside; accounts are not added or removed")
+                StoredFileNotices.add(what)
+                accountListProblem = aside.lastPathComponent
+            }
+        case .setAside(let aside, _):
+            accountListProblem = aside.lastPathComponent
+        case .unreadable:
+            accountListProblem = layout.accountsFile.lastPathComponent
+        }
         for a in accounts {
             let file = layout.foldersFile(a.id)
             switch AtomicFile.loadJSON([FolderInfo].self, from: file, what: "the folder list for \(a.email)") {
@@ -56,6 +73,13 @@ public actor MailStore {
                 folders[a.id] = list
             case .missing:
                 folders[a.id] = []
+                if let aside = AtomicFile.setAsideCopies(of: file).last {
+                    // A new list would give every folder a new id, orphaning the ones stored
+                    // under the list that was set aside, just as at the launch that set it aside.
+                    Log.info("store", "\(a.email): no folder list, and \(aside.lastPathComponent) is still set aside; not syncing")
+                    StoredFileNotices.add("the folder list for \(a.email)")
+                    folderListProblems[a.id] = FolderListProblem(detail: "an earlier folder list is still set aside", fileName: aside.lastPathComponent)
+                }
             case .setAside(let aside, let detail):
                 folders[a.id] = []
                 folderListProblems[a.id] = FolderListProblem(detail: detail, fileName: aside.lastPathComponent)
@@ -93,8 +117,14 @@ public actor MailStore {
 
     public func account(_ id: UUID) -> AccountInfo? { accounts.first { $0.id == id } }
 
+    private func refuseIfAccountListUnread() throws {
+        guard let kept = accountListProblem else { return }
+        throw FalconError.storage("FalconMail could not read its list of accounts, which is kept as \(kept). No account is added or removed "
+                                  + "until that list can be read again, so the mail stored for the accounts in it stays theirs.")
+    }
+
     public func saveAccount(_ account: AccountInfo) throws {
-        guard accountsWritable else { throw FalconError.storage("The account list could not be read, so it is left as it is.") }
+        try refuseIfAccountListUnread()
         if let i = accounts.firstIndex(where: { $0.id == account.id }) { accounts[i] = account } else { accounts.append(account) }
         try AtomicFile.writeJSON(accounts, to: layout.accountsFile)
         if folders[account.id] == nil { folders[account.id] = [] }
@@ -102,7 +132,7 @@ public actor MailStore {
     }
 
     public func removeAccount(_ id: UUID) throws {
-        guard accountsWritable else { throw FalconError.storage("The account list could not be read, so it is left as it is.") }
+        try refuseIfAccountListUnread()
         accounts.removeAll { $0.id == id }
         try AtomicFile.writeJSON(accounts, to: layout.accountsFile)
         for f in folders[id] ?? [] { folderStores[f.id] = nil }

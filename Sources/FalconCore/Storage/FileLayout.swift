@@ -102,6 +102,13 @@ public enum AtomicFile {
         }
     }
 
+    /// The copies of `url` set aside so far, oldest first.
+    public static func setAsideCopies(of url: URL) -> [URL] {
+        let prefix = url.lastPathComponent + ".unreadable-"
+        let listed = (try? FileManager.default.contentsOfDirectory(at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil)) ?? []
+        return listed.filter { $0.lastPathComponent.hasPrefix(prefix) }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
     /// Renames `url` to `<name>.unreadable-<date>`, never replacing an earlier one. Nil when the
     /// file could not be moved.
     static func setAside(_ url: URL) -> URL? {
