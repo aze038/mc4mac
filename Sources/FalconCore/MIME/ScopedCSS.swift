@@ -18,6 +18,53 @@ public enum ScopedCSS {
         return output
     }
 
+    /// Gmail reads no more than 16 KB of any one `<style>` element, and a Word original's sheet,
+    /// its lists and fonts included, can be longer; so a sheet goes out as several elements,
+    /// each under `limit` bytes, split between whole rules. A rule longer than that on its own
+    /// is an element of its own.
+    public static func sheets(_ css: String, under limit: Int = 15_000) -> [String] {
+        guard css.utf8.count > limit else { return css.isEmpty ? [] : [css] }
+        var sheets: [String] = []
+        var current = ""
+        var currentBytes = 0
+        var rule = ""
+        var depth = 0
+        var quote: Character?
+        var escaped = false
+        func close() {
+            let bytes = rule.utf8.count
+            if currentBytes > 0, currentBytes + bytes > limit {
+                sheets.append(current)
+                current = ""
+                currentBytes = 0
+            }
+            current += rule
+            currentBytes += bytes
+            rule = ""
+        }
+        for ch in css {
+            rule.append(ch)
+            if escaped { escaped = false; continue }
+            if ch == "\\" { escaped = true; continue }
+            if let q = quote {
+                if ch == q { quote = nil }
+                continue
+            }
+            switch ch {
+            case "\"", "'": quote = ch
+            case "{": depth += 1
+            case "}":
+                depth = max(0, depth - 1)
+                if depth == 0 { close() }
+            case ";" where depth == 0: close()
+            default: break
+            }
+        }
+        if !rule.isEmpty { close() }
+        if !current.isEmpty { sheets.append(current) }
+        return sheets
+    }
+
     /// The at-rules whose blocks hold rules of their own, which are scoped in turn.
     private static let grouping: Set<String> = ["media", "supports", "document", "-moz-document", "container", "layer"]
 

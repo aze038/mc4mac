@@ -382,6 +382,32 @@ final class OutlookReplyTests: XCTestCase {
         XCTAssertTrue(sent.html.contains(forward), "the chain as it came")
     }
 
+    /// Gmail reads only the first 16 KB of a `<style>` element, and Word's sheet for a message
+    /// with lists and many fonts is longer than that; the original's rules go out whole, in
+    /// several elements each under the limit, in their order, split only between rules.
+    func testALongStyleSheetGoesOutInPartsGmailReadsWhole() throws {
+        var rules = "p.MsoNormal, li.MsoNormal, div.MsoNormal {margin:0cm; font-size:11.0pt; font-family:\"Calibri\",sans-serif;}\n"
+        for list in 0..<40 {
+            rules += "@list l\(list) {mso-list-id:\(1_000_000 + list); mso-list-type:hybrid; mso-list-template-ids:-1 67698689;}\n"
+            for level in 1...9 {
+                rules += "@list l\(list):level\(level) {mso-level-number-format:bullet; mso-level-text:\"\\F0B7\"; mso-level-tab-stop:none; "
+                    + "mso-level-number-position:left; margin-left:\(18 * level).0pt; text-indent:-18.0pt; font-family:Symbol;}\n"
+            }
+        }
+        rules += "a:link, span.MsoHyperlink {color:#0563C1; text-decoration:underline;}\n"
+        let html = "<html><head><style><!--\n\(rules)--></style></head><body lang=EN-GB><div class=WordSection1>"
+            + OutlookChainFixtures.paragraph("The figures are in.") + "</div></body></html>"
+        XCTAssertGreaterThan(rules.utf8.count, 40_000)
+        let sent = reply(to: OutlookChainFixtures.message(html: html, from: sam, to: [alex], subject: "Figures"))
+        let head = try XCTUnwrap(sent.html.range(of: "</head>").map { String(sent.html[..<$0.lowerBound]) })
+        let sheets = head.components(separatedBy: "<style>").dropFirst().map { $0.components(separatedBy: "</style>")[0] }
+        XCTAssertGreaterThanOrEqual(sheets.count, 3, head)
+        for sheet in sheets { XCTAssertLessThan(sheet.utf8.count, 16_000) }
+        XCTAssertEqual(sheets.joined(), ScopedCSS.scope(rules, to: ".fm-q"), "every rule, in order, split only between rules")
+        XCTAssertTrue(sheets[0].hasPrefix(".fm-q p.MsoNormal,.fm-q li.MsoNormal,.fm-q div.MsoNormal{margin:0cm;"), sheets[0])
+        for sheet in sheets { XCTAssertTrue(sheet.hasSuffix("}"), String(sheet.suffix(40))) }
+    }
+
     /// A reply to a reply from FalconMail 1.10 keeps that reply's body font to it.
     func testAReplyFromAnEarlierBuildKeepsItsFontToItself() {
         let old = OutlookChainFixtures.falconMailOldReply(text: "We are checking.", from: "Kim Ng &lt;kim@example.nl&gt;",

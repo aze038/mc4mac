@@ -110,7 +110,7 @@ public struct QuotedOriginal: Sendable, Equatable {
         open += ">"
 
         self.body = open + body + "</div>"
-        self.head = (scoped.isEmpty ? "" : "<style>\(scoped)</style>") + conditionals.joined()
+        self.head = ScopedCSS.sheets(scoped).map { "<style>\($0)</style>" }.joined() + conditionals.joined()
         let htmlTag = QuotedOriginal.firstTag("html", in: s, from: 0).map { s.substring(with: $0) } ?? ""
         self.namespaces = HTMLAttributes.parse(htmlTag)
             .filter { $0.key.hasPrefix("xmlns:") }

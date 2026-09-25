@@ -277,7 +277,9 @@ Dear Alex, …                                   the original, whole and unchang
   rules, from its head or its body, move into the reply's head scoped to the element holding
   the quote (`ScopedCSS`), and its body's font, colours and link colours go onto that element,
   so nothing in it can restyle the new text or the heading. A chain carries one head and one
-  style sheet however deep it goes.
+  style sheet however deep it goes, sent as several `<style>` elements under 15 KB each when it
+  is longer, as Word's sheet for a message with lists can be, since Gmail reads no more than
+  16 KB of any one.
 - The new text (`CompactHTML`) goes out as Outlook writes it: paragraphs with no margin, the
   font declared once around them, empty lines as `&nbsp;`, only what differs from the font on
   the text itself. New messages are written in Outlook for Mac's default, Aptos at 12 point,
