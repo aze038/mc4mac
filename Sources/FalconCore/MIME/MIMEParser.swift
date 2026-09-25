@@ -11,6 +11,14 @@ public struct MIMEAttachment: Sendable, Hashable, Identifiable {
     public var size: Int { data.count }
 }
 
+extension MIMEAttachment {
+    /// A picture shown inline under `contentID`, made outside a parsed message, as a
+    /// signature's picture read from Outlook is.
+    public init(picture data: Data, filename: String, mimeType: String, contentID: String?) {
+        self.init(id: UUID().uuidString, filename: filename, mimeType: mimeType, contentID: contentID, isInline: true, data: data)
+    }
+}
+
 public struct MIMEPart: Sendable {
     public var headers: MIMEHeaders
     public var contentType: ContentType

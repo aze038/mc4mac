@@ -51,6 +51,8 @@ final class FakeGmailMailbox: @unchecked Sendable {
     var userLabels: [String: String] = [:]
     /// Tokens the fake accepts; nil accepts any.
     var acceptedTokens: Set<String>?
+    /// The addresses the account sends from, as users.settings.sendAs.list answers them.
+    var sendAs: [[String: Any]] = []
 
     init(email: String = "owner@example.com") {
         self.email = email
@@ -117,6 +119,7 @@ final class FakeGmailMailbox: @unchecked Sendable {
         case 1 where segments[0] == "messages": method = .messagesList
         case 2 where segments[0] == "messages": method = .messagesGet
         case 4 where segments[0] == "messages" && segments[2] == "attachments": method = .attachmentsGet
+        case 2 where segments[0] == "settings" && segments[1] == "sendAs": method = .sendAsList
         default: return .success(respond(url, 404, ["error": ["code": 404, "message": "Not Found"]]))
         }
         let query = Dictionary(grouping: comps.queryItems ?? [], by: \.name).mapValues { $0.compactMap(\.value) }
@@ -148,6 +151,8 @@ final class FakeGmailMailbox: @unchecked Sendable {
                 answer = get(segments[1], query)
             case .attachmentsGet:
                 answer = attachment(segments[1], segments[3])
+            case .sendAsList:
+                answer = (200, ["sendAs": sendAs])
             }
             let response = respond(url, answer.0, answer.1)
             if answer.0 == 200 {

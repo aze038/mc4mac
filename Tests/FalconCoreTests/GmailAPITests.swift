@@ -80,9 +80,10 @@ final class GmailAPITests: XCTestCase {
     /// 5; `messages.get` 20; `threads.get` 40; `attachments.get` 20; `modify` 5; `batchModify`
     /// 50; `messages.send` 100; `messages.import` and `messages.insert` 25; `drafts.create`,
     /// `drafts.update`, `drafts.delete` and `drafts.list` 10, 15, 10 and 5; `batchDelete` 50.
-    /// `users.getProfile` and `labels.list` are not in the design's list; Google charges 1 for each.
+    /// `users.getProfile`, `labels.list` and `settings.sendAs.list` are not in the design's list;
+    /// Google charges 1 for each.
     private static let googlePrices: [String: Int] = [
-        "users.getProfile": 1, "labels.list": 1, "labels.get": 1, "labels.create": 5,
+        "users.getProfile": 1, "labels.list": 1, "settings.sendAs.list": 1, "labels.get": 1, "labels.create": 5,
         "history.list": 2, "messages.list": 5, "messages.get": 20, "threads.get": 40, "messages.attachments.get": 20,
         "messages.modify": 5, "messages.batchModify": 50, "messages.batchDelete": 50, "messages.send": 100,
         "messages.import": 25, "messages.insert": 25,
@@ -97,6 +98,7 @@ final class GmailAPITests: XCTestCase {
         case .messagesList: return "messages.list"
         case .messagesGet: return "messages.get"
         case .attachmentsGet: return "messages.attachments.get"
+        case .sendAsList: return "settings.sendAs.list"
         }
     }
 

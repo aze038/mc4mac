@@ -2,11 +2,11 @@ import Foundation
 
 /// The Gmail API calls FalconMail makes, with the quota units Google charges for each.
 public enum GmailMethod: String, Sendable, CaseIterable, Hashable {
-    case profile, labelsList, messagesList, messagesGet, attachmentsGet
+    case profile, labelsList, messagesList, messagesGet, attachmentsGet, sendAsList
 
     public var units: Int {
         switch self {
-        case .profile, .labelsList: return 1
+        case .profile, .labelsList, .sendAsList: return 1
         case .messagesList: return 5
         // An attachment costs as much as the message itself: Google raised it from 5 to 20.
         case .messagesGet, .attachmentsGet: return 20

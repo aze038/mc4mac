@@ -324,6 +324,26 @@ final class InlinePictureTests: XCTestCase {
         XCTAssertEqual(InlinePictures.attachment(for: heic as Data, named: "IMG_0001.HEIC")?.fileWrapper?.preferredFilename, "IMG_0001.jpg")
     }
 
+    func testAJPEGIsMadeToDeclareASizeWhereverItStatesItsResolution() throws {
+        let size = NSSize(width: 96, height: 30)
+        // JFIF alone; JFIF and Exif in either byte order, which macOS reads first; and neither.
+        let jfif = OutlookFixture.jpeg(480, 150, resolution: .jfif)
+        // Without any of the application segments that could state a resolution.
+        var bare = [UInt8](jfif)
+        while (0xE0...0xEF).contains(bare[3]) { bare.removeSubrange(2..<(4 + (Int(bare[4]) << 8 | Int(bare[5])))) }
+        XCTAssertEqual(bare[2], 0xFF)
+        for (name, data) in [("JFIF", jfif), ("Exif II", OutlookFixture.jpeg(480, 150, resolution: .exif(littleEndian: true))),
+                             ("Exif MM", OutlookFixture.jpeg(480, 150, resolution: .exif(littleEndian: false))), ("bare", Data(bare))] {
+            let declared = try XCTUnwrap(InlinePictures.declaring(size, in: data), name)
+            XCTAssertEqual(NSImage(data: declared)?.size, size, name)
+            let before = try XCTUnwrap(NSBitmapImageRep(data: data)), after = try XCTUnwrap(NSBitmapImageRep(data: declared))
+            XCTAssertEqual([after.pixelsWide, after.pixelsHigh], [480, 150], name)
+            XCTAssertEqual(after.colorAt(x: 10, y: 10), before.colorAt(x: 10, y: 10), "\(name): a pixel changed")
+            // Only the header's numbers change: the picture's own data is the same bytes.
+            XCTAssertTrue(declared.suffix(data.count / 2) == data.suffix(data.count / 2), name)
+        }
+    }
+
     func testTheContentIDCarriesTheTimeAsOutlookWritesIt() {
         let newYear = Date(timeIntervalSince1970: 1_704_067_200)
         XCTAssertEqual(InlinePictures.stamp(for: newYear), "01DA3C45.7689C000")
