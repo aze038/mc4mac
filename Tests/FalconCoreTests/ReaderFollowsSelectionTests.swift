@@ -58,7 +58,7 @@ final class ReaderFollowsSelectionTests: XCTestCase {
     func testTwoReadersOfOneMessageShareOneFetch() async {
         let fetches = SharedFetches<String, Int>()
         let calls = Counter()
-        let gate = Gate()
+        let gate = ReaderGate()
         async let first = fetches.value(for: "m", within: 5) { calls.add(); await gate.wait(); return 7 }
         await assertEventually { calls.count == 1 }
         async let second = fetches.value(for: "m", within: 5) { calls.add(); return 8 }
@@ -73,17 +73,17 @@ final class ReaderFollowsSelectionTests: XCTestCase {
     func testAReaderStopsWaitingAtItsDeadlineWhateverTheFetchIsDoing() async {
         let fetches = SharedFetches<String, Int>()
         let started = Date()
-        let outcome = await fetches.value(for: "m", within: 0.2) { await Gate().wait(); return 1 }
+        let outcome = await fetches.value(for: "m", within: 0.2) { await ReaderGate().wait(); return 1 }
         guard case .timedOut = outcome else { return XCTFail("\(outcome)") }
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
     func testAReaderThatMovesOnStopsWaitingAtOnceAndItsFetchIsCalledOff() async {
         let fetches = SharedFetches<String, Int>()
-        let cancelled = Flag()
+        let cancelled = ReaderFlag()
         let reader = Task {
             await fetches.value(for: "m", within: 60) {
-                await withTaskCancellationHandler { await Gate().wait() } onCancel: { cancelled.set() }
+                await withTaskCancellationHandler { await ReaderGate().wait() } onCancel: { cancelled.set() }
                 return 1
             }
         }
@@ -99,7 +99,7 @@ final class ReaderFollowsSelectionTests: XCTestCase {
 
     func testAReaderMovingOnLeavesTheOtherReaderItsFetch() async {
         let fetches = SharedFetches<String, Int>()
-        let gate = Gate()
+        let gate = ReaderGate()
         let pane = Task { await fetches.value(for: "m", within: 60) { await gate.wait(); return 3 } }
         await assertEventually { fetches.inFlight == 1 }
         let window = Task { await fetches.value(for: "m", within: 60) { 4 } }
@@ -113,7 +113,7 @@ final class ReaderFollowsSelectionTests: XCTestCase {
     func testAFetchThatRanOutOfTimeIsJoinedByTheNextReader() async {
         let fetches = SharedFetches<String, Int>()
         let calls = Counter()
-        let gate = Gate()
+        let gate = ReaderGate()
         let first = await fetches.value(for: "m", within: 0.1) { calls.add(); await gate.wait(); return 5 }
         guard case .timedOut = first else { return XCTFail("\(first)") }
         async let again = fetches.value(for: "m", within: 5) { calls.add(); return 6 }
@@ -127,7 +127,7 @@ final class ReaderFollowsSelectionTests: XCTestCase {
     func testAFetchStuckPastItsTimeIsNotWaitedBehind() async {
         let clock = TestClock()
         let fetches = SharedFetches<String, Int>(replacedAfter: 30, now: clock.reading)
-        let first = await fetches.value(for: "m", within: 0.1) { await Gate().wait(); return 1 }
+        let first = await fetches.value(for: "m", within: 0.1) { await ReaderGate().wait(); return 1 }
         guard case .timedOut = first else { return XCTFail("\(first)") }
         clock.advance(31)
         let second = await fetches.value(for: "m", within: 5) { 2 }
@@ -136,7 +136,7 @@ final class ReaderFollowsSelectionTests: XCTestCase {
 
     func testDifferentMessagesNeverWaitForEachOther() async {
         let fetches = SharedFetches<String, Int>()
-        let stuck = Task { await fetches.value(for: "old", within: 60) { await Gate().wait(); return 0 } }
+        let stuck = Task { await fetches.value(for: "old", within: 60) { await ReaderGate().wait(); return 0 } }
         await assertEventually { fetches.inFlight == 1 }
         let started = Date()
         let answer = await fetches.value(for: "new", within: 5) { 9 }
@@ -280,7 +280,7 @@ private final class Counter: @unchecked Sendable {
     var count: Int { lock.withLock { value } }
 }
 
-private final class Flag: @unchecked Sendable {
+private final class ReaderFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
     func set() { lock.withLock { value = true } }
@@ -289,7 +289,7 @@ private final class Flag: @unchecked Sendable {
 
 /// Holds whoever waits on it until it is opened; never opened, it holds them for good, as a
 /// connection that stopped answering does.
-private final class Gate: @unchecked Sendable {
+private final class ReaderGate: @unchecked Sendable {
     private let lock = NSLock()
     private var isOpen = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
