@@ -69,10 +69,44 @@ final class GmailAPITests: XCTestCase {
         let full = try await client.full(id: message.id)
         let attachmentID = try XCTUnwrap(full.payload?.parts?.last?.body?.attachmentId)
         _ = try await client.attachment(messageID: message.id, attachmentID: attachmentID)
-        let expected: [GmailMethod: Int] = [.profile: 1, .labelsList: 1, .messagesList: 5, .messagesGet: 40, .attachmentsGet: 5]
+        let expected: [GmailMethod: Int] = [.profile: 1, .labelsList: 1, .messagesList: 5, .messagesGet: 40, .attachmentsGet: 20]
         XCTAssertEqual(mailbox.units, expected)
         let spent = await client.limiter.spent
         XCTAssertEqual(spent, expected)
+    }
+
+    /// Google's price list as the design copies it (gmail-api-engine-design.md §1.2, from Google's
+    /// usage-limits page): `history.list` 2; `messages.list` 5; `labels.get` 1; `labels.create`
+    /// 5; `messages.get` 20; `threads.get` 40; `attachments.get` 20; `modify` 5; `batchModify`
+    /// 50; `messages.send` 100; `messages.import` and `messages.insert` 25; `drafts.create`,
+    /// `drafts.update`, `drafts.delete` and `drafts.list` 10, 15, 10 and 5; `batchDelete` 50.
+    /// `users.getProfile` and `labels.list` are not in the design's list; Google charges 1 for each.
+    private static let googlePrices: [String: Int] = [
+        "users.getProfile": 1, "labels.list": 1, "labels.get": 1, "labels.create": 5,
+        "history.list": 2, "messages.list": 5, "messages.get": 20, "threads.get": 40, "messages.attachments.get": 20,
+        "messages.modify": 5, "messages.batchModify": 50, "messages.batchDelete": 50, "messages.send": 100,
+        "messages.import": 25, "messages.insert": 25,
+        "drafts.create": 10, "drafts.update": 15, "drafts.delete": 10, "drafts.list": 5,
+    ]
+
+    /// The Gmail API method each call FalconMail makes is, by Google's name for it.
+    private static func googleName(_ method: GmailMethod) -> String {
+        switch method {
+        case .profile: return "users.getProfile"
+        case .labelsList: return "labels.list"
+        case .messagesList: return "messages.list"
+        case .messagesGet: return "messages.get"
+        case .attachmentsGet: return "messages.attachments.get"
+        }
+    }
+
+    func testEveryCallIsPricedAsGoogleCharges() throws {
+        for method in GmailMethod.allCases {
+            let name = Self.googleName(method)
+            let price = try XCTUnwrap(Self.googlePrices[name], "\(name) is not in the design's price list")
+            XCTAssertEqual(method.units, price, "\(name)")
+        }
+        XCTAssertEqual(GmailMethod.attachmentsGet.units, 20, "an attachment costs 20 units, no longer 5")
     }
 
     func testLimiterKeepsEveryMinuteWithinThreeThousandUnits() async throws {
