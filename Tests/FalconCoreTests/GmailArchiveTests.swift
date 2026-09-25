@@ -148,6 +148,19 @@ final class GmailArchiveTests: XCTestCase {
         XCTAssertEqual(mailbox.units[.messagesList], 5, "one page")
     }
 
+    func testTheJobCarriesOnAfterADroppedConnectionAndAPause() async throws {
+        let mailbox = MemoryGmailTransport(email: owner)
+        for i in 0..<3 { mailbox.add(subject: "Old \(i)", labels: [.inbox], date: longAgo.addingTimeInterval(Double(i))) }
+        mailbox.fail(nil, with: GoogleAPIError(kind: .offline, detail: "URLError -1009"))
+        let sleeps = SleepLog()
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox], sleep: { sleeps.append($0) })
+        mailbox.fail(.messagesList, with: GoogleAPIError(kind: .downloadLimit, httpStatus: 429, retryAfter: 900))
+        let outcome = try await ArchiveJob.run(request: request(["Inbox"], remove: false), account: account, source: source,
+                                               storage: storage()) { _ in }
+        XCTAssertEqual(outcome.manifest.messageCount, 3)
+        XCTAssertEqual(sleeps.all.sorted(), [2, 900], "a short wait after the dropped connection, Gmail's own for its pause")
+    }
+
     func testAFolderWithNoGmailLabelIsRefusedBeforeAnythingIsWritten() async throws {
         let mailbox = MemoryGmailTransport(email: owner)
         let source = GmailArchiveSource(transport: mailbox, folders: [:])

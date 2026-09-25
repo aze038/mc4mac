@@ -133,7 +133,7 @@ public struct GmailArchiveSource: ArchiveMailSource {
         repeat {
             let query = GmailListQuery(labels: label.map { [$0] } ?? [], query: olderThan.map { "before:\(Int($0.timeIntervalSince1970))" },
                                        includeSpamTrash: spamOrTrash, maxResults: 500, pageToken: token)
-            let page = try await transport.list(query, work: .background(.transfer))
+            let page = try await step { try await transport.list(query, work: .background(.transfer)) }
             ids += page.refs.map(\.id)
             token = page.nextPageToken
         } while token != nil
@@ -143,7 +143,7 @@ public struct GmailArchiveSource: ArchiveMailSource {
 
     private func download(_ ids: [GmailMessageID]) async throws -> [GmailMessageID: GmailMessage] {
         let parts = ids.map { GmailBatchPart.message($0, .raw) }
-        let answers = try await transport.batch(parts, work: .background(.transfer))
+        let answers = try await step { try await transport.batch(parts, work: .background(.transfer)) }
         var out: [GmailMessageID: GmailMessage] = [:]
         for (id, part) in zip(ids, parts) {
             switch answers[part] {
@@ -158,6 +158,31 @@ public struct GmailArchiveSource: ArchiveMailSource {
             }
         }
         return out
+    }
+
+    /// One call, carried on after what only means waiting: a pause Gmail asks for is waited
+    /// out however long it is, as the IMAP job waits at its allowance, and a dropped connection
+    /// is tried twice more. Every call here only reads, so repeating one does nothing twice.
+    private func step<T>(_ call: () async throws -> T) async throws -> T {
+        var failures = 0
+        while true {
+            do {
+                return try await call()
+            } catch let refusal as GoogleAPIError {
+                switch refusal.kind {
+                case .rateLimited, .downloadLimit:
+                    try await sleep(max(1, refusal.retryAfter ?? 60))
+                case .quotaExhausted:
+                    try await sleep(max(1, GoogleAPIError.quotaReset(after: now()).timeIntervalSince(now())))
+                case .offline, .temporary:
+                    failures += 1
+                    guard failures < 3 else { throw refusal }
+                    try await sleep(pow(2, Double(failures)))
+                default:
+                    throw refusal
+                }
+            }
+        }
     }
 
     // MARK: - Flags and removal
