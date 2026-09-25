@@ -311,20 +311,26 @@ public enum OutlookSignatureImport {
     public static func profiles(home: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> [OutlookProfile] {
         let root = home.appendingPathComponent(profilesPath, isDirectory: true)
         var isFolder: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isFolder), isFolder.boolValue else { throw Problem.noOutlook }
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isFolder), isFolder.boolValue else {
+            throw refusesLooking(at: root) ? Problem.notAllowed : Problem.noOutlook
+        }
         let entries: [URL]
         do {
             entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])
         } catch {
             throw isRefusal(error) ? Problem.notAllowed : Problem.unreadable
         }
+        var refused = false
         let profiles = entries.compactMap { entry -> OutlookProfile? in
             let data = entry.appendingPathComponent("Data", isDirectory: true)
             var folder: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: data.path, isDirectory: &folder), folder.boolValue else { return nil }
+            guard FileManager.default.fileExists(atPath: data.path, isDirectory: &folder), folder.boolValue else {
+                if refusesLooking(at: data) { refused = true }
+                return nil
+            }
             return OutlookProfile(name: entry.lastPathComponent, folder: data)
         }
-        guard !profiles.isEmpty else { throw Problem.noOutlook }
+        guard !profiles.isEmpty else { throw refused ? Problem.notAllowed : Problem.noOutlook }
         return profiles.sorted {
             if ($0.name == "Main Profile") != ($1.name == "Main Profile") { return $0.name == "Main Profile" }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -462,6 +468,15 @@ public enum OutlookSignatureImport {
             return OutlookAccount(name: row[0]?.trimmed ?? "", email: email)
         }
         return Database(signatures: signatures, accounts: accounts)
+    }
+
+    /// Whether macOS will not say whether `url` is there, as it will not inside another app's
+    /// data until the owner allows it, rather than its not being there: the profiles then only
+    /// seem to be missing.
+    static func refusesLooking(at url: URL) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) != 0 else { return false }
+        return errno == EPERM || errno == EACCES
     }
 
     /// Whether `error` is macOS refusing access, as it does to another app's data until the

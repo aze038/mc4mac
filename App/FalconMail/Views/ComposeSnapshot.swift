@@ -143,8 +143,6 @@ enum ComposeSnapshot {
                        snippet: "Please see the schedule below.", hasAttachments: false)
     }
 
-    /// A Settings window at `pane`, built as the app builds it but drawn as it looks in front
-    /// when `active`.
     /// The Signatures pane with no signatures, offering to import them, and with one, its action
     /// menu beside + and −; the import sheet over made-up signatures from Outlook, one of them
     /// named as a signature already here, and from Gmail, with its logo; the sheet saying macOS
@@ -250,6 +248,8 @@ enum ComposeSnapshot {
         <p class=MsoNormal><o:p>&nbsp;</o:p></p></div></body></html>
         """
 
+    /// A Settings window at `pane`, built as the app builds it but drawn as it looks in front
+    /// when `active`.
     @MainActor private static func captureSettings(_ pane: SettingsPane?, model: AppModel, active: Bool,
                                                    appearance: NSAppearance.Name, to path: String) {
         let navigator = SettingsNavigator(pane: pane)

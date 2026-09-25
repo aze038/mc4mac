@@ -216,6 +216,86 @@ final class OutlookSignatureImportTests: XCTestCase {
         }
     }
 
+    func testOutlooksDataMacOSWillNotLetFalconMailLookIntoSaysSoRatherThanThatThereIsNoOutlook() throws {
+        // macOS keeps another app's data closed until the owner allows it: FalconMail cannot even
+        // look at what is inside, so the profiles seem not to be there.
+        try profile([testSignature()])
+        let container = home.appendingPathComponent("Library/Group Containers/UBF8T346G9.Office")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: container.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: container.path) }
+        XCTAssertThrowsError(try OutlookSignatureImport.read(home: home)) {
+            XCTAssertEqual($0 as? OutlookSignatureImport.Problem, .notAllowed)
+        }
+        // Only the profile's own folder closed.
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: container.path)
+        let profile = home.appendingPathComponent(OutlookSignatureImport.profilesPath).appendingPathComponent("Main Profile")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: profile.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: profile.path) }
+        XCTAssertThrowsError(try OutlookSignatureImport.read(home: home)) {
+            XCTAssertEqual($0 as? OutlookSignatureImport.Problem, .notAllowed)
+        }
+    }
+
+    func testASignatureWithTwoPicturesAndALongNameInAnyScriptKeepsBothPictures() throws {
+        let name = String(repeating: "Test Signature with a long name – ", count: 8) + "Ünïcødé 署名 ✉︎"
+        let logo = OutlookFixture.Picture(contentID: "image001.jpg@01DD0000.00000000", data: OutlookFixture.jpeg(192, 58))
+        var badge = OutlookFixture.Picture(contentID: "image002.png@01DD0000.00000000", data: Self.png(64, 64))
+        badge.mimeType = "image/png"
+        badge.filename = "image002.png"
+        try profile([OutlookFixture.SignatureSpec(name: name, html: Self.twoPictureHTML(logo: logo.contentID, badge: badge.contentID),
+                                                  pictures: [logo, badge])])
+        let read = try XCTUnwrap(OutlookSignatureImport.read(home: home).first?.signatures.first)
+        XCTAssertEqual(read.name, name)
+        XCTAssertEqual(read.pictures.map(\.contentID), [logo.contentID, badge.contentID])
+        XCTAssertEqual(read.pictures.map(\.data), [logo.data, badge.data])
+        XCTAssertEqual(read.pictures.map(\.mimeType), ["image/jpeg", "image/png"])
+        XCTAssertEqual(read.pictures.map(\.filename), ["image001.jpg", "image002.png"])
+        XCTAssertEqual(read.missingPictures, [])
+    }
+
+    @MainActor
+    func testTwoPicturesComeInAtTheirSizesAndAreSentAsTwoEmbeddedParts() throws {
+        let logo = OutlookFixture.Picture(contentID: "image001.jpg@01DD0000.00000000", data: OutlookFixture.jpeg(192, 58))
+        var badge = OutlookFixture.Picture(contentID: "image002.png@01DD0000.00000000", data: Self.png(64, 64))
+        badge.mimeType = "image/png"
+        badge.filename = "image002.png"
+        try profile([OutlookFixture.SignatureSpec(name: "Test Signature", html: Self.twoPictureHTML(logo: logo.contentID, badge: badge.contentID),
+                                                  pictures: [logo, badge])])
+        let read = try XCTUnwrap(OutlookSignatureImport.read(home: home).first)
+        let signature = try XCTUnwrap(SignatureCandidate.outlook(read).first?.signature(attributes: body))
+        let kept = try JSONDecoder().decode(Signature.self, from: JSONEncoder().encode(signature))
+        let shown = InlinePictures.attachmentLocations(in: kept.text).compactMap { InlinePictures.contents(of: $0.1) }
+        XCTAssertEqual(shown.map { NSImage(data: $0)?.size }, [NSSize(width: 96, height: 29), NSSize(width: 32, height: 32)])
+        let opened = ComposedBody.opening(lead: "\n\n", signature: kept, tail: "", attributes: body)
+        let content = ComposedHTML.content(rich: opened.rich, plain: opened.plain, historyPlain: "", historyHTML: "")
+        XCTAssertEqual(content.pictures.map(\.mimeType), ["image/jpeg", "image/png"])
+        XCTAssertTrue(content.html.contains("<img width=\"96\" height=\"29\""), content.html)
+        XCTAssertTrue(content.html.contains("<img width=\"32\" height=\"32\""), content.html)
+        for picture in content.pictures { XCTAssertTrue(content.html.contains("src=\"cid:\(picture.contentID)\""), content.html) }
+        XCTAssertFalse(content.html.contains("data:image"))
+    }
+
+    /// The made-up Word signature with a second picture, a badge, on a line of its own under the logo.
+    private static func twoPictureHTML(logo: String, badge: String) -> String {
+        OutlookFixture.wordHTML(pictureID: logo).replacingOccurrences(
+            of: "<p class=MsoNormal><o:p>&nbsp;</o:p></p></div>",
+            with: "<p class=MsoNormal><span style='font-size:10.0pt'><img width=32 height=32 style='width:.333in;height:.333in' "
+                + "src=\"cid:\(badge)\"></span></p><p class=MsoNormal><o:p>&nbsp;</o:p></p></div>")
+    }
+
+    /// A PNG `width` × `height` pixels in one colour.
+    private static func png(_ width: Int, _ height: Int) -> Data {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.systemTeal.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])!
+    }
+
     // MARK: - As FalconMail's signature
 
     @MainActor

@@ -126,8 +126,8 @@ struct SignatureImportSheet: View {
     @ViewBuilder private var defaultsList: some View {
         if session.defaults.isEmpty {
             Text(session.source == .outlook
-                 ? "No account in FalconMail has the address of an account in Outlook. Choose each account’s signatures in the Signatures pane after importing."
-                 : "No account in FalconMail sends from these addresses. Choose each account’s signatures in the Signatures pane after importing.")
+                 ? "Outlook doesn’t say which account used which signature, and none of these could be matched to an account here by its address. After importing, choose each account’s signatures under Choose default signature."
+                 : "No account here sends from these addresses. After importing, choose each account’s signatures under Choose default signature.")
                 .font(.system(size: 11))
                 .foregroundStyle(Classic.label.opacity(0.75))
                 .fixedSize(horizontal: false, vertical: true)
