@@ -204,8 +204,17 @@ struct MessageListView: View {
         return menu
     }
 
+    /// Focused and Other split the Inbox, and All Inboxes, as Outlook's do; in the table's other
+    /// folders there is nothing to split.
+    private var showsFocusedTabs: Bool {
+        guard focusedInbox, model.showsMessageList else { return false }
+        guard model.engineList.isShown else { return true }
+        let filters = model.listView(for: model.selection)?.filters ?? []
+        return filters.contains(.focused) || filters.contains(.other)
+    }
+
     @ViewBuilder private var focusedTabs: some View {
-        if focusedInbox && model.showsMessageList {
+        if showsFocusedTabs {
             Picker("", selection: Binding(get: { model.focusedTab }, set: { model.focusedTab = $0; Task { await model.reloadMessages() } })) {
                 ForEach(FocusedTab.allCases) { Text($0.title).tag($0) }
             }

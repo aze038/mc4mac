@@ -28,7 +28,8 @@ import FalconCore
 /// middle and two minimised to tabs in its status bar, then with a message window and a compose
 /// window side by side and one tab, and those tabs close up, then quits. With
 /// `-FalconMailSnapshotOnly list` it draws the message list alone, with `table` the message table
-/// alone, with `stack` the conversation alone, with `fullscreen` the mailbox window filling the
+/// alone, with `stack` the conversation alone, with `engine` a made-up Google account on the Gmail
+/// API (see `EngineSnapshot`), with `fullscreen` the mailbox window filling the
 /// screen alone, with `signature-import` only the Signatures pane offering an import, the import
 /// sheets for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
 /// signatures, and `stack50` times a conversation of fifty messages instead, writing how long it

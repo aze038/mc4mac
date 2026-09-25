@@ -113,15 +113,14 @@ extension AppModel {
     /// A command on every message of the view shown but `except`, as after Select All, which the
     /// Gmail engine takes as one piece of bulk work described by the view.
     func actOnWholeView(_ command: ListCommand, except: [ActionItem]) {
-        guard let view = engineList.controller.view, let verb = command.wholeViewVerb,
-              let accountID = wholeViewAccount(view), let engine = engine(for: accountID) else {
+        guard let view = engineList.controller.view, let verb = command.wholeViewVerb, let accountID = wholeViewAccount(view) else {
             statusText = ListStatusText.tooManySelected
             return
         }
         let request = MailActionRequest(verb: verb, targets: .wholeView(except: except), context: view)
         Task {
             do {
-                let receipt = try await engine.perform(request)
+                let receipt = try await coordinator.perform(request, accountID: accountID)
                 if let notice = receipt.notice { statusText = notice }
             } catch {
                 showAlert(for: error)
