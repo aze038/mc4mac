@@ -1896,6 +1896,15 @@ public actor AccountSyncer {
         }
     }
 
+    /// Sends every action still waiting for the server, those held for Undo and those kept from
+    /// an earlier session, without starting a sync: the account's last use of IMAP before it
+    /// moves to the Gmail API (§12.1). Returns how many still wait, as when the Mac is offline.
+    public func sendWaitingActions() async -> Int {
+        await flushPending()
+        await replayPendingOperations()
+        return await pendingActions.all().filter { $0.accountID == account.id }.count
+    }
+
     /// Runs an action on the server under the UIDVALIDITY it was queued with, so that a
     /// mailbox renumbered in between cancels it rather than acting on whichever messages now
     /// carry those UIDs.

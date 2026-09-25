@@ -155,7 +155,7 @@ struct AccountDetail: View {
         Task {
             defer { busy = false }
             do {
-                try await AccountProbe.test(settings)
+                try await AccountProbe.test(settings, existingAccount: true)
                 try await model.tokens.savePassword(newPassword, for: account.id)
                 await model.coordinator.start(account: account)
                 newPassword = ""

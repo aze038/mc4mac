@@ -48,6 +48,9 @@ public actor IMAPClient {
     /// Names the connection in the log: the account's own address, never anyone else's.
     public let label: String
     public let deadlines: IMAPDeadlines
+    /// The user name it will sign in as, which `TransportGuard` is asked about before it
+    /// connects; `label` when not given, which for an account's connection is its address.
+    public let user: String?
     private let traffic: TrafficTap
     private var connection: StreamConnection?
     private var tagCounter = 0
@@ -64,9 +67,10 @@ public actor IMAPClient {
     public private(set) var selectedMailbox: String?
     private var selectedStatus: IMAPMailboxStatus?
 
-    public init(host: String, port: UInt16 = 993, tls: Bool = true, label: String? = nil, traffic: TrafficTap = .none,
+    public init(host: String, port: UInt16 = 993, tls: Bool = true, label: String? = nil, user: String? = nil, traffic: TrafficTap = .none,
                 deadlines: IMAPDeadlines = .standard) {
         self.host = host
+        self.user = user
         self.port = port
         self.tls = tls
         self.label = label ?? host
@@ -92,6 +96,8 @@ public actor IMAPClient {
     }
 
     public func connect() async throws {
+        // A Google account on the Gmail API never opens an IMAP connection (§12.5).
+        try TransportGuard.shared.check(.imap, host: host, user: user ?? label)
         try await locked {
             let c = StreamConnection(host: host, port: port, tls: tls, tap: traffic)
             try await c.connect(deadline: deadlines.connect)
