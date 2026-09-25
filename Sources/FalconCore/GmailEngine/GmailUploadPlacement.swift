@@ -58,8 +58,7 @@ public actor GmailStorePlacer: GmailUploadPlacing {
                                             date: message.receivedDate ?? now(), messageID: messageID, at: now())
             try await store.cache(cached, body: GmailReducedBody(uploaded: parsed))
         } catch {
-            Log.warning("Gmail", "could not place an uploaded message in the index; the history's echo will: \(error.localizedDescription)",
-                        error: error)
+            Log.info("gmail", "could not place an uploaded message in the index; the history's echo will: \(error.localizedDescription)")
         }
     }
 
@@ -73,8 +72,7 @@ public actor GmailStorePlacer: GmailUploadPlacing {
         do {
             try await store.commit(GmailJournalBatch(changes: [.place(ref, order: order, labels: labels, attributes: parsedSize)]))
         } catch {
-            Log.warning("Gmail", "could not place an imported message in the index; listing All Mail will: \(error.localizedDescription)",
-                        error: error)
+            Log.info("gmail", "could not place an imported message in the index; listing All Mail will: \(error.localizedDescription)")
         }
     }
 
@@ -83,8 +81,7 @@ public actor GmailStorePlacer: GmailUploadPlacing {
         do {
             try await store.commit(GmailJournalBatch(changes: ids.map { .tombstone($0) }))
         } catch {
-            Log.warning("Gmail", "could not take deleted messages out of the index; the history's echo will: \(error.localizedDescription)",
-                        error: error)
+            Log.info("gmail", "could not take deleted messages out of the index; the history's echo will: \(error.localizedDescription)")
         }
     }
 

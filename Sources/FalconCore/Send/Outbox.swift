@@ -202,8 +202,8 @@ public actor Outbox {
                         item.heldBack = nil
                         item.error = nil
                         unclear.append(item.id)
-                        Log.warning("Outbox", "\(item.sender): Outbox item \(item.id) was being sent when FalconMail stopped; looking for it in Gmail's records",
-                                    code: "interrupted", logAs: "send")
+                        // Only a look that finds nothing makes this a held message worth reporting.
+                        Log.info("send", "\(item.sender): Outbox item \(item.id) was being sent when FalconMail stopped; looking for it in Gmail's records")
                     } else {
                         item = item.interrupted
                         item.sendBegan = nil

@@ -445,7 +445,7 @@ public actor GmailDrafts {
         state.links[localID.uuidString] = link
         if let sentence = GmailDrafts.refusalSentence(refusal, email: email) {
             persist()
-            Log.error("Drafts", "\(email): Gmail refused a draft save: \(refusal?.kind.rawValue ?? "local")", error: refusal)
+            Log.error("Save", "\(email): Gmail refused a draft save: \(refusal?.kind.rawValue ?? "local")", error: refusal)
             return GmailDraftRefused(sentence: sentence, cause: refusal)
         }
         var kept = job
@@ -460,8 +460,8 @@ public actor GmailDrafts {
         persist()
         emitProvisional()
         scheduleRetry(after: refusal?.retryAfter)
-        Log.warning("Drafts", "\(email): a draft waits for Gmail: \(refusal?.kind.rawValue ?? String(describing: type(of: error)))",
-                    error: refusal)
+        // Offline is ordinary: the provisional row says so, and it is no failure to report.
+        Log.info("drafts", "\(email): a draft waits for Gmail: \(refusal?.kind.rawValue ?? String(describing: type(of: error)))")
         return GmailDraftDeferred(ref: link.ref, sentence: GmailDrafts.waitingSentence(refusal, email: email), cause: refusal)
     }
 
@@ -632,7 +632,7 @@ public actor GmailDrafts {
         do {
             try AtomicFile.writeJSON(state, to: file)
         } catch {
-            Log.error("Drafts", "\(email): could not save the list of Gmail drafts: \(error.localizedDescription)", error: error)
+            Log.error("Store", "\(email): could not save the list of Gmail drafts: \(error.localizedDescription)", error: error)
         }
     }
 

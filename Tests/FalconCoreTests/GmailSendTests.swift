@@ -363,6 +363,51 @@ final class GmailSendTests: XCTestCase {
         XCTAssertNil(r.mailbox.attempts[.messagesSend])
     }
 
+    // MARK: - Diagnostics
+
+    func testGmailSendFailuresReachDiagnosticsNamedByTheirKindAndRedacted() async throws {
+        let directory = DiagnosticsFixtures.temporaryDirectory("gmail-send-diag")
+        FakeDiagnosticsServer.reset()
+        let center = DiagnosticsCenter(directory: directory, gate: DiagnosticsFixtures.gate(), environment: DiagnosticsFixtures.environment(),
+                                       crashReportsDirectory: nil, session: FakeDiagnosticsServer.session(), clock: ManualClock(),
+                                       random: { 0.5 })
+        center.start()
+        defer {
+            center.stop()
+            Log.observer = nil
+            FakeDiagnosticsServer.reset()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let limited = rig(layout: FileLayout(root: root.appendingPathComponent("limited")))
+        limited.mailbox.fail(.messagesSend, with: GoogleAPIError(kind: .sendingLimit, httpStatus: 429, reason: "ratelimitexceeded",
+                                                                  detail: "User-rate limit exceeded (Mail sending) for owner@example.com"))
+        _ = try await limited.outbox.enqueue(accountID: limited.mailbox.accountID, from: owner, message: Self.message(subject: "Board minutes"),
+                                             sendAt: Date())
+        await assertEventually { await self.item(limited.outbox)?.isHeld == true }
+
+        let unclear = rig(layout: FileLayout(root: root.appendingPathComponent("unclear")))
+        unclear.mailbox.fail(.messagesSend, with: GoogleAPIError(kind: .temporary, httpStatus: 502, detail: "Bad Gateway"))
+        _ = try await unclear.outbox.enqueue(accountID: unclear.mailbox.accountID, from: owner, message: Self.message(), sendAt: Date())
+        await assertEventually { await self.item(unclear.outbox)?.isHeld == true }
+
+        center.waitUntilIdle()
+        let events = center.pendingRecords.map(\.event)
+        let held = try XCTUnwrap(events.first { $0.signature.hasPrefix("Send.sendingLimit@") })
+        XCTAssertEqual(held.kind, .error)
+        XCTAssertEqual(held.signature, "Send.sendingLimit@Outbox.swift:apply")
+        XCTAssertEqual(held.title, "Sending a message failed: the daily sending limit was reached")
+        XCTAssertEqual(held.context["outcome"], .string("held"))
+        let looking = try XCTUnwrap(events.first { $0.signature.hasPrefix("Send.temporary@") })
+        XCTAssertEqual(looking.kind, .warning, "unclear, and looked for rather than failed")
+        XCTAssertEqual(looking.context["outcome"], .string("confirming"))
+        let notFound = try XCTUnwrap(events.first { $0.area == "Outbox" })
+        XCTAssertEqual(notFound.signature, "Outbox.interrupted@Outbox.swift:confirm")
+        for event in events where event.area == "Send" || event.area == "Outbox" {
+            XCTAssertFalse(event.message.contains("@example.com"), event.message)
+            XCTAssertFalse(event.message.contains("Board minutes"), "the subject never goes")
+        }
+    }
+
     // MARK: - Routing
 
     func testSwitchedGoogleAccountsSendThroughGmailAndOthersBySMTP() async throws {

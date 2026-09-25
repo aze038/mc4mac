@@ -159,7 +159,7 @@ What becomes an event:
   | `Open` | Opening a message, one moved or deleted included, or one found by a Gmail search | `Open.messageGone@AccountSyncer.swift:body` |
   | `Actions`, `Rules`, `Mute` | Moving, deleting, flagging, replaying an action from the last session, a rule, filing a muted conversation | `Actions.noMailbox@AccountSyncer.swift:commit` |
   | `Save`, `Import`, `Older`, `Folders`, `Archive` | Saving a draft or a copy, importing, Load older, creating a folder, archiving | `Archive.expungeRefused@ArchiveJob.swift:archive` |
-  | `SMTP`, `Outbox` | Sending, with `context.outcome` `retrying`, `held` or `failed`; a message held after FalconMail stopped mid-send; the Outbox not saved | `SMTP.sendingLimit@Outbox.swift:tick` |
+  | `SMTP`, `Send`, `Outbox` | Sending, by SMTP or, for a Google account switched to the Gmail engine, through Gmail's own send (`Send`), with `context.outcome` `retrying`, `waiting`, `confirming`, `held` or `failed`; a message held after FalconMail stopped mid-send, or whose unclear send Gmail's records did not confirm; the Outbox not saved | `SMTP.sendingLimit@Outbox.swift:tick` |
   | `Store` | A file set aside or unreadable, a save that failed, journal lines skipped | `Store.setAside@FileLayout.swift:load` |
   | `Search` | A Gmail search that fell back to this Mac or was paused | `Search.throttled@ServerSearch.swift:absorb` |
   | `SignIn`, `OAuth` | Setting up or checking an account, renewing a Google sign-in | `OAuth.notSignedIn@GoogleOAuth.swift:refreshed` |
