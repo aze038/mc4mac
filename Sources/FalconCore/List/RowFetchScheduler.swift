@@ -175,9 +175,9 @@ public struct RowLanding: Equatable, Sendable {
 }
 
 /// Turns requests for rows into landings. Rows on screen go first, at most 25 to a landing; the
-/// screen ahead follows in landings of 10, as all background work does. A request that has not
-/// been sent is dropped when its rows leave the screen, and a row already on its way is never
-/// asked for again.
+/// screen ahead follows in landings of 10, as all background work does, and then rows wanted
+/// for a sort by sender, recipient or subject. A request that has not been sent is dropped when
+/// its rows leave the screen, and a row already on its way is never asked for again.
 public final class RowFetchScheduler {
     public static let visibleBatch = 25
     public static let backgroundBatch = 10
@@ -185,6 +185,8 @@ public final class RowFetchScheduler {
     private let budget: RowFetchBudget
     private var visible: [RowKey] = []
     private var ahead: [RowKey] = []
+    /// Rows a sort wants, which scrolling does not replace.
+    private var background: [RowKey] = []
     private var cost: [RowKey: Int] = [:]
     private var inFlight: Set<RowKey> = []
     public private(set) var landingsSent = 0
@@ -193,7 +195,8 @@ public final class RowFetchScheduler {
         self.budget = budget
     }
 
-    public var hasPending: Bool { !visible.isEmpty || !ahead.isEmpty }
+    public var hasPending: Bool { !visible.isEmpty || !ahead.isEmpty || !background.isEmpty }
+    public var pendingBackground: [RowKey] { background }
     public var pendingVisible: [RowKey] { visible }
     public var pendingAhead: [RowKey] { ahead }
     public func isInFlight(_ key: RowKey) -> Bool { inFlight.contains(key) }
@@ -214,8 +217,19 @@ public final class RowFetchScheduler {
             let shown = Set(visible)
             ahead = wanted.filter { !shown.contains($0) }
         }
-        let live = Set(visible).union(ahead)
+        background.removeAll { cost[$0] == nil || Set(visible).contains($0) }
+        let live = Set(visible).union(ahead).union(background)
         cost = cost.filter { live.contains($0.key) }
+    }
+
+    /// Rows wanted in the background whatever the scroll does, such as those a sort by sender
+    /// would group: sent after the screen ahead, ten at a time.
+    public func requestInBackground(_ keys: [RowKey], cost price: (RowKey) -> Int) {
+        let queued = Set(background).union(visible).union(ahead).union(inFlight)
+        for key in keys where !queued.contains(key) {
+            cost[key] = price(key)
+            background.append(key)
+        }
     }
 
     /// Rows on screen are waiting for Gmail's budget, which the list's footer says at once.
@@ -226,9 +240,7 @@ public final class RowFetchScheduler {
 
     /// The landing to send now, if the budget has room for it; its rows are then in flight.
     public func next(at time: TimeInterval) -> RowLanding? {
-        let priority: RowPriority = visible.isEmpty ? .ahead : .visible
-        let limit = priority == .visible ? RowFetchScheduler.visibleBatch : RowFetchScheduler.backgroundBatch
-        let keys = Array((priority == .visible ? visible : ahead).prefix(limit))
+        let (priority, keys) = nextKeys()
         guard !keys.isEmpty else { return nil }
         let units = units(of: keys)
         guard budget.wait(for: units, priority: priority, at: time) <= 0 else { return nil }
@@ -236,6 +248,7 @@ public final class RowFetchScheduler {
         let sent = Set(keys)
         visible.removeAll { sent.contains($0) }
         ahead.removeAll { sent.contains($0) }
+        background.removeAll { sent.contains($0) }
         inFlight.formUnion(sent)
         for key in keys { cost[key] = nil }
         landingsSent += 1
@@ -244,11 +257,15 @@ public final class RowFetchScheduler {
 
     /// Seconds until the next landing could go; nil when nothing waits.
     public func delay(at time: TimeInterval) -> TimeInterval? {
-        let priority: RowPriority = visible.isEmpty ? .ahead : .visible
-        let limit = priority == .visible ? RowFetchScheduler.visibleBatch : RowFetchScheduler.backgroundBatch
-        let keys = Array((priority == .visible ? visible : ahead).prefix(limit))
+        let (priority, keys) = nextKeys()
         guard !keys.isEmpty else { return nil }
         return budget.wait(for: units(of: keys), priority: priority, at: time)
+    }
+
+    private func nextKeys() -> (RowPriority, [RowKey]) {
+        if !visible.isEmpty { return (.visible, Array(visible.prefix(RowFetchScheduler.visibleBatch))) }
+        if !ahead.isEmpty { return (.ahead, Array(ahead.prefix(RowFetchScheduler.backgroundBatch))) }
+        return (.ahead, Array(background.prefix(RowFetchScheduler.backgroundBatch)))
     }
 
     /// A landing's rows arrived, or failed; either way they are no longer on their way.

@@ -354,6 +354,31 @@ public actor ListIndex {
         for key in keys { if let date = dates[key] { frozen[key] = date } }
     }
 
+    /// Rows now on screen in a view that merges accounts: each keeps the date that placed it,
+    /// whatever is learnt of its real date, until it leaves the screen.
+    public func freezeVisible(_ keys: [RowKey]) {
+        var dates: [RowKey: Date] = [:]
+        let now = clock()
+        for key in keys {
+            if let held = frozen[key] {
+                dates[key] = held
+                continue
+            }
+            switch key {
+            case .gmail(let account, let id):
+                if let known = facts[account]?[id.raw] {
+                    dates[key] = known.date
+                } else if let record = accounts[account]?.index.record(for: id), let anchors = accounts[account]?.anchors {
+                    let dating = AnchorDating(anchors: anchors)
+                    dates[key] = dating.estimate(group: dating.group(of: record.order), now: now)
+                }
+            case .stored(let id):
+                dates[key] = storedInboxRows.first { $0.key == id }?.date
+            }
+        }
+        frozen = dates
+    }
+
     // MARK: Building
 
     public func snapshot(of view: ListView) -> ListSnapshot { build(view).snapshot }

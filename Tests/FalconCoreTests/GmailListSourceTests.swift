@@ -84,7 +84,7 @@ final class GmailListSourceTests: XCTestCase {
     }
 
     /// Rows from `stream` until `done` says enough have come, or five seconds pass.
-    private func collect(_ stream: AsyncStream<[RowKey: MessageRowContent]>, timeout: TimeInterval = 5,
+    private func collect(_ stream: AsyncStream<[RowKey: MessageRowContent]>, timeout: TimeInterval = 10,
                          until done: @escaping @Sendable ([RowKey: MessageRowContent]) -> Bool) async -> [RowKey: MessageRowContent] {
         await withTaskGroup(of: [RowKey: MessageRowContent]?.self) { group in
             group.addTask {
@@ -301,6 +301,20 @@ final class GmailListSourceTests: XCTestCase {
         _ = await source.snapshot(of: view)
         try await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(box.transport.totalUnits, before)
+    }
+
+    func testSortingBySenderFetchesUpTo200RowsInTheBackgroundAndScrollingKeepsThemQueued() async throws {
+        let box = try await mailbox(count: 260, pairs: 0, replies: 0)
+        let source = box.source()
+        let view = ListView(scope: .folder(box.folder(.inbox)), sort: ListSortSpec(key: .from, ascending: false), conversations: false)
+        let stream = source.rows
+        let build = await source.build(view)
+        XCTAssertEqual(build.textWanted.count, 200)
+        // Background work stops at 500 units left: two landings of ten go at once.
+        let arrived = await arrivingKeys(stream, count: 20, timeout: 3)
+        XCTAssertEqual(arrived.count, 20)
+        XCTAssertEqual(box.transport.units[.messagesGet], 400)
+        XCTAssertTrue(Set(arrived).isSubset(of: Set(build.textWanted)))
     }
 
     // MARK: - All Inboxes

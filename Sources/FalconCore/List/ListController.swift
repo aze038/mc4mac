@@ -232,8 +232,13 @@ public final class ListController {
     /// The rows on screen are now `range`: fetch what is missing once the scroll is slow enough
     /// to read, and one screen ahead once it rests.
     public func scrolled(visible range: Range<Int>) {
+        let moved = range != visible
         visible = range
         handle(planner.scrolled(to: range, at: uptime()))
+        if moved, let view, let extras = source as? any ListSourceExtras {
+            let keys = range.compactMap { key(at: $0) }
+            Task { await extras.showing(keys, in: view) }
+        }
     }
 
     /// The scroll has rested; the table calls this when its own timer fires, or the controller's

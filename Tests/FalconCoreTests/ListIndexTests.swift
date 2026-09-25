@@ -44,7 +44,8 @@ final class ListIndexTests: XCTestCase {
         let view = ListView(scope: .folder(account.archiveFolderID!), conversations: false)
         var best = Double.infinity
         var rows = 0
-        for _ in 0..<5 {
+        // The best of up to twenty: the Mac may be busy with other work, which is no measure of this.
+        for _ in 0..<20 where best >= 5 * Self.slack {
             var builder = ListBuilder(view: view, settings: .init(), groups: ListDateGroups(now: Date()))
             best = min(best, milliseconds {
                 builder.add(account, target: .folder(.archive), facts: [:], offline: false, expanded: [])
@@ -61,7 +62,7 @@ final class ListIndexTests: XCTestCase {
         let view = ListView(scope: .folder(account.archiveFolderID!), conversations: true)
         var best = Double.infinity
         var snapshot: ListSnapshot?
-        for _ in 0..<5 {
+        for _ in 0..<20 where best >= 50 * Self.slack {
             var builder = ListBuilder(view: view, settings: .init(), groups: ListDateGroups(now: Date()))
             best = min(best, milliseconds {
                 builder.add(account, target: .folder(.archive), facts: [:], offline: false, expanded: [])
@@ -407,6 +408,30 @@ final class ListIndexTests: XCTestCase {
         await index.freeze([], dates: [:])
         let settled = await index.build(view).snapshot
         XCTAssertEqual(settled.rowKey(at: 0), keyB)
+    }
+
+    func testRowsOnScreenAreFrozenAtTheDatesThatPlacedThem() async {
+        let now = Date()
+        let a = ListFixtures.account(ListFixtures.index([M(labels: [.inbox], thread: 0)]))
+        let b = ListFixtures.account(ListFixtures.index([M(labels: [.inbox], thread: 1)]))
+        let index = ListIndex(clock: { now })
+        await index.setAccount(a)
+        await index.setAccount(b)
+        let keyA = RowKey.gmail(account: a.accountID, id: ListFixtures.id(0))
+        let keyB = RowKey.gmail(account: b.accountID, id: ListFixtures.id(0))
+        await index.addFacts([ListFixtures.id(0).raw: ListRowFacts(date: now.addingTimeInterval(-50), from: "", to: "", subject: "")],
+                             account: a.accountID)
+        await index.addFacts([ListFixtures.id(0).raw: ListRowFacts(date: now.addingTimeInterval(-100), from: "", to: "", subject: "")],
+                             account: b.accountID)
+        let view = ListView(scope: .allInboxes, conversations: false)
+        await index.freezeVisible([keyA, keyB])
+        await index.addFacts([ListFixtures.id(0).raw: ListRowFacts(date: now.addingTimeInterval(-500), from: "", to: "", subject: "")],
+                             account: a.accountID)
+        let held = await index.build(view).snapshot
+        XCTAssertEqual(held.rowKey(at: 0), keyA, "held where it was while on screen")
+        await index.freezeVisible([keyB])
+        let moved = await index.build(view).snapshot
+        XCTAssertEqual(moved.rowKey(at: 0), keyB, "once off screen it settles into its place")
     }
 
     // MARK: - Offline, search

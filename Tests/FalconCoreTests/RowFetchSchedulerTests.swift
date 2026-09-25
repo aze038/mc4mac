@@ -162,6 +162,23 @@ final class RowFetchSchedulerTests: XCTestCase {
         }
     }
 
+    func testRowsASortWantsStayQueuedWhateverTheScrollDoesAndGoAfterTheScreenAhead() {
+        let scheduler = RowFetchScheduler()
+        scheduler.requestInBackground(keys(1_000..<1_200)) { _ in 20 }
+        scheduler.request(keys(0..<25), priority: .visible) { _ in 20 }
+        scheduler.request(keys(25..<50), priority: .ahead) { _ in 20 }
+        XCTAssertEqual(scheduler.next(at: 0)?.priority, .visible)
+        // A scroll replaces what is on screen and ahead, not what the sort wants.
+        scheduler.request(keys(300..<310), priority: .visible) { _ in 20 }
+        scheduler.request(keys(310..<320), priority: .ahead) { _ in 20 }
+        XCTAssertEqual(scheduler.pendingBackground.count, 200)
+        XCTAssertEqual(scheduler.next(at: 60)?.keys, keys(300..<310))
+        XCTAssertEqual(scheduler.next(at: 120)?.keys, keys(310..<320))
+        let sorted = scheduler.next(at: 180)
+        XCTAssertEqual(sorted?.keys, keys(1_000..<1_010), "then the sort's, ten at a time")
+        XCTAssertEqual(sorted?.priority, .ahead)
+    }
+
     func testAPauseFromGmailHoldsLandingsBackUntilItEnds() {
         let scheduler = RowFetchScheduler()
         scheduler.pause(until: 30)

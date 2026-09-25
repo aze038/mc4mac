@@ -11,15 +11,15 @@ public actor MergedListSource: ListSourceExtras {
     private nonisolated let rowsOut = RowBroadcast<[RowKey: MessageRowContent]>()
     private var forwarding: [Task<Void, Never>] = []
 
+    /// What each watched view was last sent, and what its accounts say of their budgets.
     private struct Watch {
-        var diffs: [UUID: AsyncStream<ListDiff>.Continuation] = [:]
-        var footers: [UUID: AsyncStream<[ListFooter]>.Continuation] = [:]
         var last: ListSnapshot?
         var hidden = 0
         var loading: [UUID: String] = [:]
-        var sent: [ListFooter] = []
+        var sent: [ListFooter]?
         var tasks: [Task<Void, Never>] = []
     }
+    private nonisolated let watchers: ListWatchers
     private var watches: [ListView: Watch] = [:]
     private var listening: Task<Void, Never>?
 
@@ -29,12 +29,15 @@ public actor MergedListSource: ListSourceExtras {
         self.index = index
         self.gmail = Dictionary(gmail.map { ($0.accountID, $0) }) { a, _ in a }
         self.others = others
+        let box = WeakBox<MergedListSource>()
+        watchers = ListWatchers { view in Task { await box.value?.unwatch(view) } }
         let sources: [any ListSource] = gmail + Array(others.values)
         let out = rowsOut
         forwarding = sources.map { source in
             let stream = source.rows
             return Task { for await rows in stream { out.send(rows) } }
         }
+        box.value = self
     }
 
     deinit {
@@ -54,22 +57,19 @@ public actor MergedListSource: ListSourceExtras {
         let build = await index.build(view)
         for source in gmail.values { await source.adopt(build, for: view) }
         watches[view]?.hidden = build.hiddenMessages
+        if watchers.isWatched(view) { watches[view, default: Watch()].last = build.snapshot }
         return build
     }
 
     public nonisolated func changes(of view: ListView) -> AsyncStream<ListDiff> {
-        let (stream, continuation) = AsyncStream.makeStream(of: ListDiff.self)
-        let id = UUID()
-        continuation.onTermination = { [weak self] _ in Task { await self?.unwatch(view, id: id) } }
-        Task { await self.watch(view, id: id, diffs: continuation) }
+        let stream = watchers.diffStream(for: view)
+        Task { await self.watch(view) }
         return stream
     }
 
     public nonisolated func footers(of view: ListView) -> AsyncStream<[ListFooter]> {
-        let (stream, continuation) = AsyncStream.makeStream(of: [ListFooter].self)
-        let id = UUID()
-        continuation.onTermination = { [weak self] _ in Task { await self?.unwatch(view, id: id) } }
-        Task { await self.watch(view, id: id, footers: continuation) }
+        let stream = watchers.footerStream(for: view)
+        Task { await self.watch(view, newFooters: true) }
         return stream
     }
 
@@ -95,16 +95,21 @@ public actor MergedListSource: ListSourceExtras {
         return .gone
     }
 
+    /// What is on screen keeps the place its date gave it until it scrolls away, so a row never
+    /// moves while the owner is looking at it; others settle into their exact places.
+    public func showing(_ keys: [RowKey], in view: ListView) async {
+        await index.freezeVisible(keys)
+    }
+
     public func setExpanded(_ keys: Set<RowKey>, in view: ListView) async {
         await index.setExpanded(keys, in: view.scope)
     }
 
     // MARK: Watching
 
-    private func watch(_ view: ListView, id: UUID, diffs: AsyncStream<ListDiff>.Continuation? = nil,
-                       footers: AsyncStream<[ListFooter]>.Continuation? = nil) async {
-        if watches[view] == nil {
-            var watch = Watch()
+    private func watch(_ view: ListView, newFooters: Bool = false) async {
+        if watches[view]?.tasks.isEmpty ?? true {
+            var watch = watches[view] ?? Watch()
             // Each account says when its rows wait for its budget.
             for (account, source) in gmail {
                 let stream = source.footers(of: view)
@@ -117,25 +122,20 @@ public actor MergedListSource: ListSourceExtras {
                 })
             }
             watches[view] = watch
-            watches[view]?.last = await build(view).snapshot
+            if watch.last == nil { _ = await build(view) }
         }
-        if let diffs { watches[view]?.diffs[id] = diffs }
-        if let footers {
-            watches[view]?.footers[id] = footers
+        if newFooters {
             let lines = footerLines(view)
             watches[view]?.sent = lines
-            footers.yield(lines)
+            watchers.send(lines, for: view)
         }
         startListening()
     }
 
-    private func unwatch(_ view: ListView, id: UUID) {
-        watches[view]?.diffs[id] = nil
-        watches[view]?.footers[id] = nil
-        if let watch = watches[view], watch.diffs.isEmpty, watch.footers.isEmpty {
-            for task in watch.tasks { task.cancel() }
-            watches[view] = nil
-        }
+    private func unwatch(_ view: ListView) {
+        guard !watchers.isWatched(view), let watch = watches[view] else { return }
+        for task in watch.tasks { task.cancel() }
+        watches[view] = nil
     }
 
     private func startListening() {
@@ -150,15 +150,17 @@ public actor MergedListSource: ListSourceExtras {
     }
 
     private func rebuild() async {
-        for view in watches.keys {
+        for view in watchers.views {
+            let old = watches[view]?.last
             let built = await index.build(view)
             for source in gmail.values { await source.adopt(built, for: view) }
-            guard let old = watches[view]?.last else { continue }
-            watches[view]?.last = built.snapshot
+            watches[view, default: Watch()].last = built.snapshot
             watches[view]?.hidden = built.hiddenMessages
-            let diff = ListDiffer.diff(from: old, to: built.snapshot)
-            if !diff.inserted.isEmpty || !diff.removed.isEmpty || !diff.reloaded.isEmpty || old.itemCount != built.snapshot.itemCount {
-                for continuation in watches[view]?.diffs.values ?? [:].values { continuation.yield(diff) }
+            if let old {
+                let diff = ListDiffer.diff(from: old, to: built.snapshot)
+                if !diff.inserted.isEmpty || !diff.removed.isEmpty || !diff.reloaded.isEmpty || old.itemCount != built.snapshot.itemCount {
+                    watchers.send(diff, for: view)
+                }
             }
             sendFooters(view)
         }
@@ -179,10 +181,10 @@ public actor MergedListSource: ListSourceExtras {
     }
 
     private func sendFooters(_ view: ListView) {
-        guard let watch = watches[view], !watch.footers.isEmpty else { return }
+        guard watchers.isWatched(view), watches[view] != nil else { return }
         let lines = footerLines(view)
-        guard lines != watch.sent else { return }
+        guard lines != watches[view]?.sent else { return }
         watches[view]?.sent = lines
-        for continuation in watch.footers.values { continuation.yield(lines) }
+        watchers.send(lines, for: view)
     }
 }

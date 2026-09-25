@@ -13,6 +13,12 @@ public protocol ListSourceExtras: ListSource {
     func setExpanded(_ keys: Set<RowKey>, in view: ListView) async
     /// The lines under the view's rows, each time they change.
     func footers(of view: ListView) -> AsyncStream<[ListFooter]>
+    /// The rows now on screen, whatever their text, each time they change.
+    func showing(_ keys: [RowKey], in view: ListView) async
+}
+
+extension ListSourceExtras {
+    public func showing(_ keys: [RowKey], in view: ListView) async {}
 }
 
 /// Where the source stands with Gmail, as the engine sees it.
@@ -55,7 +61,10 @@ public actor GmailListSource: ListSourceExtras {
     private let sleep: @Sendable (TimeInterval) async -> Void
 
     private nonisolated let rowsOut = RowBroadcast<[RowKey: MessageRowContent]>()
-    private nonisolated let requests: AsyncStream<(keys: [RowKey], priority: RowPriority)>.Continuation
+    /// Where a request for rows goes: on screen, the screen ahead, or wanted by a sort whatever
+    /// the scroll does.
+    enum Lane: Sendable { case visible, ahead, background }
+    private nonisolated let requests: AsyncStream<(keys: [RowKey], lane: Lane)>.Continuation
     private var pump: Task<Void, Never>?
     private var wake: Task<Void, Never>?
 
@@ -71,19 +80,18 @@ public actor GmailListSource: ListSourceExtras {
     private var pausedLong = false
     /// Rows whose next fetch is their whole conversation, 40 units, rather than the message, 20.
     private var threadFetch: Set<GmailMessageID> = []
+    /// The row whose text holds each conversation's messages, for its opened lines.
+    private var conversationRow: [UInt64: RowKey] = [:]
     private var refreshed = false
     private var refreshing: Task<Void, Never>?
     private var anchorsAsked: Set<Date> = []
     private var anchorTask: Task<Void, Never>?
     private var textAsked: Set<ListView> = []
 
-    private struct Watch {
-        var diffs: [UUID: AsyncStream<ListDiff>.Continuation] = [:]
-        var footers: [UUID: AsyncStream<[ListFooter]>.Continuation] = [:]
-        var last: ListSnapshot?
-        var lastFooters: [ListFooter] = []
-    }
-    private var watches: [ListView: Watch] = [:]
+    private nonisolated let watchers: ListWatchers
+    /// What each watched view's watchers were last sent, which the next change is worked out from.
+    private var sent: [ListView: ListSnapshot] = [:]
+    private var sentFooters: [ListView: [ListFooter]] = [:]
     private var builds: [ListView: ListBuild] = [:]
     /// Rows that stand for conversations in the views built last, whose text is a thread's.
     private var conversationKeys: [ListView: Set<UInt64>] = [:]
@@ -109,16 +117,19 @@ public actor GmailListSource: ListSourceExtras {
         self.now = now
         self.sleep = sleep
         scheduler = RowFetchScheduler(budget: budget)
-        let (incoming, requests) = AsyncStream.makeStream(of: (keys: [RowKey], priority: RowPriority).self)
+        let forget = WeakBox<GmailListSource>()
+        watchers = ListWatchers { view in Task { await forget.value?.forget(view) } }
+        let (incoming, requests) = AsyncStream.makeStream(of: (keys: [RowKey], lane: Lane).self)
         self.requests = requests
+        forget.value = self
         Task { await self.startPump(incoming) }
     }
 
-    private func startPump(_ incoming: AsyncStream<(keys: [RowKey], priority: RowPriority)>) {
+    private func startPump(_ incoming: AsyncStream<(keys: [RowKey], lane: Lane)>) {
         pump = Task { [weak self] in
             for await request in incoming {
                 guard let self else { return }
-                await self.take(request.keys, priority: request.priority)
+                await self.take(request.keys, lane: request.lane)
             }
         }
     }
@@ -225,27 +236,24 @@ public actor GmailListSource: ListSourceExtras {
     // MARK: - ListSource
 
     public func snapshot(of view: ListView) async -> ListSnapshot {
-        await build(view).snapshot
+        let snapshot = await build(view).snapshot
+        // What the caller now shows is what the next change is worked out from.
+        if watchers.isWatched(view) { sent[view] = snapshot }
+        return snapshot
     }
 
     public nonisolated func changes(of view: ListView) -> AsyncStream<ListDiff> {
-        let (stream, continuation) = AsyncStream.makeStream(of: ListDiff.self)
-        let id = UUID()
-        continuation.onTermination = { [weak self] _ in Task { await self?.unwatch(view, id: id) } }
-        Task { await self.watch(view, id: id, diffs: continuation) }
-        return stream
+        watchers.diffStream(for: view)
     }
 
     public nonisolated func footers(of view: ListView) -> AsyncStream<[ListFooter]> {
-        let (stream, continuation) = AsyncStream.makeStream(of: [ListFooter].self)
-        let id = UUID()
-        continuation.onTermination = { [weak self] _ in Task { await self?.unwatch(view, id: id) } }
-        Task { await self.watch(view, id: id, footers: continuation) }
+        let stream = watchers.footerStream(for: view)
+        Task { await self.footersWatched(view) }
         return stream
     }
 
     public nonisolated func requestRows(_ keys: [RowKey], priority: RowPriority) {
-        requests.yield((keys, priority))
+        requests.yield((keys, priority == .visible ? .visible : .ahead))
     }
 
     public func setExpanded(_ keys: Set<RowKey>, in view: ListView) async {
@@ -282,42 +290,36 @@ public actor GmailListSource: ListSourceExtras {
 
     // MARK: - Watching views
 
-    private func watch(_ view: ListView, id: UUID, diffs: AsyncStream<ListDiff>.Continuation? = nil,
-                       footers: AsyncStream<[ListFooter]>.Continuation? = nil) async {
-        if watches[view] == nil {
-            watches[view] = Watch()
-            watches[view]?.last = builds[view]?.snapshot
-        }
-        if let diffs { watches[view]?.diffs[id] = diffs }
-        if let footers {
-            watches[view]?.footers[id] = footers
-            if watches[view]?.last == nil { _ = await build(view) }
-            let current = footerLines(for: view)
-            watches[view]?.lastFooters = current
-            footers.yield(current)
-        }
+    /// A new footers watcher gets the lines as they stand.
+    private func footersWatched(_ view: ListView) async {
+        if builds[view] == nil { _ = await build(view) }
+        let lines = footerLines(for: view)
+        sentFooters[view] = lines
+        watchers.send(lines, for: view)
     }
 
-    private func unwatch(_ view: ListView, id: UUID) {
-        watches[view]?.diffs[id] = nil
-        watches[view]?.footers[id] = nil
-        if let watch = watches[view], watch.diffs.isEmpty, watch.footers.isEmpty {
-            watches[view] = nil
-            builds[view] = nil
-            conversationKeys[view] = nil
-        }
+    private func forget(_ view: ListView) {
+        guard !watchers.isWatched(view) else { return }
+        sent[view] = nil
+        sentFooters[view] = nil
+        builds[view] = nil
+        conversationKeys[view] = nil
+        textAsked.remove(view)
     }
 
     private func rebuildWatched() async {
-        for view in watches.keys {
+        // A view watched only for its footers, as All Inboxes watches each account's, is built by
+        // whoever merges it.
+        for view in watchers.diffViews {
+            let old = sent[view] ?? builds[view]?.snapshot
             let build = await index.build(view)
-            let old = watches[view]?.last
             remember(build, for: view)
+            sent[view] = build.snapshot
             if let old {
                 let diff = ListDiffer.diff(from: old, to: build.snapshot)
                 if !diff.inserted.isEmpty || !diff.removed.isEmpty || !diff.reloaded.isEmpty || old.itemCount != build.snapshot.itemCount
                     || old.complete != build.snapshot.complete {
-                    for continuation in watches[view]?.diffs.values ?? [:].values { continuation.yield(diff) }
+                    watchers.send(diff, for: view)
                 }
             }
             sendFooters(view)
@@ -326,7 +328,6 @@ public actor GmailListSource: ListSourceExtras {
 
     private func remember(_ build: ListBuild, for view: ListView) {
         builds[view] = build
-        if watches[view] != nil { watches[view]?.last = build.snapshot }
         if view.conversations {
             var keys = Set<UInt64>()
             let sourceIndex = build.snapshot.sources.firstIndex(of: accountID).map(UInt8.init(truncatingIfNeeded:))
@@ -347,7 +348,7 @@ public actor GmailListSource: ListSourceExtras {
         if !build.textWanted.isEmpty, !textAsked.contains(view) {
             textAsked.insert(view)
             let mine = build.textWanted.filter { $0.accountID == accountID }
-            if !mine.isEmpty { requests.yield((mine, .ahead)) }
+            if !mine.isEmpty { requests.yield((mine, .background)) }
         }
     }
 
@@ -362,15 +363,15 @@ public actor GmailListSource: ListSourceExtras {
     }
 
     private func sendFooters(_ view: ListView) {
-        guard let watch = watches[view], !watch.footers.isEmpty else { return }
+        guard watchers.isWatched(view) else { return }
         let lines = footerLines(for: view)
-        guard lines != watch.lastFooters else { return }
-        watches[view]?.lastFooters = lines
-        for continuation in watch.footers.values { continuation.yield(lines) }
+        guard lines != sentFooters[view] else { return }
+        sentFooters[view] = lines
+        watchers.send(lines, for: view)
     }
 
     private func sendAllFooters() {
-        for view in watches.keys { sendFooters(view) }
+        for view in watchers.views { sendFooters(view) }
     }
 
     // MARK: - Rows
@@ -381,10 +382,16 @@ public actor GmailListSource: ListSourceExtras {
 
     /// Rows asked for: those whose text is on the Mac go at once and cost nothing; the rest are
     /// scheduled, unless Gmail cannot be reached, when they stay grey.
-    private func take(_ keys: [RowKey], priority: RowPriority) async {
+    private func take(_ keys: [RowKey], lane: Lane) async {
         let mine = keys.compactMap { key -> GmailMessageID? in
             guard case .gmail(let account, let id) = key, account == accountID else { return nil }
             return id
+        }
+        if mine.isEmpty, lane == .visible {
+            // Nothing of this account is on screen: what it had waiting has scrolled away.
+            scheduler.request([], priority: .visible) { _ in 0 }
+            pumpLandings()
+            return
         }
         guard !mine.isEmpty else { return }
         await ensureRefreshed()
@@ -393,66 +400,55 @@ public actor GmailListSource: ListSourceExtras {
         var needThread: Set<GmailMessageID> = []
 
         let cached = await store.cachedMessages(mine.filter { cachedIDs.contains($0) })
-        var threadsWanted: [GmailThreadID: [GmailMessageID]] = [:]
+        var threadsWanted: Set<GmailThreadID> = []
         for id in mine where isConversation(id) {
-            if let record = snapshotOfIndex.record(for: id) { threadsWanted[record.gmailThreadID, default: []].append(id) }
+            if let record = snapshotOfIndex.record(for: id) { threadsWanted.insert(record.gmailThreadID) }
         }
-        let summaries = await store.threadSummaries(Array(threadsWanted.keys))
+        let summaries = await store.threadSummaries(Array(threadsWanted))
 
         for id in mine {
             let key = RowKey.gmail(account: accountID, id: id)
-            let thread = snapshotOfIndex.record(for: id)?.gmailThreadID
-            let summary = thread.flatMap { summaries[$0] }
+            let summary = snapshotOfIndex.record(for: id).flatMap { summaries[$0.gmailThreadID] }
             let conversation = isConversation(id)
-            if var row = session.content(for: key), !conversation || row.conversation != nil {
-                if conversation, row.conversation == nil, let summary { row.conversation = self.conversation(summary) }
-                known[key] = row
-            } else if let message = cached[id] {
-                var row = content(message)
-                if conversation {
-                    if let summary { row.conversation = self.conversation(summary) } else { needThread.insert(id) }
+            var row = session.content(for: key) ?? cached[id].map(content) ?? memberContent(id)
+            if conversation, row?.conversation == nil {
+                if let summary {
+                    row?.conversation = self.conversation(summary)
+                } else {
+                    // A conversation whose message is known but whose senders are not paints
+                    // now, and is fetched again whole.
+                    needThread.insert(id)
                 }
-                known[key] = row
-            } else if let parent = memberContent(id) {
-                known[key] = parent
-            } else {
-                missing.append(id)
-                if conversation, summary == nil { needThread.insert(id) }
             }
+            if let row { known[key] = row } else { missing.append(id) }
         }
-        // A conversation whose message is on the Mac but whose senders are not yet paints now,
-        // and is fetched again whole.
-        let incomplete = needThread.filter { known[.gmail(account: accountID, id: $0)] != nil }
         remember(known)
 
         guard !isOffline else { return }
-        let fetch = missing + incomplete
-        guard !fetch.isEmpty else {
-            if priority == .visible { scheduler.request([], priority: .visible) { _ in 0 } }
-            pumpLandings()
-            return
-        }
+        let fetch = missing + needThread.filter { known[.gmail(account: accountID, id: $0)] != nil }
         threadFetch.subtract(fetch)
         threadFetch.formUnion(needThread)
         let threadKeys = threadFetch
-        scheduler.request(fetch.map { .gmail(account: accountID, id: $0) }, priority: priority) { key in
+        let price: (RowKey) -> Int = { key in
             guard let id = key.gmailID else { return 0 }
             return threadKeys.contains(id) ? GmailMethod.threadsGet.units : GmailMethod.messagesGet.units
+        }
+        let wanted = fetch.map { RowKey.gmail(account: accountID, id: $0) }
+        switch lane {
+        case .visible: scheduler.request(wanted, priority: .visible, cost: price)
+        case .ahead: if !wanted.isEmpty { scheduler.request(wanted, priority: .ahead, cost: price) }
+        case .background: scheduler.requestInBackground(wanted, cost: price)
         }
         pumpLandings()
     }
 
-    /// A child row's text from its opened conversation's members, when the parent's is known.
+    /// A child row's text from its opened conversation's members, when the conversation's is known.
     private func memberContent(_ id: GmailMessageID) -> MessageRowContent? {
-        guard let thread = snapshotOfIndex.record(for: id)?.threadID else { return nil }
-        for key in session.keysByUse.prefix(200) {
-            guard let parent = session.peek(key), let members = parent.conversation?.members,
-                  let gid = parent.key.gmailID, snapshotOfIndex.record(for: gid)?.threadID == thread,
-                  let member = members.first(where: { $0.key.gmailID == id }) else { continue }
-            return MessageRowContent(key: .gmail(account: accountID, id: id), from: member.from, to: [], subject: parent.subject,
-                                     preview: "", date: member.date)
-        }
-        return nil
+        guard let thread = snapshotOfIndex.record(for: id)?.threadID, let parentKey = conversationRow[thread],
+              let parent = session.peek(parentKey),
+              let member = parent.conversation?.members.first(where: { $0.key.gmailID == id }) else { return nil }
+        return MessageRowContent(key: .gmail(account: accountID, id: id), from: member.from, to: [], subject: parent.subject,
+                                 preview: "", date: member.date)
     }
 
     /// Sends every landing the budget has room for, and wakes when the next one could go.
@@ -529,13 +525,19 @@ public actor GmailListSource: ListSourceExtras {
     private func remember(_ rows: [RowKey: MessageRowContent]) {
         guard !rows.isEmpty else { return }
         let evicted = session.insert(rows)
+        for (key, row) in rows where row.conversation?.members.isEmpty == false {
+            if let id = key.gmailID, let thread = snapshotOfIndex.record(for: id)?.threadID { conversationRow[thread] = key }
+        }
+        if conversationRow.count > RowContentStore.defaultCapacity * 2 {
+            conversationRow = conversationRow.filter { session.contains($0.value) }
+        }
         rowsOut.send(rows)
         var facts: [UInt64: ListRowFacts] = [:]
         for (key, row) in rows { if let id = key.gmailID { facts[id.raw] = ListRowFacts(row, ownAddresses: ownAddresses) } }
         let forget = evicted.compactMap(\.gmailID).filter { !cachedIDs.contains($0) }.map(\.raw)
         let index = self.index
         let account = accountID
-        let needsRebuild = watches.keys.contains { view in
+        let needsRebuild = watchers.diffViews.contains { view in
             view.scope.mergesAccounts || view.sort.key.isTextual || view.dateGroups || view.filters.contains(.mentionsMe)
                 || self.isOffline
         }
@@ -672,6 +674,12 @@ public actor GmailListSource: ListSourceExtras {
         summary.folderID = folderID(for: message.labels, view: view)
         return summary
     }
+}
+
+/// A weak reference that can be filled in after it is captured, for a callback made before the
+/// object it calls exists.
+final class WeakBox<T: AnyObject>: @unchecked Sendable {
+    weak var value: T?
 }
 
 // MARK: - Gmail's answers as rows
