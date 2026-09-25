@@ -360,7 +360,13 @@ public actor ListIndex {
 
     public func build(_ view: ListView) -> ListBuild {
         let now = clock()
-        var builder = ListBuilder(view: view, settings: settings, groups: ListDateGroups(now: now, calendar: calendar))
+        let merging: Bool
+        switch view.scope {
+        case .folder: merging = false
+        case .allInboxes: merging = accountOrder.filter { accounts[$0] != nil }.count + Set(storedInboxRows.map(\.accountID)).count > 1
+        case .search(let id): merging = (searches[id]?.count ?? 0) > 1
+        }
+        var builder = ListBuilder(view: view, settings: settings, groups: ListDateGroups(now: now, calendar: calendar), merging: merging)
         switch view.scope {
         case .folder(let folderID):
             guard let account = accountOrder.lazy.compactMap({ self.accounts[$0] }).first(where: { $0.target(of: folderID) != nil }),
@@ -460,13 +466,15 @@ struct ListBuilder {
     private let wantsFacts: Bool
     private let wantsDateGroups: Bool
 
-    init(view: ListView, settings: ListIndex.Settings, groups: ListDateGroups) {
+    /// `merging` when rows of more than one account will be added, which are then placed among
+    /// each other by date.
+    init(view: ListView, settings: ListIndex.Settings, groups: ListDateGroups, merging: Bool = false) {
         self.view = view
         self.settings = settings
         self.groups = groups
-        wantsFacts = view.sort.key.isTextual || view.filters.contains(.mentionsMe) || view.scope.mergesAccounts
+        wantsFacts = view.sort.key.isTextual || view.filters.contains(.mentionsMe) || merging
             || view.dateGroups && view.sort.key == .date
-        wantsDateGroups = view.scope.mergesAccounts || view.dateGroups && view.sort.key == .date
+        wantsDateGroups = merging || view.dateGroups && view.sort.key == .date
     }
 
     // MARK: Adding an account
@@ -490,7 +498,6 @@ struct ListBuilder {
             complete = false
         }
         if view.filters.contains(.mentionsMe) { complete = false }
-        if wantsDateGroups, account.anchors.isEmpty, !index.byOrder.isEmpty { needs.insert(.anchors(account.accountID)) }
         let dating = AnchorDating(anchors: account.anchors)
         anchorDating[source] = dating
 
@@ -530,6 +537,10 @@ struct ListBuilder {
         }
         if wantsDateGroups, !dating.isEmpty {
             rows.dateGroups = records.map { Int32(dating.group(of: index.records[Int($0.slot)].order)) }
+        }
+        // Anchors are asked for only when a row has no date of its own to go by.
+        if wantsDateGroups, dating.isEmpty, !records.isEmpty, rows.dates.contains(where: { $0 == nil }) || rows.dates.isEmpty {
+            needs.insert(.anchors(account.accountID))
         }
         if view.sort.key == .folder {
             let namer = FolderNamer(account: account, masks: masks)

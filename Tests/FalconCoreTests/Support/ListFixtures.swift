@@ -81,3 +81,43 @@ enum ListFixtures {
         }
     }
 }
+
+/// The first value of `stream` that `matches`, or nil after `timeout` seconds, so a test whose
+/// change never comes fails instead of waiting for ever.
+func firstValue<T: Sendable>(of stream: AsyncStream<T>, timeout: TimeInterval = 5,
+                             where matches: @escaping @Sendable (T) -> Bool = { _ in true }) async -> T? {
+    await withTaskGroup(of: T?.self) { group in
+        group.addTask {
+            for await value in stream where matches(value) { return value }
+            return nil
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1e9))
+            return nil
+        }
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        return first
+    }
+}
+
+/// The keys of rows arriving on `stream` until there are `count`, or `timeout` seconds pass.
+func arrivingKeys(_ stream: AsyncStream<[RowKey: MessageRowContent]>, count: Int, timeout: TimeInterval = 5) async -> Set<RowKey> {
+    await withTaskGroup(of: Set<RowKey>?.self) { group in
+        group.addTask {
+            var keys = Set<RowKey>()
+            for await rows in stream {
+                keys.formUnion(rows.keys)
+                if keys.count >= count { return keys }
+            }
+            return keys
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1e9))
+            return nil
+        }
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        return first ?? []
+    }
+}
