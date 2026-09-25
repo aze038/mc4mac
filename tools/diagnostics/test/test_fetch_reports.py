@@ -1,6 +1,7 @@
 """fetch-reports.sh against a fake diagnostics service on loopback; nothing leaves this Mac."""
 
 import datetime
+import zoneinfo
 import http.server
 import json
 import os
@@ -136,7 +137,8 @@ class FetchReportsTest(unittest.TestCase):
         return subprocess.run(['bash', SCRIPT] + list(args), capture_output=True, text=True, env=env, timeout=60)
 
     def saved_lines(self):
-        today = datetime.date.today().isoformat()
+        # The tool runs on Baku time (TZ above), whose date is not the Mac's around midnight.
+        today = datetime.datetime.now(zoneinfo.ZoneInfo('Asia/Baku')).date().isoformat()
         with open(os.path.join(self.reports, today + '.jsonl')) as handle:
             return [json.loads(line) for line in handle]
 
