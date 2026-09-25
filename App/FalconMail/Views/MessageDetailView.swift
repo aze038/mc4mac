@@ -79,7 +79,6 @@ struct MessageReaderView: View {
                     .padding(.leading, OL.readingSenderX - OL.readingAvatarX - OL.readingAvatar)
                     .padding(.trailing, OL.readingRightInset)
             }
-            conversationHint
             if message.isServerOnly {
                 if !serverAttachments.isEmpty {
                     ServerAttachmentStrip(message: message, stubs: serverAttachments)
@@ -208,40 +207,6 @@ struct MessageReaderView: View {
     }
 
     private var thread: MessageThread { conversation ?? MessageThread(messages: [message]) }
-
-    /// Outlook's grey notice band under the header, here for a folded conversation.
-    @ViewBuilder private var conversationHint: some View {
-        if let conversation, conversation.messages.count > 1, !model.isExpanded(conversation), context == .pane {
-            HStack(spacing: 0) {
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 11))
-                    .foregroundStyle(OLColor.replyPurple)
-                    .frame(width: 16, height: 16)
-                    .padding(.leading, 6)
-                Text("\(conversation.messages.count) messages in this conversation. Showing the latest.")
-                    .font(.system(size: OL.readingMetaFont))
-                    .foregroundStyle(OLColor.text)
-                    .lineLimit(1)
-                    .padding(.leading, 8.5)
-                Spacer(minLength: 8)
-                Button { model.expand(conversation) } label: {
-                    Text("Show All")
-                        .font(.system(size: 11))
-                        .foregroundStyle(OLColor.text)
-                        .padding(.horizontal, 8)
-                        .frame(height: 16)
-                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(OLColor.buttonBorder, lineWidth: 1))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.trailing, 10)
-            }
-            .frame(height: OL.readingNotice)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(OLColor.notice)
-            .padding(.top, 19)
-        }
-    }
 
     @ViewBuilder private var content: some View {
         if let rendered {
@@ -586,7 +551,8 @@ enum MessageRenderer {
         return false
     }
 
-    static func html(for parsed: MIMEMessage, allowRemote: Bool, dark: Bool, forceOriginal: Bool) -> String {
+    /// `inStack` for a card of the conversation stack, which leaves less room under the text.
+    static func html(for parsed: MIMEMessage, allowRemote: Bool, dark: Bool, forceOriginal: Bool, inStack: Bool = false) -> String {
         let csp = allowRemote
             ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
             : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
@@ -606,7 +572,7 @@ enum MessageRenderer {
         let inversion = inverted
             ? " html{filter:invert(0.885) hue-rotate(180deg);} img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg);}"
             : ""
-        let style = "<style>:root{color-scheme:light;} html,body{background:\(background);margin:0;}\(inversion) body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:12px 29px 30px 29px;word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
+        let style = "<style>:root{color-scheme:light;} html,body{background:\(background);margin:0;}\(inversion) body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:\(inStack ? "6px 29px 10px 29px" : "12px 29px 30px 29px");word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
         let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
@@ -625,19 +591,19 @@ enum MessageRenderer {
 
 @MainActor
 enum WebViewPool {
-    private static var free: [WKWebView] = []
+    private static var free: [ReaderWebView] = []
     private static let processPool = WKProcessPool()
     /// Remote images and whatever else a message loads are kept for this session only, in
     /// memory, never under ~/Library nor in WebKit's disk cache with its browser-sized limit.
     private static let dataStore = WKWebsiteDataStore.nonPersistent()
 
-    static func acquire() -> WKWebView {
+    static func acquire() -> ReaderWebView {
         if let v = free.popLast() { return v }
         let config = WKWebViewConfiguration()
         config.processPool = processPool
         config.websiteDataStore = dataStore
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        let view = WKWebView(frame: .zero, configuration: config)
+        let view = ReaderWebView(frame: .zero, configuration: config)
         view.underPageBackgroundColor = NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(hex: 0x1E1E1E) : .white
         }
@@ -645,8 +611,9 @@ enum WebViewPool {
         return view
     }
 
-    static func release(_ view: WKWebView) {
+    static func release(_ view: ReaderWebView) {
         view.navigationDelegate = nil
+        view.fitsContent = false
         view.loadHTMLString("", baseURL: nil)
         if free.count < 4 { free.append(view) }
     }
@@ -703,32 +670,43 @@ struct ReadingSubject: View {
 struct HTMLView: NSViewRepresentable {
     let html: String
     var sender: EmailAddress? = nil
+    /// Given for a card of the conversation stack: the message is then as tall as its text, told
+    /// here, and scrolls with the stack instead of on its own.
+    var onHeight: ((CGFloat) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> ReaderWebView {
         let view = MainActor.assumeIsolated { WebViewPool.acquire() }
         view.navigationDelegate = context.coordinator
+        view.fitsContent = onHeight != nil
+        view.onHeight = onHeight
         context.coordinator.lastHTML = ""
         context.coordinator.sender = sender
         return view
     }
 
-    func updateNSView(_ view: WKWebView, context: Context) {
+    func updateNSView(_ view: ReaderWebView, context: Context) {
         context.coordinator.sender = sender
+        view.onHeight = onHeight
         if context.coordinator.lastHTML != html {
             context.coordinator.lastHTML = html
+            view.willLoad()
             view.loadHTMLString(html, baseURL: nil)
         }
     }
 
-    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+    static func dismantleNSView(_ view: ReaderWebView, coordinator: Coordinator) {
         MainActor.assumeIsolated { WebViewPool.release(view) }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML = ""
         var sender: EmailAddress?
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            MainActor.assumeIsolated { (webView as? ReaderWebView)?.didLoad() }
+        }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {

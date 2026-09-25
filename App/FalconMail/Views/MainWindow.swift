@@ -103,7 +103,11 @@ struct MainWindow: View {
             switch model.selection {
             case .outbox, .archive: EmptyView()
             default:
-                if let thread = model.currentThread {
+                if let thread = model.currentThread, thread.messages.count > 1 {
+                    // A conversation's own row: all its messages, one under another.
+                    ConversationStackView(messages: thread.messages)
+                        .id(thread.id)
+                } else if let thread = model.currentThread {
                     MessageReaderView(message: thread.latest, conversation: model.currentConversation)
                         .id(thread.latest.id)
                 } else if model.selectedMessageIDs.count > 1 {

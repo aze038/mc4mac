@@ -25,7 +25,9 @@ final class QuotedHistoryTests: XCTestCase {
         let split = try XCTUnwrap(QuotedHistory.split(html: html, repeating: earlier))
         XCTAssertEqual(HTMLText.plainText(from: split.own), "Thanks Sam, that is all I needed. Alex")
         XCTAssertTrue(split.quoted.hasPrefix("<div class=\"gmail_quote"))
-        XCTAssertEqual(split.own + split.quoted, html)
+        // The empty line Gmail leaves above its quote goes with it.
+        XCTAssertTrue(split.own.hasSuffix("<div>Alex</div></div>"))
+        XCTAssertTrue(html.hasPrefix(split.own) && html.hasSuffix(split.quoted))
     }
 
     func testOutlooksQuoteIsHiddenFromItsRuleToTheEndWhateverLanguageItsHeadingIsIn() throws {
@@ -47,7 +49,7 @@ final class QuotedHistoryTests: XCTestCase {
             Sam Taylor<br><b>Sent:</b> Thursday, September 24, 2026 4:02 PM</p></div><p class="MsoNormal">\(earlierText)</p></div>
             """
         let split = try XCTUnwrap(QuotedHistory.split(html: html, repeating: earlier))
-        XCTAssertTrue(HTMLText.plainText(from: split.own).hasPrefix("Noted, we will collect on Tuesday."))
+        XCTAssertTrue(split.own.hasSuffix("<p class=\"MsoNormal\">Noted, we will collect on Tuesday.</p>"))
         XCTAssertFalse(HTMLText.plainText(from: split.own).contains("From:"))
     }
 

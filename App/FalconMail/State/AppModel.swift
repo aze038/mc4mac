@@ -1402,6 +1402,14 @@ final class AppModel {
         }
     }
 
+    /// What is known of a message's text without fetching anything: its first words, and all
+    /// of it when it has been opened this session. The conversation stack looks for these in a
+    /// later message's quote.
+    func knownText(of message: MessageSummary) -> [String] {
+        guard let opened = bodyCache[message.id] ?? openedServerMessages[message.id]?.message else { return [message.snippet] }
+        return [message.snippet, opened.bestText]
+    }
+
     func parsedBody(for message: MessageSummary) async -> MIMEMessage? {
         if message.isServerOnly { return await serverBody(for: message) }
         if let cached = bodyCache[message.id] { return cached }
@@ -1602,7 +1610,9 @@ final class AppModel {
             guard let current = self.threads.first(where: { $0.id == id }) else { return }
             self.readTask = nil
             self.pendingReadID = nil
-            self.markReadSilently(current.messages)
+            // The messages the reading pane shows open: the conversation stack opens every
+            // unread one, and a conversation of one message is that message.
+            self.markReadSilently(ConversationStack(current.messages).toMarkRead)
         }
     }
 
@@ -1859,6 +1869,7 @@ final class AppModel {
         }
     }
 
+
     /// Opening a message whose window is already open brings that window forward, out of the
     /// tray if it is there, rather than opening a second one.
     func showMessageWindow(_ id: String, openWindow: (String) -> Void) {
@@ -1982,6 +1993,12 @@ final class AppModel {
         guard readPolicy != .never else { return }
         cancelPendingRead()
         markReadSilently(residentThread(containing: message)?.messages ?? [message])
+    }
+
+    /// A folded card of the conversation stack opened by a click is read, as a message opened is.
+    func markReadOnExpanding(_ message: MessageSummary) {
+        guard readPolicy != .never else { return }
+        markReadSilently([message])
     }
 
     func send(_ draft: ComposeDraft) throws {

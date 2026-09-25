@@ -46,7 +46,7 @@ public enum QuotedHistory {
 
     public static func split(html: String, repeating earlier: [String]) -> Split? {
         guard let start = quoteStart(inHTML: html) else { return nil }
-        let own = String(html[..<start])
+        let own = withoutTrailingBlankLines(String(html[..<start]))
         let quoted = String(html[start...])
         guard !HTMLText.plainText(from: own).isEmpty, repeats(HTMLText.plainText(from: quoted), earlier) else { return nil }
         return Split(own: own, quoted: quoted)
@@ -104,6 +104,19 @@ public enum QuotedHistory {
         case .toEnd:
             return backingOverRule(range.lowerBound, in: html)
         }
+    }
+
+    private static let trailingBlank = try! NSRegularExpression(
+        pattern: "(?:\\s|&nbsp;|<br\\s*/?>|<(?:p|div)\\b[^>]*>(?:\\s|&nbsp;|<br\\s*/?>)*</(?:p|div)\\s*>)+$",
+        options: [.caseInsensitive])
+
+    /// The empty lines a mail program leaves above its quote go with it, so that the ••• button
+    /// stands under the last line of the message's own.
+    private static func withoutTrailingBlankLines(_ html: String) -> String {
+        let from = html.index(html.endIndex, offsetBy: -2_000, limitedBy: html.startIndex) ?? html.startIndex
+        guard let match = trailingBlank.firstMatch(in: html, range: NSRange(from..., in: html)),
+              let range = Range(match.range, in: html) else { return html }
+        return String(html[..<range.lowerBound])
     }
 
     /// Whether the element named `tag` opening at `start` is followed by no words of its own:
