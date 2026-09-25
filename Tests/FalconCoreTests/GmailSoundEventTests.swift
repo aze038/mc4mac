@@ -101,6 +101,26 @@ final class GmailSoundEventTests: XCTestCase {
         await rig.finish()
     }
 
+    func testProgressInTheStatusBarAlwaysEnds() async throws {
+        let clock = ManualGmailClock()
+        let gmail = MemoryGmailTransport()
+        for i in 0..<5 { gmail.add(subject: "Old \(i)", labels: [.inbox], date: clock.now().addingTimeInterval(-Double(5 - i) * 86_400)) }
+        let rig = GmailEngineRig(transport: gmail, clock: clock)
+        await rig.engine.runBackfill()
+        func progressEnds(_ events: [SyncEvent]) -> Bool {
+            guard let last = events.lastIndex(where: { if case .progress = $0 { return true } else { return false } }) else { return false }
+            return events[(last + 1)...].contains { if case .finished = $0 { return true } else { return false } }
+        }
+        XCTAssertTrue(progressEnds(rig.events.events), "the first listing's progress ends with finished")
+        rig.events.clear()
+        gmail.relabel(try XCTUnwrap(gmail.messages.first?.ref.id), adding: [.starred])
+        gmail.expireHistory()
+        _ = await rig.engine.check(reason: .schedule)
+        await rig.engine.relistTask?.value
+        XCTAssertTrue(progressEnds(rig.events.events), "and so does a resync's")
+        await rig.finish()
+    }
+
     // MARK: - Failures
 
     func testAFailedCheckIsQuietThenOfflineAfterTwoMinutesThenRecovers() async throws {

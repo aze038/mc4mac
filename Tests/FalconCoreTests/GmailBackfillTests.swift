@@ -136,6 +136,27 @@ final class GmailBackfillTests: XCTestCase {
         await run.rig.finish()
     }
 
+    func testFullySettingUp200kStaysWithinTheTarget() async throws {
+        let gmail = GmailFixtureMailbox.fixture(.large)
+        var settings = GmailEngineSettings()
+        settings.fillsCache = true
+        let rig = GmailEngineRig(transport: gmail, clock: ManualGmailClock(gmail.now), settings: settings)
+        await rig.engine.start()
+        try await eventually(timeout: 300, "the index and the newest 1,000") {
+            let complete = await rig.engine.state.backfill?.phase == .complete
+            let filling = await rig.engine.cacheTask != nil
+            let kept = await rig.store.cachedIDs().count
+            return complete && !filling && kept == 1_000
+        }
+        // §14.6: fully set up, the index and the newest 1,000, in at most 55,000 units at 200,000.
+        XCTAssertLessThanOrEqual(gmail.totalUnits, 55_000)
+        let kept = await rig.store.cachedIDs()
+        XCTAssertEqual(kept, Set(gmail.newestFirst.lazy.filter { gmail.labels(of: $0.id)?.isDisjoint(with: [.spam, .trash]) ?? false }
+            .prefix(1_000).map(\.id)), "the newest 1,000, never Junk Email or Deleted Items")
+        print("fully set up at 200k: \(gmail.totalUnits) units, \(gmail.units[.messagesGet] ?? 0) for the kept messages")
+        await rig.finish()
+    }
+
     // MARK: - Resuming, and repairing a listing
 
     func testAStoppedListingResumesFromTheLastSavedPage() async throws {

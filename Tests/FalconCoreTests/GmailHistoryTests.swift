@@ -515,6 +515,29 @@ final class GmailHistoryTests: XCTestCase {
         await rig.finish()
     }
 
+    func testManyRemovalCandidatesAreConfirmedByASecondListing() async throws {
+        var settings = GmailEngineSettings()
+        settings.fillsCache = false
+        settings.confirmByListingAbove = 3
+        let clock = ManualGmailClock()
+        let gmail = MemoryGmailTransport()
+        let (rig, refs) = try await listedRig(gmail, count: 30, clock: clock, settings: settings)
+        let doomed = Array(refs[5..<10])
+        for ref in doomed { gmail.delete(ref.id) }
+        gmail.expireHistory()
+        rig.transport.clearLog()
+        _ = await rig.engine.check(reason: .schedule)
+        await rig.engine.relistTask?.value
+        let allMailListings = rig.transport.trace.filter { $0 == "list:all:500" }.count
+        XCTAssertEqual(allMailListings, 2, "the relisting, then one more listing to confirm the five candidates")
+        let batches = await rig.store.batches
+        let ended = try XCTUnwrap(batches.first { $0.changes.contains { if case .resyncEnded = $0 { return true } else { return false } } })
+        for ref in doomed { XCTAssertTrue(ended.changes.contains(.tombstone(ref.id))) }
+        let minimal = rig.transport.log.filter { $0 == .messagesGet }.count
+        XCTAssertEqual(minimal, 0, "no fetch one by one")
+        await rig.finish()
+    }
+
     func testNewMailDuringAResyncIsStillAnnounced() async throws {
         let clock = ManualGmailClock()
         let gmail = MemoryGmailTransport()

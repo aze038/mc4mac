@@ -512,6 +512,8 @@ extension GmailAccountEngine {
             await markListedLabelsComplete()
             publishIndexChange(ids: [], everything: true)
             Log.info("gmail", "\(account.email): every message is listed")
+            // Ends the progress the listing showed in the status bar.
+            emit(.finished(accountID: accountID))
             backfillTask = nil
             startCacheFill()
         } catch is CancellationError {
@@ -619,7 +621,8 @@ extension GmailAccountEngine {
             state.backfill = backfill
             saveState(force: true)
         }
-        var plans: [GmailChainPlan] = backfill.bands.map { plan($0.chain, run: $0.run, top: $0.top, collects: true) }
+        // All Mail's own ids are not needed afterwards; the labels' are, to find what it skipped.
+        var plans: [GmailChainPlan] = backfill.bands.map { plan($0.chain, run: $0.run, top: $0.top, collects: false) }
         let selected: GmailLabelID? = selectedLabel ?? .inbox
         var labels = labelChains()
         if let selected, let at = labels.firstIndex(of: .label(selected)) { labels.insert(labels.remove(at: at), at: 0) }
@@ -1023,9 +1026,12 @@ extension GmailAccountEngine {
     /// Work the loop looks at every minute: a flood's relistings and end, labels made elsewhere, a
     /// listing to resume, the daily look, and the date anchors after midnight.
     func maintenance(at current: Date) async {
+        // While the first listing runs it settles imported messages itself, and a second listing
+        // of All Mail beside it would give messages two orders: the flood's listings wait for it.
+        let listed = state.backfill?.phase == .complete
         if let step = flood.tick(at: current) {
-            startFloodRelist(final: step == .ended)
-        } else if pendingFloodEnd, relistTask == nil {
+            if listed { startFloodRelist(final: step == .ended) } else if step == .ended { pendingFloodEnd = true }
+        } else if pendingFloodEnd, relistTask == nil, listed {
             pendingFloodEnd = false
             startFloodRelist(final: true)
         }

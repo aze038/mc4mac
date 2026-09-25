@@ -668,6 +668,8 @@ extension GmailAccountEngine {
             Log.warning("gmail", "\(account.email): listed the mailbox again after the history expired: \(result.removed) removed, \(result.added) added",
                         account: account, code: "resync")
             publishIndexChange(ids: [], everything: true)
+            // Ends "Checking … for changes", which the status bar showed while it ran.
+            emit(.finished(accountID: accountID))
             Task { await self.poke(reason: .schedule) }
         } catch is CancellationError {
             return
