@@ -230,8 +230,8 @@ struct ComposeFileDropTarget: NSViewRepresentable {
 /// temporary folder first and handed over as each arrives.
 enum ComposeFileDrop {
     static var draggedTypes: [NSPasteboard.PasteboardType] {
-        var types = DroppedFiles.types.map(NSPasteboard.PasteboardType.init)
-        for type in NSFilePromiseReceiver.readableDraggedTypes.map(NSPasteboard.PasteboardType.init) where !types.contains(type) {
+        var types = DroppedFiles.types.map { NSPasteboard.PasteboardType(rawValue: $0) }
+        for type in NSFilePromiseReceiver.readableDraggedTypes.map({ NSPasteboard.PasteboardType(rawValue: $0) }) where !types.contains(type) {
             types.append(type)
         }
         return types
