@@ -20,6 +20,7 @@ struct SessionState: Codable {
 struct SessionStore {
     let layout: FileLayout
     var stateURL: URL { layout.root.appendingPathComponent("session.json") }
+    /// Where messages being written are kept, one `<id>.json` each, which `UnsentDrafts` looks after.
     var draftsDirectory: URL { layout.root.appendingPathComponent("Drafts", isDirectory: true) }
 
     func save(_ state: SessionState) {
@@ -28,18 +29,5 @@ struct SessionStore {
 
     func load() -> SessionState? {
         AtomicFile.readJSON(SessionState.self, from: stateURL)
-    }
-
-    func saveDraft(_ draft: ComposeDraft) {
-        try? AtomicFile.writeJSON(draft, to: draftsDirectory.appendingPathComponent("\(draft.id.uuidString).json"))
-    }
-
-    func removeDraft(_ id: UUID) {
-        try? FileManager.default.removeItem(at: draftsDirectory.appendingPathComponent("\(id.uuidString).json"))
-    }
-
-    func loadDrafts() -> [ComposeDraft] {
-        let files = (try? FileManager.default.contentsOfDirectory(at: draftsDirectory, includingPropertiesForKeys: nil)) ?? []
-        return files.filter { $0.pathExtension == "json" }.compactMap { AtomicFile.readJSON(ComposeDraft.self, from: $0) }
     }
 }

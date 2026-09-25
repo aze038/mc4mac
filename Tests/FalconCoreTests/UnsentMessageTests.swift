@@ -122,24 +122,236 @@ final class UnsentMessageTests: XCTestCase {
         XCTAssertNil(discarded.undo(at: Date(timeIntervalSince1970: 1_790_000_001)))
     }
 
-    // MARK: Saving to Drafts
+    // MARK: Saving to Drafts, Discard and Undo, across a quit
 
-    private struct Refused: Error {}
-
-    func testTheCopyOnThisMacGoesOnlyOnceTheServerHasTheMessage() async {
-        var steps: [String] = []
-        await UnsentMessage.uploadToDrafts(upload: { steps.append("upload") },
-                                           uploaded: { steps.append("remove local copy") },
-                                           failed: { _ in steps.append("keep") })
-        XCTAssertEqual(steps, ["upload", "remove local copy"])
+    /// A message being written, as ComposeDraft is in the app: what it says, and the copy in
+    /// Drafts it is linked to, if any.
+    private struct Written: Codable, Sendable, Identifiable, Equatable {
+        var id = UUID()
+        var text: String
+        var copy: String?
     }
 
-    func testAFailedUploadKeepsTheMessageOnThisMac() async {
-        var steps: [String] = []
-        await UnsentMessage.uploadToDrafts(upload: { throw Refused() },
-                                           uploaded: { steps.append("remove local copy") },
-                                           failed: { _ in steps.append("keep") })
-        XCTAssertEqual(steps, ["keep"])
+    /// The server's Drafts folder: each copy's text by its id.
+    @MainActor
+    private final class DraftsFolder {
+        var copies: [String: String] = [:]
+        var saves = 0
+
+        /// A save adds a copy in place of the one the message is linked to.
+        func save(_ message: Written) {
+            saves += 1
+            if let copy = message.copy { copies[copy] = nil }
+            copies["saved-\(saves)"] = message.text
+        }
+
+        func delete(_ copy: String) { copies[copy] = nil }
+    }
+
+    /// Holds a save's answer back until the test gives it.
+    private actor Answer {
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        private var given = false
+
+        func wait() async {
+            guard !given else { return }
+            await withCheckedContinuation { waiting.append($0) }
+        }
+
+        func give() {
+            given = true
+            waiting.forEach { $0.resume() }
+            waiting = []
+        }
+    }
+
+    private struct Offline: Error {}
+
+    private func dataDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("UnsentDrafts-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    /// One launch of FalconMail over the files kept in `directory`.
+    @MainActor
+    private func launch(_ directory: URL, _ folder: DraftsFolder) -> UnsentDrafts<Written, String> {
+        let unsent = UnsentDrafts<Written, String>(directory: directory)
+        unsent.deleteCopy = { folder.delete($0) }
+        return unsent
+    }
+
+    private func filesOnThisMac(_ directory: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).sorted()
+    }
+
+    @MainActor
+    func testTheFileOnThisMacStaysUntilTheServerAnswersTheSave() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        let unsent = launch(directory, folder)
+        let message = Written(text: "Figures attached")
+        let answer = Answer()
+        let saving = unsent.save(message) { message in
+            await answer.wait()
+            folder.save(message)
+        }
+        // Its window closes, which lets go of it, while the server has not yet answered.
+        unsent.forget(message.id)
+        await Task.yield()
+        XCTAssertEqual(filesOnThisMac(directory), ["\(message.id.uuidString).json"], "kept on this Mac while the save is under way")
+        XCTAssertTrue(unsent.isSaving(message.id))
+        await answer.give()
+        let failure = await saving.value
+        XCTAssertNil(failure)
+        XCTAssertEqual(Array(folder.copies.values), ["Figures attached"])
+        XCTAssertEqual(filesOnThisMac(directory), [], "gone from this Mac once the server has it")
+    }
+
+    @MainActor
+    func testASaveTheServerRefusesKeepsTheMessageOnThisMac() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        let unsent = launch(directory, folder)
+        let message = Written(text: "Figures attached")
+        let failure = await unsent.save(message) { _ in throw Offline() }.value
+        XCTAssertTrue(failure is Offline)
+        XCTAssertEqual(launch(directory, folder).leftovers(), [message], "the next launch saves it")
+    }
+
+    @MainActor
+    func testAQuitBeforeTheServerAnswersSavesTheMessageExactlyOnceAtTheNextLaunch() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        folder.copies["draft-41"] = "Plan v1"
+        // A draft reopened from Drafts, changed and closed; FalconMail quits before the server
+        // answers. The quit waits for it, but no longer than it allows.
+        let message = Written(text: "Plan v2", copy: "draft-41")
+        let first = launch(directory, folder)
+        let unanswered = first.save(message) { _ in try await Task.sleep(nanoseconds: 3_600_000_000_000) }
+        first.forget(message.id)
+        let finished = await first.finish(within: 0.1)
+        XCTAssertFalse(finished)
+        XCTAssertEqual(filesOnThisMac(directory), ["\(message.id.uuidString).json"])
+        // The process ends with the save still unanswered.
+        unanswered.cancel()
+        _ = await unanswered.value
+
+        let second = launch(directory, folder)
+        let left = second.leftovers()
+        XCTAssertEqual(left, [message], "the next launch finds it, still linked to its copy in Drafts")
+        let saving = second.save(left[0]) { folder.save($0) }
+        XCTAssertEqual(second.leftovers(), [], "one being saved is not left over a second time")
+        let failure = await saving.value
+        XCTAssertNil(failure)
+        XCTAssertEqual(launch(directory, folder).leftovers(), [], "nor at the launch after")
+        XCTAssertEqual(folder.saves, 1, "saved exactly once")
+        XCTAssertEqual(folder.copies, ["saved-1": "Plan v2"], "in place of its old copy, not beside it")
+        XCTAssertEqual(filesOnThisMac(directory), [])
+    }
+
+    @MainActor
+    func testSavesOfOneMessageNeverOvertakeOneAnother() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        let unsent = launch(directory, folder)
+        var message = Written(text: "Plan v1")
+        let answer = Answer()
+        let first = unsent.save(message) { message in
+            await answer.wait()
+            folder.save(message)
+        }
+        message.text = "Plan v2"
+        let second = unsent.save(message) { folder.save($0) }
+        await Task.yield()
+        XCTAssertEqual(folder.saves, 0, "the newer save waits for the one under way")
+        await answer.give()
+        _ = await first.value
+        XCTAssertEqual(filesOnThisMac(directory).count, 1, "the newer content stays on this Mac until it is saved")
+        _ = await second.value
+        XCTAssertEqual(folder.copies["saved-2"], "Plan v2", "the newest content is saved last")
+        XCTAssertEqual(filesOnThisMac(directory), [])
+    }
+
+    @MainActor
+    func testDiscardThenQuitWithinTheUndoWindowLeavesNothingInDraftsOrOnThisMac() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        folder.copies["draft-41"] = "Plan v1"
+        let unsent = launch(directory, folder)
+        let message = Written(text: "Plan v2", copy: "draft-41")
+        unsent.keep(message)
+        unsent.discard(message.id, copy: message.copy)
+        XCTAssertEqual(folder.copies["draft-41"], "Plan v1", "its copy in Drafts stays while Undo is offered")
+        let finished = await unsent.finish(within: 5)
+        XCTAssertTrue(finished)
+        XCTAssertEqual(folder.copies, [:], "nothing in Drafts")
+        XCTAssertEqual(filesOnThisMac(directory), [], "nothing on this Mac")
+        XCTAssertEqual(launch(directory, folder).leftovers(), [], "and nothing comes back at the next launch")
+    }
+
+    @MainActor
+    func testACopyTheQuitCouldNotDeleteGoesAtTheNextLaunchAndTheMessageNeverComesBack() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        folder.copies["draft-41"] = "Plan v1"
+        let first = launch(directory, folder)
+        first.deleteCopy = { _ in throw Offline() }
+        let message = Written(text: "Plan v2", copy: "draft-41")
+        first.keep(message)
+        first.discard(message.id, copy: message.copy)
+        _ = await first.finish(within: 5)
+        XCTAssertEqual(folder.copies["draft-41"], "Plan v1")
+        XCTAssertEqual(filesOnThisMac(directory), ["\(message.id.uuidString).discarded"], "only the marker is on this Mac")
+        // As if a crash had come between writing the marker and taking the message's file away.
+        first.keep(message)
+
+        let second = launch(directory, folder)
+        XCTAssertEqual(second.leftovers(), [], "a discarded message is never saved back to Drafts")
+        let deleted = await Waiting.upTo(5, for: second.deleteDiscarded())
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(folder.copies, [:])
+        XCTAssertEqual(filesOnThisMac(directory), [])
+    }
+
+    @MainActor
+    func testOnceUndoIsOverTheCopyInDraftsIsDeleted() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        folder.copies["draft-41"] = "Plan v1"
+        let unsent = launch(directory, folder)
+        let message = Written(text: "Plan v2", copy: "draft-41")
+        unsent.keep(message)
+        unsent.discard(message.id, copy: message.copy)
+        unsent.undoEnded(message.id)
+        let deleted = await unsent.finish(within: 5)
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(folder.copies, [:])
+        XCTAssertEqual(filesOnThisMac(directory), [])
+    }
+
+    @MainActor
+    func testUndoWithinTheWindowKeepsTheSavedCopyAndTheLinkToIt() async {
+        let directory = dataDirectory()
+        let folder = DraftsFolder()
+        folder.copies["draft-41"] = "Plan v1"
+        let unsent = launch(directory, folder)
+        let message = Written(text: "Plan v2", copy: "draft-41")
+        unsent.keep(message)
+        unsent.discard(message.id, copy: message.copy)
+        unsent.undoDiscard(message)
+        // The window's end arriving late, and a quit, change nothing once Undo was pressed.
+        unsent.undoEnded(message.id)
+        let finished = await unsent.finish(within: 5)
+        XCTAssertTrue(finished)
+        XCTAssertEqual(folder.copies, ["draft-41": "Plan v1"], "the saved copy stays")
+        XCTAssertEqual(filesOnThisMac(directory), ["\(message.id.uuidString).json"], "and the message is on this Mac again")
+        let reopened = launch(directory, folder).leftovers()
+        XCTAssertEqual(reopened.first?.copy, "draft-41", "still linked to its copy")
+        // Closed again, it takes that copy's place rather than adding a second.
+        let failure = await unsent.save(message) { folder.save($0) }.value
+        XCTAssertNil(failure)
+        XCTAssertEqual(folder.copies, ["saved-1": "Plan v2"])
     }
 
     func testOpeningADraftAlreadyBeingWrittenBringsThatOneForward() {

@@ -132,6 +132,9 @@ final class AppModel {
     let notifications = NotificationService()
     let updates = UpdateManager()
     let session: SessionStore
+    /// Messages being written, kept on this Mac until Drafts has them, and discarded ones whose
+    /// copy in Drafts is still to go.
+    @ObservationIgnored let unsentDrafts: UnsentDrafts<ComposeDraft, MessageSummary>
     let moveTargets: MoveTargets
     /// A variable only so the debug snapshots can show stand-in signatures.
     var signatures: SignatureLibrary
@@ -318,7 +321,7 @@ final class AppModel {
             let old = draftsStorage
             draftsStorage = newValue
             for (id, d) in newValue where old[id] != d { scheduleDraftSave(id) }
-            for id in old.keys where newValue[id] == nil { pendingDraftSaves[id]?.cancel(); pendingDraftSaves[id] = nil; session.removeDraft(id) }
+            for id in old.keys where newValue[id] == nil { pendingDraftSaves[id]?.cancel(); pendingDraftSaves[id] = nil; unsentDrafts.forget(id) }
         }
     }
 
@@ -468,7 +471,7 @@ final class AppModel {
         pendingDraftSaves[id] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled, let self, let d = self.draftsStorage[id] else { return }
-            self.session.saveDraft(d)
+            self.unsentDrafts.keep(d)
             self.pendingDraftSaves[id] = nil
         }
     }
@@ -493,6 +496,7 @@ final class AppModel {
         self.contacts = ContactStore(layout: layout)
         self.archives = ArchiveRecordStore(layout: layout)
         self.session = SessionStore(layout: layout)
+        self.unsentDrafts = UnsentDrafts(directory: session.draftsDirectory)
         self.moveTargets = MoveTargets(layout: layout)
         self.signatures = SignatureLibrary(store: SignatureStore(layout: layout))
     }
@@ -513,7 +517,9 @@ final class AppModel {
         play(soundGate.launched())
         do { try await store.load() } catch { showAlert(for: error) }
         restoredState = session.load()
-        for d in session.loadDrafts() { drafts[d.id] = d }
+        unsentDrafts.isOpen = { [weak self] id in self?.draftsStorage[id] != nil }
+        unsentDrafts.deleteCopy = { [weak self] row in try await self?.deleteStoredCopy(row) }
+        for d in unsentDrafts.leftovers() { drafts[d.id] = d }
         if let s = restoredState {
             selection = s.selection ?? .unified
             searchText = s.searchText
@@ -534,6 +540,8 @@ final class AppModel {
         listen()
         watchForWake()
         await coordinator.startAll()
+        // Copies in Drafts of messages discarded just before the last quit, which it could not delete.
+        unsentDrafts.deleteDiscarded()
         await reloadMessages()
         if let s = restoredState {
             let ids = Set(s.selectedMessageIDs)
@@ -622,14 +630,31 @@ final class AppModel {
     func prepareForRelaunch() async {
         saveSessionNow()
         signatures.saveNow()
-        for d in drafts.values { session.saveDraft(d) }
+        await finishDrafts()
         await store.flushAll()
         let wind = Task {
             await self.flushPendingActions()
             await self.coordinator.stopAll()
         }
-        let timeout = Task { _ = try? await Task.sleep(nanoseconds: 2_000_000_000) }
-        _ = await Task.select(wind, timeout)
+        _ = await Waiting.upTo(2, for: [wind])
+    }
+
+    /// How long a quit waits for messages closed just before it to reach Drafts.
+    static let draftSaveWait: TimeInterval = 5
+
+    /// Before a quit or a relaunch: every message being written is kept on this Mac, the quit
+    /// waits up to five seconds for those closed just before it to reach Drafts, and the copies
+    /// in Drafts of discarded messages go, Undo being over. What does not finish in time is
+    /// finished at the next launch: a save that was not answered is saved once more, and a copy
+    /// not deleted is deleted then.
+    private func finishDrafts() async {
+        for d in drafts.values { unsentDrafts.keep(d) }
+        discardExpiry?.cancel()
+        discardExpiry = nil
+        let finished = await unsentDrafts.finish(within: AppModel.draftSaveWait)
+        if !finished { Log.info("app", "quit before every draft reached Drafts; the rest go at the next launch") }
+        // A save refused meanwhile hands its message back, to be kept for the next launch.
+        for d in drafts.values { unsentDrafts.keep(d) }
     }
 
     private func listen() {
@@ -1840,33 +1865,44 @@ final class AppModel {
         }
     }
 
+    /// Saves the message closed as `id` to its account's Drafts folder. It stays on this Mac until
+    /// the server has it, so a quit or a crash while it uploads leaves it for the next launch, and
+    /// a save that fails hands it back to be kept and tried again.
     func saveDraftToServer(_ id: UUID) {
         guard let draft = drafts[id] else { return }
-        drafts[id] = nil
-        guard !draft.isBlank, let account = accounts.first(where: { $0.id == draft.accountID }) else { return }
-        // Written back at once, as taking it out of `drafts` deleted it: a quit just after closing
-        // it, or a crash, must not lose it while it uploads.
-        session.saveDraft(draft)
-        Task {
-            guard let folder = folder(accountID: account.id, role: .drafts), let syncer = await coordinator.syncer(for: account.id) else {
-                drafts[id] = draft
-                return
-            }
-            await UnsentMessage.uploadToDrafts(
-                upload: {
-                    let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
-                    try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
-                },
-                uploaded: {
-                    if drafts[id] == nil { session.removeDraft(id) }
-                    await purgeStoredDraft(draft)
-                    statusText = "Draft saved to \(folder.name)"
-                },
-                failed: { error in
-                    drafts[id] = draft
-                    showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
-                })
+        guard !draft.isBlank, let account = accounts.first(where: { $0.id == draft.accountID }) else {
+            drafts[id] = nil
+            return
         }
+        let saving = unsentDrafts.save(draft) { [weak self] draft in
+            guard let self else { throw CancellationError() }
+            try await self.uploadDraft(draft, account: account)
+        }
+        // Its file on this Mac stays while the save is under way.
+        drafts[id] = nil
+        Task {
+            switch await saving.value {
+            case nil:
+                statusText = "Draft saved to \(folder(accountID: account.id, role: .drafts)?.name ?? "Drafts")"
+            case is DraftsUnavailable:
+                drafts[id] = draft
+            case let error?:
+                drafts[id] = draft
+                showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
+            }
+        }
+    }
+
+    /// One save of `draft` to its account's Drafts folder. The copy it was reopened from goes as
+    /// soon as the new one is there, before the save counts as done, so that the message is
+    /// replaced in Drafts rather than added beside itself, even by a quit just after.
+    private func uploadDraft(_ draft: ComposeDraft, account: AccountInfo) async throws {
+        guard let folder = folder(accountID: account.id, role: .drafts), let syncer = await coordinator.syncer(for: account.id) else {
+            throw DraftsUnavailable()
+        }
+        let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
+        try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
+        await purgeStoredDraft(draft)
     }
 
     /// Removes the stored copy `draft` was opened from, now that it is saved again or sent. Only
@@ -1874,10 +1910,22 @@ final class AppModel {
     /// Drafts was renumbered the UID may name another draft, which is left alone, as is the copy
     /// of a draft kept by an earlier build that did not record its row.
     func purgeStoredDraft(_ draft: ComposeDraft) async {
-        guard let opened = UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID),
-              let stored = await store.currentRow(of: opened) else { return }
+        guard let opened = UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID) else { return }
+        do {
+            try await deleteStoredCopy(opened)
+        } catch {
+            Log.info("action", "\(accountName(opened.accountID)): the draft's earlier copy stays in Drafts: \(error.localizedDescription)")
+        }
+    }
+
+    /// Deletes `row`, a message's copy in Drafts, while its UID still names that message. It
+    /// returns once the account has taken the delete in hand, which it carries out even across a
+    /// quit. A copy already gone, or of an account since removed, needs nothing more.
+    func deleteStoredCopy(_ row: MessageSummary) async throws {
+        guard accounts.contains(where: { $0.id == row.accountID }), let stored = await store.currentRow(of: row) else { return }
+        guard let syncer = await coordinator.syncer(for: row.accountID) else { throw DraftsUnavailable() }
         removeFromList([stored])
-        perform([stored], announcing: false) { try await $0.purge($1) }
+        try await syncer.purge([stored])
     }
 
     /// Closes, as closing any message not yet sent does, the drafts that no compose window or tab
@@ -2126,10 +2174,11 @@ final class AppModel {
         serverSearchDebounce?.cancel()
         serverSearchDebounce = nil
         cancelServerSearch()
+        // Before the actions are flushed, which sends the deletes of discarded messages' copies too.
+        await finishDrafts()
         await flushPendingActions()
         saveSessionNow()
         signatures.saveNow()
-        for d in drafts.values { session.saveDraft(d) }
         await store.flushAll()
         await coordinator.stopAll()
         Log.flush()
@@ -2141,3 +2190,7 @@ extension Outbox {
         undoWindow = seconds
     }
 }
+
+/// The account's Drafts folder cannot be reached for now, as while it is being set up or its
+/// syncing is off: the message stays on this Mac, to be saved later, and nothing is said.
+private struct DraftsUnavailable: Error {}

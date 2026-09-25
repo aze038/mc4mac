@@ -372,22 +372,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let model else { return .terminateNow }
         Task { @MainActor in
             let shutdown = Task { await model.shutdown() }
-            let timeout = Task { _ = try? await Task.sleep(nanoseconds: 3_000_000_000) }
-            _ = await Task.select(shutdown, timeout)
+            // Up to five seconds for messages closed just before the quit to reach Drafts, and
+            // three for everything else.
+            _ = await Waiting.upTo(AppModel.draftSaveWait + 3, for: [shutdown])
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
-    }
-}
-
-extension Task where Success == Void, Failure == Never {
-    static func select(_ a: Task<Void, Never>, _ b: Task<Void, Never>) async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await a.value }
-            group.addTask { await b.value }
-            await group.next()
-            group.cancelAll()
-        }
     }
 }
 

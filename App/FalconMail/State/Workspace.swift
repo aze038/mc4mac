@@ -98,35 +98,45 @@ extension AppModel {
         }
     }
 
-    /// Discard, from the compose ribbon, the Message menu or a tab's bar: the message closes
-    /// and its copies go, the one kept on this Mac for the next launch and the one in Drafts it
-    /// was reopened from, while other drafts stay. It is held in memory for as long as the
-    /// mailbox window offers to bring it back. `closesWindow` is false when the compose view
+    /// Discard, from the compose ribbon, the Message menu or a tab's bar: the message closes and
+    /// its copy on this Mac goes at once, while other drafts stay. It is held in memory for as long
+    /// as the mailbox window offers to bring it back, and the copy in Drafts it was reopened from
+    /// stays until then, marked to go, so that Undo brings it back still linked to that copy. Once
+    /// Undo is over the copy is deleted; a quit before then deletes it at the quit or at the next
+    /// launch, and never saves the message back. `closesWindow` is false when the compose view
     /// closes itself.
     func discardCompose(_ id: UUID, closesWindow: Bool = true) {
         guard let draft = drafts[id] else { return }
+        let now = Date()
+        // Only the message discarded last can be brought back, so Undo is over for the one before.
+        if let earlier = discarded.held { unsentDrafts.undoEnded(earlier.draft.id) }
+        unsentDrafts.discard(id, copy: UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID), at: now)
         drafts[id] = nil
-        Task { await purgeStoredDraft(draft) }
-        // Its copy in Drafts is going, so one brought back is the only copy there is.
-        var kept = draft
-        kept.sourceMessage = nil
-        kept.sourceMessageID = nil
-        let held = discarded.discard(kept, now: Date())
+        let held = discarded.discard(draft, now: now)
         discardExpiry?.cancel()
         discardExpiry = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(DiscardedMessage<ComposeDraft>.undoWindow * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            self?.discarded.letGo(held.id)
+            guard !Task.isCancelled, let self else { return }
+            self.discarded.letGo(held.id)
+            self.unsentDrafts.undoEnded(id)
         }
         if (tabs + minimizedTabs).contains(.compose(id)) { closeTab(.compose(id)) }
         if closesWindow { WindowTray.shared.close(.compose(id)) }
     }
 
-    /// Undo on the banner: the message discarded last opens again as it was.
+    /// Undo on the banner: the message discarded last opens again as it was, still linked to its
+    /// copy in Drafts, which is no longer deleted. It is kept on this Mac again first, so it is
+    /// never in neither place.
     func undoDiscard() {
         discardExpiry?.cancel()
         discardExpiry = nil
-        guard let draft = discarded.undo(at: Date()) else { return }
+        let held = discarded.held
+        guard let draft = discarded.undo(at: Date()) else {
+            // Too late: Undo is over, and its copy goes as it would have.
+            if let held { unsentDrafts.undoEnded(held.draft.id) }
+            return
+        }
+        unsentDrafts.undoDiscard(draft)
         openCompose(draft, origin: .undoneDiscard)
     }
 
