@@ -148,6 +148,9 @@ final class FakeGmailMailbox: @unchecked Sendable {
                 answer = get(segments[1], query)
             case .attachmentsGet:
                 answer = attachment(segments[1], segments[3])
+            default:
+                // The path above names only the read endpoints this fake serves.
+                answer = (404, ["error": ["code": 404, "message": "Not Found"]])
             }
             let response = respond(url, answer.0, answer.1)
             if answer.0 == 200 {

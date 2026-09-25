@@ -1,14 +1,27 @@
 import Foundation
 
-/// The Gmail API calls FalconMail makes, with the quota units each costs.
+/// The Gmail API calls FalconMail makes, with the quota units each costs. The prices are Google's
+/// for projects created from 1 May 2026, which pay four times the old price for reading a
+/// message, a thread or an attachment.
 public enum GmailMethod: String, Sendable, CaseIterable, Hashable {
-    case profile, labelsList, messagesList, messagesGet, attachmentsGet
+    case profile, labelsList, labelsGet, labelsCreate, sendAsList
+    case messagesList, messagesGet, attachmentsGet, threadsGet, historyList
+    case messagesModify, messagesBatchModify, messagesBatchDelete, messagesTrash, messagesUntrash
+    case messagesSend, messagesImport, messagesInsert
+    case draftsCreate, draftsUpdate, draftsDelete, draftsList
 
     public var units: Int {
         switch self {
-        case .profile, .labelsList: return 1
-        case .messagesList, .attachmentsGet: return 5
-        case .messagesGet: return 20
+        case .profile, .labelsList, .labelsGet, .sendAsList: return 1
+        case .historyList: return 2
+        case .labelsCreate, .messagesList, .messagesModify, .messagesUntrash, .draftsList: return 5
+        case .draftsCreate, .draftsDelete: return 10
+        case .draftsUpdate: return 15
+        case .messagesGet, .attachmentsGet, .messagesTrash: return 20
+        case .messagesImport, .messagesInsert: return 25
+        case .threadsGet: return 40
+        case .messagesBatchModify, .messagesBatchDelete: return 50
+        case .messagesSend: return 100
         }
     }
 }

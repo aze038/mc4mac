@@ -11,6 +11,15 @@ public struct GmailLabel: Decodable, Sendable, Hashable {
     public var id: String
     public var name: String
     public var type: String?
+    /// `labelShow`, `labelShowIfUnread` or `labelHide`: whether Gmail lists it among the labels.
+    public var labelListVisibility: String?
+    /// `show` or `hide`: whether Gmail lists it on its messages.
+    public var messageListVisibility: String?
+    /// Counts, which only `labels.get` gives.
+    public var messagesTotal: Int?
+    public var messagesUnread: Int?
+    public var threadsTotal: Int?
+    public var threadsUnread: Int?
 }
 
 public struct GmailMessageRef: Decodable, Sendable, Hashable {
@@ -57,6 +66,8 @@ public struct GmailMessage: Decodable, Sendable, Hashable {
     public var internalDate: String?
     public var sizeEstimate: Int?
     public var payload: GmailPart?
+    /// The whole message in base64url, in a `format=raw` answer only.
+    public var raw: String?
 
     public func header(_ name: String) -> String? { payload?.header(name) }
 

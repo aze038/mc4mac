@@ -23,6 +23,21 @@ public struct GoogleAPIError: Error, Sendable, Equatable {
         case temporary
         /// No network.
         case offline
+        /// 404 on `history.list`: Gmail no longer keeps changes from that far back.
+        case historyExpired
+        /// 403 `domainPolicy`: the Workspace administrator has turned off Gmail access for apps.
+        case domainPolicy
+        /// 400 `failedPrecondition`: Gmail is not turned on for the user.
+        case gmailNotEnabled
+        /// 429 on a send: the account's daily sending limit.
+        case sendingLimit
+        /// 429 for the API's download allowance, which all of the user's API clients share.
+        case downloadLimit
+        /// 429 for the API's upload allowance, which all of the user's API clients share, an
+        /// import in another app among them.
+        case uploadLimit
+        /// 413, or `payloadTooLarge`: more than Gmail takes in one message.
+        case tooLarge
         case other
     }
 
@@ -143,6 +158,13 @@ extension GoogleAPIError: LocalizedError {
         case .notFound: return "This message was moved or deleted on another device."
         case .temporary: return "Gmail had a temporary problem. Try again in a moment."
         case .offline: return "You're offline, and this message is not kept on this Mac."
+        case .historyExpired: return "Gmail no longer keeps the changes since FalconMail last looked, so it is listing the mailbox again."
+        case .domainPolicy: return "The Workspace administrator has turned off Gmail access for apps like FalconMail."
+        case .gmailNotEnabled: return "Gmail isn't turned on for this account."
+        case .sendingLimit: return "Gmail's daily sending limit for this account was reached. The message stays in the Outbox."
+        case .downloadLimit: return "FalconMail has paused downloading from Gmail for a while, to stay within Gmail's daily limit."
+        case .uploadLimit: return "Gmail has paused uploads for this account for a while; an import may be using the allowance."
+        case .tooLarge: return "Gmail can't send more than 25 MB of attachments in one message. Remove some, or share them from Google Drive."
         case .other: return "Gmail refused the request. Details are in the log."
         }
     }
@@ -160,7 +182,13 @@ extension GoogleAPIError: LocalizedError {
         case .needsSignIn: return "\(email) needs you to sign in again; showing matches on this Mac."
         case .clientRejected: return "Google didn't accept FalconMail's sign-in for \(email); showing matches on this Mac."
         case .temporary, .notFound: return "Gmail had a temporary problem; showing matches on this Mac for \(email)."
-        case .other: return "Gmail refused the search for \(email); showing matches on this Mac. Details are in the log."
+        case .domainPolicy:
+            return "The Workspace administrator has turned off Gmail access for apps like FalconMail for \(email); showing matches on this Mac."
+        case .gmailNotEnabled: return "Gmail isn't turned on for \(email); showing matches on this Mac."
+        case .downloadLimit:
+            return "FalconMail has paused downloading from Gmail for \(email), to stay within Gmail's daily limit; showing matches on this Mac."
+        case .historyExpired, .sendingLimit, .uploadLimit, .tooLarge, .other:
+            return "Gmail refused the search for \(email); showing matches on this Mac. Details are in the log."
         }
     }
 

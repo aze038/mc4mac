@@ -69,7 +69,7 @@ final class GmailAPITests: XCTestCase {
         let full = try await client.full(id: message.id)
         let attachmentID = try XCTUnwrap(full.payload?.parts?.last?.body?.attachmentId)
         _ = try await client.attachment(messageID: message.id, attachmentID: attachmentID)
-        let expected: [GmailMethod: Int] = [.profile: 1, .labelsList: 1, .messagesList: 5, .messagesGet: 40, .attachmentsGet: 5]
+        let expected: [GmailMethod: Int] = [.profile: 1, .labelsList: 1, .messagesList: 5, .messagesGet: 40, .attachmentsGet: 20]
         XCTAssertEqual(mailbox.units, expected)
         let spent = await client.limiter.spent
         XCTAssertEqual(spent, expected)

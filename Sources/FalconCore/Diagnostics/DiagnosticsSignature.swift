@@ -112,6 +112,13 @@ public enum DiagnosticsSignature {
         case .notFound: return "messageGone"
         case .temporary: return "temporary"
         case .offline: return "offline"
+        case .historyExpired: return "historyExpired"
+        case .domainPolicy: return "domainPolicy"
+        case .gmailNotEnabled: return "gmailNotEnabled"
+        case .sendingLimit: return "sendingLimit"
+        case .downloadLimit: return "downloadPaused"
+        case .uploadLimit: return "uploadPaused"
+        case .tooLarge: return "tooLarge"
         case .other: return refusal.httpStatus > 0 ? httpCode(refusal.httpStatus) : "serverRefused"
         }
     }
