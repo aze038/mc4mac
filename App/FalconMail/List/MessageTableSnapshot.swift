@@ -42,6 +42,86 @@ enum MessageTableSnapshot {
             }
         }
         timing(to: "\(directory)/table-timing.txt")
+        stored(to: directory)
+    }
+
+    /// An account that is not Google, through the same table: a made-up Inbox in a store in a
+    /// temporary folder, its rows' text asked for as the table scrolls, and a message arriving
+    /// while it is shown. What happened is written down beside the pictures.
+    private static func stored(to directory: String) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("FalconMailTableSnapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var report: [String] = []
+        let store = MailStore(layout: FileLayout(root: root))
+        let controller = ListController()
+        var inboxID: UUID?
+        var accountID = UUID()
+        let ready = expectation {
+            do {
+                // Written as a synced account's files are, then read as at a launch.
+                let layout = FileLayout(root: root)
+                let account = AccountInfo(email: "sam@example.org", displayName: "Sam", provider: "imap",
+                                          imapHost: "example.invalid", smtpHost: "example.invalid")
+                accountID = account.id
+                let inbox = FolderInfo(accountID: account.id, path: "INBOX", name: "Inbox", delimiter: "/", role: .inbox,
+                                       attributes: [], isSelectable: true)
+                try layout.ensureDirectory(layout.accountDirectory(account.id))
+                try AtomicFile.writeJSON([account], to: layout.accountsFile)
+                try AtomicFile.writeJSON([inbox], to: layout.foldersFile(account.id))
+                try await store.load()
+                inboxID = inbox.id
+                let now = Date()
+                var messages: [MessageSummary] = []
+                for i in 0..<12 {
+                    var message = MessageSummary(
+                        accountID: account.id, folderID: inbox.id, uid: UInt32(i + 1), messageID: "<\(i)@example.org>", inReplyTo: "",
+                        references: [], subject: i < 3 ? "Quarterly figures" : "Note \(i)",
+                        from: EmailAddress(name: ["Ruth Ade", "Ken Ito", "Lea Moss"][i % 3], address: "p\(i % 3)@example.org"),
+                        to: [EmailAddress(address: account.email)], cc: [], date: now.addingTimeInterval(-Double(i) * 3_000),
+                        flags: i % 4 == 0 ? [] : [.seen], size: 2_000, snippet: "Words of message \(i)", hasAttachments: i == 5)
+                    if i < 3 { message.threadKey = "<0@example.org>" }
+                    messages.append(message)
+                }
+                try await store.folderStore(inbox).upsert(messages)
+            } catch {
+                report.append("could not make the store: \(error.localizedDescription)")
+            }
+        }
+        guard ready, let inboxID else {
+            report.append("the store was not ready")
+            try? report.joined(separator: "\n").write(toFile: "\(directory)/table-stored.txt", atomically: true, encoding: .utf8)
+            return
+        }
+        let source = StoreListSource(store: store)
+        let view = ListView(scope: .folder(inboxID))
+        _ = expectation { await controller.show(view, from: source) }
+        report.append("rows shown: \(controller.rowCount), Items: \(controller.itemCount)")
+        controller.scrolled(visible: 0..<controller.rowCount)
+        _ = expectation {
+            for _ in 0..<100 where controller.content.count < controller.rowCount { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        report.append("rows with their text: \(controller.content.count) of \(controller.rowCount)")
+        report.append("first row: \(controller.rowContent(at: 0)?.conversation?.messageCount ?? 1) messages, \(controller.record(at: 0)?.displayKind == .conversation ? "a conversation" : "one message")")
+        _ = expectation {
+            let arrived = MessageSummary(accountID: accountID, folderID: inboxID, uid: 99, messageID: "<99@example.org>", inReplyTo: "",
+                                         references: [], subject: "Just arrived", from: EmailAddress(name: "New Sender", address: "n@example.org"),
+                                         to: [], cc: [], date: Date(), flags: [], size: 100, hasAttachments: false)
+            try? await store.folderStore(store.folder(inboxID)!).upsert([arrived])
+            await store.notifyMessagesChanged(folderID: inboxID)
+            for _ in 0..<100 where controller.itemCount < 13 { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        report.append("after a message arrived: rows \(controller.rowCount), Items \(controller.itemCount), top row \(controller.key(at: 0)?.stringValue.hasSuffix(":99") == true ? "is the new message" : "is not the new message")")
+        controller.scrolled(visible: 0..<controller.rowCount)
+        _ = expectation { try? await Task.sleep(nanoseconds: 200_000_000) }
+        MessageTableView.snapshotHasKeyboard = true
+        let table = MessageTableView(controller: controller, showsPreview: true)
+            .frame(width: OL.listWidth, height: 600)
+            .background(Color(nsColor: OLListColor.background))
+        capture(NSHostingView(rootView: table), size: NSSize(width: OL.listWidth, height: 600), appearance: .darkAqua,
+                select: 0, to: "\(directory)/table-stored-dark.png")
+        MessageTableView.snapshotHasKeyboard = false
+        controller.stop()
+        try? (report.joined(separator: "\n") + "\n").write(toFile: "\(directory)/table-stored.txt", atomically: true, encoding: .utf8)
     }
 
     /// How long a frame's worth of rows takes to lay out during a fling over 200,000: the table
