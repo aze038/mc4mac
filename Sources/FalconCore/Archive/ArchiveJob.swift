@@ -35,8 +35,17 @@ public struct ArchiveOutcome: Sendable {
     public var keptOnServer: [String]
 }
 
-/// What an archive job needs of its account; `AccountSyncer.archiveSource` gives it.
-public struct ArchiveSource: Sendable {
+/// Where an archive job reads an account's mail from, and how it takes archived mail off the
+/// server: an IMAP account's folders (`ArchiveSource`), or a switched Google account's labels
+/// through the Gmail API (`GmailArchiveSource`). Each lists, downloads and removes in its own
+/// terms; the archive written is the same, and only messages that went into it are removed.
+public protocol ArchiveMailSource: Sendable {
+    func archive(request: ArchiveRequest, account: AccountInfo, storage: ArchiveStorage,
+                 progress: @escaping @Sendable (ArchiveProgress) -> Void) async throws -> ArchiveOutcome
+}
+
+/// What an archive job needs of an IMAP account; `AccountSyncer.archiveSource` gives it.
+public struct ArchiveSource: ArchiveMailSource {
     /// Opens and signs in a connection for the job alone.
     public var connect: @Sendable () async throws -> IMAPClient
     /// Holds the job while the account may not download `bytes` more in the background, or
@@ -52,9 +61,20 @@ public struct ArchiveSource: Sendable {
         self.allowance = allowance
         self.failed = failed
     }
+
+    public func archive(request: ArchiveRequest, account: AccountInfo, storage: ArchiveStorage,
+                        progress: @escaping @Sendable (ArchiveProgress) -> Void) async throws -> ArchiveOutcome {
+        try await ArchiveJob.run(request: request, account: account, source: self, storage: storage, progress: progress)
+    }
 }
 
 public enum ArchiveJob {
+    /// Runs the job on whichever source the account's engine gives.
+    public static func run(request: ArchiveRequest, account: AccountInfo, source: any ArchiveMailSource, storage: ArchiveStorage,
+                           progress: @escaping @Sendable (ArchiveProgress) -> Void) async throws -> ArchiveOutcome {
+        try await source.archive(request: request, account: account, storage: storage, progress: progress)
+    }
+
     /// Every step runs as one unit under the UIDVALIDITY the folder had when it was listed, so
     /// a folder renumbered during a long job is never fetched from, or purged, by stale UIDs.
     /// Only messages that went into the archive are ever removed from the server. Before each
