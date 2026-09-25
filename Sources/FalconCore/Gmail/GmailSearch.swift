@@ -432,3 +432,156 @@ public actor GmailAccountSearch: MailAccountSearch {
         }
     }
 }
+
+// MARK: - Searching a Google account through its engine
+
+/// When a search in the box costs anything. Each keystroke matches the rows already loaded, at
+/// once and for nothing. After a pause of 0.6 s with three or more characters, Gmail is asked for
+/// the matching ids only, 5 units, and the rows already known show. The text of the other hits is
+/// fetched on Return, or after 1.5 s without typing. So a slowly typed "freight invoice march"
+/// costs a few lookups of ids, never three full searches.
+public struct SearchTypingPlan: Sendable {
+    public static let idsAfter: TimeInterval = 0.6
+    public static let rowsAfter: TimeInterval = 1.5
+    public static let shortest = 3
+
+    public enum Step: Equatable, Sendable {
+        /// Match the rows already loaded, locally.
+        case matchLocally(String)
+        /// Ask Gmail for the ids of the hits.
+        case lookUpIDs(String)
+        /// Fetch the text of hits not known yet.
+        case fetchRows(String)
+    }
+
+    private var text = ""
+    private var typedAt: TimeInterval?
+    private var lookedUp: String?
+    private var fetched: String?
+
+    public init() {}
+
+    /// The search box now reads `text`.
+    public mutating func typed(_ text: String, at time: TimeInterval) -> [Step] {
+        self.text = text
+        typedAt = time
+        return [.matchLocally(text)]
+    }
+
+    /// Time has passed; what the pause since the last keystroke calls for.
+    public mutating func tick(at time: TimeInterval) -> [Step] {
+        guard let typedAt else { return [] }
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= SearchTypingPlan.shortest else { return [] }
+        var steps: [Step] = []
+        if time - typedAt >= SearchTypingPlan.idsAfter, lookedUp != query {
+            lookedUp = query
+            steps.append(.lookUpIDs(query))
+        }
+        if time - typedAt >= SearchTypingPlan.rowsAfter, fetched != query {
+            fetched = query
+            steps.append(.fetchRows(query))
+        }
+        return steps
+    }
+
+    /// Return: the rows now, whatever the pause.
+    public mutating func submitted(at time: TimeInterval) -> [Step] {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        var steps: [Step] = []
+        if lookedUp != query {
+            lookedUp = query
+            steps.append(.lookUpIDs(query))
+        }
+        if fetched != query {
+            fetched = query
+            steps.append(.fetchRows(query))
+        }
+        return steps
+    }
+
+    /// When `tick` next has something to do; nil when nothing waits.
+    public var nextDeadline: TimeInterval? {
+        guard let typedAt else { return nil }
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= SearchTypingPlan.shortest else { return nil }
+        if lookedUp != query { return typedAt + SearchTypingPlan.idsAfter }
+        if fetched != query { return typedAt + SearchTypingPlan.rowsAfter }
+        return nil
+    }
+}
+
+/// A search of one switched Google account. Its hits are the index's own messages, so they show
+/// as the view `.search(id)` with their flags and folders from the index, and every action works
+/// on them; the read-only rows of the old search are not used for such an account. Looking up
+/// costs 5 units a page of ids; the text of hits comes as any row's does, from the Mac or in a
+/// landing of at most 25.
+public actor GmailEngineSearch {
+    public let id: UUID
+    public let query: String
+    private let source: GmailListSource
+    private let store: any GmailStore
+    private let transport: any GmailTransport
+    private let label: GmailLabelID?
+    private let pageSize: Int
+    private var hits: [GmailMessageID] = []
+    private var pageToken: String?
+    private var listed = false
+    /// Why the hits came from the messages kept on the Mac, when they did.
+    public private(set) var fallback: GoogleAPIError?
+
+    /// `label` limits the search to one folder; nil searches the whole account, as Archive does.
+    public init(id: UUID = UUID(), query: String, source: GmailListSource, store: any GmailStore, transport: any GmailTransport,
+                label: GmailLabelID? = nil, pageSize: Int = 100) {
+        self.id = id
+        self.query = query
+        self.source = source
+        self.store = store
+        self.transport = transport
+        self.label = label
+        self.pageSize = pageSize
+    }
+
+    public var hasMore: Bool { !listed || pageToken != nil }
+    public var hitIDs: [GmailMessageID] { hits }
+
+    /// The next page of ids, newest first, which the view then shows. Offline, or while Gmail has
+    /// asked FalconMail to wait, the messages kept on the Mac are searched instead.
+    @discardableResult
+    public func lookUp() async -> [GmailMessageID] {
+        guard hasMore, fallback == nil else { return hits }
+        let spamTrash = label == .spam || label == .trash
+        let request = GmailListQuery(labels: label.map { [$0] } ?? [], query: query, includeSpamTrash: spamTrash,
+                                     maxResults: pageSize, pageToken: pageToken)
+        do {
+            let page = try await transport.list(request, work: .interactive)
+            listed = true
+            pageToken = page.nextPageToken
+            let known = Set(hits)
+            hits += page.refs.map(\.id).filter { !known.contains($0) }
+        } catch let error as GoogleAPIError {
+            fallback = error
+            listed = true
+            pageToken = nil
+            hits = await store.searchCached(query, limit: 1_000)
+        } catch {
+            return hits
+        }
+        await source.index.setSearchHits(hits, search: id, account: source.accountID)
+        return hits
+    }
+
+    /// The text of the first hits not known yet, as rows on screen.
+    public func fetchRows(limit: Int = RowFetchScheduler.visibleBatch) async {
+        if !listed { await lookUp() }
+        let keys = hits.prefix(limit).map { RowKey.gmail(account: source.accountID, id: $0) }
+        let view = ListView(scope: .search(id))
+        _ = await source.build(view)
+        source.requestRows(Array(keys), priority: .visible)
+    }
+
+    public func end() async {
+        await source.index.endSearch(id)
+    }
+}
