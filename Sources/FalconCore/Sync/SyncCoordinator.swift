@@ -337,13 +337,13 @@ public actor SyncCoordinator {
         guard let probe, probes[account.id] == nil else { return }
         let files = GmailFiles(layout: store.layout, accountID: account.id)
         probes[account.id] = Task(priority: .utility) { [weak self] in
-            let findings = await probe(account, assembly)
-            guard !Task.isCancelled else { return }
-            GmailMigrationFile(files: files).update { record in
-                record.probeRanAt = Date()
-                record.probe = findings
-            }
-            if let findings {
+            // A probe that could not finish, as when the Mac went offline, runs again at the
+            // engine's next start; one that did never runs again.
+            if let findings = await probe(account, assembly), !Task.isCancelled {
+                GmailMigrationFile(files: files).update { record in
+                    record.probeRanAt = Date()
+                    record.probe = findings
+                }
                 Log.info("probe", "\(account.email): \(findings.logLine)")
                 let before = GmailEngineSettings()
                 let after = findings.adapted(before)

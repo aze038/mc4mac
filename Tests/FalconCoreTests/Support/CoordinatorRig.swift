@@ -63,6 +63,9 @@ final class CoordinatorRig: @unchecked Sendable {
     let tokens: TokenStore
     private let lock = NSLock()
     private var fakes: [UUID: FakeGmail] = [:]
+    private var settingsGiven: [UUID: GmailEngineSettings] = [:]
+    /// The read-only probe the coordinator runs once per account; none unless a test gives one.
+    var probe: GmailProbeRunner?
     private(set) var coordinator: SyncCoordinator!
     private(set) var outbox: Outbox!
     private var listener: Task<Void, Never>?
@@ -110,6 +113,11 @@ final class CoordinatorRig: @unchecked Sendable {
 
     private func fake(_ id: UUID) -> FakeGmail? { lock.withLock { fakes[id] } }
 
+    /// The settings the coordinator last gave the account's engine.
+    func settings(of account: AccountInfo) -> GmailEngineSettings? { lock.withLock { settingsGiven[account.id] } }
+
+    private func noteSettings(_ settings: GmailEngineSettings, for id: UUID) { lock.withLock { settingsGiven[id] = settings } }
+
     /// Starts the coordinator and the Outbox as the app does at launch.
     func launch(undoWindow: TimeInterval = 5) async throws {
         try await store.load()
@@ -126,6 +134,7 @@ final class CoordinatorRig: @unchecked Sendable {
             switches: switches,
             makeEngine: { [weak self] account, setup in
                 let gmail = self?.fake(account.id) ?? FakeGmail(email: account.email, accountID: account.id)
+                self?.noteSettings(setup.settings, for: account.id)
                 let store = GmailFileStore(accountID: account.id, files: GmailFiles(layout: layout, accountID: account.id))
                 var settings = setup.settings
                 settings.fillsCache = fillsCache
@@ -133,7 +142,7 @@ final class CoordinatorRig: @unchecked Sendable {
                                                   mutes: mutes, rules: rules, settings: settings, clock: clock, actionClock: actionClock,
                                                   folderHints: setup.folderHints, undoWindow: setup.undoWindow, events: setup.events)
             },
-            connector: connector.connector, switchRetry: 0.2, switchOffWait: 1)
+            probe: probe, connector: connector.connector, switchRetry: 0.2, switchOffWait: 1)
         await coordinator.setUndoWindow(undoWindow)
         self.coordinator = coordinator
         let smtp = smtp

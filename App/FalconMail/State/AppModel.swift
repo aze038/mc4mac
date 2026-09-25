@@ -432,6 +432,9 @@ final class AppModel {
     /// The session the last quit saved, whose entries for accounts now on the Gmail API are
     /// written back untouched for an earlier FalconMail (§12.2).
     @ObservationIgnored var previousSession: SessionState?
+    /// Whether the windows of the last session have been restored, after which drafts left over
+    /// from it are saved.
+    var sessionWindowsRestored: Bool { restoredState == nil }
     @ObservationIgnored private var knownSentIDs = Set<UUID>()
     @ObservationIgnored var soundGate = MailSoundGate(isEnabled: SoundLibrary.isEnabled)
     @ObservationIgnored private var bodyCache: [String: MIMEMessage] = [:]

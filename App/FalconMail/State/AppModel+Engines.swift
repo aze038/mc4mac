@@ -247,6 +247,20 @@ extension AppModel {
         }
         engineWatches[accountID] = EngineWatch(engine: ObjectIdentifier(engine), tasks: [folderTask, draftTask])
         rekeyCategories(accountID: accountID, assembly: assembly)
+        saveLeftoverDrafts(of: accountID)
+    }
+
+    /// Messages of the account left over from the last session that could not reach Drafts
+    /// before its engine ran go now, as `saveLeftoverDrafts` saves every account's at launch.
+    private func saveLeftoverDrafts(of accountID: UUID) {
+        guard sessionWindowsRestored else { return }
+        let inTabs = (tabs + minimizedTabs).compactMap { tab -> UUID? in
+            if case .compose(let id) = tab { return id } else { return nil }
+        }
+        let open = composeWindowDrafts.union(inTabs)
+        for (id, draft) in drafts where draft.accountID == accountID && !open.contains(id) && !unsentDrafts.isSaving(id) {
+            closeUnsent(id)
+        }
     }
 
     /// The Inbox a Gmail engine announced new mail from, before the sidebar has its folders.

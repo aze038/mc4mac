@@ -182,6 +182,42 @@ final class GmailMigrationTests: XCTestCase {
         gmail.failAlways(.messagesModify, with: nil)
     }
 
+    // MARK: - The read-only probe
+
+    func testTheReadOnlyProbeRunsOnceAndItsFindingsAdaptTheEngineFromItsNextStart() async throws {
+        let rig = try rig()
+        let account = rig.googleAccount()
+        rig.gmail(for: account).add(subject: "Hello")
+        try rig.writePreviousRelease(account)
+        let runs = Recorder<String>()
+        var found = GmailProbeFindings()
+        found.listReturnsChats = true
+        found.labelTotalsCountJunkAndDeleted = false
+        found.profileTotalCountsJunkAndDeleted = false
+        let findings = found
+        rig.probe = { probed, _ in
+            runs.append(probed.email)
+            return findings
+        }
+        try await rig.launch()
+        try await eventually(timeout: 10, "the probe ran") {
+            GmailMigrationFile(files: GmailFiles(layout: rig.layout, accountID: account.id)).load().probeRanAt != nil
+        }
+        XCTAssertEqual(runs.all, [account.email])
+        XCTAssertEqual(rig.settings(of: account)?.listsChats, false, "the first start keeps the documented defaults")
+        // The next start follows what was found, and the probe does not run again.
+        await rig.coordinator.start(account: account)
+        let adapted = rig.settings(of: account)
+        XCTAssertEqual(adapted?.listsChats, true)
+        XCTAssertEqual(adapted?.countRule.labelTotalsCountJunkAndDeleted, false)
+        XCTAssertEqual(adapted?.countRule.profileTotalCountsJunkAndDeleted, false)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(runs.all, [account.email], "once per account")
+        let record = GmailMigrationFile(files: GmailFiles(layout: rig.layout, accountID: account.id)).load()
+        XCTAssertEqual(record.probe?.listReturnsChats, true)
+        XCTAssertEqual(rig.imap.loginCount, 0)
+    }
+
     // MARK: - Re-keying by Message-ID
 
     func testCategoriesAreReKeyedOnlyWhereOneGmailMessageAgreesAndOldKeysStay() async throws {
