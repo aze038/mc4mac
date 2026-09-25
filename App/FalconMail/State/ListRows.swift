@@ -295,6 +295,7 @@ extension AppModel {
     }
 
     func selectNextThread() {
+        if engineList.move(.next) { return }
         let current = rows
         guard !current.isEmpty else { return }
         guard let last = selectedRowIndices.max() else { return selectRow(at: 0) }
@@ -302,6 +303,7 @@ extension AppModel {
     }
 
     func selectPreviousThread() {
+        if engineList.move(.previous) { return }
         let current = rows
         guard !current.isEmpty else { return }
         guard let first = selectedRowIndices.min() else { return selectRow(at: current.count - 1) }
@@ -317,6 +319,7 @@ extension AppModel {
     }
 
     func selectNextUnread() {
+        if engineList.move(.nextUnread) { return }
         let current = rows
         let start = selectedRowIndices.max().map { $0 + 1 } ?? 0
         guard start < current.count, let next = current[start...].first(where: rowIsUnread) else {
@@ -327,6 +330,7 @@ extension AppModel {
     }
 
     func selectPreviousUnread() {
+        if engineList.move(.previousUnread) { return }
         let current = rows
         let end = min(selectedRowIndices.min() ?? current.count, current.count)
         guard let previous = current[..<end].last(where: rowIsUnread) else {

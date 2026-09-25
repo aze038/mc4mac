@@ -23,6 +23,8 @@ struct MessageTableView: NSViewRepresentable {
     /// The menu for the rows a right-click acts on.
     var menu: (ListSelection) -> NSMenu? = { _ in nil }
     var onSelectionChange: (ListSelection) -> Void = { _ in }
+    /// The buttons a trackpad swipe on a row shows, from either edge.
+    var rowActions: (Int, NSTableView.RowActionEdge) -> [NSTableViewRowAction] = { _, _ in [] }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -174,6 +176,10 @@ struct MessageTableView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
+
+        func tableView(_ tableView: NSTableView, rowActionsForRow row: Int, edge: NSTableView.RowActionEdge) -> [NSTableViewRowAction] {
+            parent.rowActions(row, edge)
+        }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
             let id = NSUserInterfaceItemIdentifier("MessageTableRow")
