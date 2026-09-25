@@ -126,8 +126,10 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
     @MainActor
     public static func text(fromHTML html: String, parts: [MIMEAttachment] = [], pictures: [String: Data],
                             attributes: [NSAttributedString.Key: Any]) -> NSAttributedString? {
+        // A signature's pictures keep the size its HTML gives them, however wide: a signature is
+        // shown and sent at its own size, never shrunk to fit a window.
         guard let read = InlinePictures.text(fromHTML: ComposedBody.readingStyle(attributes) + html, parts: parts,
-                                             attributes: attributes, remote: pictures) else { return nil }
+                                             attributes: attributes, remote: pictures, fitting: false) else { return nil }
         let text = NSMutableAttributedString(attributedString: ComposedBody.readable(read, attributes: attributes))
         SignatureTables.honour(html, in: text)
         let string = text.string as NSString

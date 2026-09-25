@@ -520,16 +520,21 @@ struct SignatureTextEditor: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = true
         scroll.backgroundColor = NSColor(SignatureEditorLook.ground)
+        // The signature at its own size, as it is sent, never wrapped to the window: a table or
+        // picture wider than the window scrolls across.
+        context.coordinator.canvas = SignatureCanvas(scroll)
         onReady(view)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.onChange = onChange
+        context.coordinator.canvas?.fit()
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onChange: (NSAttributedString) -> Void
+        var canvas: SignatureCanvas?
 
         init(onChange: @escaping (NSAttributedString) -> Void) { self.onChange = onChange }
 

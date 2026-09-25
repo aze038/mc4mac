@@ -555,6 +555,10 @@ struct SignaturePreview: View {
 private struct PreviewPage: NSViewRepresentable {
     let text: NSAttributedString
 
+    final class Coordinator { var canvas: SignatureCanvas? }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         scroll.appearance = NSAppearance(named: .aqua)
@@ -570,11 +574,15 @@ private struct PreviewPage: NSViewRepresentable {
         // The first line's text eight points in and its baseline twenty-one points down.
         view.textContainerInset = NSSize(width: 3, height: 7.5)
         view.setAccessibilityLabel("Signature Preview")
+        // Shown at its own size, never squeezed into the box: what does not fit scrolls.
+        context.coordinator.canvas = SignatureCanvas(scroll)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage, !storage.isEqual(to: text) else { return }
         storage.setAttributedString(text)
+        context.coordinator.canvas?.fit()
+        view.scroll(.zero)
     }
 }
