@@ -13,6 +13,17 @@ struct MainWindow: View {
     @State private var showImportPicker = false
     @State private var importTarget: FolderInfo?
     @AppStorage(Pref.readingPane) private var readingPane = ReadingPanePosition.right.rawValue
+    /// The window this mailbox is in, and the one filling the screen, if any.
+    @State private var ownWindow: ObjectIdentifier?
+    @State private var fullScreenMailbox: ObjectIdentifier?
+    /// Drawn as it looks filling the screen, by the debug snapshots.
+    var snapshotFillsScreen = false
+
+    /// Whether this window fills the screen, its message and compose windows floating inside it
+    /// and its status bar holding the minimised ones as tabs.
+    private var fillsScreen: Bool {
+        snapshotFillsScreen || (ownWindow != nil && ownWindow == fullScreenMailbox)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,12 +38,13 @@ struct MainWindow: View {
                     MovePalette()
                 }
             }
-            WindowTrayBar()
-            StatusBar()
+            WindowTrayBar(holdsWindows: !fillsScreen)
+            StatusBar(fillsScreen: fillsScreen)
         }
         .ignoresSafeArea(.container, edges: .top)
         .background(OLColor.reading)
-        .background(MailboxWindowAccessor())
+        .background(MailboxWindowAccessor { ownWindow = ObjectIdentifier($0) })
+        .onReceive(WindowTray.shared.$fullScreenMailbox) { fullScreenMailbox = $0 }
         .background(KeyRouterView(model: model))
         .sheet(isPresented: Binding(get: { updates.shouldPrompt }, set: { _ in })) { UpdateSheet().environmentObject(updates) }
         .disabled(updates.isMandatory)
@@ -136,6 +148,9 @@ struct MainWindow: View {
 
 struct StatusBar: View {
     @Environment(AppModel.self) private var model
+    /// While the mailbox window fills the screen the bar is Outlook's taller grey one, with a tab
+    /// in the middle for each message or compose window minimised.
+    var fillsScreen = false
 
     /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail. Nothing is claimed
     /// to be up to date while an account cannot sync; what stops it is shown on its own.
@@ -150,44 +165,16 @@ struct StatusBar: View {
     }
 
     var body: some View {
+        if fillsScreen { fullScreenBody } else { windowBody }
+    }
+
+    private var windowBody: some View {
         HStack(spacing: 12) {
-            Text("Items: \(model.itemCount)")
-                .font(.system(size: OL.statusFont).monospacedDigit())
-                .foregroundStyle(OLColor.text)
-                .padding(.leading, OL.statusLeftX)
-            ForEach(model.accounts.filter { model.accountsNeedingSignIn.contains($0.id) }) { account in
-                if account.usesPassword {
-                    // Its password is changed in Settings → Accounts, which restarts its sync.
-                    Button("Update the password for \(account.email)") {
-                        SettingsWindows.shared.show(.accounts)
-                    }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
-                } else {
-                    Button("Sign in to \(account.email) again") { signInAgain(account) }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
-                }
-            }
-            ForEach(model.offlineAccounts) { account in
-                Button("\(account.email) is offline · Retry") { model.syncNow() }
-                    .buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
-            }
-            ForEach(model.pausedAccountNotices, id: \.account.id) { notice in
-                Text(notice.text)
-                    .font(.caption).foregroundStyle(Color.orange).lineLimit(1).truncationMode(.middle)
-                    .help(notice.text)
-            }
+            itemCount.padding(.leading, OL.statusLeftX)
+            notices
             Spacer()
-            chordCapsule
-            actionErrorCapsule
-            undoCapsule
-            discardCapsule
-            sendingCapsules
-            if let summary = model.syncingSummary {
-                ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
-                Text(summary).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
-            } else if let stateText {
-                Text(stateText).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
-            }
+            capsules
+            state
             if let connectedText {
                 Text(connectedText).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
             }
@@ -196,6 +183,77 @@ struct StatusBar: View {
         .frame(height: OL.status)
         .background(OLColor.status)
         .overlay(alignment: .top) { Rectangle().fill(OLColor.chromeLine).frame(height: 1) }
+    }
+
+    /// Outlook's: the item count on the left, the tabs in the middle and the state of the
+    /// folders on the right, each side keeping room enough that the tabs stand in the middle.
+    private var fullScreenBody: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 12) {
+                itemCount.fixedSize()
+                notices
+            }
+            .padding(.leading, OL.fullScreenStatusLeftX)
+            .frame(minWidth: FullScreenLayout.tabSideRoom, alignment: .leading)
+            FullScreenTabStrip()
+                .frame(maxWidth: .infinity)
+            HStack(spacing: 12) {
+                capsules
+                state
+            }
+            .padding(.trailing, OL.fullScreenStatusRightInset)
+            .frame(minWidth: FullScreenLayout.tabSideRoom, alignment: .trailing)
+        }
+        .frame(height: OL.fullScreenStatus)
+        .background(OLColor.fullScreenStatus)
+        .overlay(alignment: .top) { Rectangle().fill(OLColor.chromeLine).frame(height: 1) }
+    }
+
+    private var itemCount: some View {
+        Text("Items: \(model.itemCount)")
+            .font(.system(size: OL.statusFont).monospacedDigit())
+            .foregroundStyle(OLColor.text)
+    }
+
+    @ViewBuilder private var capsules: some View {
+        chordCapsule
+        actionErrorCapsule
+        undoCapsule
+        discardCapsule
+        sendingCapsules
+    }
+
+    @ViewBuilder private var state: some View {
+        if let summary = model.syncingSummary {
+            ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
+            Text(summary).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
+        } else if let stateText {
+            Text(stateText).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
+        }
+    }
+
+    @ViewBuilder private var notices: some View {
+        ForEach(model.accounts.filter { model.accountsNeedingSignIn.contains($0.id) }) { account in
+            if account.usesPassword {
+                // Its password is changed in Settings → Accounts, which restarts its sync.
+                Button("Update the password for \(account.email)") {
+                    SettingsWindows.shared.show(.accounts)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
+            } else {
+                Button("Sign in to \(account.email) again") { signInAgain(account) }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+            }
+        }
+        ForEach(model.offlineAccounts) { account in
+            Button("\(account.email) is offline · Retry") { model.syncNow() }
+                .buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
+        }
+        ForEach(model.pausedAccountNotices, id: \.account.id) { notice in
+            Text(notice.text)
+                .font(.caption).foregroundStyle(Color.orange).lineLimit(1).truncationMode(.middle)
+                .help(notice.text)
+        }
     }
 
     @ViewBuilder private var chordCapsule: some View {

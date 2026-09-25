@@ -191,6 +191,20 @@ enum OL {
     static let statusFont: CGFloat = 12
     static let statusLeftX: CGFloat = 25
     static let statusRightInset: CGFloat = 25.5
+
+    // MARK: message window, the size a double-clicked message opens at
+
+    static let messageWindowWidth: CGFloat = 917
+    static let messageWindowHeight: CGFloat = 1006
+
+    // MARK: full screen: the status bar holding a tab for each message or compose window
+    // minimised, measured from Outlook filling a 1728 × 1117 point screen
+
+    static let fullScreenStatus: CGFloat = 35.5
+    static let fullScreenTab: CGFloat = 27
+    static let fullScreenTabRadius: CGFloat = 4
+    static let fullScreenStatusLeftX: CGFloat = 94
+    static let fullScreenStatusRightInset: CGFloat = 47.5
 }
 
 /// Outlook's colours, dark ones measured, light ones the same surfaces in Outlook's light look.
@@ -215,6 +229,11 @@ enum OLColor {
     static let reading = dynamic(light: 0xFFFFFF, dark: 0x1E1E1E)
     static let notice = dynamic(light: 0xEFEFEF, dark: 0x323232)
     static let status = dynamic(light: 0xEDEDED, dark: 0x282828)
+    /// The status bar while the mailbox window fills the screen, and its tabs. Outlook's light
+    /// one was not captured, so the light ones are the same surfaces in its light look.
+    static let fullScreenStatus = dynamic(light: 0xD4D4D4, dark: 0x464646)
+    static let fullScreenTab = dynamic(light: 0xF6F6F6, dark: 0x1E1E1E)
+    static let fullScreenTabHover = dynamic(light: 0xFFFFFF, dark: 0x2A2A2A)
     static let divider = Color(nsColor: OLListColor.separator)
     static let text = Color(nsColor: OLListColor.text)
     static let textMuted = dynamic(light: 0x5E5E5E, dark: 0xB4B4B4)
