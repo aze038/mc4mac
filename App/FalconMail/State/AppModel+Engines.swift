@@ -254,6 +254,11 @@ extension AppModel {
                 guard let self else { return }
                 self.folders[accountID] = list
                 self.refreshDockBadge()
+                // A folder of the account chosen before its folders were known, as at launch,
+                // is shown in the table as soon as they are.
+                if !self.engineList.isShown, case .folder(let id)? = self.selection, list.contains(where: { $0.id == id }) {
+                    await self.reloadMessages()
+                }
             }
         }
         let draftTask = Task { [weak self] in
@@ -414,18 +419,21 @@ enum EngineActionText {
 }
 
 extension AppModel {
-    /// The view a change to `message` is made in: the one the list shows when the message is in
-    /// it, else the folder the row was seen in. A Gmail message is in many folders at once, so
-    /// the folder's rules come from where the owner was looking, never from a stored row (§7.2).
+    /// The view a change to `message` is made in: the one the list shows when the message was
+    /// read in it, else the one its window or tab was opened from, else the folder the row was
+    /// seen in. A Gmail message is in many folders at once, so the folder's rules come from where
+    /// the owner was looking, never from a stored row (§7.2): Archive in a window opened from Sent
+    /// follows Sent's rules whatever folder the list shows.
     func engineContext(for message: MessageSummary) -> ListView {
+        let opened = engineList.openedView(for: message.id)
         if let view = listView(for: selection) {
             switch view.scope {
-            case .allInboxes, .search: return view
-            case .folder(let id) where folder(id)?.accountID == message.accountID: return view
+            case .allInboxes where opened == nil, .search where opened == nil: return view
+            case .folder(let id) where id == message.folderID: return view
             default: break
             }
         }
-        return ListView(scope: .folder(message.folderID), conversations: false)
+        return opened ?? ListView(scope: .folder(message.folderID), conversations: false)
     }
 
     /// A change to messages of one Google account on the Gmail API, in pieces of at most 1,000.
@@ -545,7 +553,7 @@ extension AppModel {
     /// given, so a window stays open with what it had; nil only when the message is gone.
     func engineMessage(id: String) async -> MessageSummary? {
         guard let key = RowKey(string: id), key.isGmail, let accountID = key.accountID else { return nil }
-        let view = listView(for: selection).flatMap { view -> ListView? in
+        let view = engineList.openedView(for: id) ?? listView(for: selection).flatMap { view -> ListView? in
             if case .folder(let folderID) = view.scope, folder(folderID)?.accountID != accountID { return nil }
             return view
         } ?? folder(accountID: accountID, role: .inbox).map { ListView(scope: .folder($0.id), conversations: false) }

@@ -66,6 +66,9 @@ struct MessageListView: View {
         // list is read from.
         .onChange(of: model.gmailEngineAccounts) { _, _ in Task { await model.reloadMessages() } }
         .onChange(of: Set(model.engineAssemblies.keys)) { _, _ in Task { await model.reloadMessages() } }
+        // A search on the Gmail engines shows its hits as the table's view, and its end the
+        // folder again.
+        .onChange(of: model.engineSearch?.id) { _, _ in model.engineList.refreshIfShown(model) }
     }
 
     // MARK: - The table

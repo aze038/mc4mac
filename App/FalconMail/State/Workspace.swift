@@ -190,6 +190,9 @@ extension AppModel {
 
     /// Whether the Message menu's commands that change mail have nothing they may change.
     var menuCannotChange: Bool {
+        // Above 1,000 rows selected in the table nothing is handed on as a part of the selection:
+        // the commands act on the whole view, or say to select fewer.
+        if case .selection = menuTarget, menuActsOnWholeTable { return false }
         let list = menuMessages
         return list.isEmpty || list.contains { $0.isServerOnly }
     }

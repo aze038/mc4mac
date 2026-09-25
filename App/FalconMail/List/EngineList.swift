@@ -78,12 +78,28 @@ final class EngineList {
         }
         if waitingFor != nil { waitingFor = nil }
         let id = ObjectIdentifier(source)
-        if shownView == view, shownSource == id { return true }
+        if shownView == view, shownSource == id {
+            revealPending()
+            return true
+        }
         shownView = view
         shownSource = id
         await controller.show(view, from: source)
         noteFolderShown(view, model: model)
         checkEveryFolderListed()
+        if !revealPending() { readSelection(byOwner: false) }
+        return true
+    }
+
+    /// Selects the row of the message a notification's click asked to show, or the one selected
+    /// at the last quit, once the table shows it. False while there is none, or its row is not in
+    /// the list shown yet, when it is tried again as the list changes.
+    @discardableResult
+    func revealPending() -> Bool {
+        guard isShown, let model, let key = model.pendingReveal, controller.view != nil, let row = row(of: key) else { return false }
+        model.pendingReveal = nil
+        emptiedWait?.cancel()
+        controller.select(rows: [row])
         readSelection(byOwner: false)
         return true
     }
@@ -133,9 +149,11 @@ final class EngineList {
 
     // MARK: - The selection
 
-    /// The owner changed the selection in the table.
+    /// The owner changed the selection in the table, which a message still waiting to be shown
+    /// no longer takes over.
     func tableSelectionChanged() {
         emptiedWait?.cancel()
+        model?.pendingReveal = nil
         readSelection(byOwner: true)
     }
 
@@ -252,9 +270,12 @@ final class EngineList {
                 // are the same messages.
                 readSelection(byOwner: false)
             }
-            if !diff.inserted.isEmpty || !diff.removed.isEmpty { checkEveryFolderListed() }
+            if !diff.inserted.isEmpty || !diff.removed.isEmpty {
+                checkEveryFolderListed()
+                revealPending()
+            }
         case .reload:
-            readSelection(byOwner: false)
+            if !revealPending() { readSelection(byOwner: false) }
             checkEveryFolderListed()
         case .selection, .content:
             break
@@ -312,6 +333,9 @@ final class EngineList {
     }
 
     // MARK: - Opening
+
+    /// The view a message window or tab was opened from, which its folder rules are read in.
+    func openedView(for id: String) -> ListView? { windowViews[id] }
 
     /// The view a message window reads its message in: the one it was opened from, or its
     /// account's Inbox, as for a window opened from a notification or brought back at launch.

@@ -60,7 +60,14 @@ extension AppModel {
         // A window an earlier FalconMail left open for the account's old IMAP copy, which is kept
         // only for going back and is never read.
         guard key.isGmail else { return .gone }
-        return await summary(for: key, in: engineList.windowView(for: id, model: self))
+        let availability = await summary(for: key, in: engineList.windowView(for: id, model: self))
+        // Kept for the tabs and replies that ask by the id alone while Gmail cannot be reached.
+        switch availability {
+        case .available(let found): engineSummaries[id] = found
+        case .gone: engineSummaries[id] = nil
+        case .unavailable: break
+        }
+        return availability
     }
 
     /// The messages of the conversation a window was opened for, newest first, as far as they can
@@ -110,22 +117,28 @@ extension AppModel {
         }
     }
 
+    /// Whether more than 1,000 rows are selected in the table, which no command is handed as a
+    /// list of messages.
+    var menuActsOnWholeTable: Bool {
+        engineList.isShown && engineList.selectionCount > ActionTargets.largestItemList
+    }
+
+    /// A Message menu command: on the message in the message window in front, or on the list's
+    /// selection as the ribbon's commands act on it, the whole view above 1,000 rows of the table.
+    func onMenuTarget(_ command: ListCommand, _ body: () -> Void) {
+        guard case .selection = menuTarget else { return body() }
+        onSelection(command, body)
+    }
+
     /// A command on every message of the view shown but `except`, as after Select All, which the
-    /// Gmail engine takes as one piece of bulk work described by the view.
+    /// Gmail engine takes as one piece of bulk work described by the view, with Undo as for any
+    /// other change.
     func actOnWholeView(_ command: ListCommand, except: [ActionItem]) {
         guard let view = engineList.controller.view, let verb = command.wholeViewVerb, let accountID = wholeViewAccount(view) else {
             statusText = ListStatusText.tooManySelected
             return
         }
-        let request = MailActionRequest(verb: verb, targets: .wholeView(except: except), context: view)
-        Task {
-            do {
-                let receipt = try await coordinator.perform(request, accountID: accountID)
-                if let notice = receipt.notice { statusText = notice }
-            } catch {
-                showAlert(for: error)
-            }
-        }
+        Task { await perform(verb, on: .wholeView(except: except), in: view, accountID: accountID) }
     }
 
     /// A whole view is one account's folder: All Inboxes over several accounts is acted on by

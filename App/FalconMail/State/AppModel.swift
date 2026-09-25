@@ -614,6 +614,12 @@ final class AppModel {
         if let s = restoredState {
             let ids = Set(s.selectedMessageIDs)
             selectedMessageIDs = ids.filter { rowIndex[$0] != nil }
+            // The row selected in the table at the last quit is selected again once its account's
+            // engine shows it.
+            if selectedMessageIDs.isEmpty, let first = s.gmailSelectedMessageIDs?.first {
+                pendingReveal = RowKey(string: ListRow.childMessageID(first) ?? first)
+                engineList.revealPending()
+            }
             await restoreTabs(s.openTabs + (s.gmailTabs ?? []), minimized: s.minimizedTabs + (s.gmailMinimizedTabs ?? []),
                               active: s.gmailActiveTab ?? s.activeTab)
         }
@@ -804,6 +810,9 @@ final class AppModel {
                     DiagnosticsService.shared.noteSyncPass()
                     self.syncingAccounts.remove(id)
                     self.statusText = "Up to date"
+                    // "All folders are up to date." waits for every folder of every account on the
+                    // Gmail API, whatever the list shows.
+                    if self.usesGmailEngine(id) { self.engineList.checkEveryFolderListed() }
                     self.noteUnreadableFiles()
                     await self.refreshBandwidth()
                 case .checked: break
