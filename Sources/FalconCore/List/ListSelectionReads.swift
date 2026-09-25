@@ -197,3 +197,12 @@ extension ListStatusText {
     /// A command given while the rows selected could not be read in time.
     public static let selectionStillReading = "The selected message hasn't opened yet. Try again in a moment."
 }
+
+extension SelectedListRow {
+    /// Whether two readings of a selection stand for the same messages as the same kinds of row,
+    /// wherever those rows now are, as after new mail arrived above them.
+    public static func standForTheSameMessages(_ a: [SelectedListRow]?, _ b: [SelectedListRow]?) -> Bool {
+        guard let a, let b else { return a == nil && b == nil }
+        return a.count == b.count && zip(a, b).allSatisfy { $0.key == $1.key && $0.kind == $1.kind }
+    }
+}

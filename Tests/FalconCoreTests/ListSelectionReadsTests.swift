@@ -235,3 +235,15 @@ final class ListSelectionReadsTests: XCTestCase {
         XCTAssertEqual(ListReadingPlaceholder.of([t, target(2)], content: content).targets.count, 2)
     }
 }
+
+extension ListSelectionReadsTests {
+    func testRowsThatOnlyMovedStandForTheSameMessages() {
+        let key = RowKey.gmail(account: UUID(), id: GmailMessageID(raw: 0x1001))
+        let before = [SelectedListRow(row: 3, key: key, kind: .message)]
+        let moved = [SelectedListRow(row: 4, key: key, kind: .message)]
+        let other = [SelectedListRow(row: 3, key: key, kind: .conversation)]
+        XCTAssertTrue(SelectedListRow.standForTheSameMessages(before, moved))
+        XCTAssertFalse(SelectedListRow.standForTheSameMessages(before, other))
+        XCTAssertFalse(SelectedListRow.standForTheSameMessages(before, nil))
+    }
+}
