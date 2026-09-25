@@ -172,7 +172,8 @@ final class SignatureSourceTests: XCTestCase {
         let pasted = try XCTUnwrap(Signature.pasted(from: board, attributes: body))
         XCTAssertEqual(pasted.html, Self.fragment, "the page's wrapping is left behind, nothing inside it changed")
         let imported = try imported(remote: [:])
-        XCTAssertEqual(pasted.text.string, imported.text.string)
+        // A signature kept as RTFD ends its last table's paragraph with a line break of its own.
+        XCTAssertEqual(pasted.text.string.trimmingCharacters(in: .newlines), imported.text.string.trimmingCharacters(in: .newlines))
         XCTAssertEqual(InlinePictures.attachmentLocations(in: pasted.text).count, 1)
 
         // As the editor keeps what was pasted: the pasted HTML is what the signature sends.
