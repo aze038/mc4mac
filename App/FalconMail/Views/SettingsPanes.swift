@@ -518,7 +518,8 @@ struct FontsSettings: View {
     var body: some View {
         SettingsScroll {
             SettingsRow(label: "New messages:") {
-                fontPair(family: $composeFamily, size: $composeSize)
+                // In points, as Outlook shows them; kept as the size the composer sets text at.
+                fontPair(family: $composeFamily, size: $composeSize, points: true)
                 sample(family: composeFamily, size: composeSize)
             }
             Divider()
@@ -538,14 +539,14 @@ struct FontsSettings: View {
         }
     }
 
-    private func fontPair(family: Binding<String>, size: Binding<Double>) -> some View {
+    private func fontPair(family: Binding<String>, size: Binding<Double>, points: Bool = false) -> some View {
         HStack(spacing: 8) {
             Picker("", selection: family) {
                 ForEach(TextFormatter.families, id: \.self) { Text($0).tag($0) }
             }
             .labelsHidden().frame(width: 200)
             Picker("", selection: size) {
-                ForEach(TextFormatter.sizes, id: \.self) { Text("\(Int($0))").tag(Double($0)) }
+                ForEach(TextFormatter.sizes, id: \.self) { Text("\(Int($0))").tag(Double(points ? TextFormatter.pixels($0) : $0)) }
             }
             .labelsHidden().frame(width: 80)
         }

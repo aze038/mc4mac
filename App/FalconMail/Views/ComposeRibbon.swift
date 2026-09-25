@@ -118,7 +118,7 @@ struct ComposeRibbon: View {
                 FmtPopup(text: formatter.fontName, width: 90) {
                     ForEach(TextFormatter.families, id: \.self) { name in Button(name) { formatter.setFontName(name) } }
                 }
-                FmtPopup(text: "\(Int(formatter.fontSize))", width: 53) {
+                FmtPopup(text: TextFormatter.label(formatter.fontSize), width: 53) {
                     ForEach(TextFormatter.sizes, id: \.self) { size in Button("\(Int(size))") { formatter.setFontSize(size) } }
                 }
                 .padding(.leading, 12)

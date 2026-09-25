@@ -21,7 +21,9 @@ final class TextFormatter {
     /// clicked, so it is lit whenever there is a body, as in a fresh Outlook message.
     var canPaintFormat: Bool { editor != nil }
     var fontName = ComposeFont.chosen().family
-    var fontSize: CGFloat = ComposeFont.chosen().size
+    /// The size at the caret in points, as Outlook's ribbon shows it: text the composer sets at
+    /// 16, which a reader draws 16 pixels high, is Outlook's 12 point (see ComposeFont).
+    var fontSize: CGFloat = TextFormatter.points(ComposeFont.chosen().size)
     /// The paragraph's alignment at the caret; natural is left in a left-to-right text.
     private(set) var alignment = NSTextAlignment.natural
     /// The colours the Text colour and Highlight buttons show and apply with a click on their
@@ -40,7 +42,19 @@ final class TextFormatter {
         return common.filter { $0 == "System" || $0 == ComposeFont.outlookFamily || installed.contains($0) }
     }()
 
+    /// Outlook's sizes, in points.
     static let sizes: [CGFloat] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48]
+
+    /// A size the composer sets text at in points as Outlook shows them, to the half point.
+    static func points(_ pixels: CGFloat) -> CGFloat { (pixels * 0.75 * 2).rounded() / 2 }
+
+    /// A size in Outlook's points as the composer sets text at it.
+    static func pixels(_ points: CGFloat) -> CGFloat { points * 4 / 3 }
+
+    /// A size as the ribbon shows it: 12, or 10.5.
+    static func label(_ points: CGFloat) -> String {
+        points == points.rounded() ? "\(Int(points))" : String(format: "%.1f", points)
+    }
 
     /// Outlook's pure red and yellow. Its Display P3 capture holds them as 0xEB3323 and
     /// 0xFFFF53, which read as sRGB would be a duller red and a paler yellow than it applies.
@@ -100,7 +114,8 @@ final class TextFormatter {
             let standIn = chosen.family == ComposeFont.outlookFamily && font.familyName == chosen.displayFont.familyName
             let family = standIn ? ComposeFont.outlookFamily : font.familyName.map { $0.hasPrefix(".") ? "System" : $0 } ?? "System"
             if family != fontName { fontName = family }
-            if font.pointSize != fontSize { fontSize = font.pointSize }
+            let shown = TextFormatter.points(font.pointSize)
+            if shown != fontSize { fontSize = shown }
         }
         let aligned = (attributes[.paragraphStyle] as? NSParagraphStyle)?.alignment ?? .natural
         if aligned != alignment { alignment = aligned }
@@ -168,9 +183,10 @@ final class TextFormatter {
 
     private func applyFont() {
         guard let editor else { return }
+        let pixels = TextFormatter.pixels(fontSize)
         let base: NSFont = fontName == "System" || fontName == ComposeFont.outlookFamily
-            ? ComposeFont(family: fontName, size: fontSize).displayFont
-            : (NSFont(name: fontName, size: fontSize) ?? NSFont.systemFont(ofSize: fontSize))
+            ? ComposeFont(family: fontName, size: pixels).displayFont
+            : (NSFont(name: fontName, size: pixels) ?? NSFont.systemFont(ofSize: pixels))
         apply(.font, base)
         editor.typingAttributes[.font] = base
     }
@@ -195,7 +211,8 @@ final class TextFormatter {
         let current = storage.attribute(.baselineOffset, at: range.location, effectiveRange: nil) as? CGFloat ?? 0
         let value: CGFloat = abs(current - offset) < 0.01 ? 0 : offset
         storage.addAttribute(.baselineOffset, value: value, range: range)
-        let smaller = NSFont.systemFont(ofSize: value == 0 ? fontSize : fontSize * 0.75)
+        let pixels = TextFormatter.pixels(fontSize)
+        let smaller = NSFont.systemFont(ofSize: value == 0 ? pixels : pixels * 0.75)
         storage.addAttribute(.font, value: smaller, range: range)
         editor.didChangeText()
     }
