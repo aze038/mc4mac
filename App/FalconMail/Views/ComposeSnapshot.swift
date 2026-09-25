@@ -12,7 +12,8 @@ import FalconCore
 /// Notifications and Sounds pane and every other pane, the Privacy pane with its diagnostics
 /// section as a release build shows it and the sheet of data waiting to be sent, and a
 /// signature's editor window for a signature, for a new one and with ¶ showing the marks for
-/// what does not print, in both appearances into PNGs at twice their size in that directory,
+/// what does not print, a new message whose signature has a logo, in both appearances into PNGs
+/// at twice their size in that directory, with the message it would send as inline-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
 /// deleted, then quits.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
@@ -45,6 +46,7 @@ enum ComposeSnapshot {
                    to: "\(directory)/home-\(name).png")
         }
         signatures(model, to: directory)
+        inlinePictures(model, to: directory)
         // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
         privacy(model, to: directory)
         for (name, appearance) in appearances {
@@ -178,6 +180,38 @@ enum ComposeSnapshot {
                 }
                 capture(frame, appearance: appearance, to: "\(directory)/\(file)-\(name).png")
             }
+        }
+    }
+
+    /// A new message from an account whose signature for new messages has a logo, words typed
+    /// above it, as its compose window shows it, and the message it sends, written beside the
+    /// pictures as inline-sample.eml for Mail to open: the logo goes as an inline part in
+    /// multipart/related, which the HTML shows by cid:. Nothing is sent or saved anywhere else.
+    @MainActor private static func inlinePictures(_ model: AppModel, to directory: String) {
+        let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
+                                  imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [account]
+        var signature = Signature(name: "Formal")
+        signature.setText(formalText())
+        var draft = ComposeDraft.blank(account: account, signature: signature)
+        draft.to = "Sam Sender <sam@example.com>"
+        draft.subject = "Figures for this week"
+        if let opened = RichText.attributed(from: draft.richBody) {
+            let text = NSMutableAttributedString(attributedString: opened)
+            text.insert(NSAttributedString(string: "Hello Sam,\n\nThe figures for this week are in the shared folder.", attributes: RichText.bodyAttributes),
+                        at: 0)
+            draft.richBody = RichText.body(of: text)
+        }
+        let id = model.newDraft(draft)
+        defer { model.drafts[id] = nil }
+        for (name, appearance) in appearances {
+            let compose = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                               size: NSSize(width: OL.composeWindowWidth, height: 560), appearance: appearance,
+                               style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+            capture(compose, appearance: appearance, to: "\(directory)/compose-signature-\(name).png")
+        }
+        if let message = try? draft.outgoing(from: account) {
+            try? MIMEBuilder.build(message).write(to: URL(fileURLWithPath: "\(directory)/inline-sample.eml"))
         }
     }
 
