@@ -14,6 +14,8 @@ struct MessageReaderView: View {
     var conversation: MessageThread? = nil
     var context: ReaderContext = .pane
     var onDidAct: (() -> Void)? = nil
+    /// Whether a subject too long for its line starts shown whole; only the snapshot hook sets it.
+    var subjectExpanded = false
 
     @State private var parsed: MIMEMessage?
     @State private var rendered: String?
@@ -50,11 +52,8 @@ struct MessageReaderView: View {
                     .frame(width: 36, height: 22)
                     .padding(.leading, OL.readingIconX)
                     .padding(.top, OL.readingSubjectTop + 3)
-                Text(message.subject.isEmpty ? "(no subject)" : message.subject)
-                    .font(.system(size: OL.readingSubjectFont, weight: .semibold))
-                    .foregroundStyle(OLColor.text)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
+                ReadingSubject(message.subject.isEmpty ? "(no subject)" : message.subject, expanded: subjectExpanded)
+                    .id(message.id)
                     .padding(.leading, OL.readingTextX - OL.readingIconX - 36)
                     .padding(.top, OL.readingSubjectTop)
                 Spacer(minLength: 8)
@@ -70,7 +69,8 @@ struct MessageReaderView: View {
                 .padding(.top, OL.readingSubjectTop + 1)
                 .help(originalColours ? "Show this message on FalconMail's background" : "Show this message in its own colours")
             }
-            .frame(height: OL.readingAvatarTop, alignment: .top)
+            .frame(minHeight: OL.readingAvatarTop, alignment: .top)
+            .fixedSize(horizontal: false, vertical: true)
             .contextMenu { moreMenu }
             HStack(alignment: .top, spacing: 0) {
                 AvatarView(name: message.from.displayName, address: message.from.address, size: OL.readingAvatar)
@@ -650,6 +650,54 @@ enum WebViewPool {
         view.navigationDelegate = nil
         view.loadHTMLString("", baseURL: nil)
         if free.count < 4 { free.append(view) }
+    }
+}
+
+/// Outlook's reading subject: one line ending in "…" when it is too long for it. A click on a
+/// subject cut short shows it whole, wrapped over as many lines as it needs with the rest of the
+/// header moved down, and another click folds it back to one line. The whole subject is its
+/// tooltip, and it is no link, so the pointer stays an arrow.
+struct ReadingSubject: View {
+    let subject: String
+    @State private var expanded: Bool
+    /// The subject's width on one line, and that line's height, measured from a hidden copy.
+    @State private var natural = CGSize.zero
+    /// The size the subject was last laid out at.
+    @State private var shown = CGSize.zero
+
+    init(_ subject: String, expanded: Bool = false) {
+        self.subject = subject
+        _expanded = State(initialValue: expanded)
+    }
+
+    private var font: Font { .system(size: OL.readingSubjectFont, weight: .semibold) }
+    private var cutShort: Bool { natural.width > shown.width + 0.5 }
+
+    var body: some View {
+        Text(subject)
+            .font(font)
+            .foregroundStyle(OLColor.text)
+            .lineLimit(expanded ? nil : 1)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { shown = $0 }
+            .background {
+                Text(subject)
+                    .font(font)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .hidden()
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { natural = $0 }
+            }
+            // Shown whole, it is as tall as it was last laid out, so a narrow width the window
+            // asks about in passing never makes the header a word a line tall.
+            .frame(height: expanded ? max(shown.height, natural.height) : nil, alignment: .top)
+            .contentShape(Rectangle())
+            .onTapGesture { if expanded || cutShort { expanded.toggle() } }
+            .help(cutShort ? subject : "")
+            // The lines added below the first push the sender down by as much as they take, so
+            // the gap under the last line stays the one under a single line.
+            .padding(.bottom, expanded ? max(0, OL.readingAvatarTop - OL.readingSubjectTop - natural.height) : 0)
     }
 }
 

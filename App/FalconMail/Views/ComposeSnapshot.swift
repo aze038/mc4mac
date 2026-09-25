@@ -9,7 +9,8 @@ import FalconCore
 /// its Message ribbon, a compose window with Discard beside Send, the tray at the foot of the
 /// mailbox window holding a minimised message window and a minimised compose window, and the
 /// status bar offering Undo after a message is discarded, the main window's Home ribbon,
-/// which shares the compose ribbon's tiles, the Settings window's icon grid, its Signatures pane
+/// which shares the compose ribbon's tiles, the reading header with a subject too long for its
+/// line, folded and shown whole, the Settings window's icon grid, its Signatures pane
 /// with two stand-in signatures, with none and with its notice of a damaged file set aside, its
 /// Notifications and Sounds pane and every other pane, the Privacy pane with its diagnostics
 /// section as a release build shows it and the sheet of data waiting to be sent, and a
@@ -47,6 +48,12 @@ enum ComposeSnapshot {
             render(CommandBar().environment(model).frame(maxHeight: .infinity, alignment: .top),
                    size: NSSize(width: 1728, height: 140), appearance: appearance,
                    to: "\(directory)/home-\(name).png")
+            for expanded in [false, true] {
+                render(MessageReaderView(message: longSubject, subjectExpanded: expanded)
+                        .environment(model).environmentObject(model.updates).themedRoot(),
+                       size: NSSize(width: 760, height: 220), appearance: appearance,
+                       to: "\(directory)/reading-subject-\(expanded ? "expanded" : "collapsed")-\(name).png")
+            }
         }
         windows(model, to: directory)
         signatures(model, to: directory)
@@ -110,6 +117,16 @@ enum ComposeSnapshot {
         model.expandedThreadIDs = []
         model.selectedMessageIDs = []
         model.rebuildRows()
+    /// A made-up message whose subject is far too long for the reading header's one line. Its
+    /// account is none the model knows, so the reader finds no text for it and fetches none.
+    private static var longSubject: MessageSummary {
+        MessageSummary(accountID: UUID(), folderID: UUID(), uid: 1, messageID: "<snapshot@example.com>", inReplyTo: "",
+                       references: [], subject: "Re: Quarterly freight schedule for the northern warehouses / Order 2026-0417 - "
+                        + "pallets, customs papers and the revised delivery windows for every depot // Ref: NW-SCHED-26-Q4-FINAL",
+                       from: EmailAddress(name: "Planning Desk", address: "planning@example.com"),
+                       to: [EmailAddress(name: "Dispatch Team", address: "dispatch@example.com")], cc: [],
+                       date: Date(timeIntervalSince1970: 1_790_000_000), flags: [.seen], size: 0,
+                       snippet: "Please see the schedule below.", hasAttachments: false)
     }
 
     /// A Settings window at `pane`, built as the app builds it but drawn as it looks in front
