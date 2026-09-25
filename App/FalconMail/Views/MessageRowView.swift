@@ -54,16 +54,19 @@ struct MessageRowModel: Equatable {
 }
 
 extension MessageRowModel {
-    /// A conversation's own row, or a lone message's.
+    /// A conversation's own row, or a lone message's. `namesRecipients` names who the mail went
+    /// to rather than who sent it, as Outlook does in Sent and Drafts.
     static func conversation(_ thread: MessageThread, expanded: Bool, showsPreview: Bool, selection: Selection,
-                             categories: [NSColor] = [], actionsWidth: CGFloat = 0, now: Date = Date()) -> MessageRowModel {
+                             namesRecipients: Bool = false, categories: [NSColor] = [], actionsWidth: CGFloat = 0,
+                             now: Date = Date()) -> MessageRowModel {
         let latest = thread.latest
         let many = thread.messages.count > 1
         let unread = thread.unreadCount
         return MessageRowModel(
             kind: .conversation,
             disclosure: many ? (expanded ? .expanded : .collapsed) : .none,
-            sender: many ? MessageListText.participants(thread.messages) : latest.from.displayName,
+            sender: namesRecipients ? MessageListText.recipients(thread.messages)
+                : many ? MessageListText.participants(thread.messages) : latest.from.displayName,
             subject: latest.subject.isEmpty ? "(no subject)" : latest.subject,
             date: MessageListText.date(latest.date, now: now),
             // An expanded conversation drops its preview, as Outlook's does: its messages follow.
@@ -78,8 +81,10 @@ extension MessageRowModel {
     }
 
     /// One message of an expanded conversation.
-    static func child(_ message: MessageSummary, last: Bool, selection: Selection, now: Date = Date()) -> MessageRowModel {
-        MessageRowModel(kind: .child(last: last), sender: message.from.displayName,
+    static func child(_ message: MessageSummary, last: Bool, selection: Selection, namesRecipients: Bool = false,
+                      now: Date = Date()) -> MessageRowModel {
+        MessageRowModel(kind: .child(last: last),
+                        sender: namesRecipients ? MessageListText.recipients([message]) : message.from.displayName,
                         date: MessageListText.date(message.date, now: now), isUnread: !message.isRead,
                         selection: selection)
     }

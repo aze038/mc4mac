@@ -12,8 +12,8 @@ struct MessageListView: View {
     @AppStorage(Pref.rightSwipe) private var rightSwipeRaw = SwipeAction.none.rawValue
     @Environment(\.controlActiveState) private var activeState
     @FocusState private var listFocused: Bool
-    /// The day the rows' dates are written against, moved on at midnight so that today's times
-    /// become Yesterday without waiting for new mail.
+    /// Moved on at midnight, and on waking, so that the rows are written again and today's
+    /// times become Yesterday without waiting for new mail. The rows read the clock themselves.
     @State private var today = Date()
 
     #if DEBUG
@@ -209,6 +209,9 @@ struct MessageListView: View {
             .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in
                 today = Date()
             }
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+                today = Date()
+            }
             .background(ListTableTuner())
             .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } })
             .onKeyPress(.return) {
@@ -247,13 +250,13 @@ struct MessageListView: View {
                 .selectionDisabled()
         case .thread(let thread):
             ConversationRow(thread: thread, showPreview: showPreview, listHasKeyboard: listHasKeyboard,
-                            quickActions: quickActions, today: today)
+                            namesRecipients: namesRecipients, quickActions: quickActions, today: today)
                 .contextMenu { rowMenu(thread) }
                 .swipeActions(edge: .leading) { swipeButton(leftSwipeRaw, thread) }
                 .swipeActions(edge: .trailing) { swipeButton(rightSwipeRaw, thread) }
         case .message(let message, let threadID):
             ChildMessageRow(message: message, last: isLastChild(message, of: threadID), listHasKeyboard: listHasKeyboard,
-                            today: today)
+                            namesRecipients: namesRecipients, today: today)
                 .contextMenu { rowMenu(MessageThread(messages: [message])) }
         }
     }
@@ -341,6 +344,13 @@ struct MessageListView: View {
         return false
     }
 
+    /// Sent and Drafts name who the mail went to, as Outlook's do: their sender is always the
+    /// owner.
+    private var namesRecipients: Bool {
+        guard case .folder(let id) = model.selection, let role = model.folder(id)?.role else { return false }
+        return role == .sent || role == .drafts
+    }
+
     @ViewBuilder private func rowMenu(_ thread: MessageThread) -> some View {
         Button("Open") { model.openMessage(thread.latest) { openWindow(value: $0) } }
         Button("Open in Separate Window") { model.openMessage(thread.latest, forceWindow: true) { openWindow(value: $0) } }
@@ -388,7 +398,9 @@ struct ConversationRow: View {
     let thread: MessageThread
     let showPreview: Bool
     let listHasKeyboard: Bool
+    let namesRecipients: Bool
     let quickActions: [QuickAction]
+    /// Only here so that the row is written again when the day moves on; see `MessageListView.today`.
     let today: Date
     @State private var pointerInside = false
 
@@ -409,9 +421,12 @@ struct ConversationRow: View {
         let categories = model.categories(for: thread.latest)
         let row = MessageRowModel.conversation(
             thread, expanded: model.isExpanded(thread), showsPreview: showPreview,
-            selection: selected ? (listHasKeyboard ? .focused : .unfocused) : .none,
+            selection: selected ? (listHasKeyboard ? .focused : .unfocused) : .none, namesRecipients: namesRecipients,
             categories: categories.isEmpty ? [] : categories.map { NSColor($0.swatch) },
-            actionsWidth: hovering ? Self.actionsWidth(quickActions.count) : 0, now: today)
+            actionsWidth: hovering ? Self.actionsWidth(quickActions.count) : 0,
+            // The clock, not `today`: a night asleep may bring no notice that the day changed, and
+            // today's mail must not then read as older.
+            now: Date())
         ZStack(alignment: .topLeading) {
             MessageRowCell(model: row).allowsHitTesting(false)
             // Takes the row's clicks, menu and hover over the drawn row, which takes none.
@@ -422,6 +437,8 @@ struct ConversationRow: View {
                 }
                 .buttonStyle(.plain)
                 .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
+                // The chevron is drawn by the row, so the button has no image for VoiceOver to name.
+                .accessibilityLabel(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
             }
             if hovering, !quickActions.isEmpty {
                 quickActionRow
@@ -500,13 +517,15 @@ struct ChildMessageRow: View {
     /// The conversation's oldest, the last of its rows.
     let last: Bool
     let listHasKeyboard: Bool
+    let namesRecipients: Bool
+    /// Only here so that the row is written again when the day moves on.
     let today: Date
 
     var body: some View {
         let selected = model.selectedMessageIDs.contains(ListRow.childTag(message.id))
         let row = MessageRowModel.child(message, last: last,
                                         selection: selected ? (listHasKeyboard ? .focused : .unfocused) : .none,
-                                        now: today)
+                                        namesRecipients: namesRecipients, now: Date())
         ZStack {
             MessageRowCell(model: row).allowsHitTesting(false)
             Color.clear.contentShape(Rectangle())

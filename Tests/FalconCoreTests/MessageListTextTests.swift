@@ -6,11 +6,12 @@ final class MessageListTextTests: XCTestCase {
     private let folder = UUID()
     private var uid: UInt32 = 0
 
-    private func message(from name: String, _ address: String, at date: Date) -> MessageSummary {
+    private func message(from name: String, _ address: String, at date: Date,
+                         to: [EmailAddress] = [], cc: [EmailAddress] = []) -> MessageSummary {
         uid += 1
         return MessageSummary(accountID: account, folderID: folder, uid: uid, messageID: "<\(uid)@example.com>", inReplyTo: "",
                               references: [], subject: "Pallet count", from: EmailAddress(name: name, address: address),
-                              to: [], cc: [], date: date, flags: [], size: 1_000, hasAttachments: false)
+                              to: to, cc: cc, date: date, flags: [], size: 1_000, hasAttachments: false)
     }
 
     // MARK: participants
@@ -58,6 +59,30 @@ final class MessageListTextTests: XCTestCase {
             message(from: "Sam Lee", "", at: now - 120),
         ]
         XCTAssertEqual(MessageListText.participants(thread), "Help Desk, Sam Lee")
+    }
+
+    // MARK: recipients
+
+    func testSentMailIsNamedByEveryoneItWentToNewestFirstEachOnce() {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let maya = EmailAddress(name: "Maya Lindqvist", address: "maya@example.com")
+        let tom = EmailAddress(name: "Tom Okafor", address: "tom@example.com")
+        let thread = [
+            message(from: "Alex Example", "alex@example.com", at: now - 600, to: [maya, tom]),
+            message(from: "Alex Example", "alex@example.com", at: now, to: [EmailAddress(name: "Tom Okafor", address: "TOM@example.com")]),
+        ]
+        XCTAssertEqual(MessageListText.recipients(thread), "Tom Okafor, Maya Lindqvist")
+    }
+
+    func testMailSentOnlyToCcIsNamedByItsCc() {
+        let one = message(from: "Alex Example", "alex@example.com", at: Date(),
+                          cc: [EmailAddress(name: "Priya Raman", address: "priya@example.com")])
+        XCTAssertEqual(MessageListText.recipients([one]), "Priya Raman")
+    }
+
+    func testADraftWithNobodyToNameFallsBackToItsSender() {
+        let draft = message(from: "Alex Example", "alex@example.com", at: Date())
+        XCTAssertEqual(MessageListText.recipients([draft]), "Alex Example")
     }
 
     // MARK: dates

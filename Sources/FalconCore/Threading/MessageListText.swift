@@ -9,6 +9,20 @@ public enum MessageListText {
     /// the same person whatever case their address is written in; one without an address is
     /// known by their name.
     public static func participants(_ messages: [MessageSummary]) -> String {
+        names(in: messages) { [$0.from] }
+    }
+
+    /// Everyone a conversation's messages went to, newest first and each once, in the same form:
+    /// the first line in Sent and Drafts, where Outlook names who the mail went to, since its
+    /// sender is always the owner. A message sent only to Cc is named by its Cc. With nobody to
+    /// name, as in a draft not yet addressed, it falls back to the senders rather than leaving
+    /// the line blank.
+    public static func recipients(_ messages: [MessageSummary]) -> String {
+        let named = names(in: messages) { $0.to.isEmpty ? $0.cc : $0.to }
+        return named.isEmpty ? participants(messages) : named
+    }
+
+    private static func names(in messages: [MessageSummary], of people: (MessageSummary) -> [EmailAddress]) -> String {
         // Newest first however the caller ordered them; stable, so that two messages sent in the
         // same second keep the order they came in.
         let newestFirst = messages.enumerated()
@@ -16,9 +30,9 @@ public enum MessageListText {
             .map(\.element)
         var seen = Set<String>()
         var names: [String] = []
-        for message in newestFirst {
-            let address = message.from.address.trimmingCharacters(in: .whitespaces).lowercased()
-            let name = message.from.displayName.trimmingCharacters(in: .whitespaces)
+        for person in newestFirst.flatMap(people) {
+            let address = person.address.trimmingCharacters(in: .whitespaces).lowercased()
+            let name = person.displayName.trimmingCharacters(in: .whitespaces)
             let key = address.isEmpty ? "name:" + name.lowercased() : address
             guard !name.isEmpty, seen.insert(key).inserted else { continue }
             names.append(name)
