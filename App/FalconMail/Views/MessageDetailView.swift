@@ -256,10 +256,25 @@ struct MessageReaderView: View {
     private func load() async {
         if parsed == nil {
             loading = true
-            parsed = message.isServerOnly ? await openFromServer() : await model.parsedBody(for: message)
+            if message.isServerOnly {
+                parsed = await openFromServer()
+            } else {
+                // Never waits on the server for ever: past the deadline the first words show with
+                // a line saying the rest is coming, and a failure offers Try Again.
+                let fetched = await model.readerBody(for: message) { note in
+                    if !Task.isCancelled { serverProblem = note; loading = false }
+                }
+                if Task.isCancelled {
+                    loading = false
+                    return
+                }
+                parsed = fetched.parsed
+                serverProblem = fetched.problem
+            }
             loading = false
         }
         guard let parsed else { return }
+        serverProblem = nil
         await render(parsed)
         // A message opened from the server shows its text first; small inline pictures follow.
         if message.isServerOnly, let richer = await model.serverBodyWithInlineImages(message) {
@@ -590,14 +605,25 @@ enum MessageRenderer {
 
 @MainActor
 enum WebViewPool {
-    private static var free: [ReaderWebView] = []
-    private static let processPool = WKProcessPool()
+    /// Where every message's page is drawn: one process for them all, replaced by a fresh one
+    /// once that has died or stopped drawing, so that no message waits on it again.
+    private static var processPool = WKProcessPool()
     /// Remote images and whatever else a message loads are kept for this session only, in
     /// memory, never under ~/Library nor in WebKit's disk cache with its browser-sized limit.
     private static let dataStore = WKWebsiteDataStore.nonPersistent()
+    /// Views kept for the next message. One still in a window, as one SwiftUI has not yet taken
+    /// out of the reading pane or a message window is, is never kept nor handed out, so that no
+    /// two readers ever draw into one view; nor is one whose page process died or hung.
+    private static let pool = ReusePool<ReaderWebView>(capacity: 4) { $0.window == nil && !$0.isBroken }
 
     static func acquire() -> ReaderWebView {
-        if let v = free.popLast() { return v }
+        let view = pool.take { make() }
+        // Out of whatever SwiftUI host it was in before, so that its new one takes it whole.
+        view.removeFromSuperview()
+        return view
+    }
+
+    private static func make() -> ReaderWebView {
         let config = WKWebViewConfiguration()
         config.processPool = processPool
         config.websiteDataStore = dataStore
@@ -610,11 +636,37 @@ enum WebViewPool {
         return view
     }
 
+    /// Given back once SwiftUI has let it go. Kept for the next message only once it is out of
+    /// every window, after SwiftUI has finished taking the reader apart, and never twice.
     static func release(_ view: ReaderWebView) {
         view.navigationDelegate = nil
         view.fitsContent = false
-        view.loadHTMLString("", baseURL: nil)
-        if free.count < 4 { free.append(view) }
+        view.onHeight = nil
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                if pool.giveBack(view) {
+                    view.loadHTMLString("", baseURL: nil)
+                } else {
+                    view.stopLoading()
+                }
+            }
+        }
+    }
+
+    /// `view` is not to be used for another message: its page process died or stopped drawing.
+    static func discard(_ view: ReaderWebView) {
+        view.isBroken = true
+        view.navigationDelegate = nil
+        view.stopLoading()
+        pool.markUnusable(view)
+        pool.giveBack(view)
+    }
+
+    /// The process drawing messages died or stopped answering: the views kept for reuse share
+    /// it, so they go, and the views made from now on are drawn by a fresh one.
+    static func renewProcesses() {
+        pool.dropFree()
+        processPool = WKProcessPool()
     }
 }
 
@@ -675,36 +727,75 @@ struct HTMLView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> ReaderWebView {
-        let view = MainActor.assumeIsolated { WebViewPool.acquire() }
-        view.navigationDelegate = context.coordinator
-        view.fitsContent = onHeight != nil
-        view.onHeight = onHeight
+    func makeNSView(context: Context) -> ReaderWebHost {
+        let host = ReaderWebHost()
+        context.coordinator.host = host
         context.coordinator.lastHTML = ""
         context.coordinator.sender = sender
-        return view
+        host.install(MainActor.assumeIsolated { WebViewPool.acquire() }, delegate: context.coordinator, fitsContent: onHeight != nil,
+                     onHeight: onHeight)
+        return host
     }
 
-    func updateNSView(_ view: ReaderWebView, context: Context) {
+    func updateNSView(_ host: ReaderWebHost, context: Context) {
         context.coordinator.sender = sender
-        view.onHeight = onHeight
+        host.web?.onHeight = onHeight
         if context.coordinator.lastHTML != html {
             context.coordinator.lastHTML = html
-            view.willLoad()
-            view.loadHTMLString(html, baseURL: nil)
+            host.load(html)
         }
     }
 
-    static func dismantleNSView(_ view: ReaderWebView, coordinator: Coordinator) {
-        MainActor.assumeIsolated { WebViewPool.release(view) }
+    static func dismantleNSView(_ host: ReaderWebHost, coordinator: Coordinator) {
+        MainActor.assumeIsolated {
+            coordinator.host = nil
+            host.cancelWatch()
+            if let web = host.web { WebViewPool.release(web) }
+        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML = ""
         var sender: EmailAddress?
+        weak var host: ReaderWebHost?
+
+        /// The page process has answered and the new page replaced the last one: it is alive.
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            MainActor.assumeIsolated { host?.loaded(webView) }
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            MainActor.assumeIsolated { (webView as? ReaderWebView)?.didLoad() }
+            MainActor.assumeIsolated {
+                (webView as? ReaderWebView)?.didLoad()
+                host?.loaded(webView)
+            }
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            MainActor.assumeIsolated { failed(webView, error) }
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            MainActor.assumeIsolated { failed(webView, error) }
+        }
+
+        /// A page replaced by the next one before it finished is no failure.
+        @MainActor private func failed(_ webView: WKWebView, _ error: Error) {
+            (webView as? ReaderWebView)?.didFail()
+            host?.loaded(webView)
+            let code = (error as NSError).code
+            guard code != NSURLErrorCancelled, code != 102 else { return }
+            Log.warning("reader", "a message's page did not load", error: error)
+        }
+
+        /// WebKit's process for the page died, as macOS ends one under memory pressure: the
+        /// message is drawn again at once, in a fresh process, rather than left blank or as the
+        /// last message drawn before.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            MainActor.assumeIsolated {
+                Log.warning("reader", "the process drawing messages ended; the message is drawn again in a fresh one")
+                host?.replace(webView, reason: "its process ended")
+            }
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -716,5 +807,88 @@ struct HTMLView: NSViewRepresentable {
             }
             decisionHandler(.allow)
         }
+    }
+}
+
+/// Holds the web view a message is drawn in, so that a web view that stops drawing can be
+/// swapped for a fresh one in place. A page that has not replaced the one before, nor failed,
+/// within `watchSeconds` of being asked for is taken to be stuck, its process hung: the view is thrown away, not kept for
+/// reuse, and the message drawn again in a fresh one, in a fresh process, at most twice for one
+/// page, so that the reader never goes on showing a blank page, or the message drawn before.
+final class ReaderWebHost: NSView {
+    static let watchSeconds: TimeInterval = 8
+    private(set) var web: ReaderWebView?
+    private weak var delegate: WKNavigationDelegate?
+    private var html: String?
+    private var watch: DispatchWorkItem?
+    private var replacements = 0
+
+    override var isFlipped: Bool { true }
+
+    override func layout() {
+        super.layout()
+        if let web, web.frame != bounds { web.frame = bounds }
+    }
+
+    func install(_ view: ReaderWebView, delegate: WKNavigationDelegate, fitsContent: Bool, onHeight: ((CGFloat) -> Void)?) {
+        self.delegate = delegate
+        view.navigationDelegate = delegate
+        view.fitsContent = fitsContent
+        view.onHeight = onHeight
+        view.frame = bounds
+        view.autoresizingMask = [.width, .height]
+        addSubview(view)
+        web = view
+    }
+
+    func load(_ html: String) {
+        self.html = html
+        replacements = 0
+        start(html)
+    }
+
+    private func start(_ html: String) {
+        guard let web else { return }
+        web.willLoad()
+        web.loadHTMLString(html, baseURL: nil)
+        cancelWatch()
+        let work = DispatchWorkItem { [weak self, weak web] in
+            MainActor.assumeIsolated {
+                guard let self, let web, self.web === web, !web.finishedLoading, self.window != nil else { return }
+                Log.warning("reader", "a message's page did not load within \(Int(ReaderWebHost.watchSeconds)) s; it is drawn again in a fresh view")
+                self.replace(web, reason: "its page did not load")
+            }
+        }
+        watch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + ReaderWebHost.watchSeconds, execute: work)
+    }
+
+    func loaded(_ view: WKWebView) {
+        guard view === web else { return }
+        cancelWatch()
+    }
+
+    func cancelWatch() {
+        watch?.cancel()
+        watch = nil
+    }
+
+    /// Puts a fresh web view in place of `old`, which is never used again, and draws the page
+    /// in it. After two replacements for one page the page is left as it is.
+    func replace(_ old: WKWebView, reason: String) {
+        guard let current = web, current === old, let delegate else { return }
+        cancelWatch()
+        let fits = current.fitsContent
+        let onHeight = current.onHeight
+        WebViewPool.renewProcesses()
+        WebViewPool.discard(current)
+        guard replacements < 2 else {
+            Log.warning("reader", "a message's page was drawn afresh twice and still did not load (\(reason))")
+            return
+        }
+        replacements += 1
+        current.removeFromSuperview()
+        install(WebViewPool.acquire(), delegate: delegate, fitsContent: fits, onHeight: onHeight)
+        if let html { start(html) }
     }
 }

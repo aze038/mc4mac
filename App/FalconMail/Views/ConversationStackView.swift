@@ -451,10 +451,23 @@ struct ConversationCard: View {
                 if Task.isCancelled { return }
             }
             loading = true
-            parsed = message.isServerOnly ? await openFromServer() : await model.parsedBody(for: message)
+            if message.isServerOnly {
+                parsed = await openFromServer()
+            } else {
+                let fetched = await model.readerBody(for: message) { note in
+                    if !Task.isCancelled { serverProblem = note; loading = false }
+                }
+                if Task.isCancelled {
+                    loading = false
+                    return
+                }
+                parsed = fetched.parsed
+                serverProblem = fetched.problem
+            }
             loading = false
         }
         guard let parsed else { return }
+        serverProblem = nil
         await render(parsed)
         // A message opened from the server shows its text first; small inline pictures follow.
         if message.isServerOnly, let richer = await model.serverBodyWithInlineImages(message) {
@@ -566,10 +579,21 @@ final class ReaderWebView: WKWebView {
     /// The height last told through `onHeight`.
     private var toldHeight: CGFloat = 0
 
+    /// Set once the view's page process died or its page never loaded: it is not used again.
+    var isBroken = false
+    /// Whether the page last asked for has finished loading, or failed.
+    private(set) var finishedLoading = false
+
     func willLoad() {
         loaded = false
         measured = false
         toldHeight = 0
+        finishedLoading = false
+    }
+
+    /// The page asked for failed to load: it is over all the same.
+    func didFail() {
+        finishedLoading = true
     }
 
     /// Measured at once, and again as pictures that take longer come in: a picture from the web
@@ -577,6 +601,7 @@ final class ReaderWebView: WKWebView {
     /// message would be cut off out of reach, since the message does not scroll on its own. A
     /// measurement that finds the height unchanged costs nothing further.
     func didLoad() {
+        finishedLoading = true
         guard fitsContent else { return }
         loaded = true
         afterLoad.forEach { $0.cancel() }

@@ -17,6 +17,14 @@ public actor StreamConnection {
     private let tap: TrafficTap
     private var buffer = Data()
     private var isClosed = false
+    /// When anything last came from the server, or a send last finished, and since when a send
+    /// has been under way; see `quietFor`.
+    private var lastActive = Date()
+    private var sendingSince: Date?
+    /// Ends the wait for data under way, when there is one, as `close` must: a connection closed
+    /// from outside, because nobody wants to wait on it any more, fails whatever waits on it at
+    /// once rather than whenever the network says so.
+    private var abortReceive: (@Sendable () -> Void)?
 
     public init(host: String, port: UInt16, tls: Bool = true, tap: TrafficTap = .none) {
         self.host = host
@@ -79,12 +87,30 @@ public actor StreamConnection {
 
     public func send(_ data: Data) async throws {
         guard !isClosed else { throw FalconError.network("connection closed") }
+        if sendingSince == nil { sendingSince = Date() }
+        defer {
+            sendingSince = nil
+            lastActive = Date()
+        }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             connection.send(content: data, completion: .contentProcessed { error in
                 if let error { cont.resume(throwing: FalconError.network(error.localizedDescription)) } else { cont.resume() }
             })
         }
         tap.sent(data.count)
+    }
+
+    /// How long the connection has been quiet: nothing received and no send finished. A send
+    /// under way counts as activity for up to `sendAllowance` seconds, so that a large message
+    /// going up a slow line is not taken for a dead one; one taking longer, as a send into a
+    /// path that died does, counts from when it began.
+    public func quietFor(sendAllowance: TimeInterval = 120) -> TimeInterval {
+        let now = Date()
+        if let since = sendingSince {
+            let sending = now.timeIntervalSince(since)
+            return sending < sendAllowance ? 0 : sending
+        }
+        return now.timeIntervalSince(lastActive)
     }
 
     public func send(line: String) async throws {
@@ -102,6 +128,8 @@ public actor StreamConnection {
     private func fill(deadline: TimeInterval?) async throws {
         let box = ResumeOnce()
         let connection = connection
+        let abort = ReceiveAbort()
+        abortReceive = { abort.fire() }
         let result: Received
         do {
             result = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Received, Error>) in
@@ -113,17 +141,24 @@ public actor StreamConnection {
                         }
                     }
                 }
+                abort.arm {
+                    timer?.cancel()
+                    box.run { cont.resume(throwing: FalconError.network("connection closed")) }
+                }
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, isComplete, error in
                     timer?.cancel()
                     box.run { cont.resume(returning: Received(data: data, isComplete: isComplete, error: error)) }
                 }
             }
         } catch {
+            abortReceive = nil
             isClosed = true
             throw error
         }
+        abortReceive = nil
         if let error = result.error { isClosed = true; throw FalconError.network(error.localizedDescription) }
         if let data = result.data, !data.isEmpty {
+            lastActive = Date()
             buffer.append(data)
             tap.received(data.count)
         }
@@ -158,6 +193,9 @@ public actor StreamConnection {
     public func close() {
         isClosed = true
         connection.cancel()
+        let abort = abortReceive
+        abortReceive = nil
+        abort?()
     }
 }
 
@@ -172,6 +210,33 @@ private final class Deadline: @unchecked Sendable {
 
     func cancel() {
         work.cancel()
+    }
+}
+
+/// Ends a wait for data from outside, once the wait has begun, or at once if it begins after.
+private final class ReceiveAbort: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+    private var fired = false
+
+    func arm(_ body: @escaping () -> Void) {
+        lock.lock()
+        if fired {
+            lock.unlock()
+            body()
+            return
+        }
+        action = body
+        lock.unlock()
+    }
+
+    func fire() {
+        lock.lock()
+        fired = true
+        let body = action
+        action = nil
+        lock.unlock()
+        body?()
     }
 }
 

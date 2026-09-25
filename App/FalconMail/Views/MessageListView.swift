@@ -192,9 +192,14 @@ struct MessageListView: View {
     }
 
     private var rowList: some View {
-        @Bindable var model = model
+        // Every choice the owner makes in the list goes through `selectFromList`, which gives
+        // the reading pane back to the selection when a tab had it.
+        let chosen = Binding(get: { model.selectedMessageIDs }, set: { ids in
+            let event = NSApp.currentEvent?.type
+            model.selectFromList(ids, byOwner: event == .leftMouseDown || event == .leftMouseUp || event == .keyDown)
+        })
         return ScrollViewReader { proxy in
-            List(model.rows, selection: $model.selectedMessageIDs) { row in
+            List(model.rows, selection: chosen) { row in
                 rowView(row)
                     .tag(row.id)
                     .listRowInsets(EdgeInsets())
@@ -213,7 +218,15 @@ struct MessageListView: View {
                 today = Date()
             }
             .background(ListTableTuner())
-            .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest, conversation: t) { openWindow(value: $0) } } })
+            .background(DoubleClickMonitor(action: {
+                if let t = model.currentThread { model.openMessage(t.latest, conversation: t) { openWindow(value: $0) } }
+            }, onClick: { row in
+                if let row, model.rows.indices.contains(row), !model.rows[row].isGroup {
+                    model.selectFromList([model.rows[row].id])
+                } else {
+                    model.showSelectionInReader()
+                }
+            }))
             .onKeyPress(.return) {
                 guard let t = model.currentThread else { return .ignored }
                 model.openMessage(t.latest, conversation: t) { openWindow(value: $0) }
