@@ -99,6 +99,7 @@ final class HookedGmailTransport: GmailTransport, GmailServerClock, @unchecked S
     private var _offset: TimeInterval?
     private var _listCalls: [GmailListQuery] = []
     private var _log: [GmailMethod] = []
+    private var _trace: [String] = []
 
     init(_ inner: any GmailTransport) { self.inner = inner }
 
@@ -121,13 +122,16 @@ final class HookedGmailTransport: GmailTransport, GmailServerClock, @unchecked S
     var listCalls: [GmailListQuery] { lock.withLock { _listCalls } }
     /// Every call in the order it came, a batch as the methods of its parts.
     var log: [GmailMethod] { lock.withLock { _log } }
-    func clearLog() { lock.withLock { _log.removeAll(); _listCalls.removeAll() } }
+    func clearLog() { lock.withLock { _log.removeAll(); _listCalls.removeAll(); _trace.removeAll() } }
+    /// Every call in order, a list call with what it lists: `list:INBOX:100`, `list:all:500`.
+    var trace: [String] { lock.withLock { _trace } }
 
     func gmailClockOffset() async -> TimeInterval? { lock.withLock { _offset } }
 
-    private func enter(_ method: GmailMethod) throws {
+    private func enter(_ method: GmailMethod, detail: String? = nil) throws {
         let (hook, failure) = lock.withLock { () -> ((() -> Void)?, GoogleAPIError?) in
             _log.append(method)
+            _trace.append(detail ?? method.rawValue)
             let hook = hooks[method]?.isEmpty == false ? hooks[method]!.removeFirst() : nil
             var failure: GoogleAPIError?
             if let i = failures.firstIndex(where: { $0.method == method }) { failure = failures.remove(at: i).error }
@@ -150,7 +154,8 @@ final class HookedGmailTransport: GmailTransport, GmailServerClock, @unchecked S
             return listHook
         }
         hook?(query)
-        try enter(.messagesList)
+        let what = query.labels.isEmpty ? (query.query == nil ? "all" : "search") : query.labels.map(\.value).joined(separator: "+")
+        try enter(.messagesList, detail: "list:\(what):\(query.maxResults)")
         return try await inner.list(query, work: work)
     }
     func history(since start: HistoryID, types: Set<GmailHistoryType>, label: GmailLabelID?, pageToken: String?,
@@ -256,7 +261,7 @@ struct GmailEngineRig {
 }
 
 /// Waits, in real time, until `condition` holds, for work the engine does in tasks of its own.
-func waitUntil(timeout: TimeInterval = 10, _ what: String = "condition", _ condition: () async -> Bool) async throws {
+func eventually(timeout: TimeInterval = 10, _ what: String = "condition", _ condition: () async -> Bool) async throws {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
         if await condition() { return }

@@ -368,6 +368,68 @@ final class GmailHistoryTests: XCTestCase {
         await rig.finish()
     }
 
+    // MARK: - Another app importing (§4.3 step 5)
+
+    /// §14.3: a flood of 25,000 from another app, at olm2cloud's recommended 150 a minute, costs at
+    /// most 40,000 units at 200,000 messages, announces none of it, and still announces real new
+    /// mail that comes in meanwhile.
+    func testAFloodOfImportsFromAnotherAppAt200kStaysCheapAndQuiet() async throws {
+        var settings = GmailEngineSettings()
+        settings.fillsCache = false
+        let gmail = GmailFixtureMailbox.fixture(.large)
+        let clock = ManualGmailClock(gmail.now)
+        let rig = GmailEngineRig(transport: gmail, clock: clock, settings: settings)
+        await rig.engine.runBackfill()
+        let phase = await rig.engine.state.backfill?.phase
+        XCTAssertEqual(phase, .complete)
+        _ = await rig.engine.check(reason: .schedule)
+        rig.events.clear()
+        let target = gmail.addUserLabel(named: "Outlook/Imported")
+        let before = gmail.totalUnits
+        let old = gmail.now.addingTimeInterval(-3 * 365 * day)
+        var imported: [GmailRef] = []
+        var real: [GmailRef] = []
+        var sawFloodMode = false
+        var step = 0
+        func tick() async {
+            clock.advance(by: 30)
+            _ = await rig.engine.check(reason: .schedule)
+            await rig.engine.maintenance(at: clock.now())
+            await rig.engine.relistTask?.value
+            if gmail.isFloodMode { sawFloodMode = true }
+        }
+        while imported.count < 25_000 {
+            let count = min(75, 25_000 - imported.count)
+            let from = old.addingTimeInterval(Double(imported.count) * 600)
+            imported += gmail.importFromOtherApp(count: count, datedFrom: from, to: from.addingTimeInterval(Double(count) * 600), labels: [target])
+            if step % 100 == 50 { real.append(gmail.add(date: clock.now().addingTimeInterval(-2), labels: [.inbox, .unread])) }
+            step += 1
+            await tick()
+        }
+        // Half an hour with no more ends it, with one last listing.
+        for _ in 0..<62 { await tick() }
+
+        let spent = gmail.totalUnits - before
+        print("flood: \(spent) units over \(step) checks")
+        XCTAssertLessThanOrEqual(spent, 40_000)
+        XCTAssertTrue(sawFloodMode, "FalconMail used less of the shared budget while it lasted")
+        XCTAssertFalse(gmail.isFloodMode)
+        let flooding = await rig.engine.flood.isActive
+        XCTAssertFalse(flooding)
+        XCTAssertEqual(rig.events.announced.flatMap { $0 }.compactMap(\.gmailID), real.map(\.id), "only the real new mail is announced")
+        let snapshot = await rig.store.index()
+        XCTAssertEqual(snapshot.byOrder.count, gmail.count)
+        let unsettled = snapshot.byOrder.filter { snapshot.records[Int($0)].attributes.contains(.provisional) }.count
+        XCTAssertEqual(unsettled, 0, "every imported message has its place once the flood is over")
+        for ref in [imported[0], imported[12_345], imported[24_999]] {
+            let slot = try XCTUnwrap(snapshot.slotByID[ref.id.raw])
+            XCTAssertTrue(snapshot.record(atSlot: slot, has: target), "the imported folder's label is on its messages")
+        }
+        let order = snapshot.byOrder.reversed().map { snapshot.records[Int($0)].id }
+        XCTAssertEqual(order, gmail.newestFirst.map(\.id.raw), "and every message is where Gmail has it")
+        await rig.finish()
+    }
+
     // MARK: - FalconMail's own imports (§9.1)
 
     func testFalconMailsOwnImportNeverFloodsOrAnnounces() async throws {
@@ -557,7 +619,7 @@ final class GmailHistoryTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.2)
         }
         let first = Task { await rig.engine.check(reason: .schedule) }
-        try await waitUntil { entered.isSet }
+        try await eventually { entered.isSet }
         let others = (0..<3).map { _ in Task { await rig.engine.check(reason: .schedule) } }
         _ = await first.value
         for task in others { _ = await task.value }

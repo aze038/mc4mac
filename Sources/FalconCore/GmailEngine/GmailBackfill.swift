@@ -488,6 +488,7 @@ extension GmailAccountEngine {
     // MARK: - The first load
 
     func runBackfill() async {
+        await loadIfNeeded()
         do {
             if cursor == nil || state.backfill == nil { try await backfillStart() }
             guard state.backfill != nil else { return }
@@ -910,8 +911,12 @@ extension GmailAccountEngine {
         var members = given ?? [:]
         if given == nil { members = threadMembers(await store.index()) }
         var summaries: [GmailThreadSummary] = []
+        let kept = await store.threadSummaries(Array(threads))
         for thread in threads {
             let ids = members[thread.raw] ?? []
+            // A summary that already names every message of the conversation, such as the one the
+            // first screen kept, is still right.
+            if let summary = kept[thread], Set(summary.members.map(\.id)) == Set(ids) { continue }
             let cached = await store.cachedMessages(ids)
             if !ids.isEmpty, cached.count == ids.count {
                 if let summary = GmailMessageBuilder.threadSummary(thread, cached: Array(cached.values)) { summaries.append(summary) }
