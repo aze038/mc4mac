@@ -136,12 +136,24 @@ struct MainWindow: View {
 struct StatusBar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openWindow) private var openWindow
+    /// The engine's list, once the window shows one: Items is then every message of the view, not
+    /// the rows loaded, and "up to date" waits until every folder shown has been listed in full.
+    @Environment(ListController.self) private var list: ListController?
 
     /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail. Nothing is claimed
     /// to be up to date while an account cannot sync; what stops it is shown on its own.
     private var stateText: String? {
         guard model.statusText == "Up to date" || model.statusText == "Ready" else { return model.statusText }
+        if let list { return list.stateText(everyAccountReachable: model.everyAccountReachable) }
         return model.everyAccountReachable ? "All folders are up to date." : nil
+    }
+
+    @ViewBuilder private var itemsLabel: some View {
+        if let list {
+            Text(verbatim: list.itemsText)
+        } else {
+            Text("Items: \(model.itemCount)")
+        }
     }
 
     private var connectedText: String? {
@@ -151,7 +163,7 @@ struct StatusBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("Items: \(model.itemCount)")
+            itemsLabel
                 .font(.system(size: OL.statusFont).monospacedDigit())
                 .foregroundStyle(OLColor.text)
                 .padding(.leading, OL.statusLeftX)
@@ -181,7 +193,7 @@ struct StatusBar: View {
             actionErrorCapsule
             undoCapsule
             sendingCapsules
-            if let summary = model.syncingSummary {
+            if let summary = list?.syncProgress?.text ?? model.syncingSummary {
                 ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
                 Text(summary).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
             } else if let stateText {
