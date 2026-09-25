@@ -346,18 +346,25 @@ struct ReaderActionButton: View {
 }
 
 /// A message in its own window, the way Outlook opens one on a double-click: its own title row,
-/// a Message ribbon whose every action works on this message, then the message. It minimises
-/// into the tray as a compose window does.
+/// a Message ribbon whose every action works on this message, then the message. Opened from a
+/// conversation's row, the window is its newest message's and shows every message of the
+/// conversation as the reading pane does. It minimises into the tray as a compose window does.
 struct MessageWindowView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let messageID: String
     @State private var message: MessageSummary?
+    /// The conversation the window was opened for, all its messages; empty for a single message.
+    @State private var conversation: [MessageSummary]
+    @State private var conversationIDs: [String]
 
-    /// `message` is given only by the debug snapshots, which have no store to read it from.
-    init(messageID: String, message: MessageSummary? = nil) {
+    /// `message` and `conversation` are given only by the debug snapshots, which have no store to
+    /// read them from.
+    init(messageID: String, message: MessageSummary? = nil, conversation: [MessageSummary] = []) {
         self.messageID = messageID
         _message = State(initialValue: message)
+        _conversation = State(initialValue: conversation)
+        _conversationIDs = State(initialValue: conversation.map(\.id))
     }
 
     var body: some View {
@@ -367,7 +374,11 @@ struct MessageWindowView: View {
                     titleRow(message)
                     MessageWindowRibbon(message: message, close: { dismiss() })
                     Rectangle().fill(OLColor.chromeLine).frame(height: 1)
-                    MessageReaderView(message: message, context: .window)
+                    if conversation.count > 1 {
+                        ConversationStackView(messages: conversation, context: .window, afterReplying: { closeAfterReplying() })
+                    } else {
+                        MessageReaderView(message: message, context: .window)
+                    }
                 }
                 .background(OLColor.reading)
                 .overlay {
@@ -392,6 +403,7 @@ struct MessageWindowView: View {
         .onDisappear {
             model.openMessageWindows.remove(messageID)
             model.messageWindowRows[messageID] = nil
+            model.conversationWindows[messageID] = nil
             if model.movePaletteWindow == messageID { model.closeMovePalette() }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -401,10 +413,18 @@ struct MessageWindowView: View {
         if let current = await model.message(id: messageID) {
             message = current
             if model.openMessageWindows.contains(messageID) { model.messageWindowRows[messageID] = current }
+            if let ids = model.conversationWindows[messageID] { conversationIDs = ids }
+            if conversationIDs.count > 1 { conversation = await model.conversationMessages(conversationIDs, newest: current) }
         } else if message == nil {
             // A window brought back for a message that is no longer stored has nothing to show.
             dismiss()
         }
+    }
+
+    /// Settings → Composing: "Close the original message window after replying or forwarding",
+    /// for a card's own Reply, Reply All and Forward as for the ribbon's.
+    private func closeAfterReplying() {
+        if Preferences.bool(Pref.closeOriginalAfterReply, default: true) { dismiss() }
     }
 
     private func titleRow(_ message: MessageSummary) -> some View {

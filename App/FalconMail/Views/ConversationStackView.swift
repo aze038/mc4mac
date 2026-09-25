@@ -590,3 +590,20 @@ final class ReaderWebView: WKWebView {
         return document.isFlipped ? moved : bottom - moved
     }
 }
+
+extension AppModel {
+    /// The messages of the conversation a window or tab was opened for, the newest as given and
+    /// the others read again, from this Mac or from the search that found them; those gone since
+    /// are left out.
+    func conversationMessages(_ ids: [String], newest: MessageSummary) async -> [MessageSummary] {
+        var list: [MessageSummary] = []
+        for id in ids {
+            if id == newest.id {
+                list.append(newest)
+            } else if let found = await message(id: id) {
+                list.append(found)
+            }
+        }
+        return list
+    }
+}

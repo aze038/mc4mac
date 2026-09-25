@@ -226,6 +226,8 @@ extension AppModel {
     private func forgetServerRows() {
         var shown = openMessageWindows
         for case .message(let id) in tabs + minimizedTabs { shown.insert(id) }
+        // A window or tab showing a conversation shows all its messages.
+        for id in Array(shown) { shown.formUnion(conversationWindows[id] ?? []) }
         serverRows = serverRows.filter { shown.contains($0.key) }
         for id in openedServerOrder where !shown.contains(id) { forgetOpened(id) }
     }
