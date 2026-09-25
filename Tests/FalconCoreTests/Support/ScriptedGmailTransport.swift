@@ -13,6 +13,8 @@ final class ScriptedGmailTransport: GmailTransport, @unchecked Sendable {
     private var gates: [GmailMethod: Gate] = [:]
     private var lateGates: [GmailMethod: Gate] = [:]
     private var refusals: [GmailMethod: GoogleAPIError] = [:]
+    private var refusalsLater: [GmailMethod: (allowing: Int, error: GoogleAPIError)] = [:]
+    private var passed: [GmailMethod: Int] = [:]
     private var _dropsOriginalMessageID = false
     private var _uploads: [GmailMethod: [Data]] = [:]
 
@@ -50,6 +52,14 @@ final class ScriptedGmailTransport: GmailTransport, @unchecked Sendable {
         lock.withLock { refusals[method] = error }
     }
 
+    /// Lets `count` more calls to `method` through, then fails every later one with `error`.
+    func refuse(_ method: GmailMethod, with error: GoogleAPIError, afterAllowing count: Int) {
+        lock.withLock {
+            passed[method] = 0
+            refusalsLater[method] = (count, error)
+        }
+    }
+
     func release(_ method: GmailMethod) {
         lock.withLock { gates.removeValue(forKey: method) }?.open()
     }
@@ -70,7 +80,13 @@ final class ScriptedGmailTransport: GmailTransport, @unchecked Sendable {
     private func gate(_ method: GmailMethod) async throws {
         let gate = lock.withLock { gates[method] }
         await gate?.pass()
-        if let refusal = lock.withLock({ refusals[method] }) { throw refusal }
+        let refusal: GoogleAPIError? = lock.withLock {
+            if let standing = refusals[method] { return standing }
+            guard let later = refusalsLater[method] else { return nil }
+            passed[method, default: 0] += 1
+            return passed[method, default: 0] > later.allowing ? later.error : nil
+        }
+        if let refusal { throw refusal }
     }
 
     private func accepted(_ method: GmailMethod) async throws {
