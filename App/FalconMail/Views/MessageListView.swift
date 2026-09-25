@@ -96,7 +96,12 @@ struct MessageListView: View {
                         Text("Its mail shows here as soon as Gmail answers.")
                     }
                 } else if list.controller.rowCount == 0, list.controller.view != nil, !model.isSearching {
-                    ContentUnavailableView(emptyTitle, systemImage: model.filters.isEmpty ? "tray" : "line.3.horizontal.decrease.circle")
+                    if list.controller.isComplete {
+                        ContentUnavailableView(emptyTitle, systemImage: model.filters.isEmpty ? "tray" : "line.3.horizontal.decrease.circle")
+                    } else {
+                        // The folder is still being listed: its mail shows here as it comes.
+                        ProgressView("Loading…").padding()
+                    }
                 }
             }
     }

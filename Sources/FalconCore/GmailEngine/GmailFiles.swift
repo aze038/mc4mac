@@ -361,6 +361,28 @@ public actor GmailFileStore: GmailStore {
     // MARK: - The journal
 
     public func commit(_ batch: GmailJournalBatch) async throws {
+        try commitNow(batch)
+    }
+
+    public func placeIfAbsent(_ changes: [GmailChange]) async throws -> [GmailMessageID] {
+        try ensureLoaded()
+        var chosen: [GmailChange] = []
+        var ids: [GmailMessageID] = []
+        for change in changes {
+            guard case .place(let ref, let order, let labels, let attributes) = change, index.slot(of: ref.id) == nil else { continue }
+            // Labels another listing named while it waited for its place are kept.
+            let learnt = index.pending[ref.id.raw]?.labels ?? []
+            chosen.append(.place(ref, order: order, labels: labels.union(learnt), attributes: attributes))
+            ids.append(ref.id)
+        }
+        guard !chosen.isEmpty else { return [] }
+        try commitNow(GmailJournalBatch(changes: chosen))
+        return ids
+    }
+
+    /// With no suspension between reading the index and writing, so no listing page can come
+    /// between them.
+    private func commitNow(_ batch: GmailJournalBatch) throws {
         try ensureLoaded()
         guard let journal else { throw GmailDiskError.notLoaded }
         try journal.append(batch: batch.changes.map(GmailJournalEntry.change), cursor: batch.cursor)

@@ -233,6 +233,9 @@ struct GmailChainPlan: Sendable {
     var collects: Bool
     /// What a search teaches the index about every message it lists, such as having attachments.
     var attributes: GmailRecordAttributes = []
+    /// The class its requests take, when not the caller's: the folder the owner has open is
+    /// listed as work he is waiting for.
+    var work: WorkClass?
 }
 
 /// What listing the mailbox again decided.
@@ -311,7 +314,7 @@ extension GmailAccountEngine {
 
     /// Lists one chain to its end, one journaled page at a time. A page token Gmail no longer takes
     /// starts the chain again from the top, once; what is stored already stays.
-    func runChain(_ plan: GmailChainPlan, work: WorkClass) async throws -> (GmailListingChain, Set<UInt64>) {
+    func runChain(_ plan: GmailChainPlan, work asked: WorkClass) async throws -> (GmailListingChain, Set<UInt64>) {
         var token = plan.token
         var listed = plan.listed
         var ids: Set<UInt64> = []
@@ -320,6 +323,12 @@ extension GmailAccountEngine {
             try Task.checkCancellation()
             var query = plan.query
             query.pageToken = token
+            // The open folder's listing is work the owner waits for until its first pages show;
+            // the rest of it is background work like any other.
+            var work = asked
+            if let chosen = plan.work, case .label(let label) = plan.chain, aheadPlaced[label, default: 0] < settings.aheadPerFolder {
+                work = chosen
+            }
             let page: GmailListPage
             do {
                 page = try await transport.list(query, work: work)
@@ -355,7 +364,13 @@ extension GmailAccountEngine {
             if plan.top != nil {
                 await settleProvisional(page.refs)
                 reportListingProgress()
+            } else if case .label(let label) = plan.chain, aheadLabels.contains(label), state.backfill?.phase == .listing,
+                      aheadPlaced[label, default: 0] < settings.aheadPerFolder {
+                // The open folder's pages show now, not once All Mail reaches them.
+                await placeAhead(refs, labels: plan.labels, attributes: plan.attributes)
+                aheadPlaced[label, default: 0] += refs.count
             }
+            publishListedPage()
             token = page.nextPageToken
             if token == nil { break }
         }
@@ -374,6 +389,119 @@ extension GmailAccountEngine {
         } catch {
             Log.warning("gmail", "\(account.email): imported messages could not be shown yet", error: error, account: account)
         }
+    }
+
+    /// Tells the list that a page was saved, so its messages show as they are listed: at once,
+    /// then at most a few times a second while pages come quickly.
+    func publishListedPage() {
+        let current = ProcessInfo.processInfo.systemUptime
+        let interval: TimeInterval = 0.5
+        if let last = listingPublishedAt, current - last < interval {
+            guard !listingPublishWaiting else { return }
+            listingPublishWaiting = true
+            let wait = interval - (current - last)
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, wait) * 1_000_000_000))
+                await self.publishWaitingPage()
+            }
+            return
+        }
+        listingPublishedAt = current
+        publishIndexChange(ids: [], everything: true)
+    }
+
+    private func publishWaitingPage() {
+        listingPublishWaiting = false
+        listingPublishedAt = ProcessInfo.processInfo.systemUptime
+        publishIndexChange(ids: [], everything: true)
+    }
+
+    // MARK: - Showing a folder before All Mail reaches it
+
+    /// Where messages go that a folder's listing named before All Mail listed them: the room left
+    /// free at the bottom of the lowest band. All Mail is listed newest first, one band after the
+    /// other, so whatever it has not reached yet is older than everything it has placed, and
+    /// belongs below it. Each band leaves this much free, as its listing never needs more than
+    /// the mailbox's total and a twentieth.
+    func aheadRegion() -> ClosedRange<UInt32>? {
+        guard let backfill = state.backfill, backfill.phase == .listing,
+              let lowest = backfill.bands.filter({ $0.run == backfill.run }).map(\.top).min() else { return nil }
+        let size = GmailOrderSpace.band(for: backfill.total, above: 0).size
+        let bottom = lowest >= size ? lowest - size : 0
+        let room = UInt64(backfill.total / 12 + 500) * UInt64(GmailOrderSpace.step)
+        let top = min(UInt64(bottom) + room, UInt64(lowest) > 0 ? UInt64(lowest) - 1 : 0)
+        guard top > UInt64(bottom) + 1 else { return nil }
+        return (bottom + 1)...UInt32(top)
+    }
+
+    /// Messages shown ahead of All Mail that it has not given their place yet.
+    func aheadIDs(_ snapshot: GmailIndexSnapshot) -> [GmailMessageID] {
+        guard let region = aheadRegion() else { return [] }
+        var out: [GmailMessageID] = []
+        for slot in snapshot.byOrder {
+            let record = snapshot.records[Int(slot)]
+            if record.order > region.upperBound { break }
+            if region.contains(record.order) { out.append(record.gmailID) }
+        }
+        return out
+    }
+
+    /// Places the messages a folder's listing named that the index does not hold yet, below
+    /// everything All Mail has placed, newest highest, so they show at once in the folder's
+    /// order. All Mail moves each to its exact place when it lists it; nothing is placed twice,
+    /// and a message deleted meanwhile is not brought back.
+    @discardableResult
+    func placeAhead(_ refs: [GmailRef], labels: Set<GmailLabelID>, attributes: GmailRecordAttributes = []) async -> Int {
+        guard !refs.isEmpty, let region = aheadRegion() else { return 0 }
+        let snapshot = await store.index()
+        let fresh = refs.filter { snapshot.slotByID[$0.id.raw] == nil }
+        guard !fresh.isEmpty else { return 0 }
+        if aheadNext == nil {
+            // Resuming: below whatever was shown ahead before.
+            var next = region.upperBound
+            for slot in snapshot.byOrder {
+                let order = snapshot.records[Int(slot)].order
+                if order > region.upperBound { break }
+                if region.contains(order) { next = min(next, order &- 1) }
+            }
+            aheadNext = next
+        }
+        guard var next = aheadNext, UInt64(next) >= UInt64(region.lowerBound) + UInt64(fresh.count) else {
+            Log.info("gmail", "\(account.email): no more room to show messages ahead of the listing; they show as it reaches them")
+            return 0
+        }
+        var changes: [GmailChange] = []
+        for ref in fresh {
+            changes.append(.place(ref, order: next, labels: labels, attributes: attributes))
+            next -= 1
+        }
+        aheadNext = next
+        do {
+            let placed = try await store.placeIfAbsent(changes)
+            if !placed.isEmpty { publishListedPage() }
+            return placed.count
+        } catch {
+            Log.warning("gmail", "\(account.email): a folder's newest messages could not be shown yet", error: error, account: account)
+            return 0
+        }
+    }
+
+    /// A folder opened while the mailbox is first listed: its newest page, listed and shown now.
+    func showFirstPage(of label: GmailLabelID) async {
+        guard state.backfill?.phase == .listing, firstPagesShown.insert(label).inserted else { return }
+        do {
+            let page = try await transport.list(GmailListQuery(labels: [label], includeSpamTrash: true, maxResults: min(100, settings.pageSize)),
+                                                work: .interactive)
+            await placeAhead(await withoutHeld(page.refs, labels: [label]), labels: [label])
+        } catch {
+            firstPagesShown.remove(label)
+            Log.info("gmail", "\(account.email): a folder's newest page could not be listed yet; it shows as the listing reaches it")
+        }
+    }
+
+    private func withoutHeld(_ refs: [GmailRef], labels: Set<GmailLabelID>) async -> [GmailRef] {
+        guard !labels.isEmpty, let held = await parts.actions?.heldLabels(engine: self), !held.isEmpty else { return refs }
+        return refs.filter { labels.isDisjoint(with: held.labels(for: $0.id)) }
     }
 
     /// The status bar's progress while All Mail is listed, in FalconMail's existing words.
@@ -544,12 +672,22 @@ extension GmailAccountEngine {
         labelEntries = try await store.saveLabelTable(entries)
         try await store.commit(GmailJournalBatch(changes: [], cursor: start))
         cursor = cursor.map { max($0, start) } ?? start
-        state.backfill = GmailEngineState.Backfill(startHistory: start, startedAt: await gmailNow(),
-                                                   run: nextRun(for: [.allMail(after: nil, before: nil)]), bands: [],
-                                                   phase: .listing, total: profile.messagesTotal ?? 0)
+        var backfill = GmailEngineState.Backfill(startHistory: start, startedAt: await gmailNow(),
+                                                 run: nextRun(for: [.allMail(after: nil, before: nil)]), bands: [],
+                                                 phase: .listing, total: profile.messagesTotal ?? 0)
+        backfill.bands = allMailBands(total: backfill.total, run: backfill.run)
+        ceiling = max(ceiling, backfill.bands.map(\.top).max() ?? ceiling)
+        state.backfill = backfill
         saveState(force: true)
         wakeLoop()
-        await firstScreen(try await inboxPage.refs)
+        // The Inbox's newest page takes its places now, so its rows show at once, grey until
+        // their text comes; the rest of the mailbox fills in below as it is listed.
+        let firstRefs = try await inboxPage.refs
+        aheadNext = nil
+        aheadPlaced = [:]
+        firstPagesShown = [.inbox]
+        await placeAhead(await withoutHeld(firstRefs, labels: [.inbox]), labels: [.inbox])
+        await firstScreen(firstRefs)
         // The addresses the owner sends as are his own, so his mail from them is never announced.
         if let addresses = try? await transport.sendAs(work: .background(.index)) {
             state.sendAs = addresses.map { $0.sendAsEmail.lowercased() }
@@ -600,9 +738,12 @@ extension GmailAccountEngine {
         publishRows(rows)
     }
 
-    /// Step 3: All Mail, in slices by year when the mailbox is large, and every label list, side by
-    /// side, with the selected folder's list first. A listing that stopped resumes from its last
-    /// saved page. Messages a label listed that All Mail never placed are placed one by one.
+    /// Step 3: All Mail, newest first, one year's slice after the other when the mailbox is
+    /// large, beside every label list, the open folder's first and as work the owner waits for.
+    /// Each page shows as soon as it is saved: All Mail's in every folder whose listing has named
+    /// its messages, and the open folder's (and the Inbox's) at once, ahead of All Mail, below
+    /// everything All Mail has placed. A listing that stopped resumes from its last saved page.
+    /// Messages a label listed that All Mail never placed are placed one by one at the end.
     func backfillListing() async throws {
         guard var backfill = state.backfill else { return }
         if backfill.bands.isEmpty {
@@ -611,13 +752,7 @@ extension GmailAccountEngine {
             state.backfill = backfill
             saveState(force: true)
         }
-        // All Mail's own ids are not needed afterwards; the labels' are, to find what it skipped.
-        var plans: [GmailChainPlan] = backfill.bands.map { plan($0.chain, run: $0.run, top: $0.top, collects: false) }
-        let selected: GmailLabelID? = selectedLabel ?? .inbox
-        var labels = labelChains()
-        if let selected, let at = labels.firstIndex(of: .label(selected)) { labels.insert(labels.remove(at: at), at: 0) }
-        plans += labels.map { plan($0, run: backfill.run, collects: true) }
-        plans = plans.compactMap { plan in
+        func resumed(_ plan: GmailChainPlan) -> GmailChainPlan? {
             var plan = plan
             guard let progress = chainProgress[plan.chain], progress.run == plan.run else { return plan }
             if progress.isComplete { return nil }
@@ -625,10 +760,49 @@ extension GmailAccountEngine {
             plan.listed = progress.listed
             return plan
         }
-        let listed = try await runChains(plans, work: .background(.index))
+        // Newest slice first; its band is the highest.
+        let bands = backfill.bands.sorted { $0.top > $1.top }.compactMap { resumed(plan($0.chain, run: $0.run, top: $0.top, collects: false)) }
+        let selected: GmailLabelID? = selectedLabel ?? .inbox
+        var labels = labelChains()
+        if let at = labels.firstIndex(of: .label(.inbox)) { labels.insert(labels.remove(at: at), at: 0) }
+        if let selected, let at = labels.firstIndex(of: .label(selected)) { labels.insert(labels.remove(at: at), at: 0) }
+        if let selected { aheadLabels.insert(selected) }
+        queuedLabelPlans = labels.compactMap { chain in
+            guard var labelPlan = resumed(plan(chain, run: backfill.run, collects: true)) else { return nil }
+            if case .label(let label) = chain, aheadLabels.contains(label) { labelPlan.work = .interactive }
+            return labelPlan
+        }
+        // A listing resumed after a stop, or one 1.11.0 began, shows the open folder's and the
+        // Inbox's newest page first, whatever their own listings had reached.
+        for label in [GmailLabelID.inbox] + (selected.map { [$0] } ?? []) where !firstPagesShown.contains(label) {
+            await showFirstPage(of: label)
+        }
+
+        var listed: [GmailListingChain: Set<UInt64>] = [:]
+        let workers = min(max(1, settings.chainsAtOnce - 1), max(1, queuedLabelPlans.count))
+        try await withThrowingTaskGroup(of: [GmailListingChain: Set<UInt64>].self) { group in
+            group.addTask {
+                for band in bands { _ = try await self.runChain(band, work: .background(.index)) }
+                return [:]
+            }
+            for _ in 0..<workers {
+                group.addTask {
+                    var out: [GmailListingChain: Set<UInt64>] = [:]
+                    while let next = await self.nextQueuedLabelPlan() {
+                        let (chain, ids) = try await self.runChain(next, work: .background(.index))
+                        if !ids.isEmpty { out[chain] = ids }
+                    }
+                    return out
+                }
+            }
+            for try await found in group { listed.merge(found) { $0.union($1) } }
+        }
+        queuedLabelPlans = []
 
         // Ids a label listed that the index still lacks: All Mail skipped them, as happens when
-        // mail comes or goes above the page being read. They are placed, never ignored.
+        // mail comes or goes above the page being read. They are placed, never ignored. So are
+        // messages shown ahead that All Mail never listed, which still have the place given
+        // for showing them.
         let snapshot = await store.index()
         var missing: [GmailMessageID] = []
         var seen: Set<UInt64> = []
@@ -636,10 +810,15 @@ extension GmailAccountEngine {
             if case .allMail = chain { continue }
             for raw in ids where seen.insert(raw).inserted && snapshot.slotByID[raw] == nil { missing.append(GmailMessageID(raw: raw)) }
         }
+        for id in aheadIDs(snapshot) where seen.insert(id.raw).inserted { missing.append(id) }
         missing.sort()
         guard !missing.isEmpty else { return }
         Log.info("gmail", "\(account.email): \(missing.count) messages listed in a folder but not in All Mail; placing them")
         try await placeListedOnly(missing, work: .background(.index))
+    }
+
+    func nextQueuedLabelPlan() -> GmailChainPlan? {
+        queuedLabelPlans.isEmpty ? nil : queuedLabelPlans.removeFirst()
     }
 
     /// Places messages the index lacks although a listing named them.

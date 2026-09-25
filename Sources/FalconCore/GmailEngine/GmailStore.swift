@@ -32,6 +32,11 @@ public protocol GmailStore: AnyObject, Sendable {
     /// Appends one page of a listing, which counts on load whether or not a cursor follows. A page
     /// only places messages and sets bits; it never removes anything.
     func appendListingPage(_ page: GmailListingPage) async throws
+    /// Journals and applies the `.place` changes of messages the index has never held, in one
+    /// step with the looking, and returns their ids: a message a listing placed meanwhile keeps
+    /// the place it gave, and one deleted since is not brought back. Labels a listing named
+    /// while the message waited for its place are added. Other changes are ignored.
+    func placeIfAbsent(_ changes: [GmailChange]) async throws -> [GmailMessageID]
     /// Rewrites the snapshot and empties the journal. The store also does this by itself once the
     /// journal is long; the engine asks at quit.
     func compact() async throws
@@ -85,6 +90,22 @@ public protocol GmailStore: AnyObject, Sendable {
     /// starts flood mode, and never runs rules or notifications. Kept for 7 days.
     func noteImported(_ ids: [GmailMessageID], at date: Date) async throws
     func wasImported(_ id: GmailMessageID) async -> Bool
+}
+
+extension GmailStore {
+    /// For a store that cannot do it in one step, as a test's may not; the store on disk does.
+    public func placeIfAbsent(_ changes: [GmailChange]) async throws -> [GmailMessageID] {
+        var chosen: [GmailChange] = []
+        var ids: [GmailMessageID] = []
+        for change in changes {
+            guard case .place(let ref, _, _, _) = change, await record(for: ref.id) == nil else { continue }
+            chosen.append(change)
+            ids.append(ref.id)
+        }
+        guard !chosen.isEmpty else { return [] }
+        try await commit(GmailJournalBatch(changes: chosen))
+        return ids
+    }
 }
 
 // MARK: - The index

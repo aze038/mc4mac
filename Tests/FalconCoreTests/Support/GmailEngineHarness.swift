@@ -302,6 +302,13 @@ final class RecordingGmailStore: GmailStore, @unchecked Sendable {
         try await inner.appendListingPage(page)
         lock.withLock { _pages.append(page) }
     }
+    func placeIfAbsent(_ changes: [GmailChange]) async throws -> [GmailMessageID] {
+        let placed = try await inner.placeIfAbsent(changes)
+        let wanted = Set(placed.map(\.raw))
+        let applied = changes.filter { if case .place(let ref, _, _, _) = $0 { return wanted.contains(ref.id.raw) } else { return false } }
+        if !applied.isEmpty { lock.withLock { _batches.append(GmailJournalBatch(changes: applied)) } }
+        return placed
+    }
     func compact() async throws { try await inner.compact() }
     func labelTable() async -> [GmailLabelEntry] { await inner.labelTable() }
     @discardableResult

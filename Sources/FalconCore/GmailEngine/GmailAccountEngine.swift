@@ -63,6 +63,9 @@ public struct GmailEngineSettings: Sendable {
     public var chainsAtOnce = 8
     public var pageSize = 500
     public var firstScreenRows = 15
+    /// While the mailbox is first listed, how many of the open folder's messages its own listing
+    /// shows before All Mail reaches them; All Mail shows the rest as it lists them.
+    public var aheadPerFolder = 2_000
     /// Up to this many added messages in one check are fetched whole at once.
     public var fetchedOneByOne = 10
     /// Keeps the newest 1,000 on the Mac; tests of listing alone turn it off.
@@ -307,6 +310,21 @@ public actor GmailAccountEngine: MailAccountEngine {
     var lastPause: GmailPause?
     var sendAsAddresses: Set<String> = []
     var selectedLabel: GmailLabelID??
+    /// Folders whose newest page was listed and shown during this run of the first listing.
+    var firstPagesShown: Set<GmailLabelID> = []
+    /// While the first listing runs, the label listings not begun yet, the folder open first.
+    var queuedLabelPlans: [GmailChainPlan] = []
+    /// Folders whose listed messages are shown at once while the first listing runs, before All
+    /// Mail reaches them: the Inbox and each folder the owner opens.
+    var aheadLabels: Set<GmailLabelID> = [.inbox]
+    /// The next order a message shown ahead of All Mail is given, counting down.
+    var aheadNext: UInt32?
+    /// How many of each folder's messages its own listing has listed to show at once.
+    var aheadPlaced: [GmailLabelID: Int] = [:]
+    /// When the list was last told of listed pages, by the Mac's uptime: a fast listing is shown
+    /// a few times a second rather than at every page.
+    var listingPublishedAt: TimeInterval?
+    var listingPublishWaiting = false
     var undoWindow: TimeInterval = 10
     var pinned: [String: Set<GmailMessageID>] = [:]
     var updatesOther = false
@@ -575,8 +593,19 @@ public actor GmailAccountEngine: MailAccountEngine {
     }
 
     /// The view the owner has open, whose folder is listed first while the index is built.
+    ///
+    /// While the mailbox is first listed, a folder whose newest mail has not shown yet has its
+    /// newest page listed and shown at once, and its own listing goes next, ahead of the rest.
     public func noteSelectedFolder(_ label: GmailLabelID?) {
         selectedLabel = .some(label)
+        guard let label, cursor != nil, state.backfill?.phase == .listing else { return }
+        aheadLabels.insert(label)
+        if let at = queuedLabelPlans.firstIndex(where: { $0.chain == .label(label) }) {
+            var plan = queuedLabelPlans.remove(at: at)
+            plan.work = .interactive
+            queuedLabelPlans.insert(plan, at: 0)
+        }
+        if !firstPagesShown.contains(label) { Task { await self.showFirstPage(of: label) } }
     }
 
     /// "Show All Gmail Labels" turned on or off. The labels are read again at once, or once the
