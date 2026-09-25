@@ -213,10 +213,10 @@ struct MessageListView: View {
                 today = Date()
             }
             .background(ListTableTuner())
-            .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } })
+            .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest, conversation: t) { openWindow(value: $0) } } })
             .onKeyPress(.return) {
                 guard let t = model.currentThread else { return .ignored }
-                model.openMessage(t.latest) { openWindow(value: $0) }
+                model.openMessage(t.latest, conversation: t) { openWindow(value: $0) }
                 return .handled
             }
             .onKeyPress(.rightArrow) { model.expandCurrent() ? .handled : .ignored }

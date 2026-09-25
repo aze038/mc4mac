@@ -79,7 +79,6 @@ struct MessageReaderView: View {
                     .padding(.leading, OL.readingSenderX - OL.readingAvatarX - OL.readingAvatar)
                     .padding(.trailing, OL.readingRightInset)
             }
-            conversationHint
             if message.isServerOnly {
                 if !serverAttachments.isEmpty {
                     ServerAttachmentStrip(message: message, stubs: serverAttachments)
@@ -208,40 +207,6 @@ struct MessageReaderView: View {
     }
 
     private var thread: MessageThread { conversation ?? MessageThread(messages: [message]) }
-
-    /// Outlook's grey notice band under the header, here for a folded conversation.
-    @ViewBuilder private var conversationHint: some View {
-        if let conversation, conversation.messages.count > 1, !model.isExpanded(conversation), context == .pane {
-            HStack(spacing: 0) {
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 11))
-                    .foregroundStyle(OLColor.replyPurple)
-                    .frame(width: 16, height: 16)
-                    .padding(.leading, 6)
-                Text("\(conversation.messages.count) messages in this conversation. Showing the latest.")
-                    .font(.system(size: OL.readingMetaFont))
-                    .foregroundStyle(OLColor.text)
-                    .lineLimit(1)
-                    .padding(.leading, 8.5)
-                Spacer(minLength: 8)
-                Button { model.expand(conversation) } label: {
-                    Text("Show All")
-                        .font(.system(size: 11))
-                        .foregroundStyle(OLColor.text)
-                        .padding(.horizontal, 8)
-                        .frame(height: 16)
-                        .overlay(RoundedRectangle(cornerRadius: 3).stroke(OLColor.buttonBorder, lineWidth: 1))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.trailing, 10)
-            }
-            .frame(height: OL.readingNotice)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(OLColor.notice)
-            .padding(.top, 19)
-        }
-    }
 
     @ViewBuilder private var content: some View {
         if let rendered {
@@ -373,18 +338,29 @@ struct ReaderActionButton: View {
 }
 
 /// A message in its own window, the way Outlook opens one on a double-click: its own title row,
-/// a Message ribbon whose every action works on this message, then the message. It minimises
-/// into the tray as a compose window does.
+/// a Message ribbon whose every action works on this message, then the message. Opened from a
+/// conversation's row, the window is its newest message's and shows every message of the
+/// conversation as the reading pane does. It minimises into the tray as a compose window does.
 struct MessageWindowView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let messageID: String
     @State private var message: MessageSummary?
+    /// The conversation the window was opened for, all its messages; empty for a single message.
+    @State private var conversation: [MessageSummary]
+    @State private var conversationIDs: [String]
+    /// Whether the conversation's messages have been read, until when the window waits for them
+    /// rather than showing its newest message alone for a moment.
+    @State private var conversationRead: Bool
 
-    /// `message` is given only by the debug snapshots, which have no store to read it from.
-    init(messageID: String, message: MessageSummary? = nil) {
+    /// `message` and `conversation` are given only by the debug snapshots, which have no store to
+    /// read them from.
+    init(messageID: String, message: MessageSummary? = nil, conversation: [MessageSummary] = []) {
         self.messageID = messageID
         _message = State(initialValue: message)
+        _conversation = State(initialValue: conversation)
+        _conversationIDs = State(initialValue: conversation.map(\.id))
+        _conversationRead = State(initialValue: !conversation.isEmpty)
     }
 
     var body: some View {
@@ -394,7 +370,13 @@ struct MessageWindowView: View {
                     titleRow(message)
                     MessageWindowRibbon(message: message, close: { dismiss() })
                     Rectangle().fill(OLColor.chromeLine).frame(height: 1)
-                    MessageReaderView(message: message, context: .window)
+                    if conversation.count > 1 {
+                        ConversationStackView(messages: conversation, context: .window, afterReplying: { closeAfterReplying() })
+                    } else if !conversationRead, (model.conversationWindows[messageID]?.count ?? 0) > 1 {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        MessageReaderView(message: message, context: .window)
+                    }
                 }
                 .background(OLColor.reading)
                 .overlay {
@@ -419,6 +401,7 @@ struct MessageWindowView: View {
         .onDisappear {
             model.openMessageWindows.remove(messageID)
             model.messageWindowRows[messageID] = nil
+            model.conversationWindows[messageID] = nil
             if model.movePaletteWindow == messageID { model.closeMovePalette() }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -428,10 +411,19 @@ struct MessageWindowView: View {
         if let current = await model.message(id: messageID) {
             message = current
             if model.openMessageWindows.contains(messageID) { model.messageWindowRows[messageID] = current }
+            if let ids = model.conversationWindows[messageID] { conversationIDs = ids }
+            if conversationIDs.count > 1 { conversation = await model.conversationMessages(conversationIDs, newest: current) }
         } else if message == nil {
             // A window brought back for a message that is no longer stored has nothing to show.
             dismiss()
         }
+        conversationRead = true
+    }
+
+    /// Settings → Composing: "Close the original message window after replying or forwarding",
+    /// for a card's own Reply, Reply All and Forward as for the ribbon's.
+    private func closeAfterReplying() {
+        if Preferences.bool(Pref.closeOriginalAfterReply, default: true) { dismiss() }
     }
 
     private func titleRow(_ message: MessageSummary) -> some View {
@@ -568,7 +560,8 @@ enum MessageRenderer {
         return false
     }
 
-    static func html(for parsed: MIMEMessage, allowRemote: Bool, dark: Bool, forceOriginal: Bool) -> String {
+    /// `inStack` for a card of the conversation stack, which leaves less room under the text.
+    static func html(for parsed: MIMEMessage, allowRemote: Bool, dark: Bool, forceOriginal: Bool, inStack: Bool = false) -> String {
         let csp = allowRemote
             ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
             : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
@@ -588,7 +581,7 @@ enum MessageRenderer {
         let inversion = inverted
             ? " html{filter:invert(0.885) hue-rotate(180deg);} img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg);}"
             : ""
-        let style = "<style>:root{color-scheme:light;} html,body{background:\(background);margin:0;}\(inversion) body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:12px 29px 30px 29px;word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
+        let style = "<style>:root{color-scheme:light;} html,body{background:\(background);margin:0;}\(inversion) body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:\(inStack ? "6px 29px 10px 29px" : "12px 29px 30px 29px");word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
         let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
@@ -607,19 +600,19 @@ enum MessageRenderer {
 
 @MainActor
 enum WebViewPool {
-    private static var free: [WKWebView] = []
+    private static var free: [ReaderWebView] = []
     private static let processPool = WKProcessPool()
     /// Remote images and whatever else a message loads are kept for this session only, in
     /// memory, never under ~/Library nor in WebKit's disk cache with its browser-sized limit.
     private static let dataStore = WKWebsiteDataStore.nonPersistent()
 
-    static func acquire() -> WKWebView {
+    static func acquire() -> ReaderWebView {
         if let v = free.popLast() { return v }
         let config = WKWebViewConfiguration()
         config.processPool = processPool
         config.websiteDataStore = dataStore
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        let view = WKWebView(frame: .zero, configuration: config)
+        let view = ReaderWebView(frame: .zero, configuration: config)
         view.underPageBackgroundColor = NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(hex: 0x1E1E1E) : .white
         }
@@ -627,8 +620,9 @@ enum WebViewPool {
         return view
     }
 
-    static func release(_ view: WKWebView) {
+    static func release(_ view: ReaderWebView) {
         view.navigationDelegate = nil
+        view.fitsContent = false
         view.loadHTMLString("", baseURL: nil)
         if free.count < 4 { free.append(view) }
     }
@@ -685,32 +679,43 @@ struct ReadingSubject: View {
 struct HTMLView: NSViewRepresentable {
     let html: String
     var sender: EmailAddress? = nil
+    /// Given for a card of the conversation stack: the message is then as tall as its text, told
+    /// here, and scrolls with the stack instead of on its own.
+    var onHeight: ((CGFloat) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> ReaderWebView {
         let view = MainActor.assumeIsolated { WebViewPool.acquire() }
         view.navigationDelegate = context.coordinator
+        view.fitsContent = onHeight != nil
+        view.onHeight = onHeight
         context.coordinator.lastHTML = ""
         context.coordinator.sender = sender
         return view
     }
 
-    func updateNSView(_ view: WKWebView, context: Context) {
+    func updateNSView(_ view: ReaderWebView, context: Context) {
         context.coordinator.sender = sender
+        view.onHeight = onHeight
         if context.coordinator.lastHTML != html {
             context.coordinator.lastHTML = html
+            view.willLoad()
             view.loadHTMLString(html, baseURL: nil)
         }
     }
 
-    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+    static func dismantleNSView(_ view: ReaderWebView, coordinator: Coordinator) {
         MainActor.assumeIsolated { WebViewPool.release(view) }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML = ""
         var sender: EmailAddress?
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            MainActor.assumeIsolated { (webView as? ReaderWebView)?.didLoad() }
+        }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {

@@ -450,6 +450,10 @@ final class AppModel {
     /// Messages opened from Gmail, held in memory only and never written to disk.
     @ObservationIgnored var openedServerMessages: [String: GmailOpenedMessage] = [:]
     @ObservationIgnored var openedServerOrder: [String] = []
+    /// The messages of the conversation each message window or tab was opened for, newest
+    /// first, by the id of the newest, which the window or tab is known by. A window or tab
+    /// opened for one message has none, and shows that message alone.
+    @ObservationIgnored var conversationWindows: [String: [String]] = [:]
     @ObservationIgnored var serverAttachmentBytes: [String: Data] = [:]
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored var openMainWindow: (@MainActor () -> Void)?
@@ -1433,6 +1437,19 @@ final class AppModel {
         }
     }
 
+    /// A message's text when it has been opened this session, found without fetching anything.
+    /// The conversation stack looks for it, and for the message's first words, in a later
+    /// message's quote; its words are worked out away from the main thread, and only when the
+    /// first words were not found.
+    func openedBody(of message: MessageSummary) -> MIMEMessage? {
+        bodyCache[message.id] ?? openedServerMessages[message.id]?.message
+    }
+
+    #if DEBUG
+    /// For the debug snapshots, which have no account to fetch a message's text from.
+    func snapshotBody(_ parsed: MIMEMessage, for id: String) { bodyCache[id] = parsed }
+    #endif
+
     func parsedBody(for message: MessageSummary) async -> MIMEMessage? {
         if message.isServerOnly { return await serverBody(for: message) }
         do {
@@ -1639,7 +1656,9 @@ final class AppModel {
             guard let current = self.threads.first(where: { $0.id == id }) else { return }
             self.readTask = nil
             self.pendingReadID = nil
-            self.markReadSilently(current.messages)
+            // The messages the reading pane shows open: the conversation stack opens every
+            // unread one, and a conversation of one message is that message.
+            self.markReadSilently(ConversationStack(current.messages).toMarkRead)
         }
     }
 
@@ -1881,19 +1900,30 @@ final class AppModel {
 
     /// Double-click, Return, Open in the File menu and Open in Separate Window. A draft in Drafts
     /// opens to be written; any other message opens to be read, in a window of its own unless
-    /// the owner chose tabs.
-    func openMessage(_ message: MessageSummary, forceWindow: Bool = false, openWindow: (String) -> Void) {
+    /// the owner chose tabs. Opened from a conversation's row, `conversation` is that
+    /// conversation, and its window or tab shows all its messages as the reading pane does.
+    func openMessage(_ message: MessageSummary, conversation: MessageThread? = nil, forceWindow: Bool = false,
+                     openWindow: (String) -> Void) {
         let inDrafts = folder(message.folderID)?.role == .drafts
         switch MessageOpening.destination(inDraftsFolder: inDrafts, opensInWindow: openInWindowOnDoubleClick, forceWindow: forceWindow) {
         case .editDraft:
             editStoredDraft(message)
         case .window:
             markReadOnOpen(message)
+            noteConversation(conversation, openedAs: message.id)
             showMessageWindow(message.id, openWindow: openWindow)
         case .tab:
             markReadOnOpen(message)
+            noteConversation(conversation, openedAs: message.id)
             openMessageTab(message)
         }
+    }
+
+    /// A window or tab already open for the message is brought forward as it is.
+    private func noteConversation(_ conversation: MessageThread?, openedAs id: String) {
+        guard let conversation, conversation.messages.count > 1, conversation.messages.contains(where: { $0.id == id }) else { return }
+        guard !openMessageWindows.contains(id), !(tabs + minimizedTabs).contains(.message(id)) else { return }
+        conversationWindows[id] = ConversationStack.newestFirst(conversation.messages).map(\.id)
     }
 
     /// Opening a message whose window is already open brings that window forward, out of the
@@ -2019,6 +2049,12 @@ final class AppModel {
         guard readPolicy != .never else { return }
         cancelPendingRead()
         markReadSilently(residentThread(containing: message)?.messages ?? [message])
+    }
+
+    /// A folded card of the conversation stack opened by a click is read, as a message opened is.
+    func markReadOnExpanding(_ message: MessageSummary) {
+        guard readPolicy != .never else { return }
+        markReadSilently([message])
     }
 
     func send(_ draft: ComposeDraft) throws {

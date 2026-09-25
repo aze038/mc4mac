@@ -260,12 +260,12 @@ struct FalconMailApp: App {
 
     private func openSelected() {
         guard let thread = model.currentThread else { return }
-        model.openMessage(thread.latest) { openWindow(value: $0) }
+        model.openMessage(thread.latest, conversation: thread) { openWindow(value: $0) }
     }
 
     private func openSelectedInWindow() {
         guard let thread = model.currentThread else { return }
-        model.openMessage(thread.latest, forceWindow: true) { openWindow(value: $0) }
+        model.openMessage(thread.latest, conversation: thread, forceWindow: true) { openWindow(value: $0) }
     }
 }
 

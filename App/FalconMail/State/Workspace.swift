@@ -48,6 +48,7 @@ extension AppModel {
         minimizedTabs.removeAll { $0 == tab }
         if activeTab == tab { activeTab = tabs.last }
         if case .compose(let id) = tab { closeUnsent(id) }
+        if case .message(let id) = tab, !openMessageWindows.contains(id) { conversationWindows[id] = nil }
         saveSession()
     }
 
@@ -342,15 +343,26 @@ struct MessageTabView: View {
     @Environment(AppModel.self) private var model
     let messageID: String
     @State private var message: MessageSummary?
+    /// The conversation the tab was opened for, all its messages; empty for a single message.
+    @State private var conversation: [MessageSummary] = []
+    @State private var conversationRead = false
 
     var body: some View {
         Group {
-            if let message {
+            if conversation.count > 1 {
+                ConversationStackView(messages: conversation, context: .tab)
+            } else if let message, conversationRead || (model.conversationWindows[messageID]?.count ?? 0) < 2 {
                 MessageReaderView(message: message, context: .tab, onDidAct: { model.closeTab(.message(messageID)) })
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: "\(messageID)|\(model.openMessagesRevision)") { message = await model.message(id: messageID) ?? message }
+        .task(id: "\(messageID)|\(model.openMessagesRevision)") {
+            message = await model.message(id: messageID) ?? message
+            if let message, let ids = model.conversationWindows[messageID] {
+                conversation = await model.conversationMessages(ids, newest: message)
+            }
+            conversationRead = true
+        }
     }
 }
