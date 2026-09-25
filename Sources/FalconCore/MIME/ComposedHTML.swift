@@ -21,20 +21,21 @@ public enum ComposedHTML {
 
     /// The same, from a body as a draft keeps it (see ComposedBody.stored).
     public static func content(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String,
-                               date: Date = Date()) -> Content {
+                               date: Date = Date(), font: ComposeFont = .outlook) -> Content {
         content(rich: ComposedBody.text(rtf: rtf, rtfd: rtfd), plain: plain, historyPlain: historyPlain, historyHTML: historyHTML,
-                date: date)
+                date: date, font: font)
     }
 
     /// The HTML part of a message from the composer: its rich text when it has any, else its
-    /// plain text. A reply or forward whose body still ends with the quoted original sends the
-    /// original's own HTML in place of that plain copy. Every picture, the composer's own and
-    /// the original's, is sent as Outlook sends it: once, as an inline part named image001.png
-    /// and on, the HTML showing it by `cid:` at the size it is shown in the composer. `date`
-    /// is when the message is put together, which each picture's Content-ID carries.
+    /// plain text, as Outlook writes it (see CompactHTML), inside one element that declares
+    /// `font`. A reply or forward whose body still ends with the quoted original sends the
+    /// original's own HTML in place of that plain copy (see QuotedHistory), what it carries for
+    /// the head in the head. Every picture, the composer's own and the original's, is sent as
+    /// Outlook sends it: once, as an inline part named image001.png and on, the HTML showing it
+    /// by `cid:` at the size it is shown in the composer. `date` is when the message is put
+    /// together, which each picture's Content-ID carries.
     public static func content(rich: NSAttributedString?, plain: String, historyPlain: String, historyHTML: String,
-                               date: Date = Date()) -> Content {
-        let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
+                               date: Date = Date(), font: ComposeFont = .outlook) -> Content {
         var pictures = InlinePictures.Collector(date: date)
         let plainOwn = historyHTML.isEmpty ? nil
             : ComposedBody.historyStart(in: plain, history: historyPlain).map { (plain as NSString).substring(to: $0) }
@@ -50,29 +51,44 @@ public enum ComposedHTML {
                 if let own {
                     pictures = collected
                     let history = InlinePictures.sendingDataURIs(in: historyHTML, into: &pictures)
-                    return Content(html: "<html><body style=\"\(style)\">\(own.html)\(history)</body></html>",
+                    return Content(html: document(own: CompactHTML.compact(own.html, font: font), history: history, font: font),
                                    plain: plainText(plain, marks: own.marks), pictures: pictures.pictures)
                 }
             }
             var collected = pictures
             if let whole = html(from: rich, pictures: &collected) {
-                return Content(html: "<html><body style=\"\(style)\">\(whole.html)</body></html>",
+                return Content(html: document(own: CompactHTML.compact(whole.html, font: font), history: "", font: font),
                                plain: plainText(plain, marks: whole.marks), pictures: collected.pictures)
             }
         }
         if let plainOwn {
             let history = InlinePictures.sendingDataURIs(in: historyHTML, into: &pictures)
-            return Content(html: "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(plainText(plainOwn, marks: [])))</div>\(history)</body></html>",
+            return Content(html: document(own: paragraphs(plainText(plainOwn, marks: [])), history: history, font: font),
                            plain: plainText(plain, marks: []), pictures: pictures.pictures)
         }
         let text = plainText(plain, marks: [])
-        return Content(html: "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(text))</body></html>",
-                       plain: text, pictures: [])
+        return Content(html: document(own: paragraphs(text), history: "", font: font), plain: text, pictures: [])
     }
 
     /// The HTML part alone, for a body as a draft keeps it.
-    public static func document(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String) -> String {
-        content(rtf: rtf, rtfd: rtfd, plain: plain, historyPlain: historyPlain, historyHTML: historyHTML).html
+    public static func document(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String,
+                                font: ComposeFont = .outlook) -> String {
+        content(rtf: rtf, rtfd: rtfd, plain: plain, historyPlain: historyPlain, historyHTML: historyHTML, font: font).html
+    }
+
+    /// The message: the user's own text in the element declaring `font`, then the history, the
+    /// namespaces and head it carries on the document's own tags.
+    static func document(own: String, history: String, font: ComposeFont) -> String {
+        let parts = QuotedHistory.parts(of: history)
+        let head = parts.head.isEmpty ? "" : "<head>\(parts.head)</head>"
+        let text = own.isEmpty ? "" : "<div style=\"\(font.css)\">\(own)</div>"
+        return "<html\(parts.namespaces)>\(head)<body>\(text)\(parts.body)</body></html>"
+    }
+
+    /// Plain text as paragraphs, the line break that ends it ending its last paragraph.
+    private static func paragraphs(_ text: String) -> String {
+        guard !text.isEmpty else { return "" }
+        return QuotedHistory.paragraphs(text.hasSuffix("\n") ? String(text.dropLast()) : text)
     }
 
     /// `plain` with each object character, where the composer's text holds a picture, replaced

@@ -224,6 +224,46 @@ final class FormattingMarksTests: XCTestCase {
     }
 
     /// A text view set up as the composer's body is: TextKit 1 with the marks' layout manager.
+    /// A reply's heading has Outlook for Mac's one point line in #B5C4DF across the body above
+    /// it, with room between the line and the text, while the body ends with the original;
+    /// once the original is edited, or the heading is a custom one, there is no line.
+    func testOutlooksLineIsDrawnAboveAQuotedHeading() throws {
+        let (view, layout) = composer()
+        view.drawsBackground = false
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]
+        let quote = NSMutableAttributedString(attributedString: ComposedBody.headed(
+            "\nFrom: Sam <sam@example.com>\nDate: Wednesday, 23 September 2026 at 14:21\nSubject: Figures\n\n", attributes: attributes))
+        quote.append(NSAttributedString(string: "The figures are in.\n", attributes: attributes))
+        let body = NSMutableAttributedString(string: "Thanks.\n\n", attributes: attributes)
+        body.append(quote)
+        view.textStorage?.setAttributedString(body)
+        layout.quotedHistory = quote.string
+        let from = (view.string as NSString).range(of: "From:").location
+        XCTAssertEqual(layout.headingRuleCharacter, from)
+        let container = try XCTUnwrap(layout.textContainers.first)
+        layout.ensureLayout(for: container)
+        let rule = try XCTUnwrap(layout.headingRuleRect())
+        let glyph = layout.glyphIndexForCharacter(at: from)
+        XCTAssertEqual(rule.minY, layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY)
+        XCTAssertEqual(rule.height, 1)
+        XCTAssertEqual(rule.width, 400 - 2 * container.lineFragmentPadding)
+        XCTAssertGreaterThanOrEqual(layout.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil).minY - rule.minY, 3.5,
+                                    "the heading stands clear of its line")
+        let drawn = rule.offsetBy(dx: view.textContainerOrigin.x, dy: view.textContainerOrigin.y)
+        XCTAssertGreaterThan(inkedPixels(displaying: view, in: view.bounds, within: drawn), Int(rule.width))
+        // Typing above the original keeps the line.
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+        view.insertText("Hi. ", replacementRange: NSRange(location: 0, length: 0))
+        XCTAssertEqual(layout.headingRuleCharacter, from + 4)
+        // Editing inside it takes the line away.
+        let inside = (view.string as NSString).range(of: "figures are").location
+        view.insertText("EDITED ", replacementRange: NSRange(location: inside, length: 0))
+        XCTAssertNil(layout.headingRuleCharacter)
+        XCTAssertNil(layout.headingRuleRect())
+        layout.quotedHistory = "\nOn Wednesday, Sam wrote:\n\nThe figures are in.\n"
+        XCTAssertNil(layout.headingRuleCharacter)
+    }
+
     private func composer() -> (NSTextView, FormattingMarksLayoutManager) {
         let storage = NSTextStorage()
         let layout = FormattingMarksLayoutManager()

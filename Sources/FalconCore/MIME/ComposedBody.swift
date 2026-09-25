@@ -165,7 +165,7 @@ public enum ComposedBody {
     }
 
     /// The original a reply or forward quotes, as the composer shows it, as Legacy Outlook's
-    /// does: `heading`, the line and the From, Sent, To and Subject lines, in `attributes` with
+    /// does: `heading`, the From, Date, To, Cc and Subject lines, in `attributes` with
     /// their labels in bold, then the original's own HTML with its formatting, links and
     /// pictures. Each picture it shows from `parts` by cid: or from a data: URI is a picture;
     /// each it would fetch from the web is the picture `remote` holds for it, else an empty box
@@ -191,18 +191,28 @@ public enum ComposedBody {
         return self.text(rtf: kept.rtf, rtfd: kept.rtfd) ?? text
     }
 
-    /// The heading in `attributes`, each From:, Sent:, To:, Cc: and Subject: that starts a line
-    /// in bold, as the HTML sent for it has them.
+    /// The heading in `attributes`, each From:, Date:, To:, Cc: and Subject: that starts a line
+    /// in bold, as the HTML sent for it has them, and Sent: as a heading from an earlier build
+    /// has it.
     static func headed(_ heading: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
         let text = NSMutableAttributedString(string: heading, attributes: attributes)
         let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 14)
         let bold = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
         let string = heading as NSString
-        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byLines) { line, range, _, _ in
+        var first = true
+        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byLines) { line, range, enclosing, _ in
             guard let line else { return }
-            for label in ["From:", "Sent:", "To:", "Cc:", "Subject:"] where line.hasPrefix(label) {
+            for label in ReplyHeader.labels where line.hasPrefix(label) {
                 text.addAttribute(.font, value: bold, range: NSRange(location: range.location, length: (label as NSString).length))
+                // Outlook's three points between the line drawn above the heading and its text.
+                if first, label == "From:" {
+                    let style = (attributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
+                        ?? NSMutableParagraphStyle()
+                    style.paragraphSpacingBefore = 4
+                    text.addAttribute(.paragraphStyle, value: style, range: enclosing)
+                }
             }
+            if !line.isEmpty { first = false }
         }
         return text
     }

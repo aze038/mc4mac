@@ -508,8 +508,9 @@ struct CategoriesSettings: View {
 }
 
 struct FontsSettings: View {
-    @AppStorage("composeFontFamily") private var composeFamily = "System"
-    @AppStorage("composeFontSize") private var composeSize = 14.0
+    // Outlook for Mac's Aptos at 12 point out of the box, 16 in the composer's points.
+    @AppStorage(ComposeFont.familyKey) private var composeFamily = ComposeFont.outlookFamily
+    @AppStorage(ComposeFont.sizeKey) private var composeSize = Double(ComposeFont.outlook.size)
     @AppStorage("readingFontFamily") private var readingFamily = "System"
     @AppStorage("readingFontSize") private var readingSize = 14.0
     @AppStorage("listFontSize") private var listSize = 13.0
@@ -552,7 +553,8 @@ struct FontsSettings: View {
 
     private func sample(family: String, size: Double) -> some View {
         Text("The quick brown fox jumps over the lazy dog.")
-            .font(family == "System" ? .system(size: size) : .custom(family, size: size))
+            .font(family == "System" ? .system(size: size)
+                  : .custom(ComposeFont(family: family, size: size).displayFont.fontName, size: size))
             .padding(8)
             .frame(width: 420, alignment: .leading)
             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))

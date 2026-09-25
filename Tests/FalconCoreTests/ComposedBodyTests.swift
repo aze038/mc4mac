@@ -149,7 +149,7 @@ final class ComposedBodyTests: XCTestCase {
 
     func testAPlainReplySendsTheOriginalsHTML() {
         let html = ComposedHTML.document(rtf: nil, plain: "Great work 👍👍" + historyPlain, historyPlain: historyPlain, historyHTML: historyHTML)
-        XCTAssertTrue(html.contains(">Great work 👍👍</div>"), html)
+        XCTAssertTrue(html.contains("<p style=\"margin:0\">Great work 👍👍</p>"), html)
         XCTAssertEqual(occurrences(of: historyHTML, in: html), 1, html)
     }
 
