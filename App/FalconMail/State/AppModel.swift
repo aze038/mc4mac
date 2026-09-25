@@ -471,6 +471,22 @@ final class AppModel {
     /// the drafts that are not left over.
     @ObservationIgnored var composeWindowDrafts: Set<UUID> = []
 
+    // The Gmail engine (see AppModel+Engines).
+    /// Google accounts switched to the Gmail API, whether or not their engine runs yet: nothing
+    /// for them may go by IMAP or SMTP, or read their old IMAP store.
+    var gmailEngineAccounts: Set<UUID> = []
+    /// The running Gmail engines, by account, each with its list, actions, drafts and sender.
+    var engineAssemblies: [UUID: GmailAccountAssembly] = [:]
+    /// Why a Google account is not on the Gmail API yet although its switch is on, or why the
+    /// switch could not be turned off, by account, for Settings → Accounts.
+    var engineSwitchNotices: [UUID: String] = [:]
+    /// The stored rows of accounts on IMAP, as the table reads them.
+    @ObservationIgnored let storeList: StoreListSource
+    /// All Inboxes over accounts on both engines, made again when the engines change.
+    @ObservationIgnored var mergedList: (engines: Set<UUID>, source: MergedListSource)?
+    /// Searches run by the Gmail engines, by the view's id, while their results are shown.
+    @ObservationIgnored var engineSearch: EngineSearchRun?
+
     private func applyOfflineSettings() {
         Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) }
     }
@@ -499,6 +515,7 @@ final class AppModel {
         let rules = RuleStore(layout: layout)
         let mutes = MuteStore(layout: layout)
         self.store = store
+        self.storeList = StoreListSource(store: store)
         self.tokens = tokens
         self.rules = rules
         self.mutes = mutes

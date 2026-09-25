@@ -9,6 +9,9 @@ public actor SyncCoordinator {
     public let indexer: SpotlightIndexer
     public let pendingActions: PendingActionStore
     public let meter: TrafficMeter
+    /// The one index every Google account's list on the Gmail engine builds its views in, so All
+    /// Inboxes and a search over several accounts are built in one place.
+    public nonisolated let listIndex = ListIndex()
     private var syncers: [UUID: AccountSyncer] = [:]
     private var heartbeat: Task<Void, Never>?
     private var meterSaves: Task<Void, Never>?
