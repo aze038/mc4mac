@@ -499,4 +499,35 @@ final class DiagnosticsRedactorTests: XCTestCase {
         XCTAssertEqual(redactor.signingInAs(nil).userNames, [])
         XCTAssertEqual(one.signingInAs("kmuradov").userNames, ["kmuradov"])
     }
+
+    /// A folder whose name holds the user name as a word, Project kmuradov Q3, is one whole
+    /// folder reference, whether the line names it or the account's folders do, and none of
+    /// its other words is left beside a <user>. A user name that holds a folder's name as a
+    /// word is one whole <user> in the same way: the longest name goes first.
+    func testAFolderNameThatHoldsTheUserNameStaysOneReference() {
+        var known = redactor
+        known.userNames = ["kmuradov"]
+        let project = known.label("Project kmuradov Q3")
+        XCTAssertEqual(known.redact("moving to Project kmuradov Q3 failed", naming: ["Project kmuradov Q3"]),
+                       "moving to \(project) failed")
+        XCTAssertEqual(known.redact("kmuradov Archive of owner@example.com: skipped 2 unreadable journal lines", naming: ["kmuradov Archive"]),
+                       "\(known.label("kmuradov Archive")) of <addr:\(redactor.ref("owner@example.com"))>: skipped 2 unreadable journal lines")
+        let line = "opening a message in Clients/kmuradov Contracts failed for kmuradov"
+        let contracts = "opening a message in \(known.label("Clients/kmuradov Contracts")) failed for <user>"
+        XCTAssertEqual(known.redact(line, naming: ["Clients/kmuradov Contracts", "kmuradov Contracts"]), contracts)
+
+        var listed = known
+        listed.labels = ["Clients/kmuradov Contracts", "kmuradov Contracts", "Project kmuradov Q3"]
+        XCTAssertEqual(listed.redact(line), contracts)
+        XCTAssertEqual(listed.redactCrashReport(line), contracts)
+        XCTAssertEqual(listed.redact("moving to Project kmuradov Q3 failed; kmuradov was refused"), "moving to \(project) failed; <user> was refused")
+        XCTAssertEqual(listed.redact(line, naming: ["kmuradov Contracts"]), contracts, "a folder the line names inside one the account has")
+        XCTAssertEqual(listed.redact(listed.redact(line)), contracts, "redacting again changes nothing")
+
+        var team = redactor
+        team.userNames = ["hr.team"]
+        team.labels = ["Payroll"]
+        XCTAssertEqual(team.redact("NO for hr.team, Payroll.team is a folder", naming: ["HR"]),
+                       "NO for <user>, \(team.label("Payroll")).team is a folder")
+    }
 }

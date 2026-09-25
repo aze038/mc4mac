@@ -104,7 +104,7 @@ public struct DiagnosticsRedactor: Sendable {
     /// address, never splits it where its own rule could no longer find it whole.
     public func redact(_ text: String, naming names: [String]) -> String {
         guard !text.isEmpty else { return text }
-        return redactingRest(takingOut(names, from: takingOutUserNames(redactingFirst(text))), crashReport: false)
+        return redactingRest(takingOutOwnNames(naming: names, from: redactingFirst(text)), crashReport: false)
     }
 
     /// This redactor, taking out `user` as well when it is the user name an account signs in with.
@@ -123,17 +123,6 @@ public struct DiagnosticsRedactor: Sendable {
             .sorted { $0.count > $1.count }
     }
 
-    /// The accounts' user names taken out of `text` as `<user>`. The rules for addresses, web
-    /// addresses, paths and secrets have already run, so a user name that is part of an address,
-    /// as kmuradov is in kmuradov@acme.example, never splits it.
-    private func takingOutUserNames(_ text: String) -> String {
-        var s = text
-        for user in users {
-            s = outsideReferences(s) { replacing(user, with: "<user>", in: $0, ignoringCase: true) }
-        }
-        return s
-    }
-
     public func redact(_ value: JSONValue, naming names: [String]) -> JSONValue {
         guard !names.isEmpty else { return redact(value) }
         switch value {
@@ -147,11 +136,47 @@ public struct DiagnosticsRedactor: Sendable {
         }
     }
 
-    /// `names` taken out of `text`, which the rules for addresses, web addresses, paths and
-    /// secrets have already been through.
-    private func takingOut(_ names: [String], from text: String) -> String {
-        var forms: [(form: String, name: String)] = []
-        for name in Set(names) {
+    /// A name to take out of free text wherever it stands as a word: a form of a folder's name,
+    /// which becomes that folder's reference, or a user name, which becomes `<user>`.
+    private struct OwnName {
+        let form: String
+        /// The folder whose name this is a form of; nil for a user name.
+        let folder: String?
+        let ignoringCase: Bool
+    }
+
+    /// The account's own names taken out of `text`, which the rules for addresses, web addresses,
+    /// paths and secrets have already been through, so a user name or a folder's name that is
+    /// part of an address, as kmuradov is in kmuradov@acme.example, never splits it. The names
+    /// are `names`, the folders the line is about, in any case and in modified UTF-7; the
+    /// account's folder names long enough to look for anywhere, as they are written; and the
+    /// user names it signs in with, as `<user>`, in any case.
+    ///
+    /// The longest goes first, whichever kind it is, so none splits another that holds it as a
+    /// word: a folder named Project kmuradov Q3 is one whole reference, with none of its words
+    /// left beside a `<user>`, and a user name such as hr.team is one whole `<user>` beside a
+    /// folder named HR. Of two the same length, a folder named by the line goes first, then
+    /// one of the account's.
+    private func takingOutOwnNames(naming names: [String], from text: String) -> String {
+        var own = namedForms(names)
+        own += folders.words.map { OwnName(form: $0, folder: $0, ignoringCase: false) }
+        own += users.map { OwnName(form: $0, folder: nil, ignoringCase: true) }
+        let order = own.indices.sorted { own[$0].form.count != own[$1].form.count ? own[$0].form.count > own[$1].form.count : $0 < $1 }
+        var s = text
+        for name in order.map({ own[$0] })
+        where s.range(of: name.form, options: name.ignoringCase ? .caseInsensitive : []) != nil {
+            let replacement = name.folder.map(label) ?? "<user>"
+            // A folder named text or addr leaves <text> and <addr:…> whole.
+            s = outsideReferences(s) { replacing(name.form, with: replacement, in: $0, ignoringCase: name.ignoringCase) }
+        }
+        return s
+    }
+
+    /// The forms `names` can take in a line: each as it is and in modified UTF-7, and, for one
+    /// with an address in it, the parts of it around the address.
+    private func namedForms(_ names: [String]) -> [OwnName] {
+        var forms: [OwnName] = []
+        for name in Set(names).sorted() {
             let bare = name.trimmingCharacters(in: .whitespaces)
             // An address, such as a refused recipient's, goes by the address rule, with the name beside it.
             guard !bare.isEmpty, !DiagnosticsRedactor.isStandardMailbox(bare), !Rx.matches(Rx.wholeAddress, bare) else { continue }
@@ -161,16 +186,12 @@ public struct DiagnosticsRedactor: Sendable {
             let first = redactingFirst(name)
             if first != name { looked += DiagnosticsRedactor.pieces(outside: first) }
             for form in looked where form.contains(where: { $0.isLetter || $0.isNumber }) && !DiagnosticsRedactor.isStandardMailbox(form) {
-                forms.append((form, name))
+                forms.append(OwnName(form: form, folder: name, ignoringCase: true))
                 let wire = ModifiedUTF7.encode(form)
-                if wire != form { forms.append((wire, name)) }
+                if wire != form { forms.append(OwnName(form: wire, folder: name, ignoringCase: true)) }
             }
         }
-        var s = text
-        for (form, name) in forms.sorted(by: { $0.form.count > $1.form.count }) {
-            s = outsideReferences(s) { replacing(form, with: label(name), in: $0, ignoringCase: true) }
-        }
-        return s
+        return forms
     }
 
     /// The parts of `text` between the references in it, trimmed, that are not empty.
@@ -235,7 +256,7 @@ public struct DiagnosticsRedactor: Sendable {
 
     private func redact(_ text: String, crashReport: Bool) -> String {
         guard !text.isEmpty else { return text }
-        return redactingRest(takingOutUserNames(redactingFirst(text)), crashReport: crashReport)
+        return redactingRest(takingOutOwnNames(naming: [], from: redactingFirst(text)), crashReport: crashReport)
     }
 
     /// The rules for what a folder's name can stand inside: IMAP literals, web addresses,
@@ -255,11 +276,12 @@ public struct DiagnosticsRedactor: Sendable {
         return s
     }
 
-    /// Quoted text and the account's own folder names, once the rules above have run.
+    /// Quoted text and the account's short folder names, once the rules above and the account's
+    /// own names have been through the line.
     private func redactingRest(_ text: String, crashReport: Bool) -> String {
         var s = text
         if s.unicodeScalars.contains(where: Rx.quotationMarks.contains) { s = stripQuoted(s, crashReport: crashReport) }
-        s = stripFolderNames(s)
+        s = stripShortFolderNames(s)
         return s
     }
 
@@ -583,18 +605,12 @@ public struct DiagnosticsRedactor: Sendable {
         [Rx.quoted, Rx.typographicQuoted, Rx.singleQuoted].reduce(text) { s, rx in rx.replace(in: s) { _, _ in " " } }
     }
 
-    private func stripFolderNames(_ text: String) -> String {
-        var s = text
-        for name in folders.words where s.contains(name) {
-            // A folder named text or addr leaves <text> and <addr:…> whole.
-            s = outsideReferences(s) { replacing(name, with: label(name), in: $0, ignoringCase: false) }
+    /// The account's short folder names, such as HR, where a server or FalconMail names a folder.
+    private func stripShortFolderNames(_ text: String) -> String {
+        guard let named = folders.named else { return text }
+        return named.replace(in: text) { m, ns in
+            ns.substring(with: m.range(at: 1)) + ns.substring(with: m.range(at: 2)) + label(ns.substring(with: m.range(at: 3)))
         }
-        if let named = folders.named {
-            s = named.replace(in: s) { m, ns in
-                ns.substring(with: m.range(at: 1)) + ns.substring(with: m.range(at: 2)) + label(ns.substring(with: m.range(at: 3)))
-            }
-        }
-        return s
     }
 
     private func stripIPs(_ text: String) -> String {
