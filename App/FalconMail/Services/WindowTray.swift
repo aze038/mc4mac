@@ -303,7 +303,8 @@ struct WindowTrayBar: View {
                 ForEach(model.minimizedTabs) { tab in
                     HStack(spacing: 6) {
                         Image(systemName: model.icon(for: tab)).font(.caption)
-                        Text(model.title(for: tab)).font(.caption).lineLimit(1).frame(maxWidth: 220)
+                        Text(model.title(for: tab)).font(.caption).lineLimit(1)
+                            .frame(maxWidth: 220, alignment: .leading).fixedSize(horizontal: true, vertical: false)
                         Button { model.closeTab(tab) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 4)
@@ -313,7 +314,9 @@ struct WindowTrayBar: View {
                 ForEach(tray.book.tray) { entry in
                     HStack(spacing: 6) {
                         Image(systemName: WindowTrayBar.icon(for: entry.key)).font(.caption)
-                        Text(WindowTrayBar.title(for: entry)).font(.caption).lineLimit(1).frame(maxWidth: 260)
+                        // Hugs its title, as a tab's chip does, and cuts a long one short.
+                        Text(WindowTrayBar.title(for: entry)).font(.caption).lineLimit(1)
+                            .frame(maxWidth: 260, alignment: .leading).fixedSize(horizontal: true, vertical: false)
                         Button { tray.close(entry.key) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
                             .buttonStyle(.plain)
                             .help("Close")
