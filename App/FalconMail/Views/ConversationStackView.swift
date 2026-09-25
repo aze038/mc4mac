@@ -75,6 +75,21 @@ struct ConversationStackView: View {
     /// point beside the conversation glyph, Expand all or Collapse all, and the sun switch, which
     /// shows every message in its own colours.
     private var header: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let newest = stack.newest {
+                // Reply, Reply All and Forward above the subject answer the newest message; each
+                // message's own header still has its own.
+                ReaderReplyRow(reply: { all in model.reply(to: newest, all: all, then: afterReplying) },
+                               forward: { model.forward(newest, then: afterReplying) }) { EmptyView() }
+                    .padding(.leading, OL.readingIconX + 4)
+                    .padding(.top, 8)
+                    .padding(.bottom, -6)
+            }
+            subjectRow
+        }
+    }
+
+    private var subjectRow: some View {
         let subject = stack.newest?.subject ?? ""
         return HStack(alignment: .top, spacing: 0) {
             Image(systemName: "bubble.left.and.bubble.right")

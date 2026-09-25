@@ -79,85 +79,82 @@ struct HomeRibbon: View {
         let hasSingle = thread != nil
         let first = thread?.latest
         return RibbonBody {
-            RibbonTile(title: "New\nEmail", symbol: "envelope", enabled: !model.accounts.isEmpty) { model.composeNew() }
-            RibbonMenuTile(title: "New\nItems", symbol: "envelope.badge.person.crop", enabled: !model.accounts.isEmpty) {
-                Button("Message") { model.composeNew() }
-                Button("Meeting") {
-                    model.showModule(.calendar)
-                    NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
+            RibbonGroup {
+                RibbonTile(title: "New\nEmail", symbol: "square.and.pencil", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.composeNew() }
+                RibbonMenuTile(title: "New\nItems", symbol: "envelope.badge.person.crop", enabled: !model.accounts.isEmpty) {
+                    Button("Message") { model.composeNew() }
+                    Button("Meeting") {
+                        model.showModule(.calendar)
+                        NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
+                    }
+                    Button("Contact") { model.showModule(.people) }
+                    Divider()
+                    Button("Folder…") { model.promptForNewFolder() }
                 }
-                Button("Contact") { model.showModule(.people) }
-                Divider()
-                Button("Folder…") { model.promptForNewFolder() }
-            }
-            RibbonSeparator()
-
-            RibbonTile(title: "Delete", symbol: "trash", enabled: can(.delete)) {
-                model.onSelection(.delete) { model.delete(model.selectedMessages) }
-            }
-            RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: can(.archive)) {
-                model.onSelection(.archive) { model.archive(model.selectedMessages) }
-            }
-            RibbonSeparator()
-
-            RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple, enabled: hasSingle) { model.afterSelectionRead { model.replyToSelection(all: false) } }
-            RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: OLColor.replyPurple, enabled: hasSingle) { model.afterSelectionRead { model.replyToSelection(all: true) } }
-            RibbonTile(title: "Forward", symbol: "arrowshape.turn.up.right", tint: OLColor.forwardBlue, enabled: hasSingle) { model.afterSelectionRead { model.forwardSelection() } }
-            RibbonMiniColumn {
-                RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
-                    model.showModule(.calendar)
-                    NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
-                }
-                RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: hasSingle && !model.selectionIsReadOnly) {
-                    model.onSelection(.forwardAsAttachment) { model.forwardAsAttachment(model.selectedMessages) }
+                RibbonMiniColumn {
+                    RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
+                        model.showModule(.calendar)
+                        NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
+                    }
+                    RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: hasSingle && !model.selectionIsReadOnly) {
+                        model.onSelection(.forwardAsAttachment) { model.forwardAsAttachment(model.selectedMessages) }
+                    }
                 }
             }
-            RibbonSeparator()
-
-            RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
-            RibbonSeparator()
-
-            RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: can(.move(to: UUID())),
-                            action: { model.onSelection(.move) { model.openMovePalette() } }) {
-                MoveMenuItems()
+            RibbonGroup {
+                RibbonTile(title: "Delete", symbol: "trash", enabled: can(.delete)) {
+                    model.onSelection(.delete) { model.delete(model.selectedMessages) }
+                }
+                RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: can(.archive)) {
+                    model.onSelection(.archive) { model.archive(model.selectedMessages) }
+                }
             }
-            RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed,
-                            enabled: can(model.selectionIsAllInJunk ? .notJunk : .junk),
-                            action: { model.onSelection(.junk) { model.toggleJunkOnSelection() } }) {
-                Button(model.selectionIsAllInJunk ? "Not Junk" : "Move to Junk") { model.onSelection(.junk) { model.toggleJunkOnSelection() } }
-                Button("Mute Conversation") { model.onSelection(.mute) { model.muteSelection() } }
-                    .disabled(!model.allowsCommand(.mute))
+            RibbonGroup {
+                RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
             }
-            RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
-                Button("Run Rules Now") { model.runRulesNow() }
-                Button("Edit Rules…") { SettingsWindows.shared.show(.rules) }
+            RibbonGroup {
+                RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: can(.move(to: UUID())),
+                                action: { model.onSelection(.move) { model.openMovePalette() } }) {
+                    MoveMenuItems()
+                }
+                RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed,
+                                enabled: can(model.selectionIsAllInJunk ? .notJunk : .junk),
+                                action: { model.onSelection(.junk) { model.toggleJunkOnSelection() } }) {
+                    Button(model.selectionIsAllInJunk ? "Not Junk" : "Move to Junk") { model.onSelection(.junk) { model.toggleJunkOnSelection() } }
+                    Button("Mute Conversation") { model.onSelection(.mute) { model.muteSelection() } }
+                        .disabled(!model.allowsCommand(.mute))
+                }
+                RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
+                    Button("Run Rules Now") { model.runRulesNow() }
+                    Button("Edit Rules…") { SettingsWindows.shared.show(.rules) }
+                }
             }
-            RibbonSeparator()
-
-            RibbonTile(title: "Read/Unread", symbol: ReadMarking.readUnreadMarksRead(model.selectedMessages) ? "envelope.open" : "envelope",
-                       enabled: can(.markRead)) { model.onSelection(.markRead) { model.toggleReadOnSelection() } }
-            RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
-                CategoryMenuItems()
+            RibbonGroup {
+                RibbonTile(title: "Read/Unread", symbol: ReadMarking.readUnreadMarksRead(model.selectedMessages) ? "envelope.open" : "envelope",
+                           enabled: can(.markRead)) { model.onSelection(.markRead) { model.toggleReadOnSelection() } }
+                RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
+                    CategoryMenuItems()
+                }
+                RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: can(.flag),
+                                action: { model.onSelection(.flag) { model.toggleFlagOnSelection() } }) {
+                    Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.onSelection(.flag) { model.toggleFlagOnSelection() } }
+                    Button("Mark All as Read") { model.markAllReadInSelection() }
+                }
             }
-            RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: can(.flag),
-                            action: { model.onSelection(.flag) { model.toggleFlagOnSelection() } }) {
-                Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.onSelection(.flag) { model.toggleFlagOnSelection() } }
-                Button("Mark All as Read") { model.markAllReadInSelection() }
+            RibbonGroup {
+                RibbonMenuTile(title: "Filter\nEmails", symbol: model.filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") {
+                    FilterMenuItems()
+                }
             }
-            RibbonSeparator()
-
-            RibbonMenuTile(title: "Filter\nEmails", symbol: model.filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") {
-                FilterMenuItems()
+            RibbonGroup {
+                RibbonMiniColumn {
+                    FindContactField()
+                    RibbonMiniItem(title: "Address Book", symbol: "person.text.rectangle") { model.showModule(.people) }
+                }
             }
-            RibbonSeparator()
-
-            RibbonMiniColumn {
-                FindContactField()
-                RibbonMiniItem(title: "Address Book", symbol: "person.text.rectangle") { model.showModule(.people) }
+            RibbonGroup {
+                RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
             }
-            RibbonSeparator()
-
-            RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
         }
     }
 }
@@ -172,56 +169,58 @@ struct OrganiseRibbon: View {
     var body: some View {
         @Bindable var model = model
         return RibbonBody {
-            RibbonTile(title: "New\nFolder", symbol: "folder.badge.plus", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.promptForNewFolder() }
-            RibbonSeparator()
-
-            RibbonTile(title: "Conversations", symbol: model.groupByThread ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right",
-                       tint: model.groupByThread ? .accentColor : nil) { model.groupByThread.toggle() }
-            RibbonMenuTile(title: "Message\nPreview", symbol: "text.alignleft", tint: .blue) {
-                Toggle("Show Message Preview", isOn: $showPreview)
-                Divider()
-                Picker("Density", selection: Binding(get: { model.listDensity }, set: { model.listDensity = $0 })) {
-                    ForEach(ListDensity.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.inline)
+            RibbonGroup {
+                RibbonTile(title: "New\nFolder", symbol: "folder.badge.plus", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.promptForNewFolder() }
             }
-            RibbonMenuTile(title: "Arrange\nby", symbol: "arrow.up.arrow.down.square", tint: .blue) {
-                ForEach(ListSort.allCases) { sort in
-                    Button { model.listSort = sort.rawValue } label: {
-                        if model.listSort == sort.rawValue { Label(sort.title, systemImage: "checkmark") } else { Text(sort.title) }
+            RibbonGroup {
+                RibbonTile(title: "Conversations", symbol: model.groupByThread ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right",
+                           tint: model.groupByThread ? .accentColor : nil) { model.groupByThread.toggle() }
+                RibbonMenuTile(title: "Message\nPreview", symbol: "text.alignleft", tint: .blue) {
+                    Toggle("Show Message Preview", isOn: $showPreview)
+                    Divider()
+                    Picker("Density", selection: Binding(get: { model.listDensity }, set: { model.listDensity = $0 })) {
+                        ForEach(ListDensity.allCases) { Text($0.title).tag($0) }
                     }
+                    .pickerStyle(.inline)
                 }
-                Divider()
-                Button { model.sortAscending = true } label: {
-                    if model.sortAscending { Label(currentSort.ascendingTitle, systemImage: "checkmark") } else { Text(currentSort.ascendingTitle) }
+                RibbonMenuTile(title: "Arrange\nby", symbol: "arrow.up.arrow.down.square", tint: .blue) {
+                    ForEach(ListSort.allCases) { sort in
+                        Button { model.listSort = sort.rawValue } label: {
+                            if model.listSort == sort.rawValue { Label(sort.title, systemImage: "checkmark") } else { Text(sort.title) }
+                        }
+                    }
+                    Divider()
+                    Button { model.sortAscending = true } label: {
+                        if model.sortAscending { Label(currentSort.ascendingTitle, systemImage: "checkmark") } else { Text(currentSort.ascendingTitle) }
+                    }
+                    Button { model.sortAscending = false } label: {
+                        if !model.sortAscending { Label(currentSort.descendingTitle, systemImage: "checkmark") } else { Text(currentSort.descendingTitle) }
+                    }
+                    Divider()
+                    Button { model.showInGroups.toggle() } label: {
+                        if model.showInGroups { Label("Show in Groups", systemImage: "checkmark") } else { Text("Show in Groups") }
+                    }
+                    Divider()
+                    Button("Restore to Defaults") { model.restoreListDefaults() }
                 }
-                Button { model.sortAscending = false } label: {
-                    if !model.sortAscending { Label(currentSort.descendingTitle, systemImage: "checkmark") } else { Text(currentSort.descendingTitle) }
+                RibbonMenuTile(title: "Reading\nPane", symbol: ReadingPanePosition(rawValue: readingPane)?.symbol ?? "rectangle.righthalf.inset.filled", tint: .blue) {
+                    Picker("Reading Pane", selection: $readingPane) {
+                        ForEach(ReadingPanePosition.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.inline)
                 }
-                Divider()
-                Button { model.showInGroups.toggle() } label: {
-                    if model.showInGroups { Label("Show in Groups", systemImage: "checkmark") } else { Text("Show in Groups") }
-                }
-                Divider()
-                Button("Restore to Defaults") { model.restoreListDefaults() }
             }
-            RibbonMenuTile(title: "Reading\nPane", symbol: ReadingPanePosition(rawValue: readingPane)?.symbol ?? "rectangle.righthalf.inset.filled", tint: .blue) {
-                Picker("Reading Pane", selection: $readingPane) {
-                    ForEach(ReadingPanePosition.allCases) { Text($0.title).tag($0.rawValue) }
+            RibbonGroup {
+                RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }
+                RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
+                    Button("Run Rules Now") { model.runRulesNow() }
+                    Button("Edit Rules…") { SettingsWindows.shared.show(.rules) }
                 }
-                .pickerStyle(.inline)
+                RibbonTile(title: "Delete\nAll", symbol: "trash.slash", tint: .red, enabled: model.canEmptyCurrentFolder) { model.emptyCurrentFolder() }
             }
-            RibbonSeparator()
-
-            RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }
-            RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
-                Button("Run Rules Now") { model.runRulesNow() }
-                Button("Edit Rules…") { SettingsWindows.shared.show(.rules) }
+            RibbonGroup {
+                RibbonTile(title: "Sync\nFolder", symbol: "arrow.clockwise.circle", tint: .green, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
             }
-            RibbonTile(title: "Delete\nAll", symbol: "trash.slash", tint: .red, enabled: model.canEmptyCurrentFolder) { model.emptyCurrentFolder() }
-            RibbonSeparator()
-
-            RibbonTile(title: "Sync\nFolder", symbol: "arrow.clockwise.circle", tint: .green, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
         }
     }
 }
@@ -232,39 +231,41 @@ struct ToolsRibbon: View {
 
     var body: some View {
         RibbonBody {
-            RibbonTile(title: "Accounts", symbol: "person.crop.square") { SettingsWindows.shared.show(.accounts) }
-            RibbonTile(title: "Out of\nOffice", symbol: "arrow.left.square", enabled: false) {}
-            RibbonTile(title: "Public\nFolders", symbol: "folder.badge.person.crop", enabled: false) {}
-            RibbonSeparator()
-
-            RibbonTile(title: "Import", symbol: "square.and.arrow.down.on.square", tint: .blue) {
-                NotificationCenter.default.post(name: .falconImport, object: nil)
+            RibbonGroup {
+                RibbonTile(title: "Accounts", symbol: "person.crop.square") { SettingsWindows.shared.show(.accounts) }
+                RibbonTile(title: "Out of\nOffice", symbol: "arrow.left.square", enabled: false) {}
+                RibbonTile(title: "Public\nFolders", symbol: "folder.badge.person.crop", enabled: false) {}
             }
-            RibbonTile(title: "Export", symbol: "square.and.arrow.up.on.square", tint: .blue, enabled: model.hasSelection) {
-                NotificationCenter.default.post(name: .falconExport, object: nil)
-            }
-            RibbonSeparator()
-
-            RibbonMenuTile(title: "Sync\nStatus", symbol: "list.bullet.rectangle", tint: .green) {
-                Text(model.statusText)
-                Divider()
-                ForEach(model.accounts) { account in
-                    Text("\(account.email) — \(model.online[account.id] == false ? "offline" : "online")")
+            RibbonGroup {
+                RibbonTile(title: "Import", symbol: "square.and.arrow.down.on.square", tint: .blue) {
+                    NotificationCenter.default.post(name: .falconImport, object: nil)
+                }
+                RibbonTile(title: "Export", symbol: "square.and.arrow.up.on.square", tint: .blue, enabled: model.hasSelection) {
+                    NotificationCenter.default.post(name: .falconExport, object: nil)
                 }
             }
-            RibbonMenuTile(title: "Sync\nErrors", symbol: "exclamationmark.triangle", tint: .orange) {
-                if let error = model.actionError { Text(error) } else { Text("No sync errors") }
-                Divider()
-                Button("Retry Now") { model.syncNow() }
+            RibbonGroup {
+                RibbonMenuTile(title: "Sync\nStatus", symbol: "list.bullet.rectangle", tint: .green) {
+                    Text(model.statusText)
+                    Divider()
+                    ForEach(model.accounts) { account in
+                        Text("\(account.email) — \(model.online[account.id] == false ? "offline" : "online")")
+                    }
+                }
+                RibbonMenuTile(title: "Sync\nErrors", symbol: "exclamationmark.triangle", tint: .orange) {
+                    if let error = model.actionError { Text(error) } else { Text("No sync errors") }
+                    Divider()
+                    Button("Retry Now") { model.syncNow() }
+                }
             }
-            RibbonSeparator()
-
-            RibbonPill(onLabel: "Online", offLabel: "Offline", caption: "Online/Offline",
-                       isOn: Binding(get: { !offline }, set: { offline = !$0; model.setWorkOffline(!$0) }))
-            RibbonSeparator()
-
-            RibbonTile(title: "Archive\nMail", symbol: "externaldrive.badge.timemachine", tint: .purple) {
-                NotificationCenter.default.post(name: .falconArchive, object: nil)
+            RibbonGroup {
+                RibbonPill(onLabel: "Online", offLabel: "Offline", caption: "Online/Offline",
+                           isOn: Binding(get: { !offline }, set: { offline = !$0; model.setWorkOffline(!$0) }))
+            }
+            RibbonGroup {
+                RibbonTile(title: "Archive\nMail", symbol: "externaldrive.badge.timemachine", tint: .purple) {
+                    NotificationCenter.default.post(name: .falconArchive, object: nil)
+                }
             }
         }
     }

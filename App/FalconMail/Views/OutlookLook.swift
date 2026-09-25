@@ -36,7 +36,7 @@ enum OL {
     // A tile's glyph and chevron start five points below the separators and the small rows: in
     // Outlook's Home and Message ribbons alike both centre 85 points down the window.
     static let ribbonTileGlyphTop: CGFloat = 9
-    static let ribbonIcon: CGFloat = 23
+    static let ribbonIcon: CGFloat = 21
     static let ribbonLabelTop: CGFloat = 44
     static let ribbonLabelFont: CGFloat = 10.5
     static let ribbonLabelPitch: CGFloat = 10.5
@@ -250,6 +250,9 @@ enum OLColor {
     static let ribbonIcon = dynamic(light: 0x5A5A5A, dark: 0x8B8A8B)
     static let ribbonLabel = dynamic(light: 0x505050, dark: 0xA7A6A6)
     static let ribbonSeparator = dynamic(light: 0xD0D0D0, dark: 0x525252)
+    /// The modern ribbon's group cards.
+    static let ribbonCard = dynamic(light: 0xFFFFFF, dark: 0x262626)
+    static let ribbonCardLine = dynamic(light: 0xE4E4E4, dark: 0x343434)
     static let field = dynamic(light: 0xFFFFFF, dark: 0x484848)
     static let fieldText = dynamic(light: 0x7A7A7A, dark: 0xA0A0A0)
     static let ribbonField = dynamic(light: 0xFFFFFF, dark: 0x222222)

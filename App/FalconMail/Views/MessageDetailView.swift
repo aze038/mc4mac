@@ -45,6 +45,10 @@ struct MessageReaderView: View {
     /// date at the right, "To:" beneath, and the conversation notice as a grey band.
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
+            actions
+                .padding(.leading, OL.readingIconX + 4)
+                .padding(.top, 8)
+                .padding(.bottom, -6)
             HStack(alignment: .top, spacing: 0) {
                 Image(systemName: (conversation?.messages.count ?? 1) > 1 ? "bubble.left.and.bubble.right" : "envelope")
                     .font(.system(size: 17, weight: .regular))
@@ -177,14 +181,10 @@ struct MessageReaderView: View {
         showDetails ? list.map { $0.rfc5322 }.joined(separator: ", ") : list.map { $0.displayName }.joined(separator: ", ")
     }
 
+    /// Reply, Reply All and Forward as icons in a row above the subject, with the rest in a menu.
     private var actions: some View {
-        HStack(spacing: 2) {
-            ReaderActionButton("Reply", "arrowshape.turn.up.left") { reply(all: false) }
-            ReaderActionButton("Reply All", "arrowshape.turn.up.left.2") { reply(all: true) }
-            ReaderActionButton("Forward", "arrowshape.turn.up.right") { forward() }
-            ReaderActionButton(message.isFlagged ? "Unflag" : "Flag", message.isFlagged ? "flag.fill" : "flag") { model.setFlagged([message], !message.isFlagged) }
-                .disabled(message.isServerOnly)
-            Menu { moreMenu } label: { Image(systemName: "ellipsis.circle").font(.system(size: 15)) }
+        ReaderReplyRow(reply: { reply(all: $0) }, forward: { forward() }) {
+            Menu { moreMenu } label: { Image(systemName: "ellipsis").font(.system(size: 14)).foregroundStyle(OLColor.icon) }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
@@ -335,6 +335,24 @@ enum MessageFile {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task {
             if let raw = await model.rawBody(for: message) { try? raw.write(to: url) }
+        }
+    }
+}
+
+/// The row above a message's subject: Reply, Reply All and Forward as icons only, their names
+/// in the tooltip, then whatever the view adds (its menu of other actions).
+struct ReaderReplyRow<Extra: View>: View {
+    let reply: (_ all: Bool) -> Void
+    let forward: () -> Void
+    @ViewBuilder var extra: () -> Extra
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ReaderActionButton("Reply", "arrowshape.turn.up.left") { reply(false) }
+            ReaderActionButton("Reply All", "arrowshape.turn.up.left.2") { reply(true) }
+            ReaderActionButton("Forward", "arrowshape.turn.up.right") { forward() }
+            extra()
+                .padding(.leading, 4)
         }
     }
 }
@@ -553,43 +571,43 @@ struct MessageWindowRibbon: View {
             RibbonTabStrip(tabs: [(0, "Message")], selection: $tab)
                 .padding(.horizontal, OL.tabInset)
             RibbonBody {
-                RibbonTile(title: "Delete", symbol: "trash", enabled: canChange) { model.delete([message]); close() }
-                RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: canChange) { model.archive([message]); close() }
-                RibbonSeparator()
-                RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple) { reply(all: false) }
-                RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: OLColor.replyPurple) { reply(all: true) }
-                RibbonTile(title: "Forward", symbol: "arrowshape.turn.up.right", tint: OLColor.forwardBlue) { forward() }
-                RibbonMiniColumn {
-                    RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
-                        model.showModule(.calendar)
-                        NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
-                    }
-                    RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: canChange) { model.forwardAsAttachment([message]) }
-                }
-                RibbonSeparator()
-                RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: canChange,
-                                action: { model.openMovePalette(for: message) }) {
-                    Button("Move to Folder…") { model.openMovePalette(for: message) }
-                    Button("Archive") { model.archive([message]); close() }
-                }
-                RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: canChange,
-                                action: { junk() }) {
-                    Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { junk() }
-                }
-                RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
-                    Button("Run Rules Now") { model.runRulesNow() }
-                }
-                RibbonSeparator()
-                RibbonTile(title: "Read/Unread", symbol: message.isRead ? "envelope" : "envelope.open", enabled: canChange) { model.markRead([message], !message.isRead) }
-                RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
-                    ForEach(model.categories) { category in
-                        Toggle(category.name, isOn: Binding(
-                            get: { model.categories(for: message).contains(category) },
-                            set: { _ in model.toggleCategory(category, on: [message]) }))
+                RibbonGroup {
+                    RibbonTile(title: "Delete", symbol: "trash", enabled: canChange) { model.delete([message]); close() }
+                    RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: canChange) { model.archive([message]); close() }
+                    RibbonMiniColumn {
+                        RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
+                            model.showModule(.calendar)
+                            NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
+                        }
+                        RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: canChange) { model.forwardAsAttachment([message]) }
                     }
                 }
-                RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: canChange, action: { model.setFlagged([message], !message.isFlagged) }) {
-                    Button(message.isFlagged ? "Clear Flag" : "Flag Message") { model.setFlagged([message], !message.isFlagged) }
+                RibbonGroup {
+                    RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: canChange,
+                                    action: { model.openMovePalette(for: message) }) {
+                        Button("Move to Folder…") { model.openMovePalette(for: message) }
+                        Button("Archive") { model.archive([message]); close() }
+                    }
+                    RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: canChange,
+                                    action: { junk() }) {
+                        Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { junk() }
+                    }
+                    RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
+                        Button("Run Rules Now") { model.runRulesNow() }
+                    }
+                }
+                RibbonGroup {
+                    RibbonTile(title: "Read/Unread", symbol: message.isRead ? "envelope" : "envelope.open", enabled: canChange) { model.markRead([message], !message.isRead) }
+                    RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
+                        ForEach(model.categories) { category in
+                            Toggle(category.name, isOn: Binding(
+                                get: { model.categories(for: message).contains(category) },
+                                set: { _ in model.toggleCategory(category, on: [message]) }))
+                        }
+                    }
+                    RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: canChange, action: { model.setFlagged([message], !message.isFlagged) }) {
+                        Button(message.isFlagged ? "Clear Flag" : "Flag Message") { model.setFlagged([message], !message.isFlagged) }
+                    }
                 }
             }
         }

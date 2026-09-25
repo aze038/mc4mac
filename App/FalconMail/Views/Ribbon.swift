@@ -13,6 +13,10 @@ struct RibbonButtonStyle: ButtonStyle {
 /// An Outlook ribbon glyph: a light-weight symbol in Outlook's grey, in a 28 point box, tinted
 /// only where Outlook colours its own icon.
 struct RibbonGlyph: View {
+    /// The modern ribbon draws every icon in one grey line; only the accent colour, which marks
+    /// the main action or a switch that is on, keeps its colour.
+    static func modern(_ tint: Color?) -> Color? { tint == .accentColor ? tint : nil }
+
     let symbol: String
     var tint: Color?
     var size: CGFloat = OL.ribbonIcon
@@ -20,8 +24,8 @@ struct RibbonGlyph: View {
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: size, weight: .regular))
-            .foregroundStyle(tint ?? OLColor.ribbonIcon)
+            .font(.system(size: size, weight: .light))
+            .foregroundStyle(RibbonGlyph.modern(tint) ?? OLColor.ribbonIcon)
             .frame(width: box, height: box)
     }
 }
@@ -35,7 +39,7 @@ struct RibbonCaption: View {
         VStack(spacing: OL.ribbonLabelPitch - 13) {
             ForEach(Array(title.split(separator: "\n").enumerated()), id: \.offset) { _, line in
                 Text(String(line))
-                    .font(.system(size: OL.ribbonLabelFont))
+                    .font(.system(size: OL.ribbonLabelFont + 0.5))
                     .lineLimit(1)
                     .fixedSize()
             }
@@ -88,10 +92,9 @@ private struct TileBackground: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
-                RoundedRectangle(cornerRadius: 4)
+                RoundedRectangle(cornerRadius: 7)
                     .fill(hovering ? OLColor.hover : Color.clear)
-                    .padding(.top, 2)
-                    .padding(.bottom, 6)
+                    .padding(.vertical, 4)
             }
             .contentShape(Rectangle())
     }
@@ -244,9 +247,27 @@ struct RibbonSeparator: View {
     var body: some View {
         Rectangle()
             .fill(OLColor.ribbonSeparator)
-            .frame(width: 1, height: OL.ribbonSeparatorHeight)
-            .padding(.top, OL.ribbonIconTop)
+            .frame(width: 1, height: OL.ribbonSeparatorHeight - 16)
+            .padding(.top, OL.ribbonIconTop + 8)
             .padding(.horizontal, OL.ribbonSeparatorPad)
+    }
+}
+
+/// The modern ribbon's group: its tiles on a soft rounded card, a small gap from the next.
+struct RibbonGroup<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: OL.ribbonTileGap) { content() }
+            .padding(.horizontal, 4)
+            .frame(height: OL.ribbon, alignment: .top)
+            .background {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(OLColor.ribbonCard)
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(OLColor.ribbonCardLine, lineWidth: 1))
+                    .padding(.vertical, 3)
+            }
+            .padding(.trailing, 6)
     }
 }
 
@@ -291,13 +312,13 @@ struct RibbonTabStrip<Tab: Hashable>: View {
                 Button { selection = entry.tab } label: {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(entry.title)
-                            .font(.system(size: OL.tabFont, weight: selected ? .semibold : .medium))
+                            .font(.system(size: OL.tabFont - 1.5, weight: selected ? .semibold : .regular))
                             .foregroundStyle(selected ? OLColor.tabSelected : OLColor.tab)
                             .padding(.top, OL.tabTextTop)
                             .frame(height: OL.tabUnderlineTop, alignment: .top)
-                        Rectangle()
-                            .fill(selected ? OLColor.tabUnderline : Color.clear)
-                            .frame(height: OL.tabUnderline)
+                        Capsule()
+                            .fill(selected ? Color.accentColor : Color.clear)
+                            .frame(height: 2)
                     }
                     .fixedSize()
                     .contentShape(Rectangle())

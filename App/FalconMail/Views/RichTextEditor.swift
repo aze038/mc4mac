@@ -345,12 +345,51 @@ final class ComposeTextView: NSTextView {
             menu.insertItem(item, at: 0)
             menu.insertItem(.separator(), at: 1)
         }
+        // Inside a table: Outlook's table commands, first, on the cell that was clicked.
+        if isEditable, let menu, let storage = textStorage {
+            let point = convert(event.locationInWindow, from: nil)
+            let index = characterIndexForInsertion(at: point)
+            if let found = TableEditing.find(in: storage, at: index) {
+                tableMenuLocation = index
+                var at = 0
+                let groups: [[TableEditing.Change]] = [[.rowAbove, .rowBelow, .columnLeft, .columnRight],
+                                                       [.deleteRow, .deleteColumn, .deleteTable]]
+                for group in groups {
+                    for change in group {
+                        let item = NSMenuItem(title: change.title, action: #selector(changeTableFromMenu(_:)), keyEquivalent: "")
+                        item.target = self
+                        item.representedObject = TableChangeBox(change)
+                        let full = found.columns >= ComposedBody.mostTableColumns
+                        item.isEnabled = !((change == .columnLeft || change == .columnRight) && full)
+                        menu.insertItem(item, at: at)
+                        at += 1
+                    }
+                    menu.insertItem(.separator(), at: at)
+                    at += 1
+                }
+            }
+        }
         return menu
     }
 
     @objc private func insertLinkFromMenu() { onInsertLink?() }
 
+    /// Where the table menu was opened, so its commands act on the cell clicked.
+    private var tableMenuLocation: Int?
+
+    @objc private func changeTableFromMenu(_ item: NSMenuItem) {
+        guard let change = (item.representedObject as? TableChangeBox)?.change else { return }
+        TableEditing.apply(change, in: self, at: tableMenuLocation)
+        tableMenuLocation = nil
+    }
+
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(changeTableFromMenu(_:)) {
+            guard let change = (item.representedObject as? TableChangeBox)?.change,
+                  let storage = textStorage, let found = TableEditing.find(in: storage, at: tableMenuLocation ?? selectedRange().location) else { return false }
+            let full = found.columns >= ComposedBody.mostTableColumns
+            return !((change == .columnLeft || change == .columnRight) && full)
+        }
         if item.action == #selector(pasteKeepingSourceFormatting)
             || item.action == #selector(pasteMatchingFalconMailStyle) {
             return NSPasteboard.general.canReadObject(forClasses: [NSAttributedString.self, NSString.self], options: nil)
@@ -362,4 +401,10 @@ final class ComposeTextView: NSTextView {
         if item.action == #selector(paste(_:)), isEditable, ComposeTextView.pasteboardHasPicture { return true }
         return super.validateMenuItem(item)
     }
+}
+
+/// A table change carried by a menu item.
+final class TableChangeBox: NSObject {
+    let change: TableEditing.Change
+    init(_ change: TableEditing.Change) { self.change = change }
 }
