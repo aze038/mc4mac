@@ -93,6 +93,8 @@ public actor GmailListSource: ListSourceExtras {
     private var anchorsUnplaced: Set<Date> = []
     private var oldestDate: Date?
     private var needsTold: Set<ListNeed> = []
+    /// How many rows each folder showed at once when last told to the engine.
+    private var shownRows: [UUID: Int] = [:]
     private var textAsked: Set<ListView> = []
 
     private nonisolated let watchers: ListWatchers
@@ -143,6 +145,31 @@ public actor GmailListSource: ListSourceExtras {
 
     public func setOnNeed(_ handler: (@Sendable (ListNeed) -> Void)?) {
         onNeed = handler
+    }
+
+    /// Called when a folder is shown, with its label (nil for Archive) and how many rows the list
+    /// shows at once, which the engine passes to the store's first-screen rule: the Inbox and the
+    /// 12 folders used most recently keep that many rows, 20 to 30, on the Mac.
+    public var onFolderShown: (@Sendable (GmailLabelID?, Int) -> Void)?
+
+    public func setOnFolderShown(_ handler: (@Sendable (GmailLabelID?, Int) -> Void)?) {
+        onFolderShown = handler
+    }
+
+    /// The rows on screen: for a folder of this account, how many there are at once.
+    public func showing(_ keys: [RowKey], in view: ListView) async {
+        guard case .folder(let folderID) = view.scope, !keys.isEmpty else { return }
+        let target: GmailLabelID??
+        if folderID == archiveFolderID {
+            target = .some(nil)
+        } else if let label = labels.first(where: { $0.folderID == folderID })?.id {
+            target = .some(label)
+        } else {
+            target = nil
+        }
+        guard let label = target, shownRows[folderID] != keys.count else { return }
+        shownRows[folderID] = keys.count
+        onFolderShown?(label, keys.count)
     }
 
     deinit {

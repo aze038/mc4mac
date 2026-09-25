@@ -349,6 +349,28 @@ final class GmailListSourceTests: XCTestCase {
         XCTAssertEqual(told.lock.withLock { told.needs }.count, 1, "listed now, so nothing more is asked")
     }
 
+    func testAFolderShownTellsTheEngineHowManyRowsItShowsAtOnceForTheFirstScreenRule() async throws {
+        let box = try await mailbox(count: 40, pairs: 0, replies: 0)
+        let source = box.source()
+        final class Shown: @unchecked Sendable {
+            let lock = NSLock()
+            var told: [(GmailLabelID?, Int)] = []
+        }
+        let shown = Shown()
+        await source.setOnFolderShown { label, rows in shown.lock.withLock { shown.told.append((label, rows)) } }
+        let inbox = ListView(scope: .folder(box.folder(.inbox)))
+        _ = await source.snapshot(of: inbox)
+        let keys = (0..<24).map(box.key)
+        await source.showing(keys, in: inbox)
+        await source.showing(keys, in: inbox)
+        await source.showing(keys, in: ListView(scope: .folder(box.archive)))
+        let told = shown.lock.withLock { shown.told }
+        XCTAssertEqual(told.count, 2, "once per folder while the count stays")
+        XCTAssertEqual(told.first?.0, .inbox)
+        XCTAssertEqual(told.first?.1, 24)
+        XCTAssertEqual(told.last?.0, nil, "Archive has no label")
+    }
+
     func testSortingBySenderFetchesUpTo200RowsInTheBackgroundAndScrollingKeepsThemQueued() async throws {
         let box = try await mailbox(count: 260, pairs: 0, replies: 0)
         let source = box.source()
