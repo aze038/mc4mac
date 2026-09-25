@@ -44,9 +44,37 @@ public actor MailStore {
     private var folderStores: [UUID: FolderStore] = [:]
     private var folderStoreLoads: [UUID: Task<FolderStore, Error>] = [:]
     private var changeContinuations: [UUID: AsyncStream<StoreChange>.Continuation] = [:]
+    /// Google accounts on the Gmail engine. Their IMAP store, `folders.json` and every folder
+    /// directory, is kept exactly as it was, so an earlier FalconMail can take the account back:
+    /// none of their folder stores is opened, read into a list, compacted or written.
+    private var sealed: Set<UUID> = []
 
     public init(layout: FileLayout = FileLayout()) {
         self.layout = layout
+    }
+
+    /// Leaves the account's IMAP store as it is from now on, as when it moves to the Gmail
+    /// engine. What the IMAP engine had not yet written is written first, as at a quit, and its
+    /// folder stores are then let go, so nothing later compacts or rewrites them.
+    public func seal(_ accountID: UUID) async {
+        guard sealed.insert(accountID).inserted else { return }
+        for f in folders[accountID] ?? [] {
+            guard let s = folderStores[f.id] else { continue }
+            try? await s.flush()
+            folderStores[f.id] = nil
+        }
+    }
+
+    /// The account uses its IMAP store again, as when its switch is turned off.
+    public func unseal(_ accountID: UUID) {
+        sealed.remove(accountID)
+    }
+
+    public func isSealed(_ accountID: UUID) -> Bool { sealed.contains(accountID) }
+
+    private func refuseIfSealed(_ accountID: UUID) throws {
+        guard sealed.contains(accountID) else { return }
+        throw FalconError.storage("\(account(accountID)?.email ?? "This account") uses the Gmail API, so its IMAP store is kept as it was.")
     }
 
     public func load() throws {
@@ -177,6 +205,7 @@ public actor MailStore {
     /// all of it. A list without INBOX, which every IMAP server lists, leaves nothing out.
     public func reconcileFolders(accountID: UUID, listed: [IMAPFolderInfo], goneAfter: TimeInterval = 60,
                                  now: Date = Date()) throws -> [FolderInfo] {
+        try refuseIfSealed(accountID)
         try refuseIfFolderListUnread(accountID)
         var unlisted = folders[accountID] ?? []
         var result: [FolderInfo] = []
@@ -237,6 +266,7 @@ public actor MailStore {
     }
 
     public func updateFolder(_ folder: FolderInfo) throws {
+        try refuseIfSealed(folder.accountID)
         try refuseIfFolderListUnread(folder.accountID)
         guard var list = folders[folder.accountID], let i = list.firstIndex(where: { $0.id == folder.id }) else { return }
         list[i] = folder
@@ -264,6 +294,7 @@ public actor MailStore {
     /// The folder's message store, loaded once however many callers ask at the same moment: two
     /// stores on one folder would each append to its journal and write over each other.
     public func folderStore(_ folder: FolderInfo) async throws -> FolderStore {
+        try refuseIfSealed(folder.accountID)
         if let s = folderStores[folder.id] { return s }
         if let loading = folderStoreLoads[folder.id] { return try await loading.value }
         let s = FolderStore(accountID: folder.accountID, folderID: folder.id,
@@ -291,7 +322,7 @@ public actor MailStore {
     }
 
     public func messages(in folderID: UUID) async throws -> [MessageSummary] {
-        guard let f = folder(folderID) else { return [] }
+        guard let f = folder(folderID), !sealed.contains(f.accountID) else { return [] }
         let s = try await folderStore(f)
         return await s.all().sorted { $0.date > $1.date }
     }
@@ -299,18 +330,18 @@ public actor MailStore {
     /// The newest `limit` messages in a folder. Use this for anything the reader looks at:
     /// pulling an entire folder into memory stalls the interface once a mailbox grows large.
     public func messages(in folderID: UUID, limit: Int, scope: MessageScope = .all) async throws -> [MessageSummary] {
-        guard let f = folder(folderID) else { return [] }
+        guard let f = folder(folderID), !sealed.contains(f.accountID) else { return [] }
         return await (try await folderStore(f)).newest(limit, scope: scope)
     }
 
     public func storedCount(in folderID: UUID, scope: MessageScope = .all) async throws -> Int {
-        guard let f = folder(folderID) else { return 0 }
+        guard let f = folder(folderID), !sealed.contains(f.accountID) else { return 0 }
         return await (try await folderStore(f)).matchCount(scope)
     }
 
     public func unifiedInbox() async throws -> [MessageSummary] {
         var out: [MessageSummary] = []
-        for a in accounts {
+        for a in accounts where !sealed.contains(a.id) {
             if let inbox = folder(accountID: a.id, role: .inbox) {
                 out.append(contentsOf: try await messages(in: inbox.id))
             }
@@ -320,7 +351,7 @@ public actor MailStore {
 
     public func unifiedInbox(limit: Int, scope: MessageScope = .all) async throws -> [MessageSummary] {
         var out: [MessageSummary] = []
-        for a in accounts {
+        for a in accounts where !sealed.contains(a.id) {
             guard let inbox = folder(accountID: a.id, role: .inbox) else { continue }
             out.append(contentsOf: try await messages(in: inbox.id, limit: limit, scope: scope))
         }
@@ -330,7 +361,7 @@ public actor MailStore {
 
     public func unifiedCount(scope: MessageScope = .all) async throws -> Int {
         var total = 0
-        for a in accounts {
+        for a in accounts where !sealed.contains(a.id) {
             guard let inbox = folder(accountID: a.id, role: .inbox) else { continue }
             total += try await storedCount(in: inbox.id, scope: scope)
         }
@@ -339,7 +370,8 @@ public actor MailStore {
 
     public func message(id: String) async throws -> MessageSummary? {
         let parts = id.split(separator: ":").map(String.init)
-        guard parts.count == 3, let folderID = UUID(uuidString: parts[1]), let uid = UInt32(parts[2]), let f = folder(folderID) else { return nil }
+        guard parts.count == 3, let folderID = UUID(uuidString: parts[1]), let uid = UInt32(parts[2]), let f = folder(folderID),
+              !sealed.contains(f.accountID) else { return nil }
         return try await folderStore(f).message(uid: uid)
     }
 
@@ -347,14 +379,14 @@ public actor MailStore {
     /// names that message: the folder was renumbered or the message removed since, and the row
     /// now at that UID, if any, is another message that nothing done for `read` may touch.
     public func currentRow(of read: MessageSummary) async -> MessageSummary? {
-        guard let f = folder(read.folderID), let fs = try? await folderStore(f) else { return nil }
+        guard let f = folder(read.folderID), !sealed.contains(f.accountID), let fs = try? await folderStore(f) else { return nil }
         return await fs.current([read]).isEmpty ? nil : await fs.message(uid: read.uid)
     }
 
     /// Stored copies of messages in one account, by Message-ID, so a hit from a server search
     /// can be shown as the row the reader already has. A folder that cannot be loaded is skipped.
     public func storedMessages(withMessageIDs ids: Set<String>, accountID: UUID) async -> [String: [MessageSummary]] {
-        guard !ids.isEmpty else { return [:] }
+        guard !ids.isEmpty, !sealed.contains(accountID) else { return [:] }
         var out: [String: [MessageSummary]] = [:]
         for f in folders(for: accountID) where f.isSelectable {
             guard let fs = try? await folderStore(f) else { continue }
@@ -372,7 +404,7 @@ public actor MailStore {
     }
 
     public func refreshCounts(folderID: UUID) async throws {
-        guard let f = folder(folderID) else { return }
+        guard let f = folder(folderID), !sealed.contains(f.accountID) else { return }
         let store = try await folderStore(f)
         let total = await store.count
         let unread = await store.unreadCount()
@@ -384,21 +416,21 @@ public actor MailStore {
 
     public func cacheSizeBytes() async -> Int {
         var total = 0
-        for f in allFolders() {
+        for f in allFolders() where !sealed.contains(f.accountID) {
             if let s = try? await folderStore(f) { total += await s.bodyCacheSize() }
         }
         return total
     }
 
     public func clearBodyCache() async {
-        for f in allFolders() {
+        for f in allFolders() where !sealed.contains(f.accountID) {
             if let s = try? await folderStore(f) { try? await s.clearBodies() }
             emit(.messagesChanged(folderID: f.id))
         }
     }
 
     public func flushAll() async {
-        for s in folderStores.values { try? await s.flush() }
+        for s in folderStores.values where !sealed.contains(s.accountID) { try? await s.flush() }
     }
 
     public func search(_ query: String, accountID: UUID?) async throws -> [MessageSummary] {
@@ -406,7 +438,7 @@ public actor MailStore {
         guard !q.isEmpty else { return [] }
         let tokens = ArchiveTerms.tokenize(q)
         var out: [MessageSummary] = []
-        for a in accounts where accountID == nil || a.id == accountID {
+        for a in accounts where (accountID == nil || a.id == accountID) && !sealed.contains(a.id) {
             for f in folders(for: a.id) where f.isSelectable && f.role != .all {
                 let fs = try await folderStore(f)
                 if tokens.isEmpty {

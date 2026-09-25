@@ -32,14 +32,19 @@ public struct SMTPServerError: Error, LocalizedError, Sendable, Equatable {
 public actor SMTPClient {
     public let host: String
     public let port: UInt16
+    /// The user name it will sign in as, which `TransportGuard` is asked about before it connects.
+    public let user: String?
     private var connection: StreamConnection?
 
-    public init(host: String, port: UInt16 = 465) {
+    public init(host: String, port: UInt16 = 465, user: String? = nil) {
         self.host = host
         self.port = port
+        self.user = user
     }
 
     public func connect() async throws {
+        // A Google account on the Gmail API never sends by SMTP (§8.1, §12.5).
+        try TransportGuard.shared.check(.smtp, host: host, user: user)
         let c = StreamConnection(host: host, port: port, tls: true)
         try await c.connect()
         connection = c
