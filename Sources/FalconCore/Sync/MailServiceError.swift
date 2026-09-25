@@ -213,6 +213,10 @@ public enum AccountHealth: Sendable, Equatable {
     /// Unreachable for long enough to say so; reconnecting quietly meanwhile.
     case offline(since: Date)
     case imapPaused(until: Date)
+    /// A Google account on the Gmail API that Google asked to wait, for a rate, a bandwidth
+    /// allowance or a daily cap, for more than a minute. A pause, not a failure: the account is
+    /// not offline and nothing sounds. Shorter waits say nothing and stay `.online`.
+    case apiPaused(until: Date)
     case needsSignIn
     /// Stopped until the owner does something; the reason is the sentence to show.
     case blocked(reason: String)
@@ -224,12 +228,22 @@ public enum AccountHealth: Sendable, Equatable {
         }
     }
 
+    /// Kept among the accounts FalconMail is connected to: reachable, or only asked by Google to
+    /// wait a while, which leaves the account connected and its mail on the Mac available.
+    public var staysConnected: Bool {
+        switch self {
+        case .connecting, .online, .apiPaused: return true
+        default: return false
+        }
+    }
+
     var logName: String {
         switch self {
         case .connecting: return "connecting"
         case .online: return "online"
         case .offline: return "offline"
         case .imapPaused(let until): return "imapPaused until=\(ISO8601DateFormatter.archive.string(from: until))"
+        case .apiPaused(let until): return "apiPaused until=\(ISO8601DateFormatter.archive.string(from: until))"
         case .needsSignIn: return "needsSignIn"
         case .blocked: return "blocked"
         }

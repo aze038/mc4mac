@@ -340,11 +340,38 @@ public enum DiagnosticsTitle {
         "imap.notSignedIn": "Checking for new mail failed: the account needs to sign in again",
         "oauth.signInExpired": "Google sign-in expired and needs to be renewed",
         "oauth.notSignedIn": "Google sign-in expired and needs to be renewed",
+        // The Gmail API engine's area: its codes are the kinds of Google's refusals, and what the
+        // engine itself does about the mailbox.
+        "gmail.rateLimited": "Gmail asked FalconMail to slow down",
+        "gmail.quotaExhausted": "Today's Gmail allowance for FalconMail was used up",
+        "gmail.apiDisabled": "Gmail API is off for FalconMail's Google project",
+        "gmail.insufficientPermissions": "Google sign-in did not give FalconMail permission to read mail",
+        "gmail.needsSignIn": "A Google account needs to sign in again",
+        "gmail.clientRejected": "Google did not accept FalconMail's sign-in",
+        "gmail.notFound": "A message or folder was no longer on Gmail",
+        "gmail.temporary": "Gmail had a temporary problem",
+        "gmail.offline": "Gmail could not be reached: this Mac was offline",
+        "gmail.historyExpired": "Gmail's change list had expired, so FalconMail listed the mailbox again",
+        "gmail.domainPolicy": "The Workspace administrator has turned off Gmail access for apps",
+        "gmail.gmailNotEnabled": "Gmail is not turned on for an account",
+        "gmail.sendingLimit": "Gmail's daily sending limit was reached",
+        "gmail.downloadLimit": "Gmail paused downloads for an account",
+        "gmail.uploadLimit": "Gmail paused uploads for an account",
+        "gmail.tooLarge": "A message was too large for Gmail",
+        "gmail.other": "Gmail refused a request",
+        "gmail.floodMode": "Another app was importing into a Google account, so FalconMail used less of Gmail's budget",
+        "gmail.resync": "FalconMail listed a Google account's mailbox again",
+        "gmail.imapBlocked": "FalconMail tried to use IMAP for a Google account and was stopped",
+        "gmail.imapUsed": "A Google account still uses IMAP",
+        "gmail.sendUnconfirmed": "Gmail did not confirm a message was sent, so FalconMail looked for it",
+        "gmail.sendHeld": "A message whose sending could not be confirmed is held for the owner",
+        "gmail.draftSaveFailed": "A draft could not be saved to Gmail",
+        "gmail.uploadPaused": "Gmail paused uploads for an account",
     ]
 
     private static func activity(_ area: String) -> String {
         switch area {
-        case "imap", "sync": return "Checking for new mail"
+        case "imap", "sync", "gmail": return "Checking for new mail"
         case "smtp", "send": return "Sending a message"
         case "actions", "action": return "Changing messages on the server"
         case "rules": return "Applying a rule"
