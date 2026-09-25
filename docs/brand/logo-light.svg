@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 360" width="1400" height="360">
+  <defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="14"/></filter></defs>
+  
+  <g transform="translate(210,74) scale(1.0)">
+    <path d="M0.0,56.0 L140.0,166.0 L140.0,206.0 L-140.0,206.0 L-140.0,166.0 Z" fill="#0E1A28" stroke="#0E1A28" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M-150.0,8.0 L-150.0,196.0 L-10.0,97.0 Z" fill="#E0533F" stroke="#E0533F" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M-10.0,97.0 L-40.0,76.0 L-146.0,200.0 Z" fill="#D8323C" stroke="#D8323C" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M150.0,8.0 L150.0,196.0 L10.0,97.0 Z" fill="#5AA7B6" stroke="#5AA7B6" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M10.0,97.0 L40.0,76.0 L146.0,200.0 Z" fill="#3A82B0" stroke="#3A82B0" stroke-width="8" stroke-linejoin="round"/>
+  </g>
+  <text x="420" y="222" font-family="Liberation Sans" font-weight="700" font-size="150" letter-spacing="-3" fill="#0E1A28">Falcon<tspan font-weight="400">Mail</tspan></text>
+</svg>
