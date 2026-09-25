@@ -387,8 +387,12 @@ struct MessageWindowView: View {
 
     /// `message` and `conversation` are given only by the debug snapshots, which have no store to
     /// read them from.
-    init(messageID: String, message: MessageSummary? = nil, conversation: [MessageSummary] = []) {
+    /// Set when it is drawn inside the mailbox window rather than in a window of its own.
+    var onClose: (() -> Void)? = nil
+
+    init(messageID: String, message: MessageSummary? = nil, conversation: [MessageSummary] = [], onClose: (() -> Void)? = nil) {
         self.messageID = messageID
+        self.onClose = onClose
         _message = State(initialValue: message)
         _conversation = State(initialValue: conversation)
         _conversationIDs = State(initialValue: conversation.map(\.id))
@@ -400,7 +404,7 @@ struct MessageWindowView: View {
             if let message {
                 VStack(spacing: 0) {
                     titleRow(message)
-                    MessageWindowRibbon(message: message, close: { dismiss() })
+                    MessageWindowRibbon(message: message, close: { close() })
                     Rectangle().fill(OLColor.chromeLine).frame(height: 1)
                     if conversation.count > 1 {
                         ConversationStackView(messages: conversation, context: .window, afterReplying: { closeAfterReplying() })
@@ -413,7 +417,7 @@ struct MessageWindowView: View {
                 .background(OLColor.reading)
                 .overlay {
                     if model.showsMovePalette, model.movePaletteWindow == messageID {
-                        MovePalette(onMoved: { dismiss() })
+                        MovePalette(onMoved: { close() })
                     }
                 }
                 .navigationTitle(message.subject.isEmpty ? "(no subject)" : message.subject)
@@ -429,7 +433,10 @@ struct MessageWindowView: View {
             }
         }
         .frame(minWidth: 560, minHeight: 480)
-        .background(PopupWindowAccessor(key: .message(messageID)))
+        .background(onClose == nil ? PopupWindowAccessor(key: .message(messageID)) : nil)
+        .onChange(of: message?.subject) { _, subject in
+            if onClose != nil, let subject { WindowTray.shared.deskTitle(.message(messageID), subject.isEmpty ? "(no subject)" : subject) }
+        }
         // Read again whenever stored messages change, so Read/Unread and Follow Up show, and
         // toggle, what the message is now.
         .task(id: model.openMessagesRevision) { await load() }
@@ -446,6 +453,10 @@ struct MessageWindowView: View {
         .ignoresSafeArea(.container, edges: .top)
     }
 
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
+    }
+
     private func load() async {
         if model.usesGmailEngine(messageID: messageID) {
             await loadFromEngine()
@@ -458,7 +469,7 @@ struct MessageWindowView: View {
             if conversationIDs.count > 1 { conversation = await model.conversationMessages(conversationIDs, newest: current) }
         } else if message == nil {
             // A window brought back for a message that is no longer stored has nothing to show.
-            dismiss()
+            close()
         }
         conversationRead = true
     }
@@ -481,7 +492,7 @@ struct MessageWindowView: View {
                 if RowKey(string: messageID)?.isGmail == true {
                     model.statusText = "This message was moved or deleted on another device."
                 }
-                dismiss()
+                close()
                 return
             case .unavailable:
                 conversationRead = true
@@ -494,7 +505,7 @@ struct MessageWindowView: View {
     /// Settings → Composing: "Close the original message window after replying or forwarding",
     /// for a card's own Reply, Reply All and Forward as for the ribbon's.
     private func closeAfterReplying() {
-        if Preferences.bool(Pref.closeOriginalAfterReply, default: true) { dismiss() }
+        if Preferences.bool(Pref.closeOriginalAfterReply, default: true) { close() }
     }
 
     private func titleRow(_ message: MessageSummary) -> some View {

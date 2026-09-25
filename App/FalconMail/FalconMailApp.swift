@@ -38,7 +38,10 @@ struct FalconMailApp: App {
                 }
                 .onAppear {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }
-                    model.openComposeWindow = { openWindow(value: $0) }
+                    model.openComposeWindow = { id in
+                        // Filling the screen, it is drawn inside the mailbox window, as Outlook's is.
+                        if !WindowTray.shared.showInDesk(.compose(id)) { openWindow(value: id) }
+                    }
                     WindowTray.shared.openWindow = { key in
                         switch key {
                         case .message(let id): openWindow(value: id)

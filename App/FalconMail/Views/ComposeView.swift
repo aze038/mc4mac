@@ -11,6 +11,8 @@ struct ComposeView: View {
     @Environment(\.openWindow) private var openWindow
     let draftID: UUID
     var embedded = false
+    /// Drawn inside the mailbox window filling the screen, Outlook's way, with its full chrome.
+    var inDesk = false
     var onClose: (() -> Void)? = nil
     @State private var draft: ComposeDraft?
     @State private var showCc = Preferences.bool(Pref.showCcByDefault, default: false)
@@ -32,7 +34,10 @@ struct ComposeView: View {
             if draft != nil { form } else { ProgressView() }
         }
         .frame(minWidth: 600, minHeight: embedded ? 0 : 480)
-        .background(embedded ? nil : PopupWindowAccessor(key: .compose(draftID)))
+        .background(embedded || inDesk ? nil : PopupWindowAccessor(key: .compose(draftID)))
+        .onChange(of: draft?.subject) { _, subject in
+            if inDesk { WindowTray.shared.deskTitle(.compose(draftID), subject?.isEmpty == false ? subject! : "New Message") }
+        }
         .onAppear {
             if !embedded { model.composeWindowDrafts.insert(draftID) }
             load()
@@ -41,7 +46,13 @@ struct ComposeView: View {
             editSessions.values.forEach { $0.stop() }
             if !embedded {
                 model.composeWindowDrafts.remove(draftID)
-                model.closeUnsent(draftID)
+                // One drawn inside the mailbox window that became a window of its own as full
+                // screen ended goes on being written there.
+                if inDesk, WindowTray.shared.handedOver.contains(.compose(draftID)) {
+                    model.composeWindowDrafts.insert(draftID)
+                } else {
+                    model.closeUnsent(draftID)
+                }
             }
         }
         // Files dropped anywhere attach, never go in as text: behind the whole window here, over
@@ -342,7 +353,7 @@ struct ComposeView: View {
         draft = stored
         formatter.history = stored?.historyPlain ?? ""
         // A window restored for a draft that no longer exists has nothing to show.
-        if stored == nil, !embedded { dismiss() }
+        if stored == nil, !embedded { close() }
         if model.picturesToFetch.remove(draftID) != nil { fetchPictures() }
         if let date = stored?.scheduledAt, date > Date() { scheduleDate = date }
         guard !(stored?.to.isEmpty ?? true) else { return }

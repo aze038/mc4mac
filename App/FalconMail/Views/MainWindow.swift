@@ -27,18 +27,23 @@ struct MainWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            CommandBar()
-            if !model.tabs.isEmpty {
-                WorkspaceTabStrip()
-                Divider()
-            }
-            ZStack {
-                moduleContent
-                if model.showsMovePalette, model.movePaletteWindow == nil {
-                    MovePalette()
+            VStack(spacing: 0) {
+                CommandBar()
+                if !model.tabs.isEmpty {
+                    WorkspaceTabStrip()
+                    Divider()
                 }
+                ZStack {
+                    moduleContent
+                    if model.showsMovePalette, model.movePaletteWindow == nil {
+                        MovePalette()
+                    }
+                }
+                WindowTrayBar(holdsWindows: !fillsScreen)
             }
-            WindowTrayBar(holdsWindows: !fillsScreen)
+            // Filling the screen, opened messages and messages being written are drawn in here,
+            // over the mailbox and above the status bar, as Outlook's are.
+            .overlay { if fillsScreen { DeskLayer() } }
             StatusBar(fillsScreen: fillsScreen)
         }
         .ignoresSafeArea(.container, edges: .top)

@@ -40,6 +40,12 @@ final class WindowTray: ObservableObject {
         didSet { if front != oldValue { frontChanged?(front) } }
     }
     private let fullScreen = FullScreenItems()
+    /// Messages and messages being written drawn inside the mailbox window, Outlook's way, rather
+    /// than in windows of their own: every one opened while the mailbox window fills the screen.
+    /// `deskShowing` are those on screen, the one in front last; the others are in the tray, as
+    /// tabs in the status bar, and stay alive (a message being written keeps what was typed).
+    @Published private(set) var deskMounted: [PopupKey] = []
+    @Published private(set) var deskShowing: [PopupKey] = []
     /// Message or compose windows that went full screen on their own as they opened over a
     /// mailbox window filling the screen, being brought back into its space.
     private var leavingFullScreen = Set<PopupKey>()
@@ -126,6 +132,30 @@ final class WindowTray: ObservableObject {
     private func endFullScreen() {
         fullScreen.end()
         fullScreenMailbox = nil
+        handOverDesk()
+    }
+
+    /// Those drawn inside the mailbox window whose views are going away because they became
+    /// windows, not because they were closed: a message being written is not closed with them.
+    private(set) var handedOver = Set<PopupKey>()
+
+    /// The mailbox window left full screen: what was drawn inside it becomes windows of their
+    /// own again, those showing opening at once and those in the tray opening when taken out.
+    private func handOverDesk() {
+        let showing = deskMounted.filter { deskShowing.contains($0) }
+        let keys = deskMounted
+        guard !keys.isEmpty else { return }
+        handedOver.formUnion(showing)
+        deskMounted = []
+        deskShowing = []
+        for key in showing { book.closed(key) }
+        // Those in the tray are forgotten: a message being written is kept in Drafts.
+        for key in keys where !showing.contains(key) { book.closed(key) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            for key in showing { self.openWindow?(key) }
+            DispatchQueue.main.async { self.handedOver.subtract(showing) }
+        }
     }
 
     /// Takes `window` into the space of the mailbox window filling the screen, sending to their
@@ -241,9 +271,59 @@ final class WindowTray: ObservableObject {
         book.minimise(key, title: title)
     }
 
+    // MARK: Drawn inside the mailbox window
+
+    /// Shows `key` inside the mailbox window, Outlook's way, when that fills the screen or already
+    /// holds it. False when it should open in a window of its own.
+    func showInDesk(_ key: PopupKey) -> Bool {
+        guard deskMounted.contains(key) || fullScreenMailbox != nil else { return false }
+        if !deskMounted.contains(key) { deskMounted.append(key) }
+        deskShowing.removeAll { $0 == key }
+        deskShowing.append(key)
+        if book.entry(key) == nil || book.entry(key)?.place == .tray {
+            book.showing(key, title: book.entry(key)?.title ?? "")
+        }
+        // Two side by side at most, as Outlook: the one in front least recently goes to its tab.
+        while deskShowing.count > FullScreenLayout.mostShowing {
+            let oldest = deskShowing.removeFirst()
+            book.minimise(oldest, title: book.entry(oldest)?.title ?? "")
+        }
+        return true
+    }
+
+    func inDesk(_ key: PopupKey) -> Bool { deskMounted.contains(key) }
+
+    /// A message or a message being written drawn inside the mailbox window has its title.
+    func deskTitle(_ key: PopupKey, _ title: String) {
+        guard deskMounted.contains(key), book.entry(key)?.title != title else { return }
+        if book.entry(key)?.place == .tray { book.minimise(key, title: title) } else { book.showing(key, title: title) }
+    }
+
+    /// Clicked: comes to the front of those inside the mailbox window.
+    func deskFront(_ key: PopupKey) {
+        guard deskShowing.last != key, deskShowing.contains(key) else { return }
+        deskShowing.removeAll { $0 == key }
+        deskShowing.append(key)
+    }
+
+    /// Its yellow button: to its tab in the status bar.
+    func deskMinimise(_ key: PopupKey) {
+        guard deskMounted.contains(key) else { return }
+        deskShowing.removeAll { $0 == key }
+        book.minimise(key, title: book.entry(key)?.title ?? "")
+    }
+
+    /// Its red button, Discard, Send, or an action that takes the message away.
+    func deskClose(_ key: PopupKey) {
+        deskMounted.removeAll { $0 == key }
+        deskShowing.removeAll { $0 == key }
+        book.closed(key)
+    }
+
     /// Brings `key`'s window to the front, from the tray if it is there. False when no window
     /// holds it, and one should be opened.
     func bringForward(_ key: PopupKey) -> Bool {
+        if window(for: key) == nil, showInDesk(key) { return true }
         switch book.opening(key) {
         case .open:
             return false
@@ -261,6 +341,7 @@ final class WindowTray: ObservableObject {
     }
 
     func restore(_ key: PopupKey) {
+        if deskMounted.contains(key) { _ = showInDesk(key); return }
         guard let window = window(for: key) else {
             book.closed(key)
             openWindow?(key)
@@ -274,12 +355,14 @@ final class WindowTray: ObservableObject {
     /// The tray's close button, and Discard on a message being written in a window of its own.
     /// Nothing is asked: a message not yet sent keeps what was written in Drafts as it closes.
     func close(_ key: PopupKey) {
+        if deskMounted.contains(key) { return deskClose(key) }
         guard let window = window(for: key) else { return book.closed(key) }
         window.close()
     }
 
     /// Close Window in the Message menu, or Command-W, on the message or compose window in front.
     func performClose(_ key: PopupKey) {
+        if deskMounted.contains(key) { return deskClose(key) }
         window(for: key)?.performClose(nil)
     }
 
