@@ -30,8 +30,13 @@ enum ComposeSnapshot {
         let formatter = TextFormatter()
         formatter.attach(ComposeTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200)))
         let model = AppModel()
+        if UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly") == "table" {
+            MessageTableSnapshot.render(to: directory)
+            exit(0)
+        }
         messageList(model, to: directory)
         if UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly") == "list" { exit(0) }
+        MessageTableSnapshot.render(to: directory)
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")
