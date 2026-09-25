@@ -16,13 +16,17 @@ enum FrontWindow: Equatable {
 }
 
 /// The message and compose windows of their own, and the tray along the foot of the mailbox
-/// window that FalconMail minimises them into instead of the Dock.
+/// window that FalconMail minimises them into instead of the Dock. While a mailbox window fills
+/// the screen, they float inside its space instead, as Legacy Outlook's do, and the tray's
+/// entries are the tabs in its status bar.
 @MainActor
 final class WindowTray: ObservableObject {
     static let shared = WindowTray()
     static let popupIdentifier = "falcon.popup"
 
     @Published private(set) var book = WindowTrayBook()
+    /// The mailbox window filling the screen, whose status bar holds the tray as tabs.
+    @Published private(set) var fullScreenMailbox: ObjectIdentifier?
     /// Opens a window for an entry the tray holds without one, as a message window put back
     /// into the tray at launch has until it is first shown.
     var openWindow: (@MainActor (PopupKey) -> Void)?
@@ -35,6 +39,10 @@ final class WindowTray: ObservableObject {
     private var front = FrontWindow.mailbox {
         didSet { if front != oldValue { frontChanged?(front) } }
     }
+    private let fullScreen = FullScreenItems()
+    /// Message or compose windows that went full screen on their own as they opened over a
+    /// mailbox window filling the screen, being brought back into its space.
+    private var leavingFullScreen = Set<PopupKey>()
 
     private init() {
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] n in
@@ -45,21 +53,87 @@ final class WindowTray: ObservableObject {
             guard let w = n.object as? NSWindow else { return }
             MainActor.assumeIsolated { self?.willClose(w) }
         })
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: nil, queue: .main) { [weak self] n in
+            guard let w = n.object as? NSWindow else { return }
+            MainActor.assumeIsolated { self?.enteredFullScreen(w) }
+        })
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: nil, queue: .main) { [weak self] n in
+            guard let w = n.object as? NSWindow else { return }
+            MainActor.assumeIsolated { self?.exitedFullScreen(w) }
+        })
+        fullScreen.onSendToTab = { [weak self] key in
+            guard let self, let window = self.window(for: key) else { return }
+            self.minimize(window)
+        }
     }
 
     private func becameKey(_ window: NSWindow) {
         front = kind(of: window)
-        if let key = key(for: window) { book.showing(key, title: window.title) }
+        if let key = key(for: window) {
+            book.showing(key, title: window.title)
+            fullScreen.cameForward(key)
+        }
     }
 
     private func willClose(_ window: NSWindow) {
         if let key = key(for: window) {
             book.closed(key)
             popupWindows[key] = nil
+            fullScreen.forget(key)
+            leavingFullScreen.remove(key)
             if front == .popup(key) { front = .other }
         }
+        if window === fullScreen.host { endFullScreen() }
         popups.removeAll { $0.window == nil || $0.window === window }
         mailboxWindows.removeAll { $0.window == nil || $0.window === window }
+    }
+
+    // MARK: A mailbox window filling the screen
+
+    /// A mailbox window went full screen: the message and compose windows showing come into its
+    /// space, as many as fit side by side, the others to their tabs. One of them that went full
+    /// screen on its own stays in its own space.
+    private func enteredFullScreen(_ window: NSWindow) {
+        if let key = key(for: window) {
+            // One opening over the mailbox window as that filled the screen went full screen on
+            // its own before it could be kept in: it is brought back out and into the space.
+            guard fullScreen.isActive, leavingFullScreen.insert(key).inserted else { return }
+            window.toggleFullScreen(nil)
+            return
+        }
+        guard mailboxWindows.contains(where: { $0.window === window }), !fullScreen.isActive else { return }
+        fullScreen.begin(in: window)
+        fullScreenMailbox = ObjectIdentifier(window)
+        let inFront = NSApp.keyWindow
+        for entry in popups {
+            guard let popup = entry.window, popup.isVisible, let key = key(for: popup) else { continue }
+            take(popup, key: key, opening: false)
+        }
+        if let inFront, inFront.isVisible { inFront.makeKeyAndOrderFront(nil) }
+    }
+
+    private func exitedFullScreen(_ window: NSWindow) {
+        if let key = key(for: window), leavingFullScreen.remove(key) != nil {
+            if fullScreen.isActive {
+                take(window, key: key, opening: false)
+                window.makeKeyAndOrderFront(nil)
+            }
+            return
+        }
+        if window === fullScreen.host { endFullScreen() }
+    }
+
+    private func endFullScreen() {
+        fullScreen.end()
+        fullScreenMailbox = nil
+    }
+
+    /// Takes `window` into the space of the mailbox window filling the screen, sending to their
+    /// tabs the windows it leaves no room for.
+    private func take(_ window: NSWindow, key: PopupKey, opening: Bool) {
+        for sent in fullScreen.take(window, key: key, opening: opening) {
+            if let other = self.window(for: sent) { minimize(other) }
+        }
     }
 
     private func kind(of window: NSWindow) -> FrontWindow {
@@ -81,6 +155,8 @@ final class WindowTray: ObservableObject {
         guard !mailboxWindows.contains(where: { $0.window === window }) else { return }
         mailboxWindows.append(WeakWindow(window))
         if window.isKeyWindow { front = .mailbox }
+        // Brought back at launch already filling the screen.
+        if window.styleMask.contains(.fullScreen) { enteredFullScreen(window) }
     }
 
     var mailboxWindowTakesUndo: Bool {
@@ -116,7 +192,12 @@ final class WindowTray: ObservableObject {
         guard !popups.contains(where: { $0.window === window }) else { return }
         window.identifier = NSUserInterfaceItemIdentifier(WindowTray.popupIdentifier)
         popups.removeAll { $0.window == nil }
-        if let anchor = popups.last?.window, anchor.isVisible { place(window, beside: anchor) }
+        if fullScreen.isActive {
+            // Before SwiftUI shows it, so that it opens inside the space rather than in one of its own.
+            take(window, key: key, opening: !window.isVisible)
+        } else if let anchor = popups.last?.window, anchor.isVisible {
+            place(window, beside: anchor)
+        }
         popups.append(WeakWindow(window))
     }
 
@@ -149,6 +230,7 @@ final class WindowTray: ObservableObject {
         // The hook swapped the two, so this is AppKit's own minimise, to the Dock.
         guard let key = key(for: window) else { return window.falcon_miniaturize(nil) }
         book.minimise(key, title: window.title)
+        fullScreen.release(key)
         window.orderOut(nil)
     }
 
@@ -185,6 +267,7 @@ final class WindowTray: ObservableObject {
             return
         }
         book.restore(key)
+        if fullScreen.isActive { take(window, key: key, opening: false) }
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -274,13 +357,25 @@ struct PopupWindowAccessor: NSViewRepresentable {
 }
 
 struct MailboxWindowAccessor: NSViewRepresentable {
-    func makeNSView(context: Context) -> AccessorView { AccessorView() }
+    /// Told which window the mailbox is in, once it is in one.
+    var inWindow: (NSWindow) -> Void = { _ in }
+
+    func makeNSView(context: Context) -> AccessorView {
+        let view = AccessorView()
+        view.inWindow = inWindow
+        return view
+    }
+
     func updateNSView(_ nsView: AccessorView, context: Context) {}
 
     final class AccessorView: NSView {
+        var inWindow: ((NSWindow) -> Void)?
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
+            let inWindow = self.inWindow
+            DispatchQueue.main.async { inWindow?(window) }
             // The chrome draws its own title row, Outlook's way: the window's title bar is see-through
             // and the traffic lights sit over the chrome.
             window.titlebarAppearsTransparent = true
@@ -296,9 +391,14 @@ struct MailboxWindowAccessor: NSViewRepresentable {
 struct WindowTrayBar: View {
     @ObservedObject var tray = WindowTray.shared
     @Environment(AppModel.self) private var model
+    /// False while the mailbox window fills the screen, when its status bar shows the windows
+    /// minimised as tabs and this row only the tabs minimised inside the mailbox window.
+    var holdsWindows = true
+
+    private var windows: [WindowTrayBook.Entry] { holdsWindows ? tray.book.tray : [] }
 
     var body: some View {
-        if !tray.book.tray.isEmpty || !model.minimizedTabs.isEmpty {
+        if !windows.isEmpty || !model.minimizedTabs.isEmpty {
             HStack(spacing: 8) {
                 ForEach(model.minimizedTabs) { tab in
                     HStack(spacing: 6) {
@@ -311,7 +411,7 @@ struct WindowTrayBar: View {
                     .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
                     .onTapGesture { model.openTab(tab) }
                 }
-                ForEach(tray.book.tray) { entry in
+                ForEach(windows) { entry in
                     HStack(spacing: 6) {
                         Image(systemName: WindowTrayBar.icon(for: entry.key)).font(.caption)
                         // Hugs its title, as a tab's chip does, and cuts a long one short.
@@ -348,5 +448,82 @@ struct WindowTrayBar: View {
         case .message: return "Message"
         case .compose: return "New Message"
         }
+    }
+}
+
+/// The tabs in the middle of the status bar while the mailbox window fills the screen, one for
+/// each message or compose window minimised, as Legacy Outlook's: the title and account of what
+/// it holds, as its window's title row reads, in a darker tab rising from the foot of the screen.
+/// A click brings its window back into the space; the cross that shows under the pointer closes it.
+struct FullScreenTabStrip: View {
+    @ObservedObject var tray = WindowTray.shared
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        GeometryReader { proxy in
+            let entries = tray.book.tray
+            let width = FullScreenLayout.tabWidth(count: entries.count, band: proxy.size.width)
+            HStack(spacing: FullScreenLayout.tabGap) {
+                ForEach(entries) { entry in
+                    FullScreenTab(title: title(for: entry), restore: { tray.restore(entry.key) }, close: { tray.close(entry.key) })
+                        .frame(width: width)
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
+        }
+    }
+
+    /// "Subject • account", as the window's own title row reads.
+    private func title(for entry: WindowTrayBook.Entry) -> String {
+        let subject = WindowTrayBar.title(for: entry)
+        let accountID: UUID?
+        switch entry.key {
+        case .message(let id): accountID = model.messageWindowRows[id]?.accountID
+        case .compose(let id): accountID = model.drafts[id]?.accountID
+        }
+        guard let email = model.accounts.first(where: { $0.id == accountID })?.email else { return subject }
+        return "\(subject) • \(email)"
+    }
+}
+
+struct FullScreenTab: View {
+    let title: String
+    let restore: () -> Void
+    let close: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack {
+            UnevenRoundedRectangle(topLeadingRadius: OL.fullScreenTabRadius, topTrailingRadius: OL.fullScreenTabRadius)
+                .fill(hovering ? OLColor.fullScreenTabHover : OLColor.fullScreenTab)
+            Text(title)
+                .font(.system(size: OL.statusFont))
+                .foregroundStyle(OLColor.title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.horizontal, 26)
+            if hovering {
+                HStack {
+                    Button(action: close) {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(OLColor.textMuted)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Close")
+                    Spacer()
+                }
+                .padding(.leading, 6)
+            }
+        }
+        .frame(height: OL.fullScreenTab)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: restore)
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button("Show", action: restore)
+            Button("Close", action: close)
+        }
+        .help(title)
     }
 }
