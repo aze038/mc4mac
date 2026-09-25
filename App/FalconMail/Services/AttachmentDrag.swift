@@ -16,32 +16,6 @@ enum AttachmentTempFiles {
         let url = folder.appendingPathComponent(safe.isEmpty ? "attachment" : safe)
         return (try? data.write(to: url)) != nil ? url : nil
     }
-
-    static func itemProvider(filename: String, data: Data) -> NSItemProvider {
-        guard let url = write(filename: filename, data: data) else { return NSItemProvider() }
-        return NSItemProvider(contentsOf: url) ?? NSItemProvider()
-    }
-
-    static func fileURLs(from providers: [NSItemProvider]) async -> [URL] {
-        var urls: [URL] = []
-        for p in providers where p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            let url: URL? = await withCheckedContinuation { cont in
-                p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                    if let data = item as? Data { cont.resume(returning: URL(dataRepresentation: data, relativeTo: nil)) }
-                    else if let url = item as? URL { cont.resume(returning: url) }
-                    else { cont.resume(returning: nil) }
-                }
-            }
-            if let url { urls.append(url) }
-        }
-        return urls
-    }
-
-    static func attachment(from url: URL) -> OutgoingAttachment? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        let type = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-        return OutgoingAttachment(filename: url.lastPathComponent, mimeType: type, data: data)
-    }
 }
 
 @MainActor

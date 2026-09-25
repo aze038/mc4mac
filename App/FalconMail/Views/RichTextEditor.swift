@@ -147,6 +147,38 @@ final class ComposeTextView: NSTextView {
     /// copied from a web page. Elsewhere such pictures are left out.
     var fetchesPastedRemotePictures = false
     var remotePictureLoader = RemotePictureLoader.web
+    /// Set in a compose window: files dragged onto the body are attached, as Outlook attaches
+    /// them, rather than written in as their path or a file:// link. Text, and a picture moved
+    /// within the text, still drop into it. `onFileDragOver` shows the window's "Drop to attach".
+    var onDropAttachments: (([OutgoingAttachment]) -> Void)?
+    var onFileDragOver: ((Bool) -> Void)?
+
+    private func attaches(_ sender: NSDraggingInfo) -> Bool {
+        onDropAttachments != nil && ComposeFileDrop.takesAsAttachments(sender)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard attaches(sender) else { return super.draggingEntered(sender) }
+        onFileDragOver?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard attaches(sender) else { return super.draggingUpdated(sender) }
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onFileDragOver?(false)
+        super.draggingExited(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard attaches(sender), let onDropAttachments else { return super.performDragOperation(sender) }
+        onFileDragOver?(false)
+        return ComposeFileDrop.receive(sender.draggingPasteboard, deliver: onDropAttachments)
+    }
+
 
     /// An empty body has no glyphs, so its layout manager is never asked to draw any; with ¶ on,
     /// the ¶ of its one empty paragraph is still drawn, as Word draws it.
