@@ -5,10 +5,13 @@ import FalconCore
 
 /// A conversation in the reading pane, or in a window or tab of its own, as the owner chose it
 /// from Gmail: every message one under another, newest at the top, each with its own sender,
-/// recipients and date and a line between them. The newest and the unread are open; the others
-/// are one line each, sender, first words and date, and open on a click. Only an open card
-/// fetches its message's text, and the quoted history in it of the messages below it is hidden
-/// behind •••. A conversation of one message is shown by MessageReaderView, as it always was.
+/// recipients and date and a line between them. The newest is open; the others are one line
+/// each, sender, first words and date, an unread one with a blue dot and a blue sender, and open
+/// on a click. Mail is read message by message: a card opened by a click is read once it has
+/// stayed open for the delay in Settings → Reading, and Expand all reads nothing. Only an open
+/// card fetches its message's text, and the quoted history in it of the messages below it is
+/// hidden behind •••. A conversation of one message is shown by MessageReaderView, as it always
+/// was.
 struct ConversationStackView: View {
     @Environment(AppModel.self) private var model
     let messages: [MessageSummary]
@@ -20,14 +23,21 @@ struct ConversationStackView: View {
 
     @State private var stack: ConversationStack
     @State private var originalColours = false
+    /// The cards opened by a click whose message is read once the delay has passed, unless the
+    /// card is folded again or the stack closes first.
+    @State private var pendingReads: [String: Task<Void, Never>] = [:]
 
+    /// `expandedAll` opens every card from the start, as Expand all does; only the snapshot hook
+    /// sets it.
     init(messages: [MessageSummary], context: ReaderContext = .pane, afterReplying: (() -> Void)? = nil,
-         subjectExpanded: Bool = false) {
+         subjectExpanded: Bool = false, expandedAll: Bool = false) {
         self.messages = messages
         self.context = context
         self.afterReplying = afterReplying
         self.subjectExpanded = subjectExpanded
-        _stack = State(initialValue: ConversationStack(messages))
+        var stack = ConversationStack(messages)
+        if expandedAll { stack.expandAll() }
+        _stack = State(initialValue: stack)
     }
 
     var body: some View {
@@ -55,6 +65,10 @@ struct ConversationStackView: View {
         }
         .background(OLColor.reading)
         .onChange(of: messages) { _, latest in stack.update(latest) }
+        .onDisappear {
+            for task in pendingReads.values { task.cancel() }
+            pendingReads = [:]
+        }
     }
 
     /// The reading header's first line, once for the whole conversation: the subject in twenty-two
@@ -74,7 +88,7 @@ struct ConversationStackView: View {
                 .padding(.leading, OL.readingTextX - OL.readingIconX - 36)
                 .padding(.top, OL.readingSubjectTop)
             Spacer(minLength: 8)
-            Button { stack.toggleAll() } label: {
+            Button { toggleAll() } label: {
                 Text(stack.allExpanded ? "Collapse all" : "Expand all")
                     .font(.system(size: 11))
                     .foregroundStyle(OLColor.text)
@@ -104,12 +118,23 @@ struct ConversationStackView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// A click on a card's header or folded line. A message opened this way is read, as one
-    /// opened in the list is.
+    /// A click on a card's header or folded line. An unread message opened this way is read
+    /// as one selected in the list is, once the delay has passed with its card still open; the
+    /// conversation's other messages keep their state.
     private func toggle(_ message: MessageSummary) {
-        let opening = !stack.isExpanded(message.id)
-        stack.toggle(message.id)
-        if opening, !message.isRead { model.markReadOnExpanding(message) }
+        pendingReads.removeValue(forKey: message.id)?.cancel()
+        if let unread = stack.toggle(message.id), let task = model.readAfterDelay(unread) {
+            pendingReads[unread.id] = task
+        }
+    }
+
+    /// Expand all opens every card to be looked through and reads none of them; Collapse all
+    /// folds them, and a card folded before its delay passed stays unread.
+    private func toggleAll() {
+        stack.toggleAll()
+        for id in pendingReads.keys where !stack.isExpanded(id) {
+            pendingReads.removeValue(forKey: id)?.cancel()
+        }
     }
 
     /// A card's own Reply, Reply All and Forward, on that card's message.
@@ -363,7 +388,8 @@ struct ConversationCard: View {
 
     // MARK: Folded
 
-    /// Sender, first words and date on one line, the sender blue while it is unread.
+    /// Sender, first words and date on one line; while it is unread, a blue dot before it and
+    /// the sender blue and bold, as the list shows an unread conversation.
     private var foldedLine: some View {
         let avatar: CGFloat = 28
         let avatarX = OL.readingAvatarX + (OL.readingAvatar - avatar) / 2
@@ -390,6 +416,15 @@ struct ConversationCard: View {
                 .padding(.trailing, OL.readingRightInset + 4)
         }
         .frame(height: 44)
+        .overlay(alignment: .leading) {
+            if !message.isRead {
+                Circle()
+                    .fill(OLColor.unread)
+                    .frame(width: OL.listDot, height: OL.listDot)
+                    .padding(.leading, (avatarX - OL.listDot) / 2)
+                    .accessibilityLabel("Unread")
+            }
+        }
         .background(hovering ? OLColor.hover : Color.clear)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -402,7 +437,7 @@ struct ConversationCard: View {
 
     private func load() async {
         if parsed == nil {
-            // In the reading pane only the newest waits for the selection to settle; the others
+            // In the reading pane only the newest waits for the selection to settle; any others
             // opened with it wait as long, so that arrowing past a conversation fetches nothing.
             if message.isServerOnly, context == .pane, openedWithStack, !isNewest, attempt == 0 {
                 try? await Task.sleep(nanoseconds: 350_000_000)

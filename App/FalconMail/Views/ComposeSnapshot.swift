@@ -22,10 +22,11 @@ import FalconCore
 /// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
 /// deleted, the message list with made-up conversations, and a made-up conversation of four
-/// messages stacked in the reading pane and in its own window, newest and unread open, the rest
-/// folded, then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone, and
-/// with `-FalconMailSnapshotOnly stack` the conversation alone; `-FalconMailSnapshotOnly stack50`
-/// times a conversation of fifty messages instead, writing how long it held up the main thread.
+/// messages stacked in the reading pane and in its own window, the newest open and the rest
+/// folded, the unread one with its blue dot, then quits. With `-FalconMailSnapshotOnly list` it
+/// draws the message list alone, and with `-FalconMailSnapshotOnly stack` the conversation alone;
+/// `-FalconMailSnapshotOnly stack50` times a conversation of fifty messages instead, writing how
+/// long it held up the main thread.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -139,9 +140,9 @@ enum ComposeSnapshot {
     }
 
     /// A made-up conversation of four messages as the reading pane stacks it and as its own
-    /// window shows it: the newest open, quoting the one under it behind •••, the unread one
-    /// under it open too, and the two oldest folded to a line each. Their text is handed to the
-    /// model as if fetched, and WebKit draws it as the app does.
+    /// window shows it: the newest open, quoting the one under it behind •••, and the other three
+    /// folded to a line each, the unread one under it with its blue dot and blue sender. Their
+    /// text is handed to the model as if fetched, and WebKit draws it as the app does.
     @MainActor private static func conversationStack(_ model: AppModel, to directory: String) {
         let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
                                   imapHost: "example.invalid", smtpHost: "example.invalid")
@@ -162,10 +163,10 @@ enum ComposeSnapshot {
     }
 
     /// A made-up conversation of fifty messages, each quoting all before it as Gmail does, stacked
-    /// in the reading pane twice: read, so that only the newest is open, and unread, so that all
-    /// fifty are. How long the main thread is held up is written to convstack-50-timing.txt: the
-    /// first layout, and the longest the main thread went unanswered while every message loaded
-    /// and was measured. The unread stack is drawn to convstack-50-light.png.
+    /// in the reading pane twice: read, as it opens with only the newest open, and unread, with
+    /// all fifty opened as Expand all opens them. How long the main thread is held up is written
+    /// to convstack-50-timing.txt: the first layout, and the longest the main thread went
+    /// unanswered while every message loaded and was measured. The unread stack is drawn to convstack-50-light.png.
     @MainActor private static func longConversation(_ model: AppModel, to directory: String) {
         let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
                                   imapHost: "example.invalid", smtpHost: "example.invalid")
@@ -176,7 +177,8 @@ enum ComposeSnapshot {
             for (message, parsed) in mail { model.snapshotBody(parsed, for: message.id) }
             let messages = mail.map(\.0)
             let started = Date()
-            let pane = host(ConversationStackView(messages: messages).environment(model).environmentObject(model.updates).themedRoot(),
+            let pane = host(ConversationStackView(messages: messages, expandedAll: unread).environment(model)
+                                .environmentObject(model.updates).themedRoot(),
                             size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 840), appearance: .aqua)
             pane.layoutSubtreeIfNeeded()
             let firstLayout = Date().timeIntervalSince(started)

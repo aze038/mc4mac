@@ -1176,10 +1176,12 @@ final class AppModel {
         return accounts.first?.id
     }
 
+    /// The Home ribbon's Read/Unread and the U key: every message selected, each conversation's
+    /// row standing for all its messages, read while any is unread and else unread, as Outlook does.
     func toggleReadOnSelection() {
         let list = selectedMessages
-        guard let first = list.first else { return }
-        markRead(list, !first.isRead)
+        guard !list.isEmpty else { return }
+        markRead(list, ReadMarking.readUnreadMarksRead(list))
     }
 
     func toggleFlagOnSelection() {
@@ -1637,6 +1639,18 @@ final class AppModel {
         threads.first { $0.messages.contains { $0.id == message.id } }
     }
 
+    /// What the list's row `id` shows in the reading pane, as the list holds it now: a
+    /// conversation's row its stack, one of its message lines (tagged `child:`) that message.
+    func readingLine(_ id: String) -> ReadMarking.Line? {
+        switch rowIndex[id] {
+        case .thread(let thread): return .conversation(thread.messages)
+        case .message(let message, _): return .message(message)
+        default: return ReadMarking.line(tagged: id, in: threads.map(\.messages))
+        }
+    }
+
+    /// Selecting a line reads, once the delay has passed with it still selected, the one message
+    /// the reading pane shows open: a message line's own message, or a conversation row's newest.
     func selectionDidChange() {
         cancelPendingRead()
         if Preferences.bool(Pref.autoExpandConversation, default: true),
@@ -1645,20 +1659,17 @@ final class AppModel {
             expandedThreadIDs.insert(id)
         }
         guard readPolicy == .delay else { return }
-        guard selectedMessageIDs.count == 1, let id = selectedMessageIDs.first else { return }
-        guard let selected = threads.first(where: { $0.id == id }), selected.unreadCount > 0 else { return }
+        guard selectedMessageIDs.count == 1, let id = selectedMessageIDs.first, let line = readingLine(id) else { return }
+        guard !ReadMarking.toMarkRead(selecting: line).isEmpty else { return }
         pendingReadID = id
         let nanoseconds = UInt64(max(1, markReadDelaySeconds)) * 1_000_000_000
         readTask = Task { [weak self] in
             _ = try? await Task.sleep(nanoseconds: nanoseconds)
             guard !Task.isCancelled, let self else { return }
-            guard self.pendingReadID == id, self.selectedMessageIDs == [id] else { return }
-            guard let current = self.threads.first(where: { $0.id == id }) else { return }
+            guard self.pendingReadID == id, self.selectedMessageIDs == [id], let current = self.readingLine(id) else { return }
             self.readTask = nil
             self.pendingReadID = nil
-            // The messages the reading pane shows open: the conversation stack opens every
-            // unread one, and a conversation of one message is that message.
-            self.markReadSilently(ConversationStack(current.messages).toMarkRead)
+            self.markReadSilently(ReadMarking.toMarkRead(selecting: current))
         }
     }
 
@@ -2045,16 +2056,26 @@ final class AppModel {
         for id in drafts.keys where !open.contains(id) { closeUnsent(id) }
     }
 
+    /// A message opened in a window or tab of its own is read at once: that message alone, the
+    /// newest when a conversation's row was opened, its other messages staying as they were.
     private func markReadOnOpen(_ message: MessageSummary) {
         guard readPolicy != .never else { return }
         cancelPendingRead()
-        markReadSilently(residentThread(containing: message)?.messages ?? [message])
+        markReadSilently([message])
     }
 
-    /// A folded card of the conversation stack opened by a click is read, as a message opened is.
-    func markReadOnExpanding(_ message: MessageSummary) {
-        guard readPolicy != .never else { return }
-        markReadSilently([message])
+    /// A folded card of the conversation stack opened by a click is read as a message selected
+    /// in the list is: once the delay has passed. The stack cancels the task returned when the
+    /// card is folded again, or the stack closes, before then. Nil when there is nothing to wait
+    /// for.
+    func readAfterDelay(_ message: MessageSummary) -> Task<Void, Never>? {
+        guard readPolicy == .delay, !message.isRead else { return nil }
+        let nanoseconds = UInt64(max(1, markReadDelaySeconds)) * 1_000_000_000
+        return Task { [weak self] in
+            _ = try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled, let self else { return }
+            self.markReadSilently([self.messages.first { $0.id == message.id } ?? message])
+        }
     }
 
     func send(_ draft: ComposeDraft) throws {

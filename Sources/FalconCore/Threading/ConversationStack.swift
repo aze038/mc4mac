@@ -2,8 +2,12 @@ import Foundation
 
 /// A conversation as the reading pane shows it when its row in the list is clicked: every message
 /// one under another, newest at the top, the way Gmail shows a conversation but the other way up,
-/// which is the owner's choice. The newest message and every unread one start open; the others
-/// are one line each and open on a click. Only an open card fetches its message's text.
+/// which is the owner's choice. Only the newest message starts open; the others, read or not,
+/// are one line each and open on a click, an unread one with its blue dot and blue sender. Only
+/// an open card fetches its message's text.
+///
+/// Mail is read message by message: showing the stack reads only its newest message, and each
+/// of the others is read when its card is opened, never because the conversation was selected.
 ///
 /// The list keeps one row per conversation; clicking one of its per-message lines still shows
 /// that message alone, and a conversation of one message shows as it always did.
@@ -26,11 +30,10 @@ public struct ConversationStack: Equatable, Sendable {
             .map(\.element)
     }
 
-    /// The cards open when the stack opens: the newest message and every unread one.
+    /// The cards open when the stack opens: the newest message alone. An unread message below it
+    /// starts folded and stays unread until its card is opened.
     public static func startsOpen(_ messages: [MessageSummary]) -> Set<String> {
-        var open = Set(messages.filter { !$0.isRead }.map(\.id))
-        if let newest = newestFirst(messages).first { open.insert(newest.id) }
-        return open
+        newestFirst(messages).first.map { [$0.id] } ?? []
     }
 
     public var newest: MessageSummary? { messages.first }
@@ -40,19 +43,28 @@ public struct ConversationStack: Equatable, Sendable {
     /// The open cards' messages, newest first: the ones whose text is fetched.
     public var expandedMessages: [MessageSummary] { messages.filter { expanded.contains($0.id) } }
 
-    /// What opening the stack marks read, as opening a message marks it: the unread messages
-    /// shown open, which are all the unread ones, since every unread card starts open.
-    public var toMarkRead: [MessageSummary] { expandedMessages.filter { !$0.isRead } }
+    /// What showing the stack marks read once the delay in Settings → Reading has passed, as
+    /// selecting a message marks it: the newest message, the one card that starts open, when it
+    /// is unread. The others stay unread whatever else is opened, until their own card is.
+    public var toMarkRead: [MessageSummary] { newest.map { $0.isRead ? [] : [$0] } ?? [] }
 
-    /// A click on a card's header or folded line: it opens, or folds again.
-    public mutating func toggle(_ id: String) {
-        guard messages.contains(where: { $0.id == id }) else { return }
-        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+    /// A click on a card's header or folded line: it opens, or folds again. Returns the message
+    /// this click opened when it is unread, the one message the click reads.
+    @discardableResult
+    public mutating func toggle(_ id: String) -> MessageSummary? {
+        guard let message = messages.first(where: { $0.id == id }) else { return nil }
+        if expanded.contains(id) {
+            expanded.remove(id)
+            return nil
+        }
+        expanded.insert(id)
+        return message.isRead ? nil : message
     }
 
     /// Whether every card is open, which turns Expand all into Collapse all.
     public var allExpanded: Bool { messages.allSatisfy { expanded.contains($0.id) } }
 
+    /// Opens every card to be looked through; it reads none of them.
     public mutating func expandAll() {
         expanded = Set(messages.map(\.id))
     }
@@ -68,14 +80,13 @@ public struct ConversationStack: Equatable, Sendable {
     }
 
     /// The same conversation read again, as its flags change or a message comes or goes. Cards
-    /// opened or folded stay so; a message new to the stack opens when it is unread or the newest.
+    /// opened or folded stay so; a message new to the stack opens when it is the newest, and
+    /// starts folded otherwise, unread or not.
     public mutating func update(_ latest: [MessageSummary]) {
         let known = Set(messages.map(\.id))
         let ordered = Self.newestFirst(latest)
         var open = expanded.intersection(ordered.map(\.id))
-        for (index, message) in ordered.enumerated() where !known.contains(message.id) && (index == 0 || !message.isRead) {
-            open.insert(message.id)
-        }
+        if let newest = ordered.first, !known.contains(newest.id) { open.insert(newest.id) }
         messages = ordered
         expanded = open
     }
