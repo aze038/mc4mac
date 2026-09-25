@@ -140,6 +140,11 @@ final class ComposeTextView: NSTextView {
     /// Where ⌘K and the context menu's Link… go, for an editor with no ribbon button for links
     /// (the signature editor, as Outlook's).
     var onInsertLink: (() -> Void)?
+    /// HTML pasted with pictures from the web keeps them: each goes in as an empty box, is
+    /// fetched once and put in its place, as Outlook's signature editor does with a signature
+    /// copied from a web page. Elsewhere such pictures are left out.
+    var fetchesPastedRemotePictures = false
+    var remotePictureLoader = RemotePictureLoader.web
 
     /// An empty body has no glyphs, so its layout manager is never asked to draw any; with ¶ on,
     /// the ¶ of its one empty paragraph is still drawn, as Word draws it.
@@ -176,7 +181,7 @@ final class ComposeTextView: NSTextView {
     }
 
     @objc func pasteMatchingFalconMailStyle() {
-        guard let source = ComposeTextView.attributedFromPasteboard() else {
+        guard let source = ComposeTextView.attributedFromPasteboard(keepingRemotePictures: fetchesPastedRemotePictures) else {
             pasteAsPlainText(nil)
             normaliseTypingAttributes()
             return
@@ -187,7 +192,7 @@ final class ComposeTextView: NSTextView {
     /// As it came, pictures included, which are made as every picture put into a text is (see
     /// InlinePictures.pasted).
     @objc func pasteKeepingSourceFormatting() {
-        guard let source = ComposeTextView.attributedFromPasteboard() else {
+        guard let source = ComposeTextView.attributedFromPasteboard(keepingRemotePictures: fetchesPastedRemotePictures) else {
             pasteAsRichText(nil)
             return
         }
@@ -202,8 +207,8 @@ final class ComposeTextView: NSTextView {
     /// Reads the richest representation the source app offered. Excel, Word and browsers all put
     /// RTF or HTML on the pasteboard, which is what carries the table grid; a picture copied on
     /// its own, such as a screenshot, comes as a picture.
-    static func attributedFromPasteboard() -> NSAttributedString? {
-        InlinePictures.pasted(from: .general)
+    static func attributedFromPasteboard(keepingRemotePictures: Bool = false) -> NSAttributedString? {
+        InlinePictures.pasted(from: .general, keepingRemotePictures: keepingRemotePictures)
     }
 
     /// Whether Paste has a picture alone to put in, which a text view that does not take
@@ -223,6 +228,20 @@ final class ComposeTextView: NSTextView {
         textStorage?.replaceCharacters(in: range, with: restyled)
         setSelectedRange(NSRange(location: range.location + restyled.length, length: 0))
         didChangeText()
+        if fetchesPastedRemotePictures { fetchPictures(in: restyled) }
+    }
+
+    /// Fetches, once, the pictures from the web that went in as empty boxes, and puts each in
+    /// wherever its box is by then.
+    private func fetchPictures(in pasted: NSAttributedString) {
+        let addresses = RemotePictures.addresses(in: pasted)
+        guard !addresses.isEmpty else { return }
+        let loader = remotePictureLoader
+        Task { @MainActor [weak self] in
+            let fetched = await loader.fetch(addresses)
+            guard let self, !fetched.isEmpty else { return }
+            RemotePictures.fill(self, with: fetched)
+        }
     }
 
     /// Keeps every structural attribute, replaces the typeface and size with the composer's, and

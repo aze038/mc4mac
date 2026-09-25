@@ -253,7 +253,7 @@ public enum InlinePictures {
         return html.contains("cid:" + id) || html.contains("cid:" + (id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id))
     }
 
-    private static let imageTag = try! NSRegularExpression(pattern: "<img\\b[^>]*>", options: [.caseInsensitive])
+    static let imageTag = try! NSRegularExpression(pattern: "<img\\b[^>]*>", options: [.caseInsensitive])
 
     /// The value of `name` in a tag, quoted or not; `data-src` is not `src`.
     static func attribute(_ name: String, in tag: String) -> String? {
@@ -266,22 +266,141 @@ public enum InlinePictures {
         return nil
     }
 
+    /// The size a tag gives its picture, in points, from its style, as a browser reads it
+    /// first, else from its width and height; either may be missing. A size given in anything
+    /// but pixels, such as a percentage, is taken as not given.
+    static func givenSize(of tag: String) -> (width: Double?, height: Double?) {
+        let style = attribute("style", in: tag).map(HTMLEntities.decode) ?? ""
+        func fromStyle(_ name: String) -> Double? {
+            let pattern = "(?<![-\\w])\(name)\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(px)?\\s*(?:;|$|!)"
+            guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = expression.firstMatch(in: style, range: NSRange(location: 0, length: (style as NSString).length)) else { return nil }
+            return Double((style as NSString).substring(with: match.range(at: 1)))
+        }
+        func fromAttribute(_ name: String) -> Double? {
+            guard let value = attribute(name, in: tag)?.trimmed.lowercased(), !value.hasSuffix("%") else { return nil }
+            return Double(value.hasSuffix("px") ? String(value.dropLast(2)) : value)
+        }
+        return (fromStyle("width") ?? fromAttribute("width"), fromStyle("height") ?? fromAttribute("height"))
+    }
+
+    /// Whether a tag's picture is never seen: hidden by its style, given no room, or a pixel
+    /// or two across, as the tracking pictures of mailing lists are.
+    static func isHidden(_ tag: String) -> Bool {
+        let style = (attribute("style", in: tag) ?? "").lowercased().replacingOccurrences(of: " ", with: "")
+        if style.contains("display:none") || style.contains("visibility:hidden") { return true }
+        let size = givenSize(of: tag)
+        if size.width == 0 || size.height == 0 { return true }
+        if let width = size.width, let height = size.height, width <= 2, height <= 2 { return true }
+        return false
+    }
+
+    /// The size to show a picture at when its tag gives `width` and `height`: both sides as
+    /// given, or one side with the other in proportion to `natural`. Nil when the picture is
+    /// shown at its own size, as it is with neither, or with a size that is its own; with
+    /// `fitting`, a picture wider than RemotePictures.widest is scaled down to it.
+    static func shownSize(width: Double?, height: Double?, natural: NSSize, fitting: Bool) -> NSSize? {
+        var size: NSSize
+        switch (width, height) {
+        case let (w?, h?) where w > 0 && h > 0: size = NSSize(width: w, height: h)
+        case let (w?, _) where w > 0 && natural.width > 0: size = NSSize(width: w, height: (natural.height * w / natural.width).rounded())
+        case let (_, h?) where h > 0 && natural.height > 0: size = NSSize(width: (natural.width * h / natural.height).rounded(), height: h)
+        default: size = natural
+        }
+        if fitting { size = RemotePictures.fitted(size) }
+        guard size.width > 0, size.height > 0 else { return nil }
+        return abs(natural.width - size.width) >= 1 || abs(natural.height - size.height) >= 1 ? size : nil
+    }
+
+    /// Shows `attachment`'s picture at `size`. A draft's RTFD keeps no size of its own for a
+    /// picture, only the one its file declares, so a PNG's or JPEG's file is made to declare
+    /// `size` by the resolution it states; not a pixel of it changes. A GIF declares none and
+    /// shows at its own size once the draft is read back.
+    static func show(_ attachment: NSTextAttachment, at size: NSSize) {
+        if let data = attachment.fileWrapper?.regularFileContents, let declared = declaring(size, in: data) {
+            let file = FileWrapper(regularFileWithContents: declared)
+            file.preferredFilename = attachment.fileWrapper?.preferredFilename
+            attachment.fileWrapper = file
+        }
+        attachment.bounds = NSRect(origin: .zero, size: size)
+    }
+
+    /// `data`, a PNG or JPEG, stating the resolution at which its pixels are `size` points big;
+    /// nil when it cannot be made to, as for a GIF or a JPEG without a JFIF header.
+    static func declaring(_ size: NSSize, in data: Data) -> Data? {
+        guard size.width > 0, size.height > 0, let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let wide = properties[kCGImagePropertyPixelWidth] as? Int, let high = properties[kCGImagePropertyPixelHeight] as? Int,
+              wide > 0, high > 0 else { return nil }
+        let dpi = (Double(wide) / Double(size.width) * 72, Double(high) / Double(size.height) * 72)
+        let declared: Data?
+        switch format(of: data) {
+        case .png?: declared = png(data, dpi: dpi)
+        case .jpeg?: declared = jpeg(data, dpi: dpi)
+        default: declared = nil
+        }
+        guard let declared, let shown = NSImage(data: declared)?.size,
+              abs(shown.width - size.width) < 0.5, abs(shown.height - size.height) < 0.5 else { return nil }
+        return declared
+    }
+
+    /// A PNG with its pHYs chunk, in pixels a metre, saying `dpi`, just after its header.
+    private static func png(_ data: Data, dpi: (Double, Double)) -> Data? {
+        let bytes = [UInt8](data)
+        guard bytes.count > 33 else { return nil }
+        var output = Array(bytes[0..<33])
+        var offset = 33
+        while offset + 12 <= bytes.count {
+            let length = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 | Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            let end = offset + 12 + length
+            guard length >= 0, end <= bytes.count else { return nil }
+            if String(decoding: bytes[(offset + 4)..<(offset + 8)], as: UTF8.self) != "pHYs" {
+                output.append(contentsOf: bytes[offset..<end])
+            }
+            offset = end
+        }
+        func big(_ value: UInt32) -> [UInt8] { [UInt8(value >> 24), UInt8(value >> 16 & 0xFF), UInt8(value >> 8 & 0xFF), UInt8(value & 0xFF)] }
+        let perMetre = { (value: Double) in UInt32(max(1, min(Double(UInt32.max), (value / 0.0254).rounded()))) }
+        let typed = Array("pHYs".utf8) + big(perMetre(dpi.0)) + big(perMetre(dpi.1)) + [1]
+        let chunk = big(9) + typed + big(CRC32.checksum(Data(typed)))
+        output.insert(contentsOf: chunk, at: 33)
+        return Data(output)
+    }
+
+    /// A JPEG with its JFIF header saying `dpi`; nil for one without that header.
+    private static func jpeg(_ data: Data, dpi: (Double, Double)) -> Data? {
+        var bytes = [UInt8](data)
+        guard bytes.count > 18, bytes[2] == 0xFF, bytes[3] == 0xE0, Array(bytes[6..<11]) == Array("JFIF\0".utf8) else { return nil }
+        let x = UInt16(max(1, min(65_535, dpi.0.rounded()))), y = UInt16(max(1, min(65_535, dpi.1.rounded())))
+        bytes[13] = 1
+        bytes[14] = UInt8(x >> 8); bytes[15] = UInt8(x & 0xFF)
+        bytes[16] = UInt8(y >> 8); bytes[17] = UInt8(y & 0xFF)
+        return Data(bytes)
+    }
+
     /// A message's HTML as the composer's body, its pictures in it again: each picture the HTML
     /// shows from the message's own parts, by cid:, or from a data: URI, as a draft from an
-    /// earlier build holds a quoted original's, at the size the HTML gives it. A picture the
-    /// message would fetch from the web cannot be held in the body and is left out. Text the
-    /// HTML gives no colour or font takes `attributes`, the composer's own. Nil when the HTML
-    /// cannot be read.
+    /// earlier build holds a quoted original's, at the size the HTML gives it. Text the HTML
+    /// gives no colour or font takes `attributes`, the composer's own. Nil when the HTML cannot
+    /// be read.
+    ///
+    /// A picture the message would fetch from the web is left out, unless `remote` is given, as
+    /// for a quoted original or a signature: it is then the picture `remote` holds for its
+    /// address, else an empty box of the size the HTML gives it that remembers the address (see
+    /// RemotePictures), and a picture too wide for the composer is scaled down to fit. A hidden
+    /// picture or a tracking pixel is always left out. Nothing is fetched from the web while
+    /// the HTML is read.
     ///
     /// AppKit reads HTML through WebKit, which must be on the main thread.
     @MainActor
     public static func text(fromHTML html: String, parts: [MIMEAttachment],
-                            attributes: [NSAttributedString.Key: Any]) -> NSAttributedString? {
+                            attributes: [NSAttributedString.Key: Any], remote: [String: Data]? = nil) -> NSAttributedString? {
         var byID: [String: MIMEAttachment] = [:]
         for part in parts {
             guard let id = part.contentID?.lowercased(), byID[id] == nil else { continue }
             byID[id] = part
         }
+        let html = withoutFetching(html)
         let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         var placed: [String: NSTextAttachment] = [:]
         let source = html as NSString
@@ -291,7 +410,11 @@ public enum InlinePictures {
             let src = attribute("src", in: tag)?.trimmed ?? ""
             var data: Data?
             var name: String?
-            if src.lowercased().hasPrefix("cid:") {
+            var attachment: NSTextAttachment?
+            let given = givenSize(of: tag)
+            if isHidden(tag) {
+                attachment = nil
+            } else if src.lowercased().hasPrefix("cid:") {
                 let id = String(src.dropFirst(4))
                 let part = byID[id.lowercased()] ?? byID[(id.removingPercentEncoding ?? id).lowercased()]
                 data = part?.data
@@ -299,15 +422,21 @@ public enum InlinePictures {
             } else if let uri = dataURI.firstMatch(in: src, range: NSRange(location: 0, length: (src as NSString).length)),
                       uri.range.location == 0 {
                 data = decodedDataURI(uri, in: src as NSString)
+            } else if let remote, let address = RemotePictures.address(fromSource: src) {
+                let mark = RemotePictures.Placeholder(address: address, width: given.width, height: given.height)
+                attachment = remote[address].flatMap { RemotePictures.picture($0, for: mark) }
+                    ?? RemotePictures.placeholder(for: address, width: given.width, height: given.height)
             }
-            guard let data, let attachment = attachment(for: data, named: name) else {
+            if let data, let made = self.attachment(for: data, named: name) {
+                let natural = NSImage(data: made.fileWrapper?.regularFileContents ?? Data())?.size ?? .zero
+                if let size = shownSize(width: given.width, height: given.height, natural: natural, fitting: remote != nil) {
+                    show(made, at: size)
+                }
+                attachment = made
+            }
+            guard let attachment else {
                 marked.replaceCharacters(in: match.range, with: "")
                 continue
-            }
-            if let width = attribute("width", in: tag).flatMap(Double.init), let height = attribute("height", in: tag).flatMap(Double.init),
-               width > 0, height > 0, let natural = NSImage(data: attachment.fileWrapper?.regularFileContents ?? Data())?.size,
-               abs(natural.width - width) >= 1 || abs(natural.height - height) >= 1 {
-                attachment.bounds = NSRect(x: 0, y: 0, width: width, height: height)
             }
             let token = "FalconMailPicture\(nonce)N\(index)E"
             placed[token] = attachment
@@ -332,6 +461,27 @@ public enum InlinePictures {
         return ComposedBody.filling(read, with: attributes)
     }
 
+    private static let fetchingElements = try! NSRegularExpression(
+        pattern: "(?is)<(script|iframe|object|video|audio|noscript)\\b[^>]*>.*?</\\1\\s*>|<(script|iframe|object|embed|video|audio|source|track|link|meta|base|input|frame|frameset|applet)\\b[^>]*>")
+    private static let backgroundAttribute = try! NSRegularExpression(
+        pattern: "(?i)\\s(background|poster|srcset|lowsrc|dynsrc)\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s>]+)")
+    private static let remoteURL = try! NSRegularExpression(
+        pattern: "(?i)url\\(\\s*(?:&quot;|[\"'])?\\s*(?:https?:)?//[^)]*\\)")
+    private static let remoteImport = try! NSRegularExpression(pattern: "(?i)@import[^;]*;?")
+
+    /// `html` with nothing left that WebKit would fetch while reading it or run: scripts,
+    /// frames, embedded players, style sheets and fonts linked from the web, and pictures set
+    /// behind text by an attribute or by CSS. What it says and how it is laid out stay.
+    static func withoutFetching(_ html: String) -> String {
+        var output = html
+        for expression in [fetchingElements, backgroundAttribute, remoteImport] {
+            output = expression.stringByReplacingMatches(in: output, range: NSRange(location: 0, length: (output as NSString).length),
+                                                         withTemplate: "")
+        }
+        return remoteURL.stringByReplacingMatches(in: output, range: NSRange(location: 0, length: (output as NSString).length),
+                                                  withTemplate: "none")
+    }
+
     /// Pasted HTML without the pictures it would fetch from the web, which WebKit would put in
     /// as a stand-in icon.
     public static func withoutRemotePictures(_ html: String) -> String {
@@ -353,9 +503,17 @@ public enum InlinePictures {
     /// page or from Word leaves an RTF without them; RTF; HTML; or a picture alone, as a copied
     /// screenshot is. Its pictures are made as `attachment(for:named:)` makes them. Nil when
     /// there is only plain text.
+    ///
+    /// With `keepingRemotePictures`, as the signature editor pastes, HTML keeps the pictures it
+    /// would fetch from the web as boxes that remember their addresses, for the editor to fetch
+    /// and put in (see RemotePictures); otherwise they are left out.
     @MainActor
-    public static func pasted(from pasteboard: NSPasteboard) -> NSAttributedString? {
+    public static func pasted(from pasteboard: NSPasteboard, keepingRemotePictures: Bool = false) -> NSAttributedString? {
         func read(_ type: NSPasteboard.PasteboardType, as document: NSAttributedString.DocumentType) -> NSAttributedString? {
+            if document == .html, keepingRemotePictures {
+                guard let data = pasteboard.data(forType: type) else { return nil }
+                return text(fromHTML: String(decoding: data, as: UTF8.self), parts: [], attributes: [:], remote: [:])
+            }
             guard var data = pasteboard.data(forType: type) else { return nil }
             var options: [NSAttributedString.DocumentReadingOptionKey: Any] = [.documentType: document]
             if document == .html {

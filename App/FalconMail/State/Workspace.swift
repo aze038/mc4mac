@@ -21,11 +21,14 @@ extension AppModel {
     }
 
     /// Opens `draft` to be written. `onlyCopy` says nothing else holds what it says, as with a
-    /// send called back from the Outbox, so closing it always asks before dropping it.
-    func openCompose(_ draft: ComposeDraft, onlyCopy: Bool = false) {
+    /// send called back from the Outbox, so closing it always asks before dropping it. With
+    /// `fetchingPictures`, its window fetches the pictures from the web its body shows as empty
+    /// boxes and puts them in.
+    func openCompose(_ draft: ComposeDraft, onlyCopy: Bool = false, fetchingPictures: Bool = false) {
         var draft = draft
         if !onlyCopy { draft.markOpened() }
         let id = newDraft(draft)
+        if fetchingPictures { picturesToFetch.insert(id) }
         if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
             open(id)
         } else {

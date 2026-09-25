@@ -108,7 +108,8 @@ public enum ComposedHTML {
         return plainOwn.map { min(ComposedBody.throughRTF($0).utf16.count, rich.length) }
     }
 
-    /// `text` as HTML, each picture in it collected into `pictures` and shown by `cid:`, and
+    /// `text` as HTML, each picture in it collected into `pictures` and shown by `cid:`, each
+    /// box standing for a picture from the web that was not fetched shown from its address, and
     /// what the plain text says for each of its pictures in turn.
     ///
     /// The writer would put a picture down as a file beside the page, by a name two pictures can
@@ -123,6 +124,13 @@ public enum ComposedHTML {
         var tags: [(word: String, tag: String)] = []
         var marks: [String] = []
         for (index, (_, attachment)) in located.enumerated() {
+            // A picture from the web that was not fetched goes as the original's tag did, from
+            // its address, and the plain text says nothing for it.
+            if let remote = RemotePictures.placeholder(of: attachment) {
+                tags.append(("FalconMailPicture\(nonce)N\(index)E", RemotePictures.tag(for: remote)))
+                marks.append("")
+                continue
+            }
             guard let picture = InlinePictures.picture(in: attachment) else {
                 tags.append(("", ""))
                 marks.append("")

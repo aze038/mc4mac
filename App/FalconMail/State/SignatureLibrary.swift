@@ -16,6 +16,9 @@ final class SignatureLibrary {
     /// Editors' text not yet in the book, so the pane's preview and every open message's
     /// Signature menu are not redrawn at each keystroke.
     @ObservationIgnored private var pendingTexts: [UUID: NSAttributedString] = [:]
+    /// Carried-over signatures already read as HTML this session, so one that cannot be read
+    /// is not fetched for again.
+    @ObservationIgnored private var importedHTML: Set<UUID> = []
 
     init(store: SignatureStore) {
         let opened = store.open()
@@ -46,6 +49,24 @@ final class SignatureLibrary {
     func adopt(_ accounts: [AccountInfo]) {
         guard book.adopt(accounts) else { return }
         saveNow()
+    }
+
+    /// Each account signature carried over as HTML source, as one pasted into an older build's
+    /// account settings from a web page is, becomes the formatted signature it describes, once:
+    /// its pictures from the web are fetched this one time, and one that cannot be fetched stays
+    /// an empty box that is sent from its address. A signature the owner has written or changed
+    /// is never touched, nor is one of plain words.
+    func importCarriedOverHTML(loader: RemotePictureLoader) async {
+        var changed = false
+        for candidate in book.carriedOverHTML where importedHTML.insert(candidate.id).inserted {
+            let addresses = RemotePictures.addresses(inHTML: candidate.html)
+            let pictures = addresses.isEmpty ? [:] : await loader.fetch(addresses)
+            guard let text = Signature.text(fromHTML: candidate.html, pictures: pictures, attributes: RichText.bodyAttributes),
+                  book.replaceCarriedOverHTML(candidate.id, source: candidate.html, with: text, plainIn: RichText.bodyAttributes)
+            else { continue }
+            changed = true
+        }
+        if changed { saveNow() }
     }
 
     func add(startingWith text: String = "") -> Signature {

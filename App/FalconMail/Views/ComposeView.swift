@@ -328,9 +328,36 @@ struct ComposeView: View {
         formatter.history = stored?.historyPlain ?? ""
         // A window restored for a draft that no longer exists has nothing to show.
         if stored == nil, !embedded { dismiss() }
+        if model.picturesToFetch.remove(draftID) != nil { fetchPictures() }
         if let date = stored?.scheduledAt, date > Date() { scheduleDate = date }
         guard !(stored?.to.isEmpty ?? true) else { return }
         Task { @MainActor in bodyFocused = true }
+    }
+
+    /// Fetches the pictures from the web the body shows as empty boxes, a reply's or forward's
+    /// quoted original's, and puts each in its box as it is in the body then, whatever has been
+    /// typed meanwhile. A message nobody has touched yet stays untouched, so closing it still
+    /// asks nothing.
+    private func fetchPictures() {
+        guard let opened = draft.flatMap({ RichText.attributed(from: $0.richBody) }) else { return }
+        let addresses = RemotePictures.addresses(in: opened)
+        guard !addresses.isEmpty else { return }
+        let loader = model.remotePictureLoader
+        Task { @MainActor in
+            let fetched = await loader.fetch(addresses)
+            guard !fetched.isEmpty, draft != nil else { return }
+            let untouched = draft?.isUntouched ?? false
+            if let editor = formatter.editor {
+                // The text view reports the change through the body's binding.
+                guard RemotePictures.fill(editor, with: fetched) else { return }
+            } else {
+                guard let text = draft.flatMap({ RichText.attributed(from: $0.richBody) }).map(NSMutableAttributedString.init),
+                      RemotePictures.fill(text, with: fetched) else { return }
+                draft?.richBody = RichText.body(of: text)
+            }
+            if untouched { draft?.markOpened() }
+            commitDraft()
+        }
     }
 
     private func changeAccount(to account: AccountInfo) {

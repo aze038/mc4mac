@@ -92,7 +92,11 @@ struct MessageReaderView: View {
                     .padding(.top, 10)
             }
             if !model.loadRemoteImages && !allowRemoteImages && hasRemote {
-                RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
+                RemoteImagesBanner(loadOnce: {
+                    allowRemoteImages = true
+                    // A reply or forward then quotes the message with its pictures too.
+                    model.remotePicturesLoaded.insert(message.id)
+                }, loadAlways: { model.loadRemoteImages = true })
                     .padding(.horizontal, OL.readingBodyX)
                     .padding(.top, 10)
             }
@@ -316,8 +320,7 @@ struct MessageReaderView: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBody(for: message)
-            model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)))
+            model.openReply(to: message, parsed: parsed, account: account, all: all)
         }
     }
 
@@ -325,7 +328,7 @@ struct MessageReaderView: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
+            model.openForward(message, parsed: parsed, account: account)
         }
     }
 
@@ -482,8 +485,7 @@ struct MessageWindowRibbon: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBody(for: message)
-            model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)))
+            model.openReply(to: message, parsed: parsed, account: account, all: all)
         }
     }
 
@@ -491,7 +493,7 @@ struct MessageWindowRibbon: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
+            model.openForward(message, parsed: parsed, account: account)
         }
     }
 }

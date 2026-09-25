@@ -431,6 +431,15 @@ final class AppModel {
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored var openMainWindow: (@MainActor () -> Void)?
     @ObservationIgnored var openComposeWindow: (@MainActor (UUID) -> Void)?
+    /// Messages whose pictures from the web the owner loaded once in the reader, this session.
+    @ObservationIgnored var remotePicturesLoaded: Set<String> = []
+    /// Fetches the pictures from the web a quoted original or a signature shows; the snapshot
+    /// gives it one that never reaches the network.
+    @ObservationIgnored var remotePictureLoader = RemotePictureLoader.web
+    /// Drafts just opened whose quoted original's pictures from the web are to be fetched and
+    /// put in by their compose window.
+    @ObservationIgnored var picturesToFetch: Set<UUID> = []
+    @ObservationIgnored private var importingSignatures = false
     /// The drafts being written in compose windows of their own; with those in tabs, they are
     /// the drafts that are not left over.
     @ObservationIgnored var composeWindowDrafts: Set<UUID> = []
@@ -785,10 +794,23 @@ final class AppModel {
     func refreshAccounts() async {
         accounts = await store.allAccounts()
         signatures.adopt(accounts)
+        importCarriedOverSignatures()
         var map: [UUID: [FolderInfo]] = [:]
         for a in accounts { map[a.id] = await store.folders(for: a.id) }
         folders = map
         refreshDockBadge()
+    }
+
+    /// Account signatures carried over as HTML source become the signatures they describe,
+    /// with their pictures, fetched from the web once; see SignatureLibrary.
+    private func importCarriedOverSignatures() {
+        guard !importingSignatures, !signatures.book.carriedOverHTML.isEmpty else { return }
+        importingSignatures = true
+        let loader = remotePictureLoader
+        Task {
+            await signatures.importCarriedOverHTML(loader: loader)
+            importingSignatures = false
+        }
     }
 
     /// Maintained whenever folders change, so reading it from a view body costs nothing.
@@ -1110,8 +1132,7 @@ final class AppModel {
         guard let thread = currentThread, let account = account(for: thread.latest) else { return }
         Task {
             let parsed = await parsedBody(for: thread.latest)
-            openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all,
-                               signature: signature(for: account, .replies)))
+            openReply(to: thread.latest, parsed: parsed, account: account, all: all)
         }
     }
 
@@ -1119,8 +1140,26 @@ final class AppModel {
         guard let thread = currentThread, let account = account(for: thread.latest) else { return }
         Task {
             let parsed = await parsedBodyForForwarding(thread.latest)
-            openCompose(.forward(thread.latest, parsed: parsed, account: account, signature: signature(for: account, .replies)))
+            openForward(thread.latest, parsed: parsed, account: account)
         }
+    }
+
+    /// Whether pictures from the web load for `message`: always, or because the owner loaded
+    /// them for it in the reader.
+    func loadsRemotePictures(for message: MessageSummary) -> Bool {
+        loadRemoteImages || remotePicturesLoaded.contains(message.id)
+    }
+
+    /// A reply opened to be written, its original quoted with its pictures; those from the web
+    /// are fetched when they load for the message, and are otherwise empty boxes.
+    func openReply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool) {
+        openCompose(.reply(to: message, parsed: parsed, account: account, all: all, signature: signature(for: account, .replies)),
+                    fetchingPictures: loadsRemotePictures(for: message))
+    }
+
+    func openForward(_ message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo) {
+        openCompose(.forward(message, parsed: parsed, account: account, signature: signature(for: account, .replies)),
+                    fetchingPictures: loadsRemotePictures(for: message))
     }
 
     /// The signature a message from the account starts with, as the Signatures pane sets it.

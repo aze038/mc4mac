@@ -75,6 +75,9 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
             && body.replacingOccurrences(of: historyPlain, with: "").trimmed.isEmpty
     }
 
+    /// A reply, its original quoted as Legacy Outlook quotes it, as rich text with its pictures
+    /// (see ComposedBody.quote), or as its text when it has no HTML that can be read.
+    @MainActor
     static func reply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool,
                       signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
@@ -84,22 +87,43 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         d.subject = message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: \(message.subject)"
         d.inReplyTo = message.messageID
         d.references = message.references + [message.messageID].filter { !$0.isEmpty }
-        let h = history(message, parsed: parsed)
-        d.historyPlain = h.plain
-        d.historyHTML = h.html
-        d.open(lead: "\n\n", signature: signature, tail: h.plain)
+        d.openQuoting(message, parsed: parsed, signature: signature)
         return d
     }
 
+    @MainActor
     static func forward(_ message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         d.subject = message.subject.lowercased().hasPrefix("fwd:") ? message.subject : "Fwd: \(message.subject)"
-        let h = history(message, parsed: parsed)
-        d.historyPlain = h.plain
-        d.historyHTML = h.html
-        d.open(lead: "\n\n", signature: signature, tail: h.plain)
+        d.openQuoting(message, parsed: parsed, signature: signature)
         d.attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
         return d
+    }
+
+    /// Starts a reply's or forward's body: a blank line, the signature, then the original. The
+    /// original is quoted as rich text, its formatting, links and pictures as it was written,
+    /// every picture it would fetch from the web an empty box until it is fetched; only an
+    /// original without HTML, or HTML that cannot be read, is quoted as its text. `historyPlain`
+    /// is the quote's text, which the body ends with while the original is untouched, and is
+    /// then sent as `historyHTML`, the original's own HTML.
+    @MainActor
+    private mutating func openQuoting(_ message: MessageSummary, parsed: MIMEMessage?, signature: Signature?) {
+        let h = ComposeDraft.history(message, parsed: parsed)
+        historyHTML = h.html
+        if let html = parsed?.textHTML,
+           let quote = ComposedBody.quote(heading: h.heading, html: html, parts: parsed?.attachments ?? [],
+                                          indent: Preferences.bool(Pref.indentOriginal, default: false),
+                                          attributes: RichText.bodyAttributes) {
+            let opened = ComposedBody.opening(lead: "\n\n", signature: signature, quote: quote, attributes: RichText.bodyAttributes)
+            body = opened.plain
+            let stored = ComposedBody.stored(opened.rich)
+            bodyRTF = stored.rtf
+            bodyRTFD = stored.rtfd
+            historyPlain = quote.string
+        } else {
+            historyPlain = h.plain
+            open(lead: "\n\n", signature: signature, tail: h.plain)
+        }
     }
 
     static func forwardAsAttachment(_ message: MessageSummary, raw: Data, account: AccountInfo, signature: Signature?) -> ComposeDraft {
@@ -174,7 +198,10 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
 
     static let separatorLine = AttachmentReminder.separatorLine
 
-    static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> (plain: String, html: String) {
+    /// The original as a reply or forward quotes it: `heading`, the line and the From, Sent, To
+    /// and Subject lines; `plain`, the heading and the original's text; and `html`, what is sent
+    /// for them while the original is untouched.
+    static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> (heading: String, plain: String, html: String) {
         let mode = AttributionMode(rawValue: Preferences.string(Pref.attributionMode, default: AttributionMode.standard.rawValue)) ?? .standard
         let indent = Preferences.bool(Pref.indentOriginal, default: false)
         let f = DateFormatter()
@@ -207,6 +234,7 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
             html += "<b>Subject:</b> \(HTMLText.escape(message.subject))</div>"
         }
 
+        let heading = plain
         let originalText = (parsed?.bestText ?? message.snippet).trimmed
         plain += (indent ? originalText.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n") : originalText) + "\n"
 
@@ -221,7 +249,7 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         } else {
             html += "<div style=\"white-space:pre-wrap;\(quoteStyle)\">\(HTMLText.escape(originalText))</div>"
         }
-        return (plain, html)
+        return (heading, plain, html)
     }
 
     static func customAttribution(message: MessageSummary, sent: String) -> String {
