@@ -76,12 +76,12 @@ open class FormattingMarksLayoutManager: NSLayoutManager {
     }
 
     /// A reply's or forward's quoted original, as its text begins, whose heading has Outlook's
-    /// line drawn above it while the body still ends with it, as Outlook for Mac's composer
-    /// shows it. The line is drawn, never put into the text.
+    /// line drawn above it, as Outlook for Mac's composer shows it, as do the headings of the
+    /// earlier replies in the chain below it. The lines are drawn, never put into the text.
     open var quotedHistory = "" {
         didSet {
             guard quotedHistory != oldValue else { return }
-            ruledCharacter = nil
+            ruledCharacters = nil
             for container in textContainers { container.textView?.needsDisplay = true }
         }
     }
@@ -89,49 +89,76 @@ open class FormattingMarksLayoutManager: NSLayoutManager {
     /// Outlook's line above a quoted original's heading: one point of #B5C4DF.
     public static let headingRuleColour = NSColor(srgbRed: 181 / 255, green: 196 / 255, blue: 223 / 255, alpha: 1)
 
-    /// Where the line goes, found again only when the text changes: `.some(nil)` when it has
-    /// none.
-    private var ruledCharacter: Int??
+    /// Where the lines go, found again only when the text changes.
+    private var ruledCharacters: (heading: Int?, all: [Int])?
 
-    /// The first character of the heading's first line, From:, while the body ends with a
-    /// history that starts with Outlook's heading; nil otherwise.
-    public var headingRuleCharacter: Int? {
-        if let known = ruledCharacter { return known }
-        var found: Int?
-        if quotedHistory.hasPrefix("\nFrom: "), let storage = textStorage,
-           let start = ComposedBody.historyStart(in: storage.string, history: quotedHistory), start + 1 < storage.length {
-            found = start + 1
+    /// The first character of the reply's own heading, From:, while the body holds that heading
+    /// whole, even once the original below it has been edited; nil otherwise, as for a custom
+    /// attribution.
+    public var headingRuleCharacter: Int? { rulings().heading }
+
+    /// The first character of each heading that has Outlook's line above it: the reply's own and
+    /// each earlier one in the original below it (see ReplyHeader.headingStarts).
+    public var headingRuleCharacters: [Int] { rulings().all }
+
+    private func rulings() -> (heading: Int?, all: [Int]) {
+        if let known = ruledCharacters { return known }
+        var found: (heading: Int?, all: [Int]) = (nil, [])
+        if !quotedHistory.isEmpty, let storage = textStorage {
+            let text = storage.string
+            let heading = ReplyHeader.headingStart(in: text, history: quotedHistory).flatMap { $0 < storage.length ? $0 : nil }
+            if let from = heading ?? ComposedBody.historyStart(in: text, history: quotedHistory) {
+                var all = ReplyHeader.headingStarts(in: text as NSString, from: from)
+                if let heading, !all.contains(heading) { all.insert(heading, at: 0) }
+                found = (heading, all)
+            }
         }
-        ruledCharacter = .some(found)
+        ruledCharacters = found
         return found
     }
 
     open override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions, range newCharRange: NSRange,
                                       changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
-        if editMask.contains(.editedCharacters) { ruledCharacter = nil }
+        if editMask.contains(.editedCharacters) { ruledCharacters = nil }
         super.processEditing(for: textStorage, edited: editMask, range: newCharRange, changeInLength: delta,
                              invalidatedRange: invalidatedCharRange)
     }
 
-    /// The line above the heading, across the text's width at the top of its first line, behind
-    /// the text.
+    /// Each line above a heading, across the message at the top of the heading's first line,
+    /// behind the text.
     open override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
-        guard let rect = headingRuleRect() else { return }
-        let glyphs = glyphRange(forCharacterRange: NSRange(location: headingRuleCharacter ?? 0, length: 1), actualCharacterRange: nil)
-        guard NSIntersectionRange(glyphs, glyphsToShow).length > 0 else { return }
-        FormattingMarksLayoutManager.headingRuleColour.setFill()
-        rect.offsetBy(dx: origin.x, dy: origin.y).fill()
+        for character in headingRuleCharacters {
+            let glyphs = glyphRange(forCharacterRange: NSRange(location: character, length: 1), actualCharacterRange: nil)
+            guard NSIntersectionRange(glyphs, glyphsToShow).length > 0, let rect = ruleRect(at: character) else { continue }
+            FormattingMarksLayoutManager.headingRuleColour.setFill()
+            rect.offsetBy(dx: origin.x, dy: origin.y).fill()
+        }
     }
 
-    /// The line's rectangle in its text container.
+    /// The line above the reply's own heading, in its text container.
     public func headingRuleRect() -> NSRect? {
-        guard let character = headingRuleCharacter else { return nil }
+        headingRuleCharacter.flatMap(ruleRect(at:))
+    }
+
+    /// Every line, in the text container.
+    public func headingRuleRects() -> [NSRect] {
+        headingRuleCharacters.compactMap(ruleRect(at:))
+    }
+
+    /// A line one point high at the top of the line `character` is on, from where its paragraph
+    /// is set in to the far side of the text, so it follows the window's width as a div's top
+    /// border follows the message's.
+    private func ruleRect(at character: Int) -> NSRect? {
+        guard let storage = textStorage, character < storage.length else { return nil }
         let glyph = glyphIndexForCharacter(at: character)
         guard glyph < numberOfGlyphs, let container = textContainer(forGlyphAt: glyph, effectiveRange: nil) else { return nil }
         let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let style = storage.attribute(.paragraphStyle, at: character, effectiveRange: nil) as? NSParagraphStyle
+        let indent = style.map { min($0.headIndent, $0.firstLineHeadIndent) } ?? 0
         let padding = container.lineFragmentPadding
-        return NSRect(x: padding, y: line.minY, width: max(0, container.size.width - 2 * padding), height: 1)
+        let x = line.minX + padding + max(0, indent)
+        return NSRect(x: x, y: line.minY, width: max(0, line.maxX - padding - x), height: 1)
     }
 
     /// The glyphs, then the marks for their characters over them.

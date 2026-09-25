@@ -268,8 +268,10 @@ Dear Alex, …                                   the original, whole and unchang
 - The heading (`ReplyHeader`) is Outlook for Mac's own, as its binary's template and the chains
   it writes show it: names as they came with the address in angle brackets, a sender without
   a name as `<address>`, people separated by commas. The date never follows the Mac's language:
-  a Mac set to Russian used to put a Russian date in an English chain. The plain text part
-  carries the same lines. Settings' customised attribution and indent still work.
+  a Mac set to Russian used to put a Russian date in an English chain. The line is the block's
+  top border, so it runs the whole width of the message in any reader, however wide. The plain
+  text part carries the same lines under Outlook's line of 32 underscores, each line of an
+  earlier heading on a line of its own. Settings' customised attribution and indent still work.
 - The original (`QuotedOriginal`) goes below it whole: Word's MsoNormal paragraphs, its
   conditional comments and VML, a Gmail blockquote, an earlier FalconMail reply. Its style
   rules, from its head or its body, move into the reply's head scoped to the element holding
@@ -286,12 +288,16 @@ Dear Alex, …                                   the original, whole and unchang
   chain over; a chain already that long is clipped in Gmail whoever replies to it.
 
 The composer shows the quote as rich text with its formatting, links and pictures
-(`ComposedBody.quote`), the heading's labels in bold and Outlook's line drawn above it while
-the original is untouched. Only an original without HTML, or HTML that cannot be read, is
-quoted as its text. `historyPlain` is the quote's text, which the body ends with while the
-original is untouched, and `historyHTML`, the heading and the original's own HTML, is then
-sent in its place; once the owner edits inside it, the whole body goes through the picture
-path above, the original's pictures as inline parts.
+(`ComposedBody.quote`), the heading's labels in bold. Outlook's line is drawn above the heading
+and above each earlier Outlook heading in the chain (`ReplyHeader.headingStarts`: From, Van
+and the like followed by Sent, Date, Verzonden and the like), across the whole width of the
+text, so it follows the window as it is resized; it is drawn, never put into the text. Only an
+original without HTML, or HTML that cannot be read, is quoted as its text. `historyPlain` is
+the quote's text, which the body ends with while the original is untouched, and `historyHTML`,
+the heading and the original's own HTML, is then sent in its place; once the owner edits
+inside the original, the body goes through the picture path above, the original's pictures as
+inline parts, but still under Outlook's heading block, line included, while the heading's own
+lines stand whole.
 
 - A picture the original shows from its own parts, by `cid:`, or from a `data:` URI is a
   picture in the quote. None is ever an address or a stand-in such as `[cid:…]` or

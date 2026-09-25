@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import WebKit
 @testable import FalconCore
 
 /// Replies, replies to all and forwards go out as Legacy Outlook for Mac writes them, so a chain
@@ -94,6 +95,7 @@ final class OutlookReplyTests: XCTestCase {
             Thanks, noted.
 
 
+            ________________________________
             From: Sam Sender <sam@example.com>
             Date: \(ReplyHeader.date(instant))
             To: Alex Example <alex@example.com>
@@ -292,6 +294,94 @@ final class OutlookReplyTests: XCTestCase {
         XCTAssertTrue(sent.html.contains(forward), "the chain byte for byte")
     }
 
+    // MARK: - the line across the message
+
+    /// The heading's line is its block's top border, so it runs the whole width of the message
+    /// in any reader however wide, as Outlook's does, never a rule of fixed width or a row of
+    /// underscores; the plain text part has Outlook's line of underscores above the heading.
+    @MainActor
+    func testTheHeadingsLineRunsTheWholeWidthOfTheMessageAsSent() throws {
+        let parsed = OutlookChainFixtures.message(html: OutlookChainFixtures.wordDocument(body: OutlookChainFixtures.paragraph("The figures are in.")),
+                                                  from: sam, to: [alex], subject: "Figures")
+        let sent = reply(to: parsed)
+        XCTAssertFalse(sent.html.contains("<hr"), sent.html)
+        XCTAssertFalse(sent.html.contains("____"), sent.html)
+        XCTAssertEqual(sent.plain.components(separatedBy: ReplyHeader.plainLine).count, 2, sent.plain)
+        XCTAssertTrue(sent.plain.contains("\n\n\(ReplyHeader.plainLine)\nFrom: Sam Sender <sam@example.com>\nDate: "), sent.plain)
+        for width: CGFloat in [600, 1200] {
+            let measured = try measure(sent.html, width: width, script: """
+                (() => { const line = [...document.querySelectorAll('div')].find(d => getComputedStyle(d).borderTopStyle === 'solid');
+                  const style = getComputedStyle(line);
+                  return [line.getBoundingClientRect().width, document.body.getBoundingClientRect().width,
+                          parseFloat(style.borderTopWidth), style.borderTopColor].join('|'); })()
+                """).components(separatedBy: "|")
+            XCTAssertEqual(measured.count, 4, measured.joined())
+            XCTAssertEqual(Double(measured[0]), Double(measured[1]), "the whole width of the message at \(width): \(measured)")
+            XCTAssertGreaterThan(Double(measured[0]) ?? 0, Double(width) - 40)
+            // One point, which WebKit draws a whole pixel thick on a screen of one pixel to the point.
+            XCTAssertTrue((1...(4.0 / 3 + 0.01)).contains(Double(measured[2]) ?? 0), "one point: \(measured)")
+            XCTAssertEqual(measured[3], "rgb(181, 196, 223)")
+        }
+    }
+
+    /// Where the original was edited in the composer, what is sent is the body as it now reads,
+    /// but still under Outlook's heading, the same block as an untouched original has.
+    func testAHeadingRebuiltFromItsLinesIsTheSameBlock() {
+        let heading = original(from: EmailAddress(name: "O'Brien, Seán", address: "sean@example.ie"), to: [alex, jo],
+                               cc: [EmailAddress(name: "'Desk'", address: "desk@example.com")], subject: "Re: Q3 & Q4 <draft>")
+        let plain = ReplyHeader.plain(heading, attribution: .outlook)
+        let lines = try? XCTUnwrap(ReplyHeader.headingLines(of: plain + "The figures are in.\n"))
+        XCTAssertEqual(lines.map { ReplyHeader.html(headingLines: $0, font: .outlook) },
+                       ReplyHeader.html(heading, attribution: .outlook, font: .outlook))
+        XCTAssertNil(ReplyHeader.headingLines(of: ReplyHeader.plain(heading, attribution: .custom("On [DATE], [NAME] wrote:"))))
+    }
+
+    /// The composer draws Outlook's line above every heading in the chain it quotes, as Outlook
+    /// for Mac's composer shows their borders: Outlook for Mac's, Outlook for Windows', Outlook
+    /// on the web's in Dutch and FalconMail 1.10's, each with room between the line and its
+    /// text; Gmail's attribution and its Forwarded message block have no line in any reader and
+    /// get none. In the plain text part each line of a heading is a line of its own.
+    @MainActor
+    func testEveryHeadingInAQuotedChainHasOutlooksLineInTheComposer() throws {
+        let fixtures = OutlookChainFixtures.self
+        let chain = fixtures.paragraph("Pallets are ready.")
+            + fixtures.macHeading(from: "Casey Morgan &lt;casey@example.com&gt;", date: "Tuesday, 15 September 2026 at 09:12",
+                                  to: "Rowan Hale &lt;rowan@example.org&gt;", cc: nil, subject: "Pallets")
+            + fixtures.paragraph("Can you quote?")
+            + fixtures.windowsHeading(from: "Rowan Hale &lt;rowan@example.org&gt;", sent: "Monday, September 14, 2026 4:12 PM",
+                                      to: "Casey Morgan &lt;casey@example.com&gt;", subject: "RE: Pallets")
+            + "<div>Wij kijken ernaar.</div>" + fixtures.dutchHeading(from: "Casey Morgan &lt;casey@example.com&gt;",
+                                                                     sent: "woensdag 16 september 2026 10:04", to: "info@example.nl",
+                                                                     subject: "Pallets")
+        let gmail = fixtures.gmailReply(text: "Any news?", attribution: "On Thu, 17 Sept 2026 at 08:30, Kim Ng &lt;kim@example.nl&gt; wrote:",
+                                        quoted: chain)
+        let falcon = fixtures.falconMailOldReply(text: "We are checking.", from: "Kim Ng &lt;kim@example.nl&gt;",
+                                                 sent: "среда, 16 сентября 2026 г. в 09:15", quoted: gmail, keptByGmail: true)
+        let forward = "<div dir=\"ltr\"><div class=\"gmail_attr\">---------- Forwarded message ---------<br>"
+            + "From: Rowan Hale &lt;rowan@example.org&gt;<br>Date: Thu, 17 Sept 2026 at 09:00</div><br>" + falcon + "</div>"
+        let attributes: [NSAttributedString.Key: Any] = [.font: ComposeFont.outlook.displayFont, .foregroundColor: NSColor.labelColor]
+        let heading = ReplyHeader.plain(original(), attribution: .outlook)
+        let quote = try XCTUnwrap(ComposedBody.quote(heading: heading, html: forward, parts: [], attributes: attributes))
+        let text = quote.string as NSString
+        let starts = ReplyHeader.headingStarts(in: text, from: 0)
+        let expected = ["From: Sam Sender", "From: Kim Ng", "From: Casey Morgan", "From: Rowan Hale <rowan@example.org>\u{2028}Sent:", "Van: Casey"]
+        XCTAssertEqual(starts, expected.map { text.range(of: $0).location }, "\(starts) in \(quote.string.debugDescription)")
+        for start in starts.dropFirst() {
+            let style = try XCTUnwrap(quote.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle)
+            XCTAssertEqual(style.paragraphSpacingBefore, 4, text.substring(with: NSRange(location: start, length: 12)))
+        }
+        let body = NSMutableAttributedString(string: "Thanks.\n\n", attributes: attributes)
+        body.append(quote)
+        let stored = ComposedBody.stored(body)
+        let history = QuotedHistory(original: original(), html: forward, text: "", attribution: .outlook, indent: false, font: .outlook)
+        let sent = ComposedHTML.content(rtf: stored.rtf, rtfd: stored.rtfd, plain: body.string, historyPlain: quote.string,
+                                        historyHTML: history.html)
+        XCTAssertFalse(sent.plain.contains("\u{2028}"), sent.plain.debugDescription)
+        XCTAssertTrue(sent.plain.contains("From: Kim Ng <kim@example.nl>\nSent: среда"), sent.plain)
+        XCTAssertTrue(sent.plain.hasPrefix("Thanks.\n\n\n\(ReplyHeader.plainLine)\nFrom: Sam Sender"), sent.plain)
+        XCTAssertTrue(sent.html.contains(forward), "the chain as it came")
+    }
+
     /// A reply to a reply from FalconMail 1.10 keeps that reply's body font to it.
     func testAReplyFromAnEarlierBuildKeepsItsFontToItself() {
         let old = OutlookChainFixtures.falconMailOldReply(text: "We are checking.", from: "Kim Ng &lt;kim@example.nl&gt;",
@@ -410,6 +500,33 @@ final class OutlookReplyTests: XCTestCase {
 
     /// What Send builds for a reply saying `words` above `parsed`, as ComposeDraft.reply and
     /// outgoing build it, the quote standing as its text.
+    /// What `script` gives for `html` laid out by WebKit offscreen `width` points wide.
+    @MainActor
+    private func measure(_ html: String, width: CGFloat, script: String) throws -> String {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: width, height: 600), configuration: configuration)
+        let loaded = Loaded()
+        view.navigationDelegate = loaded
+        view.loadHTMLString(html, baseURL: nil)
+        let deadline = Date(timeIntervalSinceNow: 30)
+        while !loaded.done, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+        guard loaded.done else { throw XCTSkip("WebKit did not load a page in time here") }
+        var result: String?
+        var finished = false
+        view.evaluateJavaScript(script) { value, _ in
+            result = value as? String
+            finished = true
+        }
+        while !finished, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+        return try XCTUnwrap(result)
+    }
+
+    private final class Loaded: NSObject, WKNavigationDelegate {
+        var done = false
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { done = true }
+    }
+
     private func reply(to parsed: MIMEMessage, saying words: String = "Thanks, noted.",
                        font: ComposeFont = .outlook) -> ComposedHTML.Content {
         let heading = ReplyHeader.Original(from: parsed.from, date: parsed.date ?? instant, to: parsed.to, cc: parsed.cc,

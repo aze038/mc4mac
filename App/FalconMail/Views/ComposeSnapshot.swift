@@ -22,8 +22,9 @@ import FalconCore
 /// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
 /// deleted, the message list with made-up conversations, and a reply to a made-up chain from
-/// Outlook for Mac, Outlook for Windows and Gmail as its compose window shows it and as the reader
-/// shows what it sends, written as outlook-chain-reply.eml, then quits. With
+/// Outlook for Mac, Outlook for Windows and Gmail as its compose window shows it, also made
+/// narrower and wider, as the reader shows what it sends and as that HTML reads 600 and 1200
+/// points wide, written as outlook-chain-reply.eml, then quits. With
 /// `-FalconMailSnapshotOnly list` it draws the message list alone, with `chain` the reply alone.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
@@ -411,9 +412,22 @@ enum ComposeSnapshot {
                                style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
             capture(compose, appearance: appearance, to: "\(directory)/outlook-chain-compose-\(name).png")
         }
+        // The same window made narrower and then wider: the lines above the headings follow it.
+        let resized = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                           size: NSSize(width: 760, height: 900), appearance: .aqua,
+                           style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+        capture(resized, appearance: .aqua, to: "\(directory)/outlook-chain-compose-760.png")
+        resized.window?.setContentSize(NSSize(width: 1300, height: 900))
+        resized.frame = NSRect(x: 0, y: 0, width: 1300, height: 900)
+        capture(resized, appearance: .aqua, to: "\(directory)/outlook-chain-compose-1300.png")
         guard let sent = try? model.drafts[id]?.outgoing(from: account) else { return }
         let raw = MIMEBuilder.build(sent)
         try? raw.write(to: URL(fileURLWithPath: "\(directory)/outlook-chain-reply.eml"))
+        // The HTML as sent, as a reader that adds nothing of its own lays it out at 600 and 1200.
+        for width in [600, 1200] {
+            webPage(sent.htmlBody ?? "", size: NSSize(width: width, height: 900), appearance: .aqua,
+                    to: "\(directory)/outlook-chain-sent-\(width).png")
+        }
         let received = MIMEParser.parse(raw)
         for (name, appearance) in appearances {
             let page = MessageRenderer.html(for: received, allowRemote: false, dark: appearance == .darkAqua, forceOriginal: false)

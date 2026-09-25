@@ -274,7 +274,12 @@ final class ReplyQuoteTests: XCTestCase {
         let message = sent(edited, historyPlain: opened.historyPlain, historyHTML: opened.historyHTML)
         let html = try XCTUnwrap(message.textHTML)
         XCTAssertTrue(html.contains("EDITED"))
-        XCTAssertFalse(html.contains("#B5C4DF"), "the body as it now reads, not the original's HTML")
+        XCTAssertFalse(html.contains("class=MsoNormal") || html.contains("fm-q"), "the body as it now reads, not the original's HTML")
+        // Still under Outlook's heading, its line across the message, as the composer still shows it.
+        XCTAssertTrue(html.contains("<div style=\"border:none;border-top:solid #B5C4DF 1.0pt;padding:3.0pt 0in 0in 0in\"><p style=\"margin:0\">"
+                                    + "<b>From: </b>Sam &lt;sam@example.com&gt;<br><b>Date: </b>"), html)
+        XCTAssertLessThan(try XCTUnwrap(html.range(of: "border-top:solid #B5C4DF")).lowerBound, try XCTUnwrap(html.range(of: "EDITED")).lowerBound)
+        XCTAssertTrue(message.textPlain?.contains("\n\(ReplyHeader.plainLine)\nFrom: Sam <sam@example.com>\n") ?? false, message.textPlain ?? "")
         let parts = inlineParts(of: message)
         XCTAssertEqual(Array(parts.values), [logo])
         let id = try XCTUnwrap(parts.keys.first)

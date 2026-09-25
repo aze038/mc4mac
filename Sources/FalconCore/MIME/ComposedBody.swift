@@ -184,6 +184,7 @@ public enum ComposedBody {
                                                  remote: remote) else { return nil }
         let quoted = NSMutableAttributedString(attributedString: readable(original, attributes: attributes))
         if indent { setIn(quoted, by: 12) }
+        spaceHeadings(quoted)
         if !quoted.string.hasSuffix("\n") { quoted.append(NSAttributedString(string: "\n", attributes: attributes)) }
         let text = NSMutableAttributedString(attributedString: headed(heading, attributes: attributes))
         text.append(quoted)
@@ -257,6 +258,21 @@ public enum ComposedBody {
     }
 
     /// Every paragraph of `text` set in from the left by `points` more.
+    /// Outlook's three points between the line the composer draws above each earlier heading in
+    /// the original (see ReplyHeader.headingStarts) and its text.
+    private static func spaceHeadings(_ text: NSMutableAttributedString) {
+        let string = text.string as NSString
+        text.beginEditing()
+        for start in ReplyHeader.headingStarts(in: string, from: 0) {
+            let paragraph = string.paragraphRange(for: NSRange(location: start, length: 0))
+            let style = (text.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy()
+                as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+            style.paragraphSpacingBefore = max(style.paragraphSpacingBefore, 4)
+            text.addAttribute(.paragraphStyle, value: style, range: paragraph)
+        }
+        text.endEditing()
+    }
+
     private static func setIn(_ text: NSMutableAttributedString, by points: CGFloat) {
         let whole = NSRange(location: 0, length: text.length)
         text.beginEditing()
