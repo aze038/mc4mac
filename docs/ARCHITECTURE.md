@@ -203,6 +203,43 @@ while it was off. The release workflow keeps each build's dSYM in
 `~/Library/Application Support/FalconMail Symbols/<version>/<build>/` on the runner,
 where the daily triage symbolicates crashes; dSYMs are never uploaded.
 
+## Pictures in messages
+
+A picture in a message, whether a signature's logo, one put in with Pictures, one pasted, or
+one in the original a reply or forward quotes, is sent the way Outlook sends it, so Gmail,
+Outlook and Apple Mail all show it in the text:
+
+```
+multipart/mixed                      only when files are attached
+├── multipart/related; type="multipart/alternative"
+│   ├── multipart/alternative
+│   │   ├── text/plain               [cid:image001.png@01DD4CC3.9581C170] where the picture was
+│   │   └── text/html                <img width="96" height="28" src="cid:image001.png@01DD4CC3.9581C170">
+│   └── image/png                    inline; image001.png; Content-ID <image001.png@01DD4CC3.9581C170>
+└── application/pdf                  attachment
+```
+
+- Each different picture goes once, named `image001.png`, `image002.jpg` and on in the order
+  it first appears. Its Content-ID is the name and, after the `@`, the time the message was
+  put together as Outlook writes it (Windows file time in hexadecimal).
+- PNG, JPEG and GIF go exactly as they are, however large. Formats readers do not show in a
+  message become one they do: HEIC photos become JPEG, anything else (a screenshot copied as
+  TIFF, BMP, PDF) becomes PNG.
+- The plain text part says `[cid:…]` where each picture stood, as Outlook writes it, and
+  carries none of its bytes.
+- A picture is never sent as a `data:` URI: Gmail shows none, and Outlook for Windows up to
+  2016 shows none ([caniemail](https://www.caniemail.com/features/image-base64/)). A quoted
+  original's pictures are held as `data:` URIs in the draft only, as earlier builds kept them,
+  and are turned into parts as the message goes (`ComposedHTML.content`).
+- Readers find the pictures through the `cid:` URLs of RFC 2392 and the multipart/related
+  structure of RFC 2387; the `type` parameter names the part a reader opens first.
+
+Drafts keep their pictures as flat RTFD in `bodyRTFD`, beside the RTF in `bodyRTF` that
+earlier builds read, which then open the draft with its text and formatting. A body without
+pictures is kept exactly as before. A draft opened again from Drafts, or a send called back
+from the Outbox, comes back with its pictures: from the RTFD the Outbox keeps beside the
+message, else from the message's HTML and its parts (`InlinePictures.text(fromHTML:)`).
+
 ## Gmail specifics
 
 - `[Gmail]/All Mail` is skipped during sync to avoid duplicates. It is offered

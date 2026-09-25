@@ -114,7 +114,7 @@ struct ComposeView: View {
                 InlineFormatBar(formatter: formatter)
                 Divider()
             }
-            RichTextEditor(rtf: binding(\.bodyRTF), plain: binding(\.body)) { view in
+            RichTextEditor(body: binding(\.richBody)) { view in
                 Task { @MainActor in
                     formatter.attach(view)
                     view.isContinuousSpellCheckingEnabled = Preferences.bool(Pref.checkSpelling, default: true)

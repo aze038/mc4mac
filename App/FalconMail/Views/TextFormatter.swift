@@ -304,19 +304,17 @@ final class TextFormatter {
         editor.didChangeText()
     }
 
+    /// Outlook's Pictures, in a message and in the signature editor alike: the picture goes in
+    /// as its file, which RTFD keeps with the text, so a draft and a signature keep it, and it is
+    /// sent as it is (see InlinePictures).
     func insertPicture() {
-        guard let editor, let storage = editor.textStorage else { return }
+        guard let editor else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url, NSImage(contentsOf: url) != nil,
-              let file = try? FileWrapper(url: url, options: .immediate) else { return }
-        // Held as its file, which RTFD writes out with the text, so a signature keeps it.
-        let body = NSAttributedString(attachment: NSTextAttachment(fileWrapper: file))
-        let range = editor.selectedRange()
-        guard editor.shouldChangeText(in: range, replacementString: nil) else { return }
-        storage.replaceCharacters(in: range, with: body)
-        editor.didChangeText()
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url),
+              let picture = InlinePictures.attachment(for: data, named: url.lastPathComponent) else { return }
+        ComposedBody.insertPicture(picture, into: editor, before: history)
     }
 
     func checkSpelling() {

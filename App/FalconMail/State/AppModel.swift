@@ -1844,15 +1844,15 @@ final class AppModel {
         let raw = await outbox.rawMessage(for: item.id)
         let url = sidecarURL(item.id)
         let accountID = item.accountID
-        return await Task.detached(priority: .userInitiated) { () -> ComposeDraft? in
-            let parsed = raw.map { MIMEParser.parse($0) }
-            let attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
-            if let sidecar = AtomicFile.readJSON(ComposeDraftSidecar.self, from: url) {
-                return sidecar.draft(attachments: attachments)
-            }
-            guard let parsed else { return nil }
-            return ComposeDraft.from(parsed: parsed, accountID: accountID)
+        let (parsed, sidecar) = await Task.detached(priority: .userInitiated) { () -> (MIMEMessage?, ComposeDraftSidecar?) in
+            (raw.map { MIMEParser.parse($0) }, AtomicFile.readJSON(ComposeDraftSidecar.self, from: url))
         }.value
+        if let sidecar {
+            return sidecar.draft(attachments: parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? [])
+        }
+        // Read on the main thread, where AppKit reads HTML.
+        guard let parsed else { return nil }
+        return ComposeDraft.from(parsed: parsed, accountID: accountID)
     }
 
     func addGoogleAccount(loginHint: String? = nil) async throws {

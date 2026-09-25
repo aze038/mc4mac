@@ -550,12 +550,7 @@ enum MessageRenderer {
         let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
-            body = html
-            for a in parsed.attachments {
-                guard let cid = a.contentID else { continue }
-                let dataURL = "data:\(a.mimeType);base64,\(a.data.base64EncodedString())"
-                body = body.replacingOccurrences(of: "cid:\(cid)", with: dataURL, options: .caseInsensitive)
-            }
+            body = InlinePictures.resolvingCIDs(in: html, with: parsed.attachments)
             body = body.replacingOccurrences(of: "(?is)<script[^>]*>.*?</script>", with: "", options: .regularExpression)
         } else {
             body = "<pre>" + HTMLLinkify.escapeAndLink(parsed.textPlain ?? "") + "</pre>"

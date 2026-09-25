@@ -9,43 +9,142 @@ import AppKit
 /// follows the appearance become Table Grid's solid black. Colours chosen by hand go out as
 /// exactly the sRGB colour that was chosen (see `SentColour`).
 public enum ComposedHTML {
+    /// What the composer's body sends: the HTML part, the plain text part, and the pictures the
+    /// HTML shows, each once, which go beside it as inline parts in multipart/related.
+    public struct Content: Sendable {
+        public var html: String
+        /// The plain text, with `[cid:…]` where each picture stands in the HTML, as Outlook
+        /// writes it; no picture's bytes are in it.
+        public var plain: String
+        public var pictures: [InlinePicture]
+    }
+
+    /// The same, from a body as a draft keeps it (see ComposedBody.stored).
+    public static func content(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String,
+                               date: Date = Date()) -> Content {
+        content(rich: ComposedBody.text(rtf: rtf, rtfd: rtfd), plain: plain, historyPlain: historyPlain, historyHTML: historyHTML,
+                date: date)
+    }
+
     /// The HTML part of a message from the composer: its rich text when it has any, else its
     /// plain text. A reply or forward whose body still ends with the quoted original sends the
-    /// original's own HTML in place of that plain copy.
-    public static func document(rtf: Data?, plain: String, historyPlain: String, historyHTML: String) -> String {
+    /// original's own HTML in place of that plain copy. Every picture, the composer's own and
+    /// the original's, is sent as Outlook sends it: once, as an inline part named image001.png
+    /// and on, the HTML showing it by `cid:` at the size it is shown in the composer. `date`
+    /// is when the message is put together, which each picture's Content-ID carries.
+    public static func content(rich: NSAttributedString?, plain: String, historyPlain: String, historyHTML: String,
+                               date: Date = Date()) -> Content {
         let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
+        var pictures = InlinePictures.Collector(date: date)
         let plainOwn = historyHTML.isEmpty ? nil
             : ComposedBody.historyStart(in: plain, history: historyPlain).map { (plain as NSString).substring(to: $0) }
-        if let rtf, let rich = try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf],
-                                                        documentAttributes: nil) {
-            if !historyHTML.isEmpty, let start = ownLength(of: rich, history: historyPlain, plainOwn: plainOwn),
-               let own = start == 0 ? "" : html(from: rich.attributedSubstring(from: NSRange(location: 0, length: start))) {
-                return "<html><body style=\"\(style)\">\(own)\(historyHTML)</body></html>"
+        if let rich {
+            if !historyHTML.isEmpty, let start = ownLength(of: rich, history: historyPlain, plainOwn: plainOwn) {
+                var collected = pictures
+                let own: (html: String, marks: [String])?
+                if start == 0 {
+                    own = ("", [])
+                } else {
+                    own = html(from: rich.attributedSubstring(from: NSRange(location: 0, length: start)), pictures: &collected)
+                }
+                if let own {
+                    pictures = collected
+                    let history = InlinePictures.sendingDataURIs(in: historyHTML, into: &pictures)
+                    return Content(html: "<html><body style=\"\(style)\">\(own.html)\(history)</body></html>",
+                                   plain: plainText(plain, marks: own.marks), pictures: pictures.pictures)
+                }
             }
-            if let whole = html(from: rich) {
-                return "<html><body style=\"\(style)\">\(whole)</body></html>"
+            var collected = pictures
+            if let whole = html(from: rich, pictures: &collected) {
+                return Content(html: "<html><body style=\"\(style)\">\(whole.html)</body></html>",
+                               plain: plainText(plain, marks: whole.marks), pictures: collected.pictures)
             }
         }
         if let plainOwn {
-            return "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(plainOwn))</div>\(historyHTML)</body></html>"
+            let history = InlinePictures.sendingDataURIs(in: historyHTML, into: &pictures)
+            return Content(html: "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(plainText(plainOwn, marks: [])))</div>\(history)</body></html>",
+                           plain: plainText(plain, marks: []), pictures: pictures.pictures)
         }
-        return "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(plain))</body></html>"
+        let text = plainText(plain, marks: [])
+        return Content(html: "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(text))</body></html>",
+                       plain: text, pictures: [])
+    }
+
+    /// The HTML part alone, for a body as a draft keeps it.
+    public static func document(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String) -> String {
+        content(rtf: rtf, rtfd: rtfd, plain: plain, historyPlain: historyPlain, historyHTML: historyHTML).html
+    }
+
+    /// `plain` with each object character, where the composer's text holds a picture, replaced
+    /// in turn by the mark of the picture sent for it; one for which nothing is sent is taken
+    /// out.
+    private static func plainText(_ plain: String, marks: [String]) -> String {
+        guard plain.contains("\u{FFFC}") else { return plain }
+        var remaining = marks[...]
+        var output = ""
+        for character in plain {
+            if character == "\u{FFFC}" {
+                output += remaining.popFirst() ?? ""
+            } else {
+                output.append(character)
+            }
+        }
+        return output
     }
 
     /// How much of the rich text, in UTF-16 units, is the user's own, when the body still ends
     /// with the original.
     ///
     /// The original is found at the end of the rich text itself. A length taken straight from
-    /// the plain body would not fit: counted in characters it misses the second UTF-16 unit of
-    /// every emoji, counted in UTF-16 units it keeps the carriage returns and pictures that RTF
-    /// leaves out, and either way the difference comes off the end of the user's own text,
-    /// usually the signature. RTF can still set the original down in the body otherwise than on
-    /// its own, since it cuts a NUL's run short and composes an accent only within one run of
-    /// formatting; the plain body then says where the user's text ends, measured as RTF gives
-    /// that text back.
+    /// the plain body would not fit a body read from RTF, as one kept by an earlier build is:
+    /// counted in characters it misses the second UTF-16 unit of every emoji, counted in UTF-16
+    /// units it keeps the carriage returns and pictures that RTF leaves out, and either way the
+    /// difference comes off the end of the user's own text, usually the signature. RTF can still
+    /// set the original down in the body otherwise than on its own, since it cuts a NUL's run
+    /// short and composes an accent only within one run of formatting; the plain body then says
+    /// where the user's text ends, measured as RTF gives that text back.
     private static func ownLength(of rich: NSAttributedString, history: String, plainOwn: String?) -> Int? {
         if let start = ComposedBody.historyStart(in: rich.string, history: history) { return start }
         return plainOwn.map { min(ComposedBody.throughRTF($0).utf16.count, rich.length) }
+    }
+
+    /// `text` as HTML, each picture in it collected into `pictures` and shown by `cid:`, and
+    /// what the plain text says for each of its pictures in turn.
+    ///
+    /// The writer would put a picture down as a file beside the page, by a name two pictures can
+    /// share and at no size, so each is held out of its way: every picture is written as a word
+    /// no text holds, which keeps the picture's place and formatting, a link on it included, and
+    /// that word is then replaced by the picture's tag.
+    static func html(from text: NSAttributedString, pictures: inout InlinePictures.Collector) -> (html: String, marks: [String])? {
+        let located = InlinePictures.attachmentLocations(in: text)
+        guard !located.isEmpty else { return html(from: text).map { ($0, []) } }
+        let marked = NSMutableAttributedString(attributedString: text)
+        let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        var tags: [(word: String, tag: String)] = []
+        var marks: [String] = []
+        for (index, (_, attachment)) in located.enumerated() {
+            guard let picture = InlinePictures.picture(in: attachment) else {
+                tags.append(("", ""))
+                marks.append("")
+                continue
+            }
+            let sent = pictures.add(picture.data, picture.format)
+            tags.append(("FalconMailPicture\(nonce)N\(index)E", InlinePictures.tag(for: sent, size: picture.size)))
+            marks.append(InlinePictures.plainMark(for: sent))
+        }
+        marked.beginEditing()
+        for ((location, _), word) in zip(located, tags.map(\.word)).reversed() {
+            let range = NSRange(location: location, length: 1)
+            var attributes = marked.attributes(at: location, effectiveRange: nil)
+            attributes[.attachment] = nil
+            marked.replaceCharacters(in: range, with: NSAttributedString(string: word, attributes: attributes))
+        }
+        marked.endEditing()
+        guard var written = html(from: marked) else { return nil }
+        for (word, tag) in tags where !word.isEmpty {
+            written = written.replacingOccurrences(of: word, with: tag)
+        }
+        return (written, marks)
     }
 
     public static func html(from text: NSAttributedString) -> String? {

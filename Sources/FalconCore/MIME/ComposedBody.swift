@@ -31,8 +31,31 @@ public enum ComposedBody {
         return text.utf16.distance(from: text.utf16.startIndex, to: index.samePosition(in: text.utf16) ?? index)
     }
 
+    /// The body as a draft keeps it: RTF, which every build reads, and beside it, only while the
+    /// body holds pictures, flat RTFD, which keeps them. A build from before pictures were kept
+    /// reads the RTF alone and opens the draft with its text and formatting, the pictures left
+    /// out; a body without pictures is kept exactly as those builds kept it.
+    public static func stored(_ text: NSAttributedString) -> (rtf: Data?, rtfd: Data?) {
+        let whole = NSRange(location: 0, length: text.length)
+        let rtf = text.rtf(from: whole, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        guard InlinePictures.hasPictures(text) else { return (rtf, nil) }
+        return (rtf, text.rtfd(from: whole, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]))
+    }
+
+    /// The body a draft keeps, from its RTFD when it has one this build can read, else from its
+    /// RTF; nil for a plain body.
+    public static func text(rtf: Data?, rtfd: Data?) -> NSAttributedString? {
+        if let rtfd, let text = try? NSAttributedString(data: rtfd, options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                                                         documentAttributes: nil) {
+            return text
+        }
+        guard let rtf else { return nil }
+        return try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+    }
+
     /// Plain text as it reads once written to RTF and read back, the trip the composer's body
-    /// makes to its draft store and to what is sent.
+    /// made to its draft store and to what is sent before drafts kept their pictures, and still
+    /// makes in a draft an earlier build kept.
     static func throughRTF(_ plain: String) -> String {
         let text = NSAttributedString(string: plain)
         guard let data = text.rtf(from: NSRange(location: 0, length: text.length),
@@ -84,6 +107,26 @@ public enum ComposedBody {
         editor.didChangeText()
         editor.undoManager?.setActionName("Insert Signature")
         editor.setSelectedRange(NSRange(location: location + inserted.length, length: 0))
+    }
+
+    /// Puts a picture in at the caret, in place of what is selected, or above the original when
+    /// the caret is in it, as one step Undo takes back, and leaves the caret after it. Pictures
+    /// from the Pictures button, in the composer and in the signature editor, go in here.
+    @MainActor
+    public static func insertPicture(_ attachment: NSTextAttachment, into editor: NSTextView, before history: String) {
+        guard let storage = editor.textStorage else { return }
+        var range = editor.selectedRange()
+        let location = insertionPoint(for: range.location, in: storage.string, history: history)
+        if location != range.location { range = NSRange(location: location, length: 0) }
+        var own = attributes(at: location, in: editor)
+        own[.attachment] = attachment
+        let picture = NSAttributedString(string: "\u{FFFC}", attributes: own)
+        editor.breakUndoCoalescing()
+        guard editor.shouldChangeText(in: range, replacementString: picture.string) else { return }
+        storage.replaceCharacters(in: range, with: picture)
+        editor.didChangeText()
+        editor.undoManager?.setActionName("Insert Picture")
+        editor.setSelectedRange(NSRange(location: range.location + picture.length, length: 0))
     }
 
     /// A message's body as it opens: `lead`, the signature, then `tail`, a reply's quoted

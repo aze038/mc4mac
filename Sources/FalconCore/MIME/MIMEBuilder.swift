@@ -79,24 +79,55 @@ public enum MIMEBuilder {
         out += "MIME-Version: 1.0\r\n"
         out += "X-Mailer: FalconMail\r\n"
 
-        let bodyPart = textPart(m)
-        if m.attachments.isEmpty {
+        // Laid out as Outlook lays a message out: the text and HTML as multipart/alternative;
+        // the pictures the HTML shows beside it, inside multipart/related; and that, when files
+        // are attached as well, first inside multipart/mixed.
+        let pictures = m.htmlBody == nil ? [] : m.attachments.filter { $0.contentID != nil }
+        let files = m.htmlBody == nil ? m.attachments : m.attachments.filter { $0.contentID == nil }
+        var bodyPart = textPart(m)
+        if !pictures.isEmpty { bodyPart = relatedPart(bodyPart, pictures: pictures) }
+        if files.isEmpty {
             out += bodyPart
         } else {
             let boundary = "=_FalconMail_\(UUID().uuidString)"
             out += "Content-Type: multipart/mixed; boundary=\"\(boundary)\"\r\n\r\n"
             out += "--\(boundary)\r\n" + bodyPart
-            for a in m.attachments {
-                out += "\r\n--\(boundary)\r\n"
-                out += "Content-Type: \(a.mimeType); name=\"\(sanitize(a.filename))\"\r\n"
-                out += "Content-Transfer-Encoding: base64\r\n"
-                out += "Content-Disposition: \(a.contentID == nil ? "attachment" : "inline"); filename=\"\(sanitize(a.filename))\"\r\n"
-                if let cid = a.contentID { out += "Content-ID: <\(cid)>\r\n" }
-                out += "\r\n" + a.data.base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed]) + "\r\n"
+            for a in files {
+                out += "\r\n--\(boundary)\r\n" + attachmentPart(a)
             }
             out += "--\(boundary)--\r\n"
         }
         return Data(out.utf8)
+    }
+
+    /// The text and HTML with the pictures the HTML shows by `cid:`, as RFC 2387 has it: the
+    /// first part is the one a reader opens, and `type` says what it is.
+    static func relatedPart(_ body: String, pictures: [OutgoingAttachment]) -> String {
+        let boundary = "=_FalconMailRel_\(UUID().uuidString)"
+        var out = "Content-Type: multipart/related; boundary=\"\(boundary)\"; type=\"multipart/alternative\"\r\n\r\n"
+        out += "--\(boundary)\r\n" + body
+        for picture in pictures {
+            out += "\r\n--\(boundary)\r\n" + attachmentPart(picture)
+        }
+        out += "--\(boundary)--\r\n"
+        return out
+    }
+
+    /// A file attached, or a picture shown in the text, which has a Content-ID and is inline,
+    /// with Outlook's headers for one: its name, a description, its size.
+    static func attachmentPart(_ a: OutgoingAttachment) -> String {
+        let name = sanitize(a.filename)
+        var out = "Content-Type: \(a.mimeType); name=\"\(name)\"\r\n"
+        if let cid = a.contentID {
+            out += "Content-Description: \(name)\r\n"
+            out += "Content-Disposition: inline; filename=\"\(name)\"; size=\(a.data.count)\r\n"
+            out += "Content-ID: <\(cid)>\r\n"
+        } else {
+            out += "Content-Disposition: attachment; filename=\"\(name)\"\r\n"
+        }
+        out += "Content-Transfer-Encoding: base64\r\n"
+        out += "\r\n" + a.data.base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed]) + "\r\n"
+        return out
     }
 
     static func textPart(_ m: OutgoingMessage) -> String {

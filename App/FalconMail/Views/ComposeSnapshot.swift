@@ -253,7 +253,7 @@ enum ComposeSnapshot {
                           onAttachFromDrive: {}, signatures: [], onInsertSignature: { _ in }, onEditSignatures: {},
                           onInsertTableDialog: {}, onCycleBackground: {})
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
-            RichTextEditor(rtf: .constant(RichText.rtf(from: body)), plain: .constant(body.string)) { view in
+            RichTextEditor(body: .constant(RichText.body(of: body))) { view in
                 Task { @MainActor in formatter.attach(view) }
             }
         }

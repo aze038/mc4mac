@@ -3,8 +3,7 @@ import AppKit
 import FalconCore
 
 struct RichTextEditor: NSViewRepresentable {
-    @Binding var rtf: Data?
-    @Binding var plain: String
+    @Binding var body: RichText.Body
     var onEditorReady: (NSTextView) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -40,7 +39,7 @@ struct RichTextEditor: NSViewRepresentable {
         text.font = RichText.defaultFont
         text.textColor = .labelColor
         text.backgroundColor = .textBackgroundColor
-        context.coordinator.apply(to: text, rtf: rtf, plain: plain)
+        context.coordinator.apply(to: text, body: body)
         onEditorReady(text)
         return scroll
     }
@@ -49,7 +48,7 @@ struct RichTextEditor: NSViewRepresentable {
         guard let text = scroll.documentView as? NSTextView else { return }
         context.coordinator.parent = self
         guard !context.coordinator.editing else { return }
-        context.coordinator.apply(to: text, rtf: rtf, plain: plain)
+        context.coordinator.apply(to: text, body: body)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -59,18 +58,18 @@ struct RichTextEditor: NSViewRepresentable {
 
         init(_ parent: RichTextEditor) { self.parent = parent }
 
-        func apply(to text: NSTextView, rtf: Data?, plain: String) {
-            guard let rtf else {
+        func apply(to text: NSTextView, body: RichText.Body) {
+            guard let stored = body.rtfd ?? body.rtf else {
                 // A formatted body replaced by a plain one, as when an untouched message's From
                 // goes to an account with a plain signature, is replaced on screen even where
                 // the words are the same; and should it come back, it is loaded again.
-                if lastApplied != nil || text.string != plain { load(RichText.attributed(fromPlain: plain), into: text) }
+                if lastApplied != nil || text.string != body.plain { load(RichText.attributed(fromPlain: body.plain), into: text) }
                 lastApplied = nil
                 return
             }
-            guard rtf != lastApplied, let attributed = RichText.attributed(fromRTF: rtf) else { return }
+            guard stored != lastApplied, let attributed = RichText.attributed(from: body) else { return }
             load(attributed, into: text)
-            lastApplied = rtf
+            lastApplied = stored
         }
 
         /// A draft opens with the caret at the start of the user's own text, as Outlook's does.
@@ -85,15 +84,22 @@ struct RichTextEditor: NSViewRepresentable {
             guard let text = notification.object as? NSTextView, let storage = text.textStorage else { return }
             editing = true
             defer { editing = false }
-            let data = RichText.rtf(from: storage)
-            lastApplied = data
-            parent.rtf = data
-            parent.plain = storage.string
+            let body = RichText.body(of: storage)
+            lastApplied = body.rtfd ?? body.rtf
+            parent.body = body
         }
     }
 }
 
 enum RichText {
+    /// The composer's body in every form a draft keeps it in: its words, its RTF, and, while
+    /// it holds pictures, its RTFD (see ComposedBody.stored).
+    struct Body: Equatable {
+        var plain: String
+        var rtf: Data?
+        var rtfd: Data?
+    }
+
     static let defaultFont = NSFont.systemFont(ofSize: 14)
 
     /// Table lines take the text's own colour, so they read in both appearances; what is sent
@@ -109,17 +115,13 @@ enum RichText {
         NSAttributedString(string: text, attributes: bodyAttributes)
     }
 
-    static func attributed(fromRTF data: Data) -> NSAttributedString? {
-        try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+    static func attributed(from body: Body) -> NSAttributedString? {
+        ComposedBody.text(rtf: body.rtf, rtfd: body.rtfd)
     }
 
-    static func rtf(from storage: NSAttributedString) -> Data? {
-        storage.rtf(from: NSRange(location: 0, length: storage.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
-    }
-
-    static func isEmpty(_ data: Data?) -> Bool {
-        guard let data, let attributed = attributed(fromRTF: data) else { return true }
-        return attributed.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    static func body(of text: NSAttributedString) -> Body {
+        let stored = ComposedBody.stored(text)
+        return Body(plain: text.string, rtf: stored.rtf, rtfd: stored.rtfd)
     }
 }
 
@@ -182,8 +184,14 @@ final class ComposeTextView: NSTextView {
         insertRestyled(source)
     }
 
+    /// As it came, pictures included, which are made as every picture put into a text is (see
+    /// InlinePictures.pasted).
     @objc func pasteKeepingSourceFormatting() {
-        pasteAsRichText(nil)
+        guard let source = ComposeTextView.attributedFromPasteboard() else {
+            pasteAsRichText(nil)
+            return
+        }
+        insertPasted(source)
     }
 
     @objc func pastePlainText() {
@@ -192,28 +200,24 @@ final class ComposeTextView: NSTextView {
     }
 
     /// Reads the richest representation the source app offered. Excel, Word and browsers all put
-    /// RTF or HTML on the pasteboard, which is what carries the table grid.
+    /// RTF or HTML on the pasteboard, which is what carries the table grid; a picture copied on
+    /// its own, such as a screenshot, comes as a picture.
     static func attributedFromPasteboard() -> NSAttributedString? {
-        let board = NSPasteboard.general
-        if let data = board.data(forType: .rtfd),
-           let value = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil) {
-            return value
-        }
-        if let data = board.data(forType: .rtf),
-           let value = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) {
-            return value
-        }
-        if let data = board.data(forType: .html),
-           let value = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html,
-                                                                    .characterEncoding: String.Encoding.utf8.rawValue],
-                                               documentAttributes: nil) {
-            return value
-        }
-        return nil
+        InlinePictures.pasted(from: .general)
+    }
+
+    /// Whether Paste has a picture alone to put in, which a text view that does not take
+    /// pictures by itself would not offer to paste.
+    private static var pasteboardHasPicture: Bool {
+        NSPasteboard.general.availableType(from: [.png, .tiff, NSPasteboard.PasteboardType("public.jpeg"),
+                                                  NSPasteboard.PasteboardType("public.heic")]) != nil
     }
 
     private func insertRestyled(_ source: NSAttributedString) {
-        let restyled = ComposeTextView.restyle(source, to: typingAttributes[.font] as? NSFont ?? RichText.defaultFont)
+        insertPasted(ComposeTextView.restyle(source, to: typingAttributes[.font] as? NSFont ?? RichText.defaultFont))
+    }
+
+    private func insertPasted(_ restyled: NSAttributedString) {
         let range = selectedRange()
         guard shouldChangeText(in: range, replacementString: restyled.string) else { return }
         textStorage?.replaceCharacters(in: range, with: restyled)
@@ -284,10 +288,14 @@ final class ComposeTextView: NSTextView {
 
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(pasteKeepingSourceFormatting)
-            || item.action == #selector(pasteMatchingFalconMailStyle)
-            || item.action == #selector(pastePlainText) {
+            || item.action == #selector(pasteMatchingFalconMailStyle) {
+            return NSPasteboard.general.canReadObject(forClasses: [NSAttributedString.self, NSString.self], options: nil)
+                || ComposeTextView.pasteboardHasPicture
+        }
+        if item.action == #selector(pastePlainText) {
             return NSPasteboard.general.canReadObject(forClasses: [NSAttributedString.self, NSString.self], options: nil)
         }
+        if item.action == #selector(paste(_:)), isEditable, ComposeTextView.pasteboardHasPicture { return true }
         return super.validateMenuItem(item)
     }
 }
