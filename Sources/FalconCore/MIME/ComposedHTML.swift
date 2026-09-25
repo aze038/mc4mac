@@ -21,23 +21,27 @@ public enum ComposedHTML {
 
     /// The same, from a body as a draft keeps it (see ComposedBody.stored).
     public static func content(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String,
-                               date: Date = Date()) -> Content {
+                               date: Date = Date(), font: ComposeFont = .outlook) -> Content {
         content(rich: ComposedBody.text(rtf: rtf, rtfd: rtfd), plain: plain, historyPlain: historyPlain, historyHTML: historyHTML,
-                date: date)
+                date: date, font: font)
     }
 
     /// The HTML part of a message from the composer: its rich text when it has any, else its
-    /// plain text. A reply or forward whose body still ends with the quoted original sends the
-    /// original's own HTML in place of that plain copy. Every picture, the composer's own and
-    /// the original's, is sent as Outlook sends it: once, as an inline part named image001.png
-    /// and on, the HTML showing it by `cid:` at the size it is shown in the composer. `date`
-    /// is when the message is put together, which each picture's Content-ID carries.
+    /// plain text, as Outlook writes it (see CompactHTML), inside one element that declares
+    /// `font`. A reply or forward whose body still ends with the quoted original sends the
+    /// original's own HTML in place of that plain copy (see ReplyHistory), what it carries for
+    /// the head in the head. Every picture, the composer's own and the original's, is sent as
+    /// Outlook sends it: once, as an inline part named image001.png and on, the HTML showing it
+    /// by `cid:` at the size it is shown in the composer. `date` is when the message is put
+    /// together, which each picture's Content-ID carries.
     public static func content(rich: NSAttributedString?, plain: String, historyPlain: String, historyHTML: String,
-                               date: Date = Date()) -> Content {
-        let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
+                               date: Date = Date(), font: ComposeFont = .outlook) -> Content {
         var pictures = InlinePictures.Collector(date: date)
         let plainOwn = historyHTML.isEmpty ? nil
             : ComposedBody.historyStart(in: plain, history: historyPlain).map { (plain as NSString).substring(to: $0) }
+        // The plain text part sets the heading off with Outlook's line of underscores, as the
+        // HTML part does with its line across the message.
+        let plainPart = historyHTML.isEmpty ? plain : withOutlookLine(plain, history: historyPlain)
         if let rich {
             if !historyHTML.isEmpty, let start = ownLength(of: rich, history: historyPlain, plainOwn: plainOwn) {
                 var collected = pictures
@@ -50,35 +54,89 @@ public enum ComposedHTML {
                 if let own {
                     pictures = collected
                     let history = InlinePictures.sendingDataURIs(in: historyHTML, into: &pictures)
-                    return Content(html: "<html><body style=\"\(style)\">\(own.html)\(history)</body></html>",
-                                   plain: plainText(plain, marks: own.marks), pictures: pictures.pictures)
+                    return Content(html: document(own: CompactHTML.compact(own.html, font: font), history: history, font: font),
+                                   plain: plainText(plainPart, marks: own.marks), pictures: pictures.pictures)
                 }
+            }
+            if !historyHTML.isEmpty, let edited = editedReply(rich, historyPlain: historyPlain, font: font, pictures: pictures) {
+                return Content(html: edited.html, plain: plainText(plainPart, marks: edited.marks), pictures: edited.pictures.pictures)
             }
             var collected = pictures
             if let whole = html(from: rich, pictures: &collected) {
-                return Content(html: "<html><body style=\"\(style)\">\(whole.html)</body></html>",
-                               plain: plainText(plain, marks: whole.marks), pictures: collected.pictures)
+                return Content(html: document(own: CompactHTML.compact(whole.html, font: font), history: "", font: font),
+                               plain: plainText(plainPart, marks: whole.marks), pictures: collected.pictures)
             }
         }
         if let plainOwn {
             let history = InlinePictures.sendingDataURIs(in: historyHTML, into: &pictures)
-            return Content(html: "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">\(HTMLText.escape(plainText(plainOwn, marks: [])))</div>\(history)</body></html>",
-                           plain: plainText(plain, marks: []), pictures: pictures.pictures)
+            return Content(html: document(own: paragraphs(plainText(plainOwn, marks: [])), history: history, font: font),
+                           plain: plainText(plainPart, marks: []), pictures: pictures.pictures)
         }
-        let text = plainText(plain, marks: [])
-        return Content(html: "<html><body style=\"\(style);white-space:pre-wrap\">\(HTMLText.escape(text))</body></html>",
-                       plain: text, pictures: [])
+        return Content(html: document(own: paragraphs(plainText(plain, marks: [])), history: "", font: font),
+                       plain: plainText(plainPart, marks: []), pictures: [])
+    }
+
+    /// A reply or forward whose original was edited, as the composer shows it, but still under
+    /// Outlook's heading, its line across the message included, while the heading itself stands
+    /// whole: the user's text, the heading's block, then the edited original. Nil when the body
+    /// no longer holds the heading, or holds no heading of Outlook's.
+    private static func editedReply(_ rich: NSAttributedString, historyPlain: String, font: ComposeFont,
+                                    pictures: InlinePictures.Collector) -> (html: String, marks: [String], pictures: InlinePictures.Collector)? {
+        guard let lines = ReplyHeader.headingLines(of: historyPlain),
+              let from = ReplyHeader.headingStart(in: rich.string, history: historyPlain) else { return nil }
+        let text = rich.string as NSString
+        let ownEnd = from > 0 && text.character(at: from - 1) == 0x0A ? from - 1 : from
+        var rest = min(text.length, from + (lines as NSString).length)
+        // The heading's line break and the empty line after it, which its block holds.
+        for _ in 0..<2 where rest < text.length && text.character(at: rest) == 0x0A { rest += 1 }
+        var collected = pictures
+        let own: (html: String, marks: [String])?
+        own = ownEnd == 0 ? ("", []) : html(from: rich.attributedSubstring(from: NSRange(location: 0, length: ownEnd)), pictures: &collected)
+        let original: (html: String, marks: [String])?
+        original = rest >= text.length ? ("", [])
+            : html(from: rich.attributedSubstring(from: NSRange(location: rest, length: text.length - rest)), pictures: &collected)
+        guard let own, let original else { return nil }
+        let quoted = CompactHTML.compact(original.html, font: font)
+        let history = ReplyHeader.html(headingLines: lines, font: font) + (quoted.isEmpty ? "" : "<div style=\"\(font.css)\">\(quoted)</div>")
+        return (document(own: CompactHTML.compact(own.html, font: font), history: history, font: font), own.marks + original.marks, collected)
+    }
+
+    /// `plain` with Outlook's line of underscores on a line of its own above the heading of the
+    /// original it quotes, where it still holds that heading.
+    static func withOutlookLine(_ plain: String, history: String) -> String {
+        guard let from = ReplyHeader.headingStart(in: plain, history: history) else { return plain }
+        let text = plain as NSString
+        return text.substring(to: from) + ReplyHeader.plainLine + "\n" + text.substring(from: from)
     }
 
     /// The HTML part alone, for a body as a draft keeps it.
-    public static func document(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String) -> String {
-        content(rtf: rtf, rtfd: rtfd, plain: plain, historyPlain: historyPlain, historyHTML: historyHTML).html
+    public static func document(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String,
+                                font: ComposeFont = .outlook) -> String {
+        content(rtf: rtf, rtfd: rtfd, plain: plain, historyPlain: historyPlain, historyHTML: historyHTML, font: font).html
+    }
+
+    /// The message: the user's own text in the element declaring `font`, then the history, the
+    /// namespaces and head it carries on the document's own tags.
+    static func document(own: String, history: String, font: ComposeFont) -> String {
+        let parts = ReplyHistory.parts(of: history)
+        let head = parts.head.isEmpty ? "" : "<head>\(parts.head)</head>"
+        let text = own.isEmpty ? "" : "<div style=\"\(font.css)\">\(own)</div>"
+        return "<html\(parts.namespaces)>\(head)<body>\(text)\(parts.body)</body></html>"
+    }
+
+    /// Plain text as paragraphs, the line break that ends it ending its last paragraph.
+    private static func paragraphs(_ text: String) -> String {
+        guard !text.isEmpty else { return "" }
+        return ReplyHistory.paragraphs(text.hasSuffix("\n") ? String(text.dropLast()) : text)
     }
 
     /// `plain` with each object character, where the composer's text holds a picture, replaced
     /// in turn by the mark of the picture sent for it; one for which nothing is sent is taken
     /// out.
     private static func plainText(_ plain: String, marks: [String]) -> String {
+        // A line break within a paragraph, as Shift-Return types and a quoted original's <br>
+        // gives, is a line break in plain text.
+        let plain = plain.replacingOccurrences(of: "\u{2028}", with: "\n").replacingOccurrences(of: "\u{2029}", with: "\n")
         guard plain.contains("\u{FFFC}") else { return plain }
         var remaining = marks[...]
         var output = ""

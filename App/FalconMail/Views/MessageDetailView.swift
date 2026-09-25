@@ -560,41 +560,17 @@ enum MessageRenderer {
         return false
     }
 
-    /// `inStack` for a card of the conversation stack, which leaves less room under the text.
+    /// The page the reader's web view shows for `parsed` (see ReadingHTML): the message on its
+    /// own ground, recoloured as Outlook does in dark appearance unless `forceOriginal`, the sun
+    /// switch, shows it as it was written. `inStack` for a card of the conversation stack, which
+    /// leaves less room under the text.
     static func html(for parsed: MIMEMessage, allowRemote: Bool, dark: Bool, forceOriginal: Bool, inStack: Bool = false) -> String {
-        let csp = allowRemote
-            ? "default-src 'none'; img-src * data: cid: blob:; style-src 'unsafe-inline' *; font-src *;"
-            : "default-src 'none'; img-src data:; style-src 'unsafe-inline';"
-        // Outlook puts every message on its own ground and leaves the message's colours to the
-        // sun switch; a message that paints its own canvas is not an exception.
-        let ownCanvas = forceOriginal
-        // In dark appearance the message is laid out in its own light colours and the whole page
-        // is then inverted, pictures inverted back: black text on white becomes Outlook's light
-        // grey on #1e1e1e, and a message that hard-codes its colours stays readable. The sun
-        // switch shows it un-inverted, as it was written.
-        let inverted = dark && !ownCanvas
-        let background = "#ffffff"
-        let text = "#1d1d1f"
-        let quote = "#1d1d1f"
-        let rule = "#333333"
-        let link = "#0a66c2"
-        let inversion = inverted
-            ? " html{filter:invert(0.885) hue-rotate(180deg);} img,video,canvas,svg,picture{filter:invert(1) hue-rotate(180deg);}"
-            : ""
-        let style = "<style>:root{color-scheme:light;} html,body{background:\(background);margin:0;}\(inversion) body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.2;color:\(text);padding:\(inStack ? "6px 29px 10px 29px" : "12px 29px 30px 29px");word-wrap:break-word;overflow-wrap:anywhere;} p{margin:0 0 16px;} pre{white-space:pre-wrap;font-family:inherit;} img{max-width:100%;height:auto;} table{max-width:100%;} blockquote{border-left:1px solid \(rule);margin:0 0 0 4px;padding-left:6px;color:\(quote);} a{color:\(link);}</style>"
-        let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
-        var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
-            body = InlinePictures.resolvingCIDs(in: html, with: parsed.attachments)
-            body = body.replacingOccurrences(of: "(?is)<script[^>]*>.*?</script>", with: "", options: .regularExpression)
-        } else {
-            body = "<pre>" + HTMLLinkify.escapeAndLink(parsed.textPlain ?? "") + "</pre>"
+            return ReadingHTML.page(body: html, parts: parsed.attachments, allowRemote: allowRemote, dark: dark, ownColours: forceOriginal,
+                                    inStack: inStack)
         }
-        if let range = body.range(of: "<head>", options: .caseInsensitive) {
-            body.insert(contentsOf: head, at: range.upperBound)
-            return body
-        }
-        return "<html><head>\(head)</head><body>\(body)</body></html>"
+        return ReadingHTML.page(body: "<pre>" + HTMLLinkify.escapeAndLink(parsed.textPlain ?? "") + "</pre>", plain: true,
+                                parts: [], allowRemote: allowRemote, dark: dark, ownColours: forceOriginal, inStack: inStack)
     }
 }
 

@@ -64,6 +64,44 @@ final class QuotedHistoryTests: XCTestCase {
         XCTAssertEqual(HTMLText.plainText(from: split.own), "Thanks, Tuesday it is.")
     }
 
+    func testFalconMailsQuoteUnderOutlookForMacsHeadingIsHiddenWithTheHeadingsBlock() throws {
+        // A reply as FalconMail writes it (see ReplyHistory and ComposedHTML): the new text in the
+        // message's font, Outlook for Mac's heading in its block under the line across the
+        // message, then the original.
+        let original = ReplyHeader.Original(from: EmailAddress(name: "Sam Taylor", address: "sam@example.com"),
+                                            date: Date(timeIntervalSince1970: 1_790_258_520),
+                                            to: [EmailAddress(name: "Alex", address: "alex@example.com")], cc: [], subject: "Pallet count")
+        let history = ReplyHistory(original: original,
+                                   html: "<html><head><style>p{margin:0}</style></head><body><div>\(earlierText)</div></body></html>",
+                                   text: earlierText, attribution: .outlook, indent: false, font: .outlook)
+        let sent = ComposedHTML.content(rich: nil, plain: "Thanks, Tuesday it is.\n\n" + history.plain, historyPlain: history.plain,
+                                        historyHTML: history.html)
+
+        let split = try XCTUnwrap(QuotedHistory.split(html: sent.html, repeating: earlier))
+        XCTAssertEqual(HTMLText.plainText(from: split.own), "Thanks, Tuesday it is.")
+        // The heading goes whole, the element setting its font included, and the empty line under
+        // the new text goes too, the element holding that text kept whole.
+        XCTAssertTrue(split.quoted.hasPrefix("<div style=\"\(ComposeFont.outlook.css);color:black\"><div style=\"border:none;"
+                                             + "border-top:solid #B5C4DF"), split.quoted)
+        XCTAssertTrue(split.own.hasSuffix("Thanks, Tuesday it is.</p></div>"), split.own)
+
+        // The plain text part, whose heading stands under Outlook's line of underscores.
+        let plain = try XCTUnwrap(QuotedHistory.split(plain: sent.plain, repeating: earlier))
+        XCTAssertEqual(plain.own, "Thanks, Tuesday it is.")
+        XCTAssertTrue(plain.quoted.hasPrefix(ReplyHeader.plainLine + "\nFrom: Sam Taylor <sam@example.com>\nDate: "), plain.quoted)
+    }
+
+    func testOutlookForWindowsQuoteGoesWithTheDivHoldingItsHeading() throws {
+        let html = """
+            <div class="WordSection1"><p class="MsoNormal">Noted.</p><p class="MsoNormal">&nbsp;</p><div>\
+            <div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0in 0in 0in"><p class="MsoNormal"><b>From:</b> \
+            Sam Taylor<br><b>Sent:</b> Thursday, September 24, 2026 4:02 PM</p></div></div><p class="MsoNormal">\(earlierText)</p></div>
+            """
+        let split = try XCTUnwrap(QuotedHistory.split(html: html, repeating: earlier))
+        XCTAssertEqual(split.own, "<div class=\"WordSection1\"><p class=\"MsoNormal\">Noted.</p>")
+        XCTAssertTrue(split.quoted.hasPrefix("<div><div style=\"border:none;"), split.quoted)
+    }
+
     func testAppleMailsQuoteGoesWithTheLineNamingItsWriter() throws {
         let html = """
             <html><body><div>See you then.</div><div><br><div>On 24 Sep 2026, at 16:02, Sam Taylor &lt;sam@example.com&gt; \

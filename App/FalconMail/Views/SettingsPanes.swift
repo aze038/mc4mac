@@ -508,8 +508,9 @@ struct CategoriesSettings: View {
 }
 
 struct FontsSettings: View {
-    @AppStorage("composeFontFamily") private var composeFamily = "System"
-    @AppStorage("composeFontSize") private var composeSize = 14.0
+    // Outlook for Mac's Aptos at 12 point out of the box, 16 in the composer's points.
+    @AppStorage(ComposeFont.familyKey) private var composeFamily = ComposeFont.outlookFamily
+    @AppStorage(ComposeFont.sizeKey) private var composeSize = Double(ComposeFont.outlook.size)
     @AppStorage("readingFontFamily") private var readingFamily = "System"
     @AppStorage("readingFontSize") private var readingSize = 14.0
     @AppStorage("listFontSize") private var listSize = 13.0
@@ -517,7 +518,8 @@ struct FontsSettings: View {
     var body: some View {
         SettingsScroll {
             SettingsRow(label: "New messages:") {
-                fontPair(family: $composeFamily, size: $composeSize)
+                // In points, as Outlook shows them; kept as the size the composer sets text at.
+                fontPair(family: $composeFamily, size: $composeSize, points: true)
                 sample(family: composeFamily, size: composeSize)
             }
             Divider()
@@ -537,14 +539,14 @@ struct FontsSettings: View {
         }
     }
 
-    private func fontPair(family: Binding<String>, size: Binding<Double>) -> some View {
+    private func fontPair(family: Binding<String>, size: Binding<Double>, points: Bool = false) -> some View {
         HStack(spacing: 8) {
             Picker("", selection: family) {
                 ForEach(TextFormatter.families, id: \.self) { Text($0).tag($0) }
             }
             .labelsHidden().frame(width: 200)
             Picker("", selection: size) {
-                ForEach(TextFormatter.sizes, id: \.self) { Text("\(Int($0))").tag(Double($0)) }
+                ForEach(TextFormatter.sizes, id: \.self) { Text("\(Int($0))").tag(Double(points ? TextFormatter.pixels($0) : $0)) }
             }
             .labelsHidden().frame(width: 80)
         }
@@ -552,7 +554,8 @@ struct FontsSettings: View {
 
     private func sample(family: String, size: Double) -> some View {
         Text("The quick brown fox jumps over the lazy dog.")
-            .font(family == "System" ? .system(size: size) : .custom(family, size: size))
+            .font(family == "System" ? .system(size: size)
+                  : .custom(ComposeFont(family: family, size: size).displayFont.fontName, size: size))
             .padding(8)
             .frame(width: 420, alignment: .leading)
             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))

@@ -26,8 +26,18 @@ public enum AttachmentReminder {
             return String(body.dropLast(historyPlain.count))
         }
         let lines = body.components(separatedBy: "\n")
-        guard let cut = lines.firstIndex(where: startsQuotedHistory) else { return body }
+        let cut = lines.indices.first { index in
+            startsQuotedHistory(lines[index]) || (index + 1 < lines.count && startsOutlookHeading(lines[index], lines[index + 1]))
+        }
+        guard let cut else { return body }
         return lines[..<cut].joined(separator: "\n")
+    }
+
+    /// Outlook's heading above a quoted original, which has no line of its own: From: followed
+    /// by Date: as Outlook for Mac writes it, or by Sent: as Outlook for Windows does.
+    private static func startsOutlookHeading(_ line: String, _ next: String) -> Bool {
+        let next = next.trimmingCharacters(in: .whitespaces)
+        return line.trimmingCharacters(in: .whitespaces).hasPrefix("From:") && (next.hasPrefix("Date:") || next.hasPrefix("Sent:"))
     }
 
     private static func startsQuotedHistory(_ line: String) -> Bool {

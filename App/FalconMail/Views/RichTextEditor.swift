@@ -100,7 +100,9 @@ enum RichText {
         var rtfd: Data?
     }
 
-    static let defaultFont = NSFont.systemFont(ofSize: 14)
+    /// The font for new messages Settings chooses, out of the box Outlook for Mac's Aptos at 12
+    /// point, shown in the nearest installed font (see ComposeFont).
+    static var defaultFont: NSFont { ComposeFont.chosen().displayFont }
 
     /// Table lines take the text's own colour, so they read in both appearances; what is sent
     /// turns them black (see ComposedHTML).

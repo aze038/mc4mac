@@ -23,15 +23,18 @@ import FalconCore
 /// writes down beside them the words and buttons of the question asked before a signature is
 /// deleted, the message list with made-up conversations, a made-up conversation of four
 /// messages stacked in the reading pane and in its own window, the newest open and the rest
-/// folded, the unread one with its blue dot, and the mailbox window filling a 1728 × 1117 point
+/// folded, the unread one with its blue dot, the mailbox window filling a 1728 × 1117 point
 /// screen with a message window alone in the middle and two minimised to tabs in its status bar,
 /// then with a message window and a compose window side by side and one tab, and those tabs
-/// close up, then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone,
-/// with `stack` the conversation alone, with `fullscreen` the mailbox window filling the screen
+/// close up, and a reply to a made-up chain from Outlook for Mac, Outlook for Windows and Gmail
+/// as its compose window shows it, also made narrower and wider, as the reader shows what it
+/// sends and as that HTML reads 600 and 1200 points wide, written as outlook-chain-reply.eml,
+/// then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone, with
+/// `stack` the conversation alone, with `fullscreen` the mailbox window filling the screen
 /// alone, with `signature-import` only the Signatures pane offering an import, the import sheets
 /// for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
-/// signatures, and `stack50` times a conversation of fifty messages instead, writing how long it
-/// held up the main thread.
+/// signatures, with `chain` the reply to the chain alone, and `stack50` times a conversation of
+/// fifty messages instead, writing how long it held up the main thread.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -65,6 +68,10 @@ enum ComposeSnapshot {
         }
         messageList(model, to: directory)
         if only == "list" { exit(0) }
+        if only == "chain" {
+            outlookChain(model, to: directory)
+            exit(0)
+        }
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")
@@ -92,6 +99,7 @@ enum ComposeSnapshot {
         inlinePictures(model, to: directory)
         replyQuotes(model, to: directory)
         conversationStack(model, to: directory)
+        outlookChain(model, to: directory)
         // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
         privacy(model, to: directory)
         for (name, appearance) in appearances {
@@ -811,6 +819,141 @@ enum ComposeSnapshot {
                 try? MIMEBuilder.build(sent).write(to: URL(fileURLWithPath: "\(directory)/reply-quote-sample.eml"))
             }
         }
+    }
+
+    /// A reply to all to a made-up chain as Outlook for Windows sends it, with Outlook for Mac's
+    /// and Outlook for Windows' headings, a Gmail reply in its blockquote, a signature table and a
+    /// 5.5 point disclaimer, in the compose window and, as sent, in the reader, in both
+    /// appearances; and the message it sends, as outlook-chain-reply.eml. The reader's page is
+    /// drawn by WebKit as the reading pane draws it, the recolouring for dark appearance included.
+    @MainActor private static func outlookChain(_ model: AppModel, to directory: String) {
+        let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
+                                  imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [account]
+        let parsed = MIMEParser.parse(outlookChainMessage())
+        let message = MessageSummary(accountID: account.id, folderID: UUID(), uid: 1, messageID: parsed.messageID, inReplyTo: "",
+                                     references: [], subject: parsed.subject, from: parsed.from, to: parsed.to, cc: parsed.cc,
+                                     date: parsed.date ?? Date(), flags: [.seen], size: 40_000, hasAttachments: false)
+        var draft = ComposeDraft.reply(to: message, parsed: parsed, account: account, all: true, signature: nil)
+        if let opened = RichText.attributed(from: draft.richBody) {
+            let text = NSMutableAttributedString(attributedString: opened)
+            text.insert(NSAttributedString(string: "Hello Casey,\n\nThanks, both trucks are booked for Tuesday morning.\n\nKind regards,\nAlex",
+                                           attributes: RichText.bodyAttributes), at: 0)
+            draft.richBody = RichText.body(of: text)
+        }
+        let id = model.newDraft(draft)
+        defer { model.drafts[id] = nil }
+        for (name, appearance) in appearances {
+            let compose = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                               size: NSSize(width: OL.composeWindowWidth, height: 900), appearance: appearance,
+                               style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+            capture(compose, appearance: appearance, to: "\(directory)/outlook-chain-compose-\(name).png")
+        }
+        // The same window made narrower and then wider: the lines above the headings follow it.
+        let resized = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                           size: NSSize(width: 760, height: 900), appearance: .aqua,
+                           style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+        capture(resized, appearance: .aqua, to: "\(directory)/outlook-chain-compose-760.png")
+        resized.window?.setContentSize(NSSize(width: 1300, height: 900))
+        resized.frame = NSRect(x: 0, y: 0, width: 1300, height: 900)
+        capture(resized, appearance: .aqua, to: "\(directory)/outlook-chain-compose-1300.png")
+        guard let sent = try? model.drafts[id]?.outgoing(from: account) else { return }
+        let raw = MIMEBuilder.build(sent)
+        try? raw.write(to: URL(fileURLWithPath: "\(directory)/outlook-chain-reply.eml"))
+        // The HTML as sent, as a reader that adds nothing of its own lays it out at 600 and 1200.
+        for width in [600, 1200] {
+            webPage(sent.htmlBody ?? "", size: NSSize(width: width, height: 900), appearance: .aqua,
+                    to: "\(directory)/outlook-chain-sent-\(width).png")
+        }
+        let received = MIMEParser.parse(raw)
+        for (name, appearance) in appearances {
+            let page = MessageRenderer.html(for: received, allowRemote: false, dark: appearance == .darkAqua, forceOriginal: false)
+            webPage(page, size: NSSize(width: 900, height: 900), appearance: appearance, to: "\(directory)/outlook-chain-reader-\(name).png")
+        }
+    }
+
+    /// `html` drawn by the reading pane's own web view, offscreen, `size` points big.
+    @MainActor private static func webPage(_ html: String, size: NSSize, appearance: NSAppearance.Name, to path: String) {
+        let view = WebViewPool.acquire()
+        defer { WebViewPool.release(view) }
+        _ = host(view, size: size, appearance: appearance)
+        view.loadHTMLString(html, baseURL: nil)
+        let deadline = Date(timeIntervalSinceNow: 20)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        while view.isLoading, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+        var done = false
+        view.takeSnapshot(with: nil) { image, _ in
+            if let tiff = image?.tiffRepresentation { write(NSBitmapImageRep(data: tiff), to: path) }
+            done = true
+        }
+        while !done, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+    }
+
+    /// A made-up chain as Outlook for Windows sends it: Word's head and styles, a reply in
+    /// Calibri with a signature table and a 5.5 point disclaimer, Outlook for Mac's heading above
+    /// an earlier reply, Outlook for Windows' heading above a Gmail reply, and Gmail's blockquote.
+    private static func outlookChainMessage() -> Data {
+        let paragraph = { (text: String) in "<p class=MsoNormal><span style='font-size:11.0pt'>\(text)<o:p></o:p></span></p>" }
+        let empty = "<p class=MsoNormal><span style='font-size:11.0pt'><o:p>&nbsp;</o:p></span></p>"
+        let signature = """
+            <table class=MsoNormalTable border=0 cellspacing=0 cellpadding=0 style='border-collapse:collapse'><tr>\
+            <td width=376 valign=top style='width:281.95pt;padding:0cm 5.4pt 0cm 5.4pt'><p class=MsoNormal><b>\
+            <span style='font-size:9.0pt;font-family:"Arial",sans-serif;color:black'>Casey Morgan / Operations<o:p></o:p></span></b></p>\
+            <p class=MsoNormal><span style='font-size:9.0pt;font-family:"Arial",sans-serif;color:#595959'>A: 12 Harbour Road, \
+            Portsmouth<o:p></o:p></span></p></td></tr></table><p class=MsoNormal><span style='font-size:5.5pt;\
+            font-family:"Helvetica Neue",serif;color:#595959'>Disclaimer: this message is for the named recipient only. If it \
+            reached you by mistake, please tell the sender and delete it.<o:p></o:p></span></p>
+            """
+        let body = paragraph("Dear Alex,") + empty + paragraph("The pallets for both trucks are ready. Can you confirm the loading "
+            + "date for the second truck?") + empty + paragraph("Kind regards,") + signature + empty
+            + "<div style='border:none;border-top:solid #B5C4DF 1.0pt;padding:3.0pt 0cm 0cm 0cm'><p class=MsoNormal><b>"
+            + "<span style='color:black'>From: </span></b><span style='color:black'>Alex Example &lt;alex@example.com&gt;<br><b>Date: </b>"
+            + "Tuesday, 22 September 2026 at 16:40<br><b>To: </b>Casey Morgan &lt;casey@example.com&gt;<br><b>Cc: </b>'Desk' "
+            + "&lt;desk@example.com&gt;<br><b>Subject: </b>Re: Pallets for Tuesday<o:p></o:p></span></p></div>" + empty
+            + paragraph("Casey, the first truck is booked. I will confirm the second one tomorrow.") + empty
+            + "<div style='border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm'><p class=MsoNormal><b>"
+            + "<span lang=EN-US style='font-size:11.0pt;font-family:\"Calibri\",sans-serif'>From:</span></b><span lang=EN-US "
+            + "style='font-size:11.0pt;font-family:\"Calibri\",sans-serif'> Jordan Lee &lt;jordan@example.net&gt;<br><b>Sent:</b> "
+            + "Monday, September 21, 2026 4:12 PM<br><b>To:</b> Casey Morgan &lt;casey@example.com&gt;<br><b>Subject:</b> Pallets "
+            + "for Tuesday<o:p></o:p></span></p></div>" + empty
+            + "<div><div dir=ltr>Hi Casey, can you send two trucks on Tuesday?</div><br><div class=gmail_quote><div dir=ltr "
+            + "class=gmail_attr>On Mon, 21 Sept 2026 at 09:30, Rowan Hale &lt;rowan@example.org&gt; wrote:<br></div><blockquote "
+            + "class=gmail_quote style='margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex'>"
+            + "<div dir=ltr>Jordan, 27 pallets are waiting in Portsmouth.</div></blockquote></div></div>"
+        let html = """
+            <html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" \
+            xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta http-equiv=Content-Type content="text/html; charset=utf-8">\
+            <style><!--
+            @font-face {font-family:Calibri; panose-1:2 15 5 2 2 2 4 3 2 4;}
+            p.MsoNormal, li.MsoNormal, div.MsoNormal {margin:0cm; font-size:12.0pt; font-family:"Calibri",sans-serif;}
+            a:link, span.MsoHyperlink {color:#0563C1; text-decoration:underline;}
+            div.WordSection1 {page:WordSection1;}
+            --></style></head><body lang=EN-GB link="#0563C1" vlink="#954F72" style='word-wrap:break-word'>\
+            <div class=WordSection1>\(body)</div></body></html>
+            """
+        let raw = """
+            From: Casey Morgan <casey@example.com>\r
+            To: Alex Example <alex@example.com>\r
+            Cc: Desk <desk@example.com>, Jordan Lee <jordan@example.net>\r
+            Subject: RE: Pallets for Tuesday\r
+            Date: Wed, 23 Sep 2026 10:21:00 +0000\r
+            Message-ID: <outlook-chain-sample@example.com>\r
+            MIME-Version: 1.0\r
+            Content-Type: multipart/alternative; boundary="alt"\r
+            \r
+            --alt\r
+            Content-Type: text/plain; charset=utf-8\r
+            \r
+            \(HTMLText.plainText(from: html))\r
+            --alt\r
+            Content-Type: text/html; charset=utf-8\r
+            Content-Transfer-Encoding: base64\r
+            \r
+            \(Data(html.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed]))\r
+            --alt--\r
+            """
+        return Data(raw.utf8)
     }
 
     /// A message as Outlook for Windows sends one: its logo an inline part in multipart/related

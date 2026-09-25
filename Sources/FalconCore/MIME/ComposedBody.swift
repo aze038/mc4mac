@@ -165,7 +165,7 @@ public enum ComposedBody {
     }
 
     /// The original a reply or forward quotes, as the composer shows it, as Legacy Outlook's
-    /// does: `heading`, the line and the From, Sent, To and Subject lines, in `attributes` with
+    /// does: `heading`, the From, Date, To, Cc and Subject lines, in `attributes` with
     /// their labels in bold, then the original's own HTML with its formatting, links and
     /// pictures. Each picture it shows from `parts` by cid: or from a data: URI is a picture;
     /// each it would fetch from the web is the picture `remote` holds for it, else an empty box
@@ -184,6 +184,7 @@ public enum ComposedBody {
                                                  remote: remote) else { return nil }
         let quoted = NSMutableAttributedString(attributedString: readable(original, attributes: attributes))
         if indent { setIn(quoted, by: 12) }
+        spaceHeadings(quoted)
         if !quoted.string.hasSuffix("\n") { quoted.append(NSAttributedString(string: "\n", attributes: attributes)) }
         let text = NSMutableAttributedString(attributedString: headed(heading, attributes: attributes))
         text.append(quoted)
@@ -191,18 +192,28 @@ public enum ComposedBody {
         return self.text(rtf: kept.rtf, rtfd: kept.rtfd) ?? text
     }
 
-    /// The heading in `attributes`, each From:, Sent:, To:, Cc: and Subject: that starts a line
-    /// in bold, as the HTML sent for it has them.
+    /// The heading in `attributes`, each From:, Date:, To:, Cc: and Subject: that starts a line
+    /// in bold, as the HTML sent for it has them, and Sent: as a heading from an earlier build
+    /// has it.
     static func headed(_ heading: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
         let text = NSMutableAttributedString(string: heading, attributes: attributes)
         let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 14)
         let bold = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
         let string = heading as NSString
-        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byLines) { line, range, _, _ in
+        var first = true
+        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byLines) { line, range, enclosing, _ in
             guard let line else { return }
-            for label in ["From:", "Sent:", "To:", "Cc:", "Subject:"] where line.hasPrefix(label) {
+            for label in ReplyHeader.labels where line.hasPrefix(label) {
                 text.addAttribute(.font, value: bold, range: NSRange(location: range.location, length: (label as NSString).length))
+                // Outlook's three points between the line drawn above the heading and its text.
+                if first, label == "From:" {
+                    let style = (attributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
+                        ?? NSMutableParagraphStyle()
+                    style.paragraphSpacingBefore = 4
+                    text.addAttribute(.paragraphStyle, value: style, range: enclosing)
+                }
             }
+            if !line.isEmpty { first = false }
         }
         return text
     }
@@ -247,6 +258,21 @@ public enum ComposedBody {
     }
 
     /// Every paragraph of `text` set in from the left by `points` more.
+    /// Outlook's three points between the line the composer draws above each earlier heading in
+    /// the original (see ReplyHeader.headingStarts) and its text.
+    private static func spaceHeadings(_ text: NSMutableAttributedString) {
+        let string = text.string as NSString
+        text.beginEditing()
+        for start in ReplyHeader.headingStarts(in: string, from: 0) {
+            let paragraph = string.paragraphRange(for: NSRange(location: start, length: 0))
+            let style = (text.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle)?.mutableCopy()
+                as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+            style.paragraphSpacingBefore = max(style.paragraphSpacingBefore, 4)
+            text.addAttribute(.paragraphStyle, value: style, range: paragraph)
+        }
+        text.endEditing()
+    }
+
     private static func setIn(_ text: NSMutableAttributedString, by points: CGFloat) {
         let whole = NSRange(location: 0, length: text.length)
         text.beginEditing()

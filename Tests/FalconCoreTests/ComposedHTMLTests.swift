@@ -292,9 +292,9 @@ final class ComposedHTMLTests: XCTestCase {
         let rtf = try XCTUnwrap(rich.rtf(from: NSRange(location: 0, length: rich.length),
                                          documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]))
         let html = ComposedHTML.document(rtf: rtf, plain: rich.string, historyPlain: "", historyHTML: "")
-        XCTAssertTrue(html.contains("color: #1f4e79\">Alex Moreno<"), html)
-        XCTAssertTrue(html.contains("color: #c00000; background-color: #e2efda\">Finance<"), html)
-        XCTAssertTrue(html.contains("background-color: #ffc000\">Leeds office<"), html)
+        XCTAssertTrue(html.contains("color:#1f4e79\">Alex Moreno<"), html)
+        XCTAssertTrue(html.contains("color:#c00000;background-color:#e2efda\">Finance<"), html)
+        XCTAssertTrue(html.contains("background-color:#ffc000\">Leeds office<"), html)
         for shifted in officeShifted { XCTAssertFalse(html.contains(shifted), shifted) }
     }
 
@@ -310,21 +310,21 @@ final class ComposedHTMLTests: XCTestCase {
         let rtf = try XCTUnwrap(body.rtf(from: NSRange(location: 0, length: body.length),
                                          documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]))
         let html = ComposedHTML.document(rtf: rtf, plain: body.string, historyPlain: history, historyHTML: historyHTML)
-        XCTAssertTrue(html.contains("color: #ff0000\">See below<"), html)
+        XCTAssertTrue(html.contains("color:#ff0000\">See below<"), html)
         XCTAssertTrue(html.hasSuffix(historyHTML + "</body></html>"), html)
         XCTAssertEqual(html.components(separatedBy: "#fb0007").count, 2, html)
         XCTAssertFalse(html.contains("From: Sam"), html)
     }
 
-    /// A body with no rich text is sent as it always was: nothing in it is taken for a colour,
-    /// in its own words or in the original of a reply.
+    /// A body with no rich text is sent as its words, a paragraph to a line in Outlook's font:
+    /// nothing in it is taken for a colour, in its own words or in the original of a reply.
     func testAPlainBodyIsSentAsItWas() {
-        let style = "font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px"
+        let open = "<html><body><div style=\"font-family:Aptos,Calibri,Helvetica,Arial,sans-serif;font-size:12pt\">"
         XCTAssertEqual(ComposedHTML.document(rtf: nil, plain: "Red is #fb0007 <b>", historyPlain: "", historyHTML: ""),
-                       "<html><body style=\"\(style);white-space:pre-wrap\">Red is #fb0007 &lt;b&gt;</body></html>")
+                       open + "<p style=\"margin:0\">Red is #fb0007 &lt;b&gt;</p></div></body></html>")
         let historyHTML = "<p style=\"color: #6c6c6c\">Earlier</p>"
         XCTAssertEqual(ComposedHTML.document(rtf: nil, plain: "Yes #ffff0b\n\nEarlier", historyPlain: "Earlier", historyHTML: historyHTML),
-                       "<html><body style=\"\(style)\"><div style=\"white-space:pre-wrap\">Yes #ffff0b\n\n</div>\(historyHTML)</body></html>")
+                       open + "<p style=\"margin:0\">Yes #ffff0b</p><p style=\"margin:0\">&nbsp;</p></div>\(historyHTML)</body></html>")
     }
 
     /// Only what is sent is recoloured: the draft keeps every colour and block it had, in the

@@ -249,13 +249,61 @@ its PNG or JPEG made to declare that size by the resolution it states; no pixel 
 
 ### The quoted original
 
-A reply or forward quotes its original as Legacy Outlook for Mac does: the line and the From,
-Sent, To and Subject lines, then the original's own HTML read as rich text with its
-formatting, links and pictures (`ComposedBody.quote`). Only an original without HTML, or HTML
-that cannot be read, is quoted as its text. `historyPlain` is the quote's text, which the body
-ends with while the original is untouched, and the original's own HTML (`historyHTML`) is then
-sent in its place; once the owner edits inside it, the whole body goes through the picture
-path above, the original's pictures as inline parts.
+A reply, reply to all or forward stacks the chain exactly as Legacy Outlook for Mac does, so a
+conversation that passes between Outlook, Gmail and FalconMail reads the same at every step:
+
+```
+Hello Casey,                                   the new text, in the message's font
+                                               an empty line
+──────────────────────────────────────         1 pt #B5C4DF, 3 pt above the text
+From: Casey Morgan <casey@example.com>         bold labels, black, the message's font
+Date: Wednesday, 23 September 2026 at 13:21    always English, the Mac's time zone
+To: Alex Example <alex@example.com>
+Cc: 'Desk' <desk@example.com>, Jo Park <jo@example.com>   left out when empty
+Subject: RE: Pallets for Tuesday
+                                               an empty line
+Dear Alex, …                                   the original, whole and unchanged
+```
+
+- The heading (`ReplyHeader`) is Outlook for Mac's own, as its binary's template and the chains
+  it writes show it: names as they came with the address in angle brackets, a sender without
+  a name as `<address>`, people separated by commas. The date never follows the Mac's language:
+  a Mac set to Russian used to put a Russian date in an English chain. The line is the block's
+  top border, so it runs the whole width of the message in any reader, however wide. The plain
+  text part carries the same lines under Outlook's line of 32 underscores, each line of an
+  earlier heading on a line of its own. Settings' customised attribution and indent still work.
+- The original (`QuotedOriginal`) goes below it whole: Word's MsoNormal paragraphs, its
+  conditional comments and VML, a Gmail blockquote, an earlier FalconMail reply. Its style
+  rules, from its head or its body, move into the reply's head scoped to the element holding
+  the quote (`ScopedCSS`), and its body's font, colours and link colours go onto that element,
+  so nothing in it can restyle the new text or the heading. A chain carries one head and one
+  style sheet however deep it goes, sent as several `<style>` elements under 15 KB each when it
+  is longer, as Word's sheet for a message with lists can be, since Gmail reads no more than
+  16 KB of any one.
+- The new text (`CompactHTML`) goes out as Outlook writes it: paragraphs with no margin, the
+  font declared once around them, empty lines as `&nbsp;`, only what differs from the font on
+  the text itself. New messages are written in Outlook for Mac's default, Aptos at 12 point,
+  declared as `Aptos, Calibri, Helvetica, Arial, sans-serif` and shown in the composer in the
+  first of those installed (`ComposeFont`), unless Settings → Fonts chooses another.
+- In the reading pane's conversation stack, a reply FalconMail sent hides its quote behind •••
+  from the heading's block down, as Outlook for Windows' own (`QuotedHistory`).
+- Gmail clips a message whose HTML passes about 102 KB behind "[Message clipped]". A reply adds
+  under 3 KB of its own on top of the chain it quotes, so FalconMail is never what pushes a
+  chain over; a chain already that long is clipped in Gmail whoever replies to it.
+
+The composer shows the quote as rich text with its formatting, links and pictures
+(`ComposedBody.quote`), the heading's labels in bold. Outlook's line is drawn above the heading
+and above each earlier Outlook heading in the chain (`ReplyHeader.headingStarts`: From, Van
+and the like followed by Sent, Date, Verzonden and the like), across the whole width of the
+text, so it follows the window as it is resized; it is drawn, never put into the text. Only an
+original without HTML, or HTML that cannot be read, is quoted as its text, its words without the
+codes and addresses its sender's plain text writes for its pictures (`QuotedText`). The heading
+and the quote, as text and as HTML, are `ReplyHistory`: `historyPlain` is the quote's text,
+which the body ends with while the original is untouched, and `historyHTML`, the heading and
+the original's own HTML, is then sent in its place; once the owner edits
+inside the original, the body goes through the picture path above, the original's pictures as
+inline parts, but still under Outlook's heading block, line included, while the heading's own
+lines stand whole.
 
 - A picture the original shows from its own parts, by `cid:`, or from a `data:` URI is a
   picture in the quote. None is ever an address or a stand-in such as `[cid:…]` or
@@ -277,6 +325,17 @@ source, becomes the signature it describes once, with its pictures, those from t
 that one time (`SignatureBook.carriedOverHTML`). A signature the owner has written or changed
 since, or one of plain words, is left as it is. The signature editor's Paste keeps the pictures
 from the web of HTML copied from a web page, fetched once; elsewhere they are left out.
+
+## Reading Outlook's HTML
+
+The reader (`ReadingHTML`) shows a message in its own fonts, sizes, colours and layout, as
+Outlook does. Office's fonts come with Office and not with macOS, so text in Calibri or Aptos
+would fall back to Helvetica, about a tenth wider and taller than Outlook draws it; each Office
+font a message names that the Mac lacks is stood in for by the macOS font nearest it in shape,
+scaled so a line takes the width it takes in Outlook (Calibri by Seravek at 96%, Aptos by
+Helvetica at 95%, measured on the fonts Outlook for Mac ships). In dark appearance the page is
+recoloured as Outlook's dark mode does, Outlook's black text and windowtext lines drawn light
+on a dark ground; the sun switch shows the message as written, on white.
 
 ## Gmail specifics
 
