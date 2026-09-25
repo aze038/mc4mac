@@ -25,31 +25,28 @@ struct ServerAttachmentStrip: View {
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(stubs.enumerated()), id: \.element.id) { index, stub in
-                    // Dragged as a promise, downloaded when it is dropped: onto a compose window it
-                    // attaches, onto Finder it makes the file; the window never moves.
-                    chip(stub, selected: index == selectedIndex)
-                        .overlay {
-                            AttachmentDragHandle(
+        VStack(alignment: .leading, spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(stubs.enumerated()), id: \.element.id) { index, stub in
+                        // Dragged as a promise, downloaded when it is dropped: onto a compose window
+                        // it attaches, onto Finder it makes the file; the window never moves.
+                        AttachmentCard(
+                            filename: stub.filename, size: stub.size,
+                            selected: index == selectedIndex, busy: fetching.contains(stub.id),
+                            handle: AttachmentDragHandle(
                                 filename: stub.filename,
                                 content: .promise(filename: stub.filename, mimeType: stub.mimeType,
                                                   fetch: download(stub)),
-                                help: "Downloads from Gmail when opened or saved",
                                 onClick: { select(index) },
                                 onDoubleClick: { select(index); open(stub) },
-                                menu: [
-                                    .init(title: "Quick Look") { select(index); toggleQuickLook() },
-                                    .init(title: "Open") { open(stub) },
-                                    .init(title: "Save As…") { saveAs(stub) },
-                                    .init(title: "Save to Google Drive…") { saveToDrive(stub) },
-                                    .init(title: "Copy") { copy(stub) },
-                                ])
-                        }
+                                menu: menu(stub, index).map { a in .init(title: a.title, enabled: a.enabled, action: a.run) }),
+                            actions: menu(stub, index))
+                    }
                 }
+                .padding(.vertical, 2)
             }
-            .padding(.vertical, 2)
+            AttachmentAllLinks(count: stubs.count, downloadAll: { downloadAll() }, previewAll: { previewAll() })
         }
         .background(
             QuickLookHostView(urls: stubs.map(localURL), selectedIndex: Binding(
@@ -87,6 +84,43 @@ struct ServerAttachmentStrip: View {
         .background(selected ? Color.accentColor : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
         .foregroundStyle(selected ? Color.white : Color.primary)
         .contentShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func menu(_ stub: GmailAttachmentStub, _ index: Int) -> [AttachmentCard.Action] {
+        [
+            .init(title: "Preview") { select(index); toggleQuickLook() },
+            .init(title: "Open") { open(stub) },
+            .init(title: "Download") { downloadToDownloads(stub) },
+            .init(title: "Save As…") { saveAs(stub) },
+            .init(title: "Save to Google Drive…") { saveToDrive(stub) },
+            .init(title: "Copy") { copy(stub) },
+        ]
+    }
+
+    /// Into the Downloads folder, as Outlook's Download does, and shown there.
+    private func downloadToDownloads(_ stub: GmailAttachmentStub) {
+        guard let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
+        prepare(stub) { url in
+            let target = AttachmentFolderPicker.freeURL(for: stub.filename, in: folder)
+            guard (try? FileManager.default.copyItem(at: url, to: target)) != nil else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([target])
+        }
+    }
+
+    private func downloadAll() {
+        guard let folder = AttachmentFolderPicker.chooseFolder() else { return }
+        for stub in stubs {
+            prepare(stub) { url in
+                _ = try? FileManager.default.copyItem(at: url, to: AttachmentFolderPicker.freeURL(for: stub.filename, in: folder))
+            }
+        }
+    }
+
+    /// Quick Look over every attachment, the arrow keys going from one to the next.
+    private func previewAll() {
+        for stub in stubs { prepare(stub) }
+        select(selectedIndex ?? 0)
+        toggleQuickLook()
     }
 
     private var current: GmailAttachmentStub? {

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Quartz
 import UniformTypeIdentifiers
 import FalconCore
 
@@ -22,6 +23,9 @@ struct ComposeView: View {
     @State private var error: String?
     @State private var dropTargeted = false
     @State private var editSessions: [UUID: AttachmentEditSession] = [:]
+    @State private var selectedAttachment = 0
+    @State private var attachmentFocus = 0
+    @State private var previewFiles: [String: URL] = [:]
     @State private var showAttachmentWarning = false
     @State private var showDrivePicker = false
     @State private var showTableDialog = false
@@ -298,18 +302,75 @@ struct ComposeView: View {
     @ViewBuilder private var attachmentStrip: some View {
         if let attachments = draft?.attachments, !attachments.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack {
-                    ForEach(attachments) { a in
-                        ComposeAttachmentChip(
-                            attachment: a,
-                            isEditing: editSessions[a.id] != nil,
-                            onEdit: { edit(a) },
-                            onStopWatching: { stopWatching(a.id) },
-                            onRemove: { remove(a.id) })
+                HStack(spacing: 8) {
+                    ForEach(Array(attachments.enumerated()), id: \.element.id) { index, a in
+                        // As in a message: a click selects, Space or Preview shows it in Quick
+                        // Look, a double-click opens it; the arrow holds the rest.
+                        AttachmentCard(
+                            filename: a.filename, size: a.data.count,
+                            selected: index == selectedAttachment, busy: editSessions[a.id] != nil,
+                            handle: AttachmentDragHandle(
+                                filename: a.filename,
+                                content: .file({ previewURL(a) }),
+                                help: editSessions[a.id] != nil ? "Saves in the other app are picked up automatically." : nil,
+                                onClick: { selectAttachment(index) },
+                                onDoubleClick: { selectAttachment(index); NSWorkspace.shared.open(previewURL(a)) },
+                                menu: attachmentMenu(a, index).map { m in .init(title: m.title, enabled: m.enabled, action: m.run) }),
+                            actions: attachmentMenu(a, index))
                     }
                 }
                 .padding(.vertical, 4)
             }
+            .background(
+                QuickLookHostView(urls: attachments.map(previewURL), selectedIndex: $selectedAttachment,
+                                  focusToken: attachmentFocus,
+                                  onOpen: { i in if attachments.indices.contains(i) { NSWorkspace.shared.open(previewURL(attachments[i])) } })
+                    .frame(width: 0, height: 0)
+            )
+            .onKeyPress(.space) { toggleAttachmentPreview(); return .handled }
+        }
+    }
+
+    private func attachmentMenu(_ a: OutgoingAttachment, _ index: Int) -> [AttachmentCard.Action] {
+        let editing = editSessions[a.id] != nil
+        var items: [AttachmentCard.Action] = [
+            .init(title: "Preview") { selectAttachment(index); toggleAttachmentPreview() },
+            .init(title: "Open") { NSWorkspace.shared.open(previewURL(a)) },
+            .init(title: editing ? "Reopen for Editing" : "Edit in Its App") { edit(a) },
+        ]
+        if editing { items.append(.init(title: "Stop Watching for Changes") { stopWatching(a.id) }) }
+        items.append(.init(title: "Save As…") {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = a.filename
+            if panel.runModal() == .OK, let url = panel.url { try? a.data.write(to: url) }
+        })
+        items.append(.init(title: "Remove", destructive: true) { remove(a.id) })
+        return items
+    }
+
+    private func selectAttachment(_ index: Int) {
+        selectedAttachment = index
+        attachmentFocus += 1
+    }
+
+    /// A copy of the attachment on disk for Quick Look and opening, written once for each
+    /// version of it and thrown away with the others at the next launch.
+    private func previewURL(_ a: OutgoingAttachment) -> URL {
+        let key = "\(a.id.uuidString)-\(a.data.count)-\(a.data.hashValue)"
+        if let url = previewFiles[key], FileManager.default.fileExists(atPath: url.path) { return url }
+        let url = AttachmentTempFiles.write(filename: a.filename, data: a.data) ?? URL(fileURLWithPath: "/dev/null")
+        DispatchQueue.main.async { previewFiles[key] = url }
+        return url
+    }
+
+    private func toggleAttachmentPreview() {
+        guard let attachments = draft?.attachments, !attachments.isEmpty else { return }
+        if !attachments.indices.contains(selectedAttachment) { selectedAttachment = 0 }
+        attachmentFocus += 1
+        let panel = QLPreviewPanel.shared()!
+        let index = selectedAttachment
+        DispatchQueue.main.async {
+            if panel.isVisible { panel.orderOut(nil) } else { panel.currentPreviewItemIndex = index; panel.makeKeyAndOrderFront(nil) }
         }
     }
 

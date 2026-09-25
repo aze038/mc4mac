@@ -888,6 +888,13 @@ final class ReaderWebHost: NSView {
         view.navigationDelegate = delegate
         view.fitsContent = fitsContent
         view.onHeight = onHeight
+        // The page is a message drawn from its text, with no address to load again, so the web
+        // view's own Reload did nothing: it draws the message again, in a fresh view.
+        view.onReload = { [weak self, weak view] in
+            guard let self, let view, self.web === view, let html = self.html else { return }
+            self.replacements = 0
+            self.start(html)
+        }
         view.frame = bounds
         view.autoresizingMask = [.width, .height]
         addSubview(view)

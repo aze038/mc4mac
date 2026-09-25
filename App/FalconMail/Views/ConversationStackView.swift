@@ -547,6 +547,24 @@ struct CardActionButton: View {
 /// Down, Home, End and the up and down arrows) move the stack, and its height is measured again
 /// whenever it is loaded or its width changes.
 final class ReaderWebView: WKWebView {
+    /// Draws the message again: what Reload in its right-click menu does.
+    var onReload: (() -> Void)?
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        for item in menu.items where item.identifier?.rawValue == "WKMenuItemIdentifierReload" || item.title == "Reload" {
+            if onReload == nil {
+                menu.removeItem(item)
+            } else {
+                item.target = self
+                item.action = #selector(reloadMessage(_:))
+                item.isEnabled = true
+            }
+        }
+    }
+
+    @objc private func reloadMessage(_ sender: Any?) { onReload?() }
+
     var fitsContent = false {
         didSet {
             guard !fitsContent else { return }

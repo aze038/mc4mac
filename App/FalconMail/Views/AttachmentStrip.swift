@@ -129,29 +129,26 @@ struct AttachmentStrip: View {
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(visible.enumerated()), id: \.element.id) { index, a in
-                    // Clicks, the menu and dragging go through AppKit (see AttachmentDragHandle),
-                    // so that dragging the chip drags the file and never the window.
-                    AttachmentChip(attachment: a, selected: index == selectedIndex)
-                        .overlay {
-                            AttachmentDragHandle(
+        VStack(alignment: .leading, spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, a in
+                        // Clicks, the menu and dragging go through AppKit (see AttachmentDragHandle),
+                        // so that dragging the box drags the file and never the window.
+                        AttachmentCard(
+                            filename: a.filename, size: a.size, selected: index == selectedIndex,
+                            handle: AttachmentDragHandle(
                                 filename: a.filename,
                                 content: .file({ url(for: a) }),
                                 onClick: { select(index) },
                                 onDoubleClick: { select(index); open(a) },
-                                menu: [
-                                    .init(title: "Quick Look") { select(index); toggleQuickLook() },
-                                    .init(title: "Open") { open(a) },
-                                    .init(title: "Save As…") { saveAs(a) },
-                                    .init(title: "Save to Google Drive…", enabled: driveAccount != nil) { driveTarget = a },
-                                    .init(title: "Copy") { copyToPasteboard(a) },
-                                ])
-                        }
+                                menu: menu(a, index).map { m in .init(title: m.title, enabled: m.enabled, action: m.run) }),
+                            actions: menu(a, index))
+                    }
                 }
+                .padding(.vertical, 2)
             }
-            .padding(.vertical, 2)
+            AttachmentAllLinks(count: visible.count, downloadAll: { downloadAll() }, previewAll: { select(selectedIndex); toggleQuickLook() })
         }
         .background(
             QuickLookHostView(urls: visible.map { url(for: $0) }, selectedIndex: $selectedIndex, focusToken: focusToken)
@@ -178,6 +175,30 @@ struct AttachmentStrip: View {
             copyToPasteboard(a)
             return .handled
         }
+    }
+
+    private func menu(_ a: MIMEAttachment, _ index: Int) -> [AttachmentCard.Action] {
+        [
+            .init(title: "Preview") { select(index); toggleQuickLook() },
+            .init(title: "Open") { open(a) },
+            .init(title: "Download") { download(a) },
+            .init(title: "Save As…") { saveAs(a) },
+            .init(title: "Save to Google Drive…", enabled: driveAccount != nil) { driveTarget = a },
+            .init(title: "Copy") { copyToPasteboard(a) },
+        ]
+    }
+
+    /// Into the Downloads folder, as Outlook's Download does, and shown there.
+    private func download(_ a: MIMEAttachment) {
+        guard let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
+        let target = AttachmentFolderPicker.freeURL(for: a.filename, in: folder)
+        guard (try? a.data.write(to: target)) != nil else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([target])
+    }
+
+    private func downloadAll() {
+        guard let folder = AttachmentFolderPicker.chooseFolder() else { return }
+        for a in visible { try? a.data.write(to: AttachmentFolderPicker.freeURL(for: a.filename, in: folder)) }
     }
 
     private var current: MIMEAttachment? { visible.indices.contains(selectedIndex) ? visible[selectedIndex] : nil }
