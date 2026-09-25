@@ -22,6 +22,16 @@ public struct OutboxItem: Codable, Sendable, Hashable, Identifiable {
     /// must say if FalconMail stops before the send ends: held, and under the status `failed`,
     /// since the previous release has no way out of "Sending…" for one it finds after a crash.
     public var sendBegan: Bool?
+    /// Who it goes to, box by box, for the Outbox to show and a message called back to open
+    /// with, Bcc included, should its draft beside it be missing. `recipients` stays what it
+    /// goes to, all of them, as the previous release reads it; these it ignores, and items it
+    /// queued have none.
+    public var to: [EmailAddress]?
+    public var cc: [EmailAddress]?
+    public var bcc: [EmailAddress]?
+    /// The Message-ID it goes out with, as the .eml has it. Absent from items an earlier build
+    /// queued.
+    public var messageID: String?
 
     // The Gmail engine's fields. An account on SMTP leaves them empty, and the previous release
     // ignores them.
@@ -30,8 +40,6 @@ public struct OutboxItem: Codable, Sendable, Hashable, Identifiable {
     /// the attempt can be recognised in Gmail's records even if Gmail gives the message a
     /// Message-ID of its own. Every attempt has a new one.
     public var attemptID: UUID?
-    /// The message's own Message-ID, as the .eml has it.
-    public var messageID: String?
     /// Where the account's history stood when the attempt began, never later than Gmail's own
     /// position: a send whose outcome is unclear is looked for in the history after it.
     public var preSendHistoryID: HistoryID?
@@ -172,6 +180,8 @@ public actor Outbox {
 
     /// A sent item is cleared out this long after it went, once Gmail's id for it is known.
     static let sentItemsKept: TimeInterval = 7 * 24 * 3600
+    /// The Bcc recipients of what is sent, written down as each message is queued.
+    public nonisolated let sentBcc: SentBccStore
 
     public static func draftSidecarURL(directory: URL, id: UUID) -> URL {
         directory.appendingPathComponent("\(id.uuidString).draft.json")
@@ -185,6 +195,7 @@ public actor Outbox {
         self.undoWindow = undoWindow
         self.confirmAfter = confirmAfter.isEmpty ? [0] : confirmAfter
         self.retryDelay = retryDelay
+        self.sentBcc = SentBccStore(file: layout.sentBccFile)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var loaded: [UUID: OutboxItem] = [:]
         var unclear: [UUID] = []
@@ -248,14 +259,19 @@ public actor Outbox {
     /// into, and the Gmail draft to delete once the message has gone.
     public func enqueue(accountID: UUID, from: String, message: OutgoingMessage, sendAt: Date? = nil,
                         gmailThreadID: GmailThreadID? = nil, gmailDraftID: String? = nil) throws -> OutboxItem {
+        // No Bcc header: the Bcc recipients are in `recipients`, the envelope, and nowhere else.
         let raw = MIMEBuilder.build(message)
         var item = OutboxItem(accountID: accountID, subject: message.subject, recipients: message.allRecipients, sender: from,
                               sendAt: sendAt ?? Date().addingTimeInterval(undoWindow), undoWindow: undoWindow)
+        item.to = message.to
+        item.cc = message.cc
+        item.bcc = message.bcc
         item.messageID = message.messageID
         item.gmailThreadID = gmailThreadID
         item.gmailDraftID = gmailDraftID
         try raw.write(to: directory.appendingPathComponent("\(item.id.uuidString).eml"), options: .atomic)
         try persist(item)
+        sentBcc.record(messageID: message.messageID, bcc: message.bcc)
         items[item.id] = item
         notify()
         startPump()
@@ -277,6 +293,10 @@ public actor Outbox {
     }
 
     public func remove(_ id: UUID) {
+        // One cancelled never went, and one called back goes again under a new Message-ID.
+        if let item = items[id], item.status == .cancelled, let messageID = item.messageID {
+            sentBcc.forget(messageID: messageID)
+        }
         items[id] = nil
         confirming.removeValue(forKey: id)?.cancel()
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(id.uuidString).json"))

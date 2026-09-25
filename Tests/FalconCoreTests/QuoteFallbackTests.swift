@@ -174,7 +174,8 @@ final class QuoteFallbackTests: XCTestCase {
     // MARK: - HTML that cannot be quoted as rich text
 
     func testAnOriginalWhoseHTMLCannotBeReadIsQuotedAsItsWordsWithoutStandIns() throws {
-        let parsed = MIMEParser.parse(outlookRaw(logo: try png()))
+        let logo = try png()
+        let parsed = MIMEParser.parse(outlookRaw(logo: logo))
         XCTAssertTrue(parsed.bestText.contains("[cid:\(cid)]<https://northwind.example/>"), "the sender's own plain text")
         let words = QuotedText.of(parsed, snippet: "")
         assertNoStandIns(words)
@@ -188,16 +189,27 @@ final class QuoteFallbackTests: XCTestCase {
             Northwind & Co – Operations
             """)
 
-        // What the reply shows and sends: the quote untouched, then edited inside.
-        let history = heading + words + "\n"
-        let historyHTML = "<div style=\"white-space:pre-wrap\">\(HTMLText.escape(words))</div>"
-        let untouched = sent(body: "\n\nThanks.\n" + history, history: history, historyHTML: historyHTML)
+        // What the reply shows and sends, as ComposeDraft.history quotes it: Outlook for Mac's
+        // heading and the words, the original's own HTML going for them while they are untouched,
+        // its logo as an inline part shown by cid:; then the words edited inside.
+        let original = ReplyHeader.Original(from: parsed.from, date: parsed.date ?? Date(), to: parsed.to, cc: parsed.cc,
+                                            subject: parsed.subject)
+        let quoted = ReplyHistory(original: original,
+                                  html: parsed.textHTML.map { InlinePictures.resolvingCIDs(in: $0, with: parsed.attachments) },
+                                  text: words, attribution: .outlook, indent: false, font: .outlook)
+        let history = quoted.plain
+        let untouched = sent(body: "\n\nThanks.\n" + history, history: history, historyHTML: quoted.html)
         assertNoStandIns(untouched.plain)
         XCTAssertTrue(untouched.plain.contains("Sam Carter"))
+        XCTAssertTrue(untouched.plain.contains(ReplyHeader.plainLine + "\nFrom: Sam <sam@example.com>\nDate: "), untouched.plain)
+        XCTAssertEqual(untouched.pictures.map(\.data), [logo], "the logo goes once, as an inline part")
+        XCTAssertTrue(untouched.html.contains("src=\"cid:\(try XCTUnwrap(untouched.pictures.first).contentID)\""))
+        XCTAssertFalse(untouched.html.contains("data:image"))
         let edited = sent(body: "\n\nThanks.\n" + history.replacingOccurrences(of: "Kind regards,", with: "Kind regards, EDITED"),
-                          history: history, historyHTML: historyHTML)
+                          history: history, historyHTML: quoted.html)
         assertNoStandIns(edited.plain)
-        assertNoStandIns(edited.html)
+        // The HTML writes an empty paragraph as Outlook does, &nbsp;; what it shows has no stand-in.
+        assertNoStandIns(HTMLText.plainText(from: edited.html))
         XCTAssertTrue(edited.html.contains("EDITED"))
     }
 

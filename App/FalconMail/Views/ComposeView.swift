@@ -155,7 +155,7 @@ struct ComposeView: View {
                       formatter: formatter,
                       showsBcc: $showBcc,
                       importance: binding(\.importance),
-                      canSend: !(draft?.to.isEmpty ?? true),
+                      canSend: hasRecipients,
                       onSend: { send() },
                       onDiscard: { discard() },
                       onAttachFile: { attach() },
@@ -167,9 +167,23 @@ struct ComposeView: View {
                       onCycleBackground: { model.cycleAppearance() })
     }
 
+    /// Send is offered once any of To, Cc and Bcc names someone: a message may go to Cc or Bcc
+    /// alone, as Outlook's may.
+    private var hasRecipients: Bool {
+        guard let d = draft else { return false }
+        return !(d.to.trimmed.isEmpty && d.cc.trimmed.isEmpty && d.bcc.trimmed.isEmpty)
+    }
+
+    /// The Bcc row stays while it names anyone, whatever the Bcc button says, so that no one is
+    /// ever sent a message from a box that cannot be seen: a draft opened again, or a message
+    /// called back from the Outbox, opens with its Bcc recipients showing.
+    private var showsBccRow: Bool {
+        showBcc || !(draft?.bcc.trimmed.isEmpty ?? true)
+    }
+
     private var inlineActionBar: some View {
         HStack(spacing: 14) {
-            InlineAction(title: "Send", symbol: "paperplane", prominent: true, enabled: !(draft?.to.isEmpty ?? true)) { send() }
+            InlineAction(title: "Send", symbol: "paperplane", prominent: true, enabled: hasRecipients) { send() }
             InlineAction(title: "Discard", symbol: "trash") { discard() }
             InlineAction(title: "Attach", symbol: "paperclip") { attach() }
             InlineMenuAction(title: "Signature", symbol: "signature") {
@@ -239,7 +253,7 @@ struct ComposeView: View {
             } trailing: {
                 bookButton
             }
-            if showBcc {
+            if showsBccRow {
                 ComposeFieldRow(label: "Bcc:") {
                     RecipientField(label: "", text: binding(\.bcc))
                 } trailing: {

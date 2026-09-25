@@ -24,16 +24,22 @@ import FalconCore
 /// deleted, the message list with made-up conversations, the message table not yet shown (see
 /// `MessageTableSnapshot`), a made-up conversation of four messages stacked in the reading pane
 /// and in its own window, the newest open and the rest folded, the unread one with its blue dot,
-/// and the mailbox window filling a 1728 × 1117 point screen with a message window alone in the
+/// the mailbox window filling a 1728 × 1117 point screen with a message window alone in the
 /// middle and two minimised to tabs in its status bar, then with a message window and a compose
-/// window side by side and one tab, and those tabs close up, then quits. With
+/// window side by side and one tab, and those tabs close up, and a reply to a made-up chain from
+/// Outlook for Mac, Outlook for Windows and Gmail as its compose window shows it, also made
+/// narrower and wider, as the reader shows what it sends and as that HTML reads 600 and 1200
+/// points wide, written as outlook-chain-reply.eml, then quits. With
 /// `-FalconMailSnapshotOnly list` it draws the message list alone, with `table` the message table
 /// alone, with `stack` the conversation alone, with `engine` a made-up Google account on the Gmail
-/// API (see `EngineSnapshot`), with `fullscreen` the mailbox window filling the
-/// screen alone, with `signature-import` only the Signatures pane offering an import, the import
-/// sheets for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
-/// signatures, and `stack50` times a conversation of fifty messages instead, writing how long it
-/// held up the main thread.
+/// API (see `EngineSnapshot`), with `fullscreen` the mailbox window filling the screen alone, with
+/// `signature-import` only the Signatures pane offering an import, the import sheets for Outlook
+/// and Gmail, macOS's refusal and the pane after an import, all with made-up signatures, with
+/// `chain` the reply to the chain alone, and `stack50` times a conversation of fifty messages
+/// instead, writing how long it held up the main thread, and with `sent-recipients` a made-up
+/// message the owner sent to people in To, Cc and Bcc, as the reading pane, its own window and its
+/// conversation show it, with the Outbox, the status bar while it is sending and the compose
+/// window that wrote it.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -77,8 +83,16 @@ enum ComposeSnapshot {
             signatureImport(model, to: directory, prefix: "fm-sig-import")
             exit(0)
         }
+        if only == "sent-recipients" {
+            sentRecipients(model, to: directory)
+            exit(0)
+        }
         messageList(model, to: directory)
         if only == "list" { exit(0) }
+        if only == "chain" {
+            outlookChain(model, to: directory)
+            exit(0)
+        }
         MessageTableSnapshot.render(to: directory)
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
@@ -107,6 +121,8 @@ enum ComposeSnapshot {
         inlinePictures(model, to: directory)
         replyQuotes(model, to: directory)
         conversationStack(model, to: directory)
+        sentRecipients(model, to: directory)
+        outlookChain(model, to: directory)
         // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
         privacy(model, to: directory)
         for (name, appearance) in appearances {
@@ -189,6 +205,84 @@ enum ComposeSnapshot {
                                 .themedRoot().environment(model).environmentObject(model.updates),
                               size: NSSize(width: 917, height: 1006), appearance: appearance, style: style)
             captureWithMessages(window, appearance: appearance, to: "\(directory)/convstack-window-\(name).png")
+        }
+    }
+
+    /// A made-up reply the owner sent to two people, copying three and blind-copying two, as the
+    /// reading pane shows it in Sent, as its own window shows it, and as the second card of its
+    /// conversation; the Outbox and the status bar while it waits to go, naming every box; and the
+    /// compose window it was written in, its Bcc row showing because it names someone although the
+    /// Bcc button is off. The Bcc recipients are shown from the record written as it was sent,
+    /// since what went out, and so Gmail's copy in Sent Mail, does not name them.
+    @MainActor private static func sentRecipients(_ model: AppModel, to directory: String) {
+        let account = AccountInfo.google(email: "alex@example.com", displayName: "Alex Example")
+        model.accounts = [account]
+        let me = EmailAddress(name: "Alex Example", address: "alex@example.com")
+        let ana = EmailAddress(name: "Ana Lee", address: "ana.lee@example.com")
+        let al = EmailAddress(name: "Al Karimov", address: "al.karimov@example.com")
+        let cc = [EmailAddress(name: "Bob Stone", address: "bob.stone@example.com"), EmailAddress(name: "Ben Ng", address: "ben.ng@example.com"),
+                  EmailAddress(address: "dispatch@example.com")]
+        let bcc = [EmailAddress(name: "Cy Young", address: "cy.young@example.com"), EmailAddress(name: "Operations", address: "ops@example.com")]
+        let sentDate = Date(timeIntervalSince1970: 1_790_003_600)
+        let original = OutgoingMessage(from: ana, to: [me, al], cc: [cc[0]], subject: "Rates for the Baku run",
+                                       textBody: "Hello Alex,\n\nCould you send over the rates for the Baku run next week? Bob is copied.\n\nAna\n",
+                                       messageID: "<rates-1@example.com>", date: Date(timeIntervalSince1970: 1_790_000_000))
+        let reply = OutgoingMessage(from: me, to: [ana, al], cc: cc, bcc: bcc, subject: "Re: Rates for the Baku run",
+                                    textBody: "Hello Ana,\n\nThe rates are below; Bob, Ben and dispatch are copied so they can book the trucks.\n\nAlex\n",
+                                    inReplyTo: "<rates-1@example.com>", references: ["<rates-1@example.com>"],
+                                    messageID: "<rates-reply-1@example.com>", date: sentDate)
+        // What sending it writes down; what went out names no Bcc.
+        model.outbox.sentBcc.record(messageID: reply.messageID, bcc: reply.bcc, at: sentDate)
+        func summary(_ m: OutgoingMessage, uid: UInt32, folder: UUID) -> MessageSummary {
+            let parsed = MIMEParser.parse(MIMEBuilder.build(m))
+            let row = MessageSummary(accountID: account.id, folderID: folder, uid: uid, messageID: m.messageID, inReplyTo: m.inReplyTo ?? "",
+                                     references: m.references, subject: m.subject, from: parsed.from, to: parsed.to, cc: parsed.cc,
+                                     date: m.date, flags: [.seen], size: 2048, snippet: parsed.snippet, hasAttachments: false, hasBody: true,
+                                     threadKey: "rates")
+            model.snapshotBody(parsed, for: row.id)
+            return row
+        }
+        let inbox = summary(original, uid: 1, folder: UUID())
+        let sent = summary(reply, uid: 2, folder: UUID())
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        // Queued just now, so that it is still in its ten seconds to undo as it is drawn.
+        func queued() -> OutboxItem {
+            var item = OutboxItem(accountID: account.id, subject: reply.subject, recipients: reply.allRecipients, sender: me.address,
+                                  sendAt: Date().addingTimeInterval(5), undoWindow: 10)
+            item.to = reply.to
+            item.cc = reply.cc
+            item.bcc = reply.bcc
+            item.messageID = reply.messageID
+            return item
+        }
+        var draft = ComposeDraft(accountID: account.id)
+        draft.to = OutgoingRecipients.box(reply.to)
+        draft.cc = OutgoingRecipients.box(reply.cc)
+        draft.bcc = OutgoingRecipients.box(reply.bcc)
+        draft.subject = reply.subject
+        draft.body = reply.textBody
+        let draftID = model.newDraft(draft)
+        defer { model.drafts[draftID] = nil }
+        for (name, appearance) in appearances {
+            let pane = host(MessageReaderView(message: sent).environment(model).environmentObject(model.updates).themedRoot(),
+                            size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 420), appearance: appearance)
+            captureWithMessages(pane, appearance: appearance, to: "\(directory)/sent-recipients-reading-\(name).png")
+            let window = host(MessageWindowView(messageID: sent.id, message: sent).themedRoot().environment(model)
+                                .environmentObject(model.updates),
+                              size: NSSize(width: 917, height: 560), appearance: appearance, style: style)
+            captureWithMessages(window, appearance: appearance, to: "\(directory)/sent-recipients-window-\(name).png")
+            let stack = host(ConversationStackView(messages: [sent, inbox]).environment(model).environmentObject(model.updates).themedRoot(),
+                             size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 520), appearance: appearance)
+            captureWithMessages(stack, appearance: appearance, to: "\(directory)/sent-recipients-stack-\(name).png")
+            model.outboxItems = [queued()]
+            render(OutboxView().environment(model).themedRoot(), size: NSSize(width: 900, height: 120), appearance: appearance,
+                   to: "\(directory)/sent-recipients-outbox-\(name).png")
+            render(VStack(spacing: 0) { Spacer(minLength: 0); StatusBar() }.environment(model).themedRoot(),
+                   size: NSSize(width: 1728, height: 40), appearance: appearance, to: "\(directory)/sent-recipients-status-\(name).png")
+            model.outboxItems = []
+            let compose = host(ComposeView(draftID: draftID).themedRoot().environment(model).environmentObject(model.updates),
+                               size: NSSize(width: OL.composeWindowWidth, height: 420), appearance: appearance, style: style)
+            capture(compose, appearance: appearance, to: "\(directory)/sent-recipients-compose-\(name).png")
         }
     }
 
@@ -826,6 +920,141 @@ enum ComposeSnapshot {
                 try? MIMEBuilder.build(sent).write(to: URL(fileURLWithPath: "\(directory)/reply-quote-sample.eml"))
             }
         }
+    }
+
+    /// A reply to all to a made-up chain as Outlook for Windows sends it, with Outlook for Mac's
+    /// and Outlook for Windows' headings, a Gmail reply in its blockquote, a signature table and a
+    /// 5.5 point disclaimer, in the compose window and, as sent, in the reader, in both
+    /// appearances; and the message it sends, as outlook-chain-reply.eml. The reader's page is
+    /// drawn by WebKit as the reading pane draws it, the recolouring for dark appearance included.
+    @MainActor private static func outlookChain(_ model: AppModel, to directory: String) {
+        let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
+                                  imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [account]
+        let parsed = MIMEParser.parse(outlookChainMessage())
+        let message = MessageSummary(accountID: account.id, folderID: UUID(), uid: 1, messageID: parsed.messageID, inReplyTo: "",
+                                     references: [], subject: parsed.subject, from: parsed.from, to: parsed.to, cc: parsed.cc,
+                                     date: parsed.date ?? Date(), flags: [.seen], size: 40_000, hasAttachments: false)
+        var draft = ComposeDraft.reply(to: message, parsed: parsed, account: account, all: true, signature: nil)
+        if let opened = RichText.attributed(from: draft.richBody) {
+            let text = NSMutableAttributedString(attributedString: opened)
+            text.insert(NSAttributedString(string: "Hello Casey,\n\nThanks, both trucks are booked for Tuesday morning.\n\nKind regards,\nAlex",
+                                           attributes: RichText.bodyAttributes), at: 0)
+            draft.richBody = RichText.body(of: text)
+        }
+        let id = model.newDraft(draft)
+        defer { model.drafts[id] = nil }
+        for (name, appearance) in appearances {
+            let compose = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                               size: NSSize(width: OL.composeWindowWidth, height: 900), appearance: appearance,
+                               style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+            capture(compose, appearance: appearance, to: "\(directory)/outlook-chain-compose-\(name).png")
+        }
+        // The same window made narrower and then wider: the lines above the headings follow it.
+        let resized = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                           size: NSSize(width: 760, height: 900), appearance: .aqua,
+                           style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+        capture(resized, appearance: .aqua, to: "\(directory)/outlook-chain-compose-760.png")
+        resized.window?.setContentSize(NSSize(width: 1300, height: 900))
+        resized.frame = NSRect(x: 0, y: 0, width: 1300, height: 900)
+        capture(resized, appearance: .aqua, to: "\(directory)/outlook-chain-compose-1300.png")
+        guard let sent = try? model.drafts[id]?.outgoing(from: account) else { return }
+        let raw = MIMEBuilder.build(sent)
+        try? raw.write(to: URL(fileURLWithPath: "\(directory)/outlook-chain-reply.eml"))
+        // The HTML as sent, as a reader that adds nothing of its own lays it out at 600 and 1200.
+        for width in [600, 1200] {
+            webPage(sent.htmlBody ?? "", size: NSSize(width: width, height: 900), appearance: .aqua,
+                    to: "\(directory)/outlook-chain-sent-\(width).png")
+        }
+        let received = MIMEParser.parse(raw)
+        for (name, appearance) in appearances {
+            let page = MessageRenderer.html(for: received, allowRemote: false, dark: appearance == .darkAqua, forceOriginal: false)
+            webPage(page, size: NSSize(width: 900, height: 900), appearance: appearance, to: "\(directory)/outlook-chain-reader-\(name).png")
+        }
+    }
+
+    /// `html` drawn by the reading pane's own web view, offscreen, `size` points big.
+    @MainActor private static func webPage(_ html: String, size: NSSize, appearance: NSAppearance.Name, to path: String) {
+        let view = WebViewPool.acquire()
+        defer { WebViewPool.release(view) }
+        _ = host(view, size: size, appearance: appearance)
+        view.loadHTMLString(html, baseURL: nil)
+        let deadline = Date(timeIntervalSinceNow: 20)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        while view.isLoading, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+        var done = false
+        view.takeSnapshot(with: nil) { image, _ in
+            if let tiff = image?.tiffRepresentation { write(NSBitmapImageRep(data: tiff), to: path) }
+            done = true
+        }
+        while !done, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+    }
+
+    /// A made-up chain as Outlook for Windows sends it: Word's head and styles, a reply in
+    /// Calibri with a signature table and a 5.5 point disclaimer, Outlook for Mac's heading above
+    /// an earlier reply, Outlook for Windows' heading above a Gmail reply, and Gmail's blockquote.
+    private static func outlookChainMessage() -> Data {
+        let paragraph = { (text: String) in "<p class=MsoNormal><span style='font-size:11.0pt'>\(text)<o:p></o:p></span></p>" }
+        let empty = "<p class=MsoNormal><span style='font-size:11.0pt'><o:p>&nbsp;</o:p></span></p>"
+        let signature = """
+            <table class=MsoNormalTable border=0 cellspacing=0 cellpadding=0 style='border-collapse:collapse'><tr>\
+            <td width=376 valign=top style='width:281.95pt;padding:0cm 5.4pt 0cm 5.4pt'><p class=MsoNormal><b>\
+            <span style='font-size:9.0pt;font-family:"Arial",sans-serif;color:black'>Casey Morgan / Operations<o:p></o:p></span></b></p>\
+            <p class=MsoNormal><span style='font-size:9.0pt;font-family:"Arial",sans-serif;color:#595959'>A: 12 Harbour Road, \
+            Portsmouth<o:p></o:p></span></p></td></tr></table><p class=MsoNormal><span style='font-size:5.5pt;\
+            font-family:"Helvetica Neue",serif;color:#595959'>Disclaimer: this message is for the named recipient only. If it \
+            reached you by mistake, please tell the sender and delete it.<o:p></o:p></span></p>
+            """
+        let body = paragraph("Dear Alex,") + empty + paragraph("The pallets for both trucks are ready. Can you confirm the loading "
+            + "date for the second truck?") + empty + paragraph("Kind regards,") + signature + empty
+            + "<div style='border:none;border-top:solid #B5C4DF 1.0pt;padding:3.0pt 0cm 0cm 0cm'><p class=MsoNormal><b>"
+            + "<span style='color:black'>From: </span></b><span style='color:black'>Alex Example &lt;alex@example.com&gt;<br><b>Date: </b>"
+            + "Tuesday, 22 September 2026 at 16:40<br><b>To: </b>Casey Morgan &lt;casey@example.com&gt;<br><b>Cc: </b>'Desk' "
+            + "&lt;desk@example.com&gt;<br><b>Subject: </b>Re: Pallets for Tuesday<o:p></o:p></span></p></div>" + empty
+            + paragraph("Casey, the first truck is booked. I will confirm the second one tomorrow.") + empty
+            + "<div style='border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm'><p class=MsoNormal><b>"
+            + "<span lang=EN-US style='font-size:11.0pt;font-family:\"Calibri\",sans-serif'>From:</span></b><span lang=EN-US "
+            + "style='font-size:11.0pt;font-family:\"Calibri\",sans-serif'> Jordan Lee &lt;jordan@example.net&gt;<br><b>Sent:</b> "
+            + "Monday, September 21, 2026 4:12 PM<br><b>To:</b> Casey Morgan &lt;casey@example.com&gt;<br><b>Subject:</b> Pallets "
+            + "for Tuesday<o:p></o:p></span></p></div>" + empty
+            + "<div><div dir=ltr>Hi Casey, can you send two trucks on Tuesday?</div><br><div class=gmail_quote><div dir=ltr "
+            + "class=gmail_attr>On Mon, 21 Sept 2026 at 09:30, Rowan Hale &lt;rowan@example.org&gt; wrote:<br></div><blockquote "
+            + "class=gmail_quote style='margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex'>"
+            + "<div dir=ltr>Jordan, 27 pallets are waiting in Portsmouth.</div></blockquote></div></div>"
+        let html = """
+            <html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" \
+            xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta http-equiv=Content-Type content="text/html; charset=utf-8">\
+            <style><!--
+            @font-face {font-family:Calibri; panose-1:2 15 5 2 2 2 4 3 2 4;}
+            p.MsoNormal, li.MsoNormal, div.MsoNormal {margin:0cm; font-size:12.0pt; font-family:"Calibri",sans-serif;}
+            a:link, span.MsoHyperlink {color:#0563C1; text-decoration:underline;}
+            div.WordSection1 {page:WordSection1;}
+            --></style></head><body lang=EN-GB link="#0563C1" vlink="#954F72" style='word-wrap:break-word'>\
+            <div class=WordSection1>\(body)</div></body></html>
+            """
+        let raw = """
+            From: Casey Morgan <casey@example.com>\r
+            To: Alex Example <alex@example.com>\r
+            Cc: Desk <desk@example.com>, Jordan Lee <jordan@example.net>\r
+            Subject: RE: Pallets for Tuesday\r
+            Date: Wed, 23 Sep 2026 10:21:00 +0000\r
+            Message-ID: <outlook-chain-sample@example.com>\r
+            MIME-Version: 1.0\r
+            Content-Type: multipart/alternative; boundary="alt"\r
+            \r
+            --alt\r
+            Content-Type: text/plain; charset=utf-8\r
+            \r
+            \(HTMLText.plainText(from: html))\r
+            --alt\r
+            Content-Type: text/html; charset=utf-8\r
+            Content-Transfer-Encoding: base64\r
+            \r
+            \(Data(html.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed]))\r
+            --alt--\r
+            """
+        return Data(raw.utf8)
     }
 
     /// A message as Outlook for Windows sends one: its logo an inline part in multipart/related

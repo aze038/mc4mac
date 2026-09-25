@@ -5,7 +5,9 @@ import Foundation
 /// screen already. It is hidden only when FalconMail is sure of it:
 ///
 /// - it starts where a mail program starts one: Gmail's, Apple Mail's, Thunderbird's, Yahoo's or
-///   Outlook's quote, FalconMail's own, an "Original Message" line, or lines beginning with ">";
+///   Outlook's quote, FalconMail's own under Outlook for Mac's heading or as it wrote them before,
+///   an "Original Message" line, a line of underscores over a From line, or lines beginning
+///   with ">";
 /// - it runs to the end of the message, so no answer written under or between quoted lines is
 ///   ever hidden, nor one written between the quoted parts of a Gmail quote or under a
 ///   Thunderbird quote's line naming its writer;
@@ -78,9 +80,11 @@ public enum QuotedHistory {
         ("<div\\b[^>]*\\bid\\s*=\\s*[\"']?(x_)*(appendonsend|divRplyFwdMsg|mail-editor-reference-message-container)\\b", .toEnd),
         // Legacy Outlook for Mac.
         ("<(span|div)\\b[^>]*\\bid\\s*=\\s*[\"']?OLK_SRC_BODY_SECTION\\b", .toEnd),
-        // Outlook for Windows: the rule above the From, Sent, To and Subject block.
+        // Outlook for Windows, and Legacy Outlook for Mac as FalconMail writes its replies and
+        // forwards: the block whose top border is the line above the From, Sent or Date, To and
+        // Subject lines.
         ("<div\\b[^>]*\\bstyle\\s*=\\s*[\"'][^\"']*border\\s*:\\s*none\\s*;\\s*border-top\\s*:\\s*solid", .toEnd),
-        // FalconMail's own replies and forwards.
+        // FalconMail's replies and forwards before it wrote Outlook for Mac's heading.
         ("<hr\\b[^>]*>\\s*<div\\b[^>]*>\\s*<b>\\s*From:\\s*</b>", .toEnd),
         ("-{2,}\\s*(" + originalMessage + ")\\s*-{2,}", .toEnd),
     ]
@@ -122,21 +126,24 @@ public enum QuotedHistory {
             guard HTMLText.plainText(from: between).isEmpty else { return nil }
             return range.lowerBound
         case .toEnd:
-            return backingOverRule(range.lowerBound, in: html)
+            return backingOverRuleAndHolders(range.lowerBound, in: html)
         }
     }
 
     private static let trailingBlank = try! NSRegularExpression(
-        pattern: "(?:\\s|&nbsp;|<br\\s*/?>|<(?:p|div)\\b[^>]*>(?:\\s|&nbsp;|<br\\s*/?>)*</(?:p|div)\\s*>)+$",
+        pattern: "(?:\\s|&nbsp;|<br\\s*/?>|<(?:p|div)\\b[^>]*>(?:\\s|&nbsp;|<br\\s*/?>)*</(?:p|div)\\s*>)+"
+            + "((?:</(?:div|span|font)\\s*>\\s*)*)$",
         options: [.caseInsensitive])
 
     /// The empty lines a mail program leaves above its quote go with it, so that the ••• button
-    /// stands under the last line of the message's own.
+    /// stands under the last line of the message's own; so do those at the foot of an element
+    /// holding the message's own text, as FalconMail's holds it in its font, the element's end
+    /// kept.
     private static func withoutTrailingBlankLines(_ html: String) -> String {
         let from = html.index(html.endIndex, offsetBy: -2_000, limitedBy: html.startIndex) ?? html.startIndex
         guard let match = trailingBlank.firstMatch(in: html, range: NSRange(from..., in: html)),
-              let range = Range(match.range, in: html) else { return html }
-        return String(html[..<range.lowerBound])
+              let range = Range(match.range, in: html), let ends = Range(match.range(at: 1), in: html) else { return html }
+        return String(html[..<range.lowerBound]) + html[ends]
     }
 
     /// Whether the element named `tag` opening at `start` is followed by no words of its own:
@@ -206,12 +213,20 @@ public enum QuotedHistory {
         return cut
     }
 
-    /// Outlook draws a rule above its quote; it goes with the quote.
-    private static func backingOverRule(_ cut: String.Index, in html: String) -> String.Index {
-        let from = html.index(cut, offsetBy: -300, limitedBy: html.startIndex) ?? html.startIndex
-        let before = String(html[from..<cut])
-        guard let rule = before.range(of: "<hr\\b[^>]*>\\s*$", options: [.regularExpression, .caseInsensitive]) else { return cut }
-        return html.index(from, offsetBy: before.distance(from: before.startIndex, to: rule.lowerBound))
+    /// Outlook draws a rule above its quote, and Outlook for Windows and FalconMail hold its
+    /// heading in a div opened just above it, FalconMail's setting the heading's font; they go
+    /// with the quote, so that the message's own part is left whole and its empty lines at its
+    /// foot can go too.
+    private static func backingOverRuleAndHolders(_ cut: String.Index, in html: String) -> String.Index {
+        var cut = cut
+        while true {
+            let from = html.index(cut, offsetBy: -600, limitedBy: html.startIndex) ?? html.startIndex
+            let before = String(html[from..<cut])
+            guard let found = before.range(of: "(<hr\\b[^>]*>|<div\\b[^>]*>)\\s*$", options: [.regularExpression, .caseInsensitive]) else {
+                return cut
+            }
+            cut = html.index(from, offsetBy: before.distance(from: before.startIndex, to: found.lowerBound))
+        }
     }
 
     // MARK: - Plain text

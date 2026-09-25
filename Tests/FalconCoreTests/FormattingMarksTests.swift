@@ -224,6 +224,86 @@ final class FormattingMarksTests: XCTestCase {
     }
 
     /// A text view set up as the composer's body is: TextKit 1 with the marks' layout manager.
+    /// A reply's heading has Outlook for Mac's one point line in #B5C4DF across the body above
+    /// it, with room between the line and the text, while the body holds the heading, even once
+    /// the original below it is edited, as what is sent then still has it; a custom heading has
+    /// no line.
+    func testOutlooksLineIsDrawnAboveAQuotedHeading() throws {
+        let (view, layout) = composer()
+        view.drawsBackground = false
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]
+        let quote = NSMutableAttributedString(attributedString: ComposedBody.headed(
+            "\nFrom: Sam <sam@example.com>\nDate: Wednesday, 23 September 2026 at 14:21\nSubject: Figures\n\n", attributes: attributes))
+        quote.append(NSAttributedString(string: "The figures are in.\n", attributes: attributes))
+        let body = NSMutableAttributedString(string: "Thanks.\n\n", attributes: attributes)
+        body.append(quote)
+        view.textStorage?.setAttributedString(body)
+        layout.quotedHistory = quote.string
+        let from = (view.string as NSString).range(of: "From:").location
+        XCTAssertEqual(layout.headingRuleCharacter, from)
+        let container = try XCTUnwrap(layout.textContainers.first)
+        layout.ensureLayout(for: container)
+        let rule = try XCTUnwrap(layout.headingRuleRect())
+        let glyph = layout.glyphIndexForCharacter(at: from)
+        XCTAssertEqual(rule.minY, layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY)
+        XCTAssertEqual(rule.height, 1)
+        XCTAssertEqual(rule.width, 400 - 2 * container.lineFragmentPadding)
+        XCTAssertGreaterThanOrEqual(layout.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil).minY - rule.minY, 3.5,
+                                    "the heading stands clear of its line")
+        let drawn = rule.offsetBy(dx: view.textContainerOrigin.x, dy: view.textContainerOrigin.y)
+        XCTAssertGreaterThan(inkedPixels(displaying: view, in: view.bounds, within: drawn), Int(rule.width))
+        // Typing above the original keeps the line.
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+        view.insertText("Hi. ", replacementRange: NSRange(location: 0, length: 0))
+        XCTAssertEqual(layout.headingRuleCharacter, from + 4)
+        // Editing the original below it keeps the line; taking the heading apart takes it away.
+        let inside = (view.string as NSString).range(of: "figures are").location
+        view.insertText("EDITED ", replacementRange: NSRange(location: inside, length: 0))
+        XCTAssertEqual(layout.headingRuleCharacter, from + 4)
+        XCTAssertNotNil(layout.headingRuleRect())
+        let subject = (view.string as NSString).range(of: "Subject:")
+        view.insertText("Re", replacementRange: subject)
+        XCTAssertNil(layout.headingRuleCharacter)
+        XCTAssertNil(layout.headingRuleRect())
+        layout.quotedHistory = "\nOn Wednesday, Sam wrote:\n\nThe figures are in.\n"
+        XCTAssertNil(layout.headingRuleCharacter)
+    }
+
+    /// The line runs the whole width of the message whatever its width, as Outlook's top border
+    /// does, and follows the window as it is made narrower or wider; so do the lines above the
+    /// headings of the earlier replies in the chain below, Outlook for Mac's, Outlook for
+    /// Windows' and Outlook's in Dutch alike, while Gmail's attribution and a heading under
+    /// Outlook's plain text line of underscores get none of their own.
+    func testTheLinesRunTheMessagesWholeWidthAboveEveryHeadingInTheChain() throws {
+        let (view, layout) = composer()
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]
+        let history = "\nFrom: Sam <sam@example.com>\nDate: Wednesday, 23 September 2026 at 14:21\nSubject: Re: Figures\n\n"
+            + "Here they are.\n\nFrom: Alex <alex@example.com>\u{2028}Sent: Tuesday, September 22, 2026 4:40 PM\u{2028}Subject: Figures\n\n"
+            + "Can you send them?\n\nVan: Jo <jo@example.nl>\u{2028}Verzonden: maandag 21 september 2026 09:30\u{2028}Onderwerp: Cijfers\n\n"
+            + "Graag.\n\nOn Mon, 21 Sept 2026 at 09:00, Kim <kim@example.org> wrote:\nFrom: the depot\nWe have them.\n\n"
+            + "________________________________\nFrom: Lee <lee@example.com>\nSent: Sunday, September 20, 2026 8:00 PM\n\nOld.\n"
+        let body = NSMutableAttributedString(string: "Thanks.\n", attributes: attributes)
+        body.append(ComposedBody.headed(history, attributes: attributes))
+        view.textStorage?.setAttributedString(body)
+        layout.quotedHistory = history
+        let text = view.string as NSString
+        XCTAssertEqual(layout.headingRuleCharacters, [text.range(of: "From: Sam").location, text.range(of: "From: Alex").location,
+                                                      text.range(of: "Van: Jo").location])
+        for width: CGFloat in [400, 900] {
+            view.setFrameSize(NSSize(width: width, height: 300))
+            let container = try XCTUnwrap(layout.textContainers.first)
+            container.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+            layout.ensureLayout(for: container)
+            let rules = layout.headingRuleRects()
+            XCTAssertEqual(rules.count, 3)
+            for rule in rules {
+                XCTAssertEqual(rule.minX, container.lineFragmentPadding)
+                XCTAssertEqual(rule.width, width - 2 * container.lineFragmentPadding, "the whole width at \(width)")
+                XCTAssertEqual(rule.height, 1)
+            }
+        }
+    }
+
     private func composer() -> (NSTextView, FormattingMarksLayoutManager) {
         let storage = NSTextStorage()
         let layout = FormattingMarksLayoutManager()

@@ -34,18 +34,25 @@ public actor SMTPClient {
     public let port: UInt16
     /// The user name it will sign in as, which `TransportGuard` is asked about before it connects.
     public let user: String?
+    /// Always TLS to a mail server; plain TCP only for the tests' server on loopback.
+    private let tls: Bool
     private var connection: StreamConnection?
 
     public init(host: String, port: UInt16 = 465, user: String? = nil) {
+        self.init(host: host, port: port, user: user, tls: true)
+    }
+
+    init(host: String, port: UInt16, user: String? = nil, tls: Bool) {
         self.host = host
         self.port = port
         self.user = user
+        self.tls = tls
     }
 
     public func connect() async throws {
         // A Google account on the Gmail API never sends by SMTP (§8.1, §12.5).
         try TransportGuard.shared.check(.smtp, host: host, user: user)
-        let c = StreamConnection(host: host, port: port, tls: true)
+        let c = StreamConnection(host: host, port: port, tls: tls)
         try await c.connect()
         connection = c
         let greeting = try await readReply()
@@ -77,7 +84,16 @@ public actor SMTPClient {
         guard p.code == 235 else { throw SMTPServerError(stage: .authentication, code: p.code, text: p.text) }
     }
 
+    /// Hands the message over for every one of `recipients`, To, Cc and Bcc alike, each named in
+    /// a RCPT TO of its own: the envelope, not the message's headers, says who receives it, so a
+    /// Bcc recipient is named here and nowhere in what is sent.
     public func send(from: String, recipients: [String], message: Data) async throws {
+        // An address with a line break or angle bracket in it would end the command early and
+        // start another; the composer never lets one through, and neither does this.
+        for address in [from] + recipients where !SMTPClient.isSafeInCommand(address) {
+            throw FalconError.invalidInput("“\(address)” is not an email address.")
+        }
+        guard !recipients.isEmpty else { throw FalconError.invalidInput("Add at least one recipient.") }
         let mail = try await command("MAIL FROM:<\(from)>")
         guard mail.code == 250 else { throw SMTPServerError(stage: .sender, code: mail.code, text: mail.text) }
         for r in recipients {
@@ -116,6 +132,10 @@ public actor SMTPClient {
                 return (code, lines.joined(separator: "\n"))
             }
         }
+    }
+
+    static func isSafeInCommand(_ address: String) -> Bool {
+        !address.isEmpty && !address.contains { $0.isNewline || $0.isWhitespace || $0 == "<" || $0 == ">" }
     }
 
     static func dotStuffed(_ data: Data) -> Data {

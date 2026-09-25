@@ -89,14 +89,13 @@ final class ReplyQuoteTests: XCTestCase {
         return MIMEParser.parse(Data(raw.utf8))
     }
 
-    private let heading = "\n________________________________\nFrom: Sam <sam@example.com>\nSent: Thursday, 24 September 2026 at 16:05\nTo: Alex <alex@example.com>\nSubject: Figures\n\n"
-
-    /// The HTML ComposeDraft.history keeps for the original, sent in its place while it is
-    /// untouched.
-    private func historyHTML(of parsed: MIMEMessage) -> String {
-        var inner = InlinePictures.resolvingCIDs(in: parsed.textHTML ?? "", with: parsed.attachments)
-        inner = inner.replacingOccurrences(of: "(?is)<(/?)(html|head|body)[^>]*>", with: "", options: .regularExpression)
-        return "<hr><div>\(inner)</div>"
+    /// The original's heading and HTML as ComposeDraft.history quotes it (see ReplyHistory), the
+    /// HTML sent in its place while it is untouched.
+    private func history(of parsed: MIMEMessage) -> ReplyHistory {
+        let original = ReplyHeader.Original(from: parsed.from, date: parsed.date ?? Date(timeIntervalSince1970: 1_790_262_300),
+                                            to: parsed.to, cc: parsed.cc, subject: parsed.subject)
+        return ReplyHistory(original: original, html: InlinePictures.resolvingCIDs(in: parsed.textHTML ?? "", with: parsed.attachments),
+                             text: parsed.bestText, attribution: .outlook, indent: false, font: .outlook)
     }
 
     /// A reply's body as ComposeDraft.reply opens it, kept as a draft keeps it and read back as
@@ -110,12 +109,13 @@ final class ReplyQuoteTests: XCTestCase {
     }
 
     private func reply(to parsed: MIMEMessage, remote: [String: Data] = [:], signature: Signature? = nil) throws -> Opened {
-        let quote = try XCTUnwrap(ComposedBody.quote(heading: heading, html: try XCTUnwrap(parsed.textHTML), parts: parsed.attachments,
+        let history = history(of: parsed)
+        let quote = try XCTUnwrap(ComposedBody.quote(heading: history.heading, html: try XCTUnwrap(parsed.textHTML), parts: parsed.attachments,
                                                      remote: remote, attributes: body))
         let opened = ComposedBody.opening(lead: "\n\n", signature: signature, quote: quote, attributes: body)
         let stored = ComposedBody.stored(opened.rich)
         let read = try XCTUnwrap(ComposedBody.text(rtf: stored.rtf, rtfd: stored.rtfd))
-        return Opened(rich: read, plain: opened.plain, historyPlain: quote.string, historyHTML: historyHTML(of: parsed), stored: stored)
+        return Opened(rich: read, plain: opened.plain, historyPlain: quote.string, historyHTML: history.html, stored: stored)
     }
 
     /// What Send builds from a body as the draft keeps it (ComposeDraft.outgoing, MIMEBuilder).
@@ -177,6 +177,9 @@ final class ReplyQuoteTests: XCTestCase {
         let from = (text.string as NSString).range(of: "From:")
         let heading = try XCTUnwrap(text.attribute(.font, at: from.location, effectiveRange: nil) as? NSFont)
         XCTAssertTrue(NSFontManager.shared.traits(of: heading).contains(.boldFontMask))
+        let date = try XCTUnwrap(text.attribute(.font, at: (text.string as NSString).range(of: "Date:").location,
+                                                effectiveRange: nil) as? NSFont)
+        XCTAssertTrue(NSFontManager.shared.traits(of: date).contains(.boldFontMask))
         let samAt = (text.string as NSString).range(of: "Sam\n").location
         XCTAssertEqual(text.attribute(.foregroundColor, at: samAt, effectiveRange: nil) as? NSColor, .labelColor)
         // Text the original leaves unstyled is set as the composer sets its own.
@@ -208,7 +211,9 @@ final class ReplyQuoteTests: XCTestCase {
         let message = sent(typed, historyPlain: opened.historyPlain, historyHTML: opened.historyHTML)
         let html = try XCTUnwrap(message.textHTML)
         XCTAssertTrue(html.contains("Thanks."))
-        XCTAssertTrue(html.contains("<hr><div>"), "the original's own HTML")
+        XCTAssertTrue(html.contains("border-top:solid #B5C4DF 1.0pt"), "Outlook's heading")
+        XCTAssertTrue(html.contains("<p class=MsoNormal>The figures are in the <a href=\"https://example.com/report\">report</a>.</p>"),
+                      "the original's own HTML")
         XCTAssertEqual(Array(inlineParts(of: message).values), [logo], "the logo goes once, as an inline part")
         XCTAssertFalse(html.contains("data:image"))
         // An earlier build reads the RTF alone, without the picture, and still finds the quote.
@@ -254,7 +259,7 @@ final class ReplyQuoteTests: XCTestCase {
     }
 
     func testAnOriginalWithoutHTMLIsQuotedAsItsText() {
-        XCTAssertNil(ComposedBody.quote(heading: heading, html: "  \n", parts: [], attributes: body))
+        XCTAssertNil(ComposedBody.quote(heading: "\nFrom: Sam <sam@example.com>\n\n", html: "  \n", parts: [], attributes: body))
     }
 
     // MARK: - editing inside the quote
@@ -269,7 +274,12 @@ final class ReplyQuoteTests: XCTestCase {
         let message = sent(edited, historyPlain: opened.historyPlain, historyHTML: opened.historyHTML)
         let html = try XCTUnwrap(message.textHTML)
         XCTAssertTrue(html.contains("EDITED"))
-        XCTAssertFalse(html.contains("<hr><div>"), "the body as it now reads, not the original's HTML")
+        XCTAssertFalse(html.contains("class=MsoNormal") || html.contains("fm-q"), "the body as it now reads, not the original's HTML")
+        // Still under Outlook's heading, its line across the message, as the composer still shows it.
+        XCTAssertTrue(html.contains("<div style=\"border:none;border-top:solid #B5C4DF 1.0pt;padding:3.0pt 0in 0in 0in\"><p style=\"margin:0\">"
+                                    + "<b>From: </b>Sam &lt;sam@example.com&gt;<br><b>Date: </b>"), html)
+        XCTAssertLessThan(try XCTUnwrap(html.range(of: "border-top:solid #B5C4DF")).lowerBound, try XCTUnwrap(html.range(of: "EDITED")).lowerBound)
+        XCTAssertTrue(message.textPlain?.contains("\n\(ReplyHeader.plainLine)\nFrom: Sam <sam@example.com>\n") ?? false, message.textPlain ?? "")
         let parts = inlineParts(of: message)
         XCTAssertEqual(Array(parts.values), [logo])
         let id = try XCTUnwrap(parts.keys.first)

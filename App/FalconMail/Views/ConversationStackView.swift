@@ -281,11 +281,19 @@ struct ConversationCard: View {
                 actions
             }
             .frame(minHeight: 24)
-            recipients("To:", message.to)
-                .padding(.top, 6)
+            let bcc = model.bcc(of: message, parsed: parsed)
+            if !message.to.isEmpty || (message.cc.isEmpty && bcc.isEmpty) {
+                recipients("To:", message.to)
+                    .padding(.top, 6)
+            }
             if !message.cc.isEmpty {
                 recipients("Cc:", message.cc)
-                    .padding(.top, 3)
+                    .padding(.top, message.to.isEmpty ? 6 : 3)
+            }
+            // On a message the owner sent, as Outlook shows it.
+            if !bcc.isEmpty {
+                recipients("Bcc:", bcc)
+                    .padding(.top, message.to.isEmpty && message.cc.isEmpty ? 6 : 3)
             }
             if showDetails {
                 VStack(alignment: .leading, spacing: 4) {
@@ -306,13 +314,12 @@ struct ConversationCard: View {
             Text(label)
                 .font(.system(size: OL.readingMetaFont, weight: .semibold))
                 .foregroundStyle(OLColor.text)
-                .frame(minWidth: 20, alignment: .leading)
+                .frame(width: OL.stackRecipientLabel, alignment: .leading)
             Text(showDetails ? list.map(\.rfc5322).joined(separator: ", ") : list.map(\.displayName).joined(separator: ", "))
                 .font(.system(size: OL.readingMetaFont))
                 .foregroundStyle(OLColor.textMuted)
                 .lineLimit(showDetails ? nil : 1)
                 .textSelection(.enabled)
-                .padding(.leading, 12)
         }
         .contentShape(Rectangle())
         .onTapGesture { showDetails.toggle() }

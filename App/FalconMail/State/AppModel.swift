@@ -2246,7 +2246,8 @@ final class AppModel {
         guard let folder = folder(accountID: account.id, role: .drafts), let syncer = await coordinator.syncer(for: account.id) else {
             throw DraftsUnavailable()
         }
-        let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
+        // With its Bcc recipients, which only the owner's copy in Drafts ever holds.
+        let raw = MIMEBuilder.build(try draft.outgoing(from: account, asDraft: true), keepingBcc: true)
         try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
         await purgeStoredDraft(draft)
     }
@@ -2335,6 +2336,13 @@ final class AppModel {
         closeTab(.compose(draft.id))
     }
 
+    /// The Bcc line of `message`: its own Bcc header, as a copy in Sent kept by another program
+    /// or a draft has, and the Bcc recipients written down when FalconMail sent it, which Gmail's
+    /// copy in Sent Mail does not name.
+    func bcc(of message: MessageSummary, parsed: MIMEMessage?) -> [EmailAddress] {
+        SentBccStore.shown(header: parsed?.headers.first("Bcc"), recorded: outbox.sentBcc.bcc(forMessageID: message.messageID))
+    }
+
     var sendingSoonItems: [OutboxItem] {
         outboxItems.filter { $0.isSendingSoon(within: TimeInterval(undoSendSeconds)) }
     }
@@ -2396,7 +2404,12 @@ final class AppModel {
         }
         // Read on the main thread, where AppKit reads HTML.
         guard let parsed else { return nil }
-        return ComposeDraft.from(parsed: parsed, accountID: accountID)
+        var draft = ComposeDraft.from(parsed: parsed, accountID: accountID)
+        // What was queued holds no Bcc header; the item itself keeps who was in each box.
+        if let to = item.to { draft.to = OutgoingRecipients.box(to) }
+        if let cc = item.cc { draft.cc = OutgoingRecipients.box(cc) }
+        if let bcc = item.bcc { draft.bcc = OutgoingRecipients.box(bcc) }
+        return draft
     }
 
     func addGoogleAccount(loginHint: String? = nil) async throws {

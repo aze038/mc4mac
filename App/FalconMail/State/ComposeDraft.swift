@@ -104,8 +104,8 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
                       signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         let recipients = ReplyAddressing.recipients(for: message, replyTo: parsed?.replyTo ?? [], own: account.ownAddresses, all: all)
-        d.to = recipients.to.map { $0.rfc5322 }.joined(separator: ", ")
-        if all { d.cc = recipients.cc.map { $0.rfc5322 }.joined(separator: ", ") }
+        d.to = OutgoingRecipients.box(recipients.to)
+        if all { d.cc = OutgoingRecipients.box(recipients.cc) }
         d.subject = message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: \(message.subject)"
         d.inReplyTo = message.messageID
         d.references = message.references + [message.messageID].filter { !$0.isEmpty }
@@ -170,9 +170,10 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     @MainActor
     static func from(parsed: MIMEMessage, accountID: UUID) -> ComposeDraft {
         var d = ComposeDraft(accountID: accountID)
-        d.to = parsed.to.map { $0.rfc5322 }.joined(separator: ", ")
-        d.cc = parsed.cc.map { $0.rfc5322 }.joined(separator: ", ")
-        d.bcc = AddressParser.parse(parsed.headers.first("Bcc")).map { $0.rfc5322 }.joined(separator: ", ")
+        d.to = OutgoingRecipients.box(parsed.to)
+        d.cc = OutgoingRecipients.box(parsed.cc)
+        // A draft saved to Drafts keeps its Bcc recipients in a Bcc header (see uploadDraft).
+        d.bcc = OutgoingRecipients.box(AddressParser.parse(parsed.headers.first("Bcc")))
         d.subject = parsed.subject
         d.body = parsed.bestText
         if let html = parsed.textHTML, !html.trimmed.isEmpty,
@@ -224,91 +225,49 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         openNew(lead: auto.lead, signature: signature)
     }
 
-    static let separatorLine = AttachmentReminder.separatorLine
-
-    /// The original as a reply or forward quotes it: `heading`, the line and the From, Sent, To
-    /// and Subject lines; `plain`, the heading and the original's text; and `html`, what is sent
-    /// for them while the original is untouched.
-    static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> (heading: String, plain: String, html: String) {
+    /// The original as a reply or forward quotes it, as Legacy Outlook for Mac does (see
+    /// ReplyHistory): `heading`, the From, Date, To, Cc and Subject lines in English; `plain`,
+    /// the heading and the original's text; and `html`, what is sent for them while the
+    /// original is untouched, the original's own HTML with its rules kept to itself. Its
+    /// pictures are held in its HTML until the message goes, and are then sent as inline parts
+    /// of their own (see ComposedHTML).
+    static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> ReplyHistory {
         let mode = AttributionMode(rawValue: Preferences.string(Pref.attributionMode, default: AttributionMode.standard.rawValue)) ?? .standard
-        let indent = Preferences.bool(Pref.indentOriginal, default: false)
-        let f = DateFormatter()
-        f.dateStyle = .full
-        f.timeStyle = .short
-        let sent = f.string(from: message.date)
-        let to = message.to.map { $0.rfc5322 }.joined(separator: "; ")
-        let cc = message.cc.map { $0.rfc5322 }.joined(separator: "; ")
-
-        var plain = "\n" + separatorLine + "\n"
-        var html = "<hr style=\"border:none;border-top:1px solid #b5b5b5;margin:18px 0 10px 0\">"
+        let attribution: ReplyHeader.Attribution
         switch mode {
-        case .none:
-            break
-        case .custom:
-            let line = customAttribution(message: message, sent: sent)
-            plain += line + "\n\n"
-            html += "<div style=\"font-size:13px;color:#555;margin-bottom:10px\">\(HTMLText.escape(line))</div>"
-        case .standard:
-            plain += "From: \(message.from.rfc5322)\n"
-            plain += "Sent: \(sent)\n"
-            plain += "To: \(to)\n"
-            if !cc.isEmpty { plain += "Cc: \(cc)\n" }
-            plain += "Subject: \(message.subject)\n\n"
-            html += "<div style=\"font-size:13px;color:#555;margin-bottom:10px\">"
-            html += "<b>From:</b> \(HTMLText.escape(message.from.rfc5322))<br>"
-            html += "<b>Sent:</b> \(HTMLText.escape(sent))<br>"
-            html += "<b>To:</b> \(HTMLText.escape(to))<br>"
-            if !cc.isEmpty { html += "<b>Cc:</b> \(HTMLText.escape(cc))<br>" }
-            html += "<b>Subject:</b> \(HTMLText.escape(message.subject))</div>"
+        case .none: attribution = .none
+        case .custom: attribution = .custom(Preferences.string(Pref.attributionFormat, default: "On [DATE], \"[NAME]\" <[ADDRESS]> wrote:"))
+        case .standard: attribution = .outlook
         }
-
-        let heading = plain
+        let original = ReplyHeader.Original(from: message.from, date: message.date, to: message.to, cc: message.cc,
+                                            subject: message.subject)
+        let html = parsed?.textHTML.map { InlinePictures.resolvingCIDs(in: $0, with: parsed?.attachments ?? []) }
         // The original's words, never the codes and addresses its sender's plain text writes for
         // its pictures (see QuotedText); the few words the list shows when it could not be
         // downloaded.
-        let originalText = QuotedText.of(parsed, snippet: message.snippet).trimmed
-        plain += (indent ? originalText.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n") : originalText) + "\n"
-
-        let quoteStyle = indent ? "border-left:3px solid #b5b5b5;padding-left:10px;margin-left:2px" : ""
-        if let original = parsed?.textHTML, !original.trimmed.isEmpty {
-            // The original's pictures are held in its HTML until the message goes, and are then
-            // sent as inline parts of their own (see ComposedHTML).
-            var inner = InlinePictures.resolvingCIDs(in: original, with: parsed?.attachments ?? [])
-            inner = inner.replacingOccurrences(of: "(?is)<script[^>]*>.*?</script>", with: "", options: .regularExpression)
-            inner = inner.replacingOccurrences(of: "(?is)<(/?)(html|head|body)[^>]*>", with: "", options: .regularExpression)
-            html += "<div style=\"\(quoteStyle)\">\(inner)</div>"
-        } else {
-            html += "<div style=\"white-space:pre-wrap;\(quoteStyle)\">\(HTMLText.escape(originalText))</div>"
-        }
-        return (heading, plain, html)
+        return ReplyHistory(original: original, html: html, text: QuotedText.of(parsed, snippet: message.snippet),
+                            attribution: attribution, indent: Preferences.bool(Pref.indentOriginal, default: false),
+                            font: ComposeFont.chosen())
     }
 
-    static func customAttribution(message: MessageSummary, sent: String) -> String {
-        Preferences.string(Pref.attributionFormat, default: "On [DATE], \"[NAME]\" <[ADDRESS]> wrote:")
-            .replacingOccurrences(of: "[DATE]", with: sent)
-            .replacingOccurrences(of: "[NAME]", with: message.from.name.isEmpty ? message.from.address : message.from.name)
-            .replacingOccurrences(of: "[ADDRESS]", with: message.from.address)
-    }
-
-    func outgoing(from account: AccountInfo, requireRecipients: Bool = true) throws -> OutgoingMessage {
-        let toList = AddressParser.parse(to)
-        var ccList = AddressParser.parse(cc)
-        var bccList = AddressParser.parse(bcc)
-        if Preferences.bool(Pref.autoCopySelf, default: false) {
-            let me = EmailAddress(name: account.displayName, address: account.email)
-            let alreadyThere = (toList + ccList + bccList).contains { $0.address.caseInsensitiveCompare(account.email) == .orderedSame }
-            if !alreadyThere {
-                if Preferences.string(Pref.autoCopyMode, default: "bcc") == "cc" { ccList.append(me) } else { bccList.append(me) }
+    /// The message as it goes: to everyone in To, Cc and Bcc, each box read as CcBccDeliveryTests
+    /// sends it (see OutgoingRecipients). Sending needs someone to send to and nothing in a box
+    /// that is no address; `asDraft`, the copy saved to Drafts, needs neither, and does not add
+    /// the owner as "automatically Cc or Bcc myself" does, which happens only as it is sent.
+    func outgoing(from account: AccountInfo, asDraft: Bool = false) throws -> OutgoingMessage {
+        var recipients = OutgoingRecipients(to: to, cc: cc, bcc: bcc)
+        if !asDraft {
+            try recipients.checkSendable()
+            if Preferences.bool(Pref.autoCopySelf, default: false) {
+                let mode = OutgoingRecipients.CopyMode(rawValue: Preferences.string(Pref.autoCopyMode, default: "bcc")) ?? .bcc
+                recipients.copy(EmailAddress(name: account.displayName, address: account.email), as: mode)
             }
-        }
-        guard !requireRecipients || !toList.isEmpty || !AddressParser.parse(cc).isEmpty || !AddressParser.parse(bcc).isEmpty else {
-            throw FalconError.invalidInput("Add at least one recipient.")
         }
         let date = Date()
         let content = ComposedHTML.content(rtf: bodyRTF, rtfd: bodyRTFD, plain: body, historyPlain: historyPlain,
-                                           historyHTML: historyHTML, date: date)
-        return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                               cc: ccList, bcc: bccList, subject: subject, textBody: content.plain,
+                                           historyHTML: historyHTML, date: date, font: ComposeFont.chosen())
+        return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: recipients.to,
+                               cc: recipients.cc, bcc: recipients.bcc, subject: subject, textBody: content.plain,
                                htmlBody: content.html, attachments: attachments + content.pictures.map(\.attachment),
                                inReplyTo: inReplyTo, references: references, date: date, importance: importance)
     }

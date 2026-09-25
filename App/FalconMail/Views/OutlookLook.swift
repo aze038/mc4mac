@@ -155,6 +155,11 @@ enum OL {
     static let readingSenderX: CGFloat = 94.5
     static let readingSenderFont: CGFloat = 13
     static let readingMetaFont: CGFloat = 12
+    /// Where the names of the reading header's To, Cc and Bcc lines start, after their labels:
+    /// sixteen points after "To:", as measured, and the others' names under them.
+    static let readingRecipientLabel: CGFloat = 34
+    /// The same in a conversation card, twelve points after a label twenty wide.
+    static let stackRecipientLabel: CGFloat = 32
     static let readingRightInset: CGFloat = 12
     static let readingNoticeTop: CGFloat = 108
     static let readingNotice: CGFloat = 20

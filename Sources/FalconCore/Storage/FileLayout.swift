@@ -21,6 +21,8 @@ public struct FileLayout: Sendable {
     public var mutedFile: URL { root.appendingPathComponent("muted.json") }
     public var notificationPolicyFile: URL { root.appendingPathComponent("notifications.json") }
     public var outboxDirectory: URL { root.appendingPathComponent("Outbox", isDirectory: true) }
+    /// The Bcc recipients of messages sent from this Mac (`SentBccStore`), which earlier builds ignore.
+    public var sentBccFile: URL { root.appendingPathComponent("sentBcc.json") }
     public var contactsDirectory: URL { root.appendingPathComponent("Contacts", isDirectory: true) }
     public var diagnosticsDirectory: URL { root.appendingPathComponent("Diagnostics", isDirectory: true) }
 
