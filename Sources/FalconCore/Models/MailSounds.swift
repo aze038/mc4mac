@@ -24,7 +24,8 @@ public enum MailSoundEvent: String, CaseIterable, Sendable, Identifiable {
 /// same: the engine retries such a connection quietly (`AccountHealth.connecting`), and the
 /// reconnect a few seconds later finishes a pass. A pause the engine keeps on purpose, for a
 /// throttle, the day's allowance or a server that allows no more connections
-/// (`AccountHealth.imapPaused`), is no failure at all, and neither is a rule or a muted
+/// (`AccountHealth.imapPaused`), or a wait Google asked of a Google account on the Gmail API
+/// (`AccountHealth.apiPaused`), is no failure at all, and neither is a rule or a muted
 /// conversation that fails inside a pass (`SyncEvent.problem`). So the sound plays only for an
 /// account the engine says cannot sync (`AccountHealth.isFailing`), once its episode has lasted
 /// `lastingFailure`: counted from the episode's first failure, a quiet one included, and heard at
@@ -96,7 +97,7 @@ public struct MailSoundGate {
                 // with the next pass.
                 if before != nil, failing[account] == nil { failing[account] = FailureEpisode(started: uptime) }
                 return nil
-            case .imapPaused:
+            case .imapPaused, .apiPaused:
                 // Kept on purpose, so no failure, and no part of one: a failure after it begins
                 // an episode of its own, which must last a minute of its own. One that has
                 // already sounded goes on, so a pause in the middle of it sounds nothing twice.
@@ -185,7 +186,7 @@ extension AccountHealth {
     public var isFailing: Bool {
         switch self {
         case .offline, .needsSignIn, .blocked: return true
-        case .connecting, .online, .imapPaused: return false
+        case .connecting, .online, .imapPaused, .apiPaused: return false
         }
     }
 }

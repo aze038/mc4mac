@@ -27,6 +27,11 @@ public enum GmailDateGroups {
     /// The recent boundaries that move every day, which are worked out again at local midnight.
     public static let recentCount = 4
 
+    /// The boundaries that move every day, asked again at local midnight.
+    public static func recent(now: Date, calendar: Calendar = .current) -> [Date] {
+        boundaries(now: now, oldest: nil, calendar: calendar).prefix(recentCount).map(\.date)
+    }
+
     /// Every boundary from today back to the month of `oldest`, newest first. Without `oldest`,
     /// only the recent four and the month they reach into.
     public static func boundaries(now: Date, oldest: Date?, calendar: Calendar = .current,
