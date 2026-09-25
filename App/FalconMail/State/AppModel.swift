@@ -194,12 +194,25 @@ final class AppModel {
     @ObservationIgnored private var contactAddressCache = Set<String>()
     @ObservationIgnored private var myAddressCache = Set<String>()
     var openMessageWindows = Set<String>()
+    /// The message each message window shows, as it last read it, for the Message menu's
+    /// commands while that window is in front.
+    var messageWindowRows: [String: MessageSummary] = [:]
+    /// Which window is in front, for the commands that act on it.
+    var frontWindow = FrontWindow.mailbox
     var tabs: [WorkspaceTab] = []
     var minimizedTabs: [WorkspaceTab] = []
     var activeTab: WorkspaceTab?
     var tabTitles: [String: String] = [:]
     var cacheSizeBytes = 0
     var showsMovePalette = false
+    /// The messages the palette was opened for, when not the selection.
+    var movePaletteMessages: [MessageSummary]?
+    /// The message window the palette is open over, nil for the mailbox window.
+    var movePaletteWindow: String?
+    /// Moves on whenever stored messages change, so a message open in a window or tab of its own
+    /// reads its flags again and its ribbon shows what it is now.
+    var openMessagesRevision = 0
+    @ObservationIgnored var openMessagesRefresh: Task<Void, Never>?
     var focusSearchToken = 0
     var keyChordHint: String?
     var mutedThreads: [MutedThread] = []
@@ -294,6 +307,10 @@ final class AppModel {
         }
     }
 
+    /// The message discarded last, which the status bar offers to bring back for a while.
+    var discarded = DiscardedMessage<ComposeDraft>()
+    @ObservationIgnored var discardExpiry: Task<Void, Never>?
+
     private var draftsStorage: [UUID: ComposeDraft] = [:]
     var drafts: [UUID: ComposeDraft] {
         get { draftsStorage }
@@ -342,10 +359,13 @@ final class AppModel {
         get { loadRemoteImagesStorage }
         set { loadRemoteImagesStorage = newValue; Preferences.set(newValue, "loadRemoteImages") }
     }
-    private var openInWindowStorage = Preferences.bool("openInWindowOnDoubleClick", default: false)
+    private var openInWindowStorage = MessageOpening.opensInWindow(
+        stored: UserDefaults.standard.object(forKey: MessageOpening.preferenceKey) as? Bool)
+    /// Settings → Reading: whether a double-clicked message opens in a window of its own, as
+    /// Outlook's does, or in a tab of the mailbox window.
     var openInWindowOnDoubleClick: Bool {
         get { openInWindowStorage }
-        set { openInWindowStorage = newValue; Preferences.set(newValue, "openInWindowOnDoubleClick") }
+        set { openInWindowStorage = newValue; Preferences.set(newValue, MessageOpening.preferenceKey) }
     }
     private var appearanceStorage = Preferences.string("appearance", default: AppAppearance.system.rawValue)
     var appearance: String {
@@ -551,11 +571,23 @@ final class AppModel {
         showAlert(error.localizedDescription, names: Log.names(heldBy: error))
     }
 
-    var windowsToRestore: [String] {
+    /// The message windows the last session left open, read once at launch: those to open again
+    /// and those to put back into the tray. Drafts that no window holds go to Drafts now.
+    var messageWindowsToRestore: (open: [String], tray: [String]) {
         let state = restoredState
         restoredState = nil
         saveLeftoverDrafts()
-        return state?.openMessageWindows ?? []
+        return WindowTrayBook.restoring(messageWindows: state?.openMessageWindows ?? [], inTray: state?.trayMessageWindows)
+    }
+
+    /// Puts the messages that were in the tray at the last quit back into it, each under its
+    /// subject, without opening their windows until they are taken out. One no longer stored is
+    /// left out.
+    func shelveMessageWindows(_ ids: [String]) async {
+        for id in ids {
+            guard let message = await message(id: id) else { continue }
+            WindowTray.shared.shelve(.message(id), title: message.subject.isEmpty ? "(no subject)" : message.subject)
+        }
     }
 
     func currentSessionState() -> SessionState {
@@ -565,8 +597,10 @@ final class AppModel {
             if case .message(let id) = tab { return stored(id) }
             return true
         }
+        let windows = WindowTray.shared.book.messageWindows
         return SessionState(selection: selection, selectedMessageIDs: selectedMessageIDs.filter(stored), searchText: searchText,
-                            openMessageWindows: openMessageWindows.filter(stored), openDraftIDs: Array(drafts.keys),
+                            openMessageWindows: windows.all.filter(stored), trayMessageWindows: windows.inTray.filter(stored),
+                            openDraftIDs: Array(drafts.keys),
                             openTabs: tabs.filter(storedTab), minimizedTabs: minimizedTabs.filter(storedTab),
                             activeTab: activeTab.flatMap { storedTab($0) ? $0 : nil })
     }
@@ -607,7 +641,9 @@ final class AppModel {
                 case .foldersChanged(let accountID):
                     self.folders[accountID] = await self.store.folders(for: accountID)
                     self.refreshDockBadge()
-                case .messagesChanged(let folderID): self.scheduleReload(for: folderID)
+                case .messagesChanged(let folderID):
+                    self.scheduleReload(for: folderID)
+                    self.noteStoredMessagesChanged()
                 case .contactsChanged: self.contactList = await self.contacts.all()
                 }
             }
@@ -1103,23 +1139,36 @@ final class AppModel {
 
     func composeNew() {
         guard let account = accounts.first else { return }
-        openCompose(.blank(account: account, signature: signature(for: account, .newMessages)))
+        openCompose(.blank(account: account, signature: signature(for: account, .newMessages)), origin: .new)
     }
 
     func replyToSelection(all: Bool) {
-        guard let thread = currentThread, let account = account(for: thread.latest) else { return }
-        Task {
-            let parsed = await parsedBody(for: thread.latest)
-            openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all,
-                               signature: signature(for: account, .replies)))
-        }
+        guard let thread = currentThread else { return }
+        reply(to: thread.latest, all: all)
     }
 
     func forwardSelection() {
-        guard let thread = currentThread, let account = account(for: thread.latest) else { return }
+        guard let thread = currentThread else { return }
+        forward(thread.latest)
+    }
+
+    /// `then` runs once the reply is open, as a message window closes after it.
+    func reply(to message: MessageSummary, all: Bool, then: (() -> Void)? = nil) {
+        guard let account = account(for: message) else { return }
         Task {
-            let parsed = await parsedBodyForForwarding(thread.latest)
-            openCompose(.forward(thread.latest, parsed: parsed, account: account, signature: signature(for: account, .replies)))
+            let parsed = await parsedBody(for: message)
+            openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
+                               signature: signature(for: account, .replies)), origin: .reply)
+            then?()
+        }
+    }
+
+    func forward(_ message: MessageSummary, then: (() -> Void)? = nil) {
+        guard let account = account(for: message) else { return }
+        Task {
+            let parsed = await parsedBodyForForwarding(message)
+            openCompose(.forward(message, parsed: parsed, account: account, signature: signature(for: account, .replies)), origin: .reply)
+            then?()
         }
     }
 
@@ -1170,12 +1219,34 @@ final class AppModel {
             return
         }
         guard WindowTray.shared.orderMailboxWindowFront() else { return }
+        movePaletteMessages = nil
+        movePaletteWindow = nil
+        showsMovePalette = true
+    }
+
+    /// Move in a message window's ribbon: the palette opens over that window and moves that
+    /// message, whatever the mailbox window has selected.
+    func openMovePalette(for message: MessageSummary) {
+        guard !message.isServerOnly else {
+            statusText = AppModel.readOnlyNotice
+            return
+        }
+        movePaletteMessages = [message]
+        movePaletteWindow = message.id
         showsMovePalette = true
     }
 
     func closeMovePalette() {
         showsMovePalette = false
+        movePaletteMessages = nil
+        movePaletteWindow = nil
     }
+
+    /// What the open palette moves: the message of the window it opened over, else the selection.
+    var paletteMessages: [MessageSummary] {
+        movePaletteMessages ?? selectedMessages
+    }
+
 
     func moveToLastTarget() {
         let list = selectedMessages
@@ -1188,7 +1259,7 @@ final class AppModel {
     }
 
     private var moveScope: [FolderInfo] {
-        let accountIDs = Set(selectedMessages.map(\.accountID))
+        let accountIDs = Set(paletteMessages.map(\.accountID))
         return accounts.flatMap { folders[$0.id] ?? [] }.filter { $0.isSelectable && accountIDs.contains($0.accountID) }
     }
 
@@ -1231,9 +1302,12 @@ final class AppModel {
         return a.path.localizedCaseInsensitiveCompare(b.path) == .orderedAscending
     }
 
-    func commitPalette(_ folder: FolderInfo) {
-        showsMovePalette = false
-        move(selectedMessages, to: folder)
+    /// False when nothing it holds could move there, as when it is the folder they are in.
+    @discardableResult
+    func commitPalette(_ folder: FolderInfo) -> Bool {
+        let list = paletteMessages
+        closeMovePalette()
+        return move(list, to: folder)
     }
 
     func forwardAsAttachment(_ messages: [MessageSummary]) {
@@ -1253,14 +1327,14 @@ final class AppModel {
             }
             let signature = signature(for: account, .replies)
             if parts.count == 1, let raw = await rawBody(for: first) {
-                openCompose(.forwardAsAttachment(first, raw: raw, account: account, signature: signature))
+                openCompose(.forwardAsAttachment(first, raw: raw, account: account, signature: signature), origin: .reply)
                 return
             }
             var draft = ComposeDraft(accountID: account.id)
             draft.subject = "Fwd: \(parts.count) messages"
             draft.open(lead: "\n\n", signature: signature)
             draft.attachments = parts
-            openCompose(draft)
+            openCompose(draft, origin: .reply)
         }
     }
 
@@ -1441,7 +1515,7 @@ final class AppModel {
         pendingReadID = nil
     }
 
-    private func residentThread(containing message: MessageSummary) -> MessageThread? {
+    func residentThread(containing message: MessageSummary) -> MessageThread? {
         threads.first { $0.messages.contains { $0.id == message.id } }
     }
 
@@ -1515,16 +1589,18 @@ final class AppModel {
         perform(list) { try await $0.delete($1) }
     }
 
-    func move(_ list: [MessageSummary], to folder: FolderInfo) {
+    @discardableResult
+    func move(_ list: [MessageSummary], to folder: FolderInfo) -> Bool {
         applyMove(list, to: folder)
     }
 
-    private func applyMove(_ list: [MessageSummary], to folder: FolderInfo) {
+    private func applyMove(_ list: [MessageSummary], to folder: FolderInfo) -> Bool {
         let targets = actionable(list).filter { $0.accountID == folder.accountID && $0.folderID != folder.id }
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else { return false }
         moveTargets.record(folder: folder)
         removeFromList(targets)
         perform(targets) { try await $0.move($1, to: folder) }
+        return true
     }
 
     func isInJunk(_ list: [MessageSummary]) -> Bool {
@@ -1702,13 +1778,56 @@ final class AppModel {
         return draft.id
     }
 
+    /// Double-click, Return, Open in the File menu and Open in Separate Window. A draft in Drafts
+    /// opens to be written; any other message opens to be read, in a window of its own unless
+    /// the owner chose tabs.
     func openMessage(_ message: MessageSummary, forceWindow: Bool = false, openWindow: (String) -> Void) {
-        if folder(message.folderID)?.role == .drafts { return editStoredDraft(message) }
-        markReadOnOpen(message)
-        if forceWindow || openInWindowOnDoubleClick { openWindow(message.id) } else { openMessageTab(message) }
+        let inDrafts = folder(message.folderID)?.role == .drafts
+        switch MessageOpening.destination(inDraftsFolder: inDrafts, opensInWindow: openInWindowOnDoubleClick, forceWindow: forceWindow) {
+        case .editDraft:
+            editStoredDraft(message)
+        case .window:
+            markReadOnOpen(message)
+            showMessageWindow(message.id, openWindow: openWindow)
+        case .tab:
+            markReadOnOpen(message)
+            openMessageTab(message)
+        }
+    }
+
+    /// Opening a message whose window is already open brings that window forward, out of the
+    /// tray if it is there, rather than opening a second one.
+    func showMessageWindow(_ id: String, openWindow: (String) -> Void) {
+        if !WindowTray.shared.bringForward(.message(id)) { openWindow(id) }
+    }
+
+    /// Brings forward the compose window or tab already holding draft `id`, or opens one for it.
+    func showCompose(_ id: UUID) {
+        if WindowTray.shared.bringForward(.compose(id)) { return }
+        if (tabs + minimizedTabs).contains(.compose(id)) { return openTab(.compose(id)) }
+        if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
+            open(id)
+        } else {
+            openTab(.compose(id))
+        }
+    }
+
+    /// Coalesced, since a busy sync can change stored messages dozens of times a second.
+    private func noteStoredMessagesChanged() {
+        let showsOne = !openMessageWindows.isEmpty || (tabs + minimizedTabs).contains { if case .message = $0 { return true } else { return false } }
+        guard showsOne, openMessagesRefresh == nil else { return }
+        openMessagesRefresh = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let self else { return }
+            self.openMessagesRevision &+= 1
+            self.openMessagesRefresh = nil
+        }
     }
 
     private func editStoredDraft(_ message: MessageSummary) {
+        // Opened twice, it would be two copies, each adding its own to Drafts as it closes.
+        let open = drafts.values.map { (draft: $0.id, row: $0.sourceMessage == nil ? nil : $0.sourceMessageID) }
+        if let id = UnsentMessage.alreadyOpen(row: message.id, among: open) { return showCompose(id) }
         Task {
             guard let parsed = await parsedBody(for: message) else {
                 showActionError("Could not open that draft.")
@@ -1717,7 +1836,7 @@ final class AppModel {
             var draft = ComposeDraft.from(parsed: parsed, accountID: message.accountID)
             draft.sourceMessageID = message.id
             draft.sourceMessage = message
-            openCompose(draft)
+            openCompose(draft, origin: .reopenedDraft)
         }
     }
 
@@ -1725,20 +1844,28 @@ final class AppModel {
         guard let draft = drafts[id] else { return }
         drafts[id] = nil
         guard !draft.isBlank, let account = accounts.first(where: { $0.id == draft.accountID }) else { return }
+        // Written back at once, as taking it out of `drafts` deleted it: a quit just after closing
+        // it, or a crash, must not lose it while it uploads.
+        session.saveDraft(draft)
         Task {
             guard let folder = folder(accountID: account.id, role: .drafts), let syncer = await coordinator.syncer(for: account.id) else {
                 drafts[id] = draft
                 return
             }
-            do {
-                let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
-                try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
-                await purgeStoredDraft(draft)
-                statusText = "Draft saved to \(folder.name)"
-            } catch {
-                drafts[id] = draft
-                showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
-            }
+            await UnsentMessage.uploadToDrafts(
+                upload: {
+                    let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
+                    try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
+                },
+                uploaded: {
+                    if drafts[id] == nil { session.removeDraft(id) }
+                    await purgeStoredDraft(draft)
+                    statusText = "Draft saved to \(folder.name)"
+                },
+                failed: { error in
+                    drafts[id] = draft
+                    showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
+                })
         }
     }
 
@@ -1747,20 +1874,20 @@ final class AppModel {
     /// Drafts was renumbered the UID may name another draft, which is left alone, as is the copy
     /// of a draft kept by an earlier build that did not record its row.
     func purgeStoredDraft(_ draft: ComposeDraft) async {
-        guard let opened = draft.sourceMessage, opened.id == draft.sourceMessageID,
+        guard let opened = UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID),
               let stored = await store.currentRow(of: opened) else { return }
         removeFromList([stored])
         perform([stored], announcing: false) { try await $0.purge($1) }
     }
 
-    /// Saves to the Drafts folder the drafts that no compose window or tab holds, such as those
-    /// left from the last session. One still being written is saved only as it closes: a copy
-    /// saved from under it would be one that Discard Changes could not take back and that Save
-    /// as Draft would add a second copy beside.
+    /// Closes, as closing any message not yet sent does, the drafts that no compose window or tab
+    /// holds, such as those open at the last quit: what was written goes to the Drafts folder.
+    /// One still being written is saved only as it closes: a copy saved from under it would be
+    /// one that Discard could not take back and that closing would add a second copy beside.
     func saveLeftoverDrafts() {
         let inTabs = (tabs + minimizedTabs).compactMap { if case .compose(let id) = $0 { return id } else { return nil } }
         let open = composeWindowDrafts.union(inTabs)
-        for id in drafts.keys where !open.contains(id) { saveDraftToServer(id) }
+        for id in drafts.keys where !open.contains(id) { closeUnsent(id) }
     }
 
     private func markReadOnOpen(_ message: MessageSummary) {
@@ -1792,7 +1919,7 @@ final class AppModel {
         outboxItems.filter { $0.isSendingSoon(within: TimeInterval(undoSendSeconds)) }
     }
 
-    func cancelAndReopen(_ item: OutboxItem, openWindow: @escaping (UUID) -> Void) {
+    func cancelAndReopen(_ item: OutboxItem) {
         Task {
             let cancelled = (try? await outbox.cancel(item.id)) ?? false
             let title = outboxTitle(item)
@@ -1806,12 +1933,8 @@ final class AppModel {
                 statusText = "Cancelled “\(title)”, but the message could not be reopened"
                 return
             }
-            if openInWindowOnDoubleClick {
-                _ = newDraft(draft)
-                openWindow(draft.id)
-            } else {
-                openCompose(draft, onlyCopy: true)
-            }
+            // Where it opens follows the compose setting, as every other message being written does.
+            openCompose(draft, origin: .outboxRecall)
             statusText = "Reopened “\(title)” as a draft"
         }
     }

@@ -163,7 +163,11 @@ enum OL {
 
     // MARK: compose window (917 × 1006): the header band under the ribbon, y 137–219
 
-    static let composeWindowWidth: CGFloat = 917
+    // Legacy's window is 917 wide. FalconMail's is wider by the Discard tile the owner asked
+    // for beside Send, which moves every later group 49 points right, so that Pictures,
+    // Signature and Link still show at the ribbon's end.
+    static let composeDiscardTile: CGFloat = 49
+    static let composeWindowWidth: CGFloat = 917 + composeDiscardTile
     static let composeWindowHeight: CGFloat = 1006
     static let composeBandTop: CGFloat = 3
     static let composeBandBottom: CGFloat = 9

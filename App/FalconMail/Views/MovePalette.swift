@@ -3,6 +3,8 @@ import FalconCore
 
 struct MovePalette: View {
     @Environment(AppModel.self) private var model
+    /// Runs once the messages are on their way, as a message window closes when its message moves.
+    var onMoved: (() -> Void)?
     @State private var query = ""
     @State private var highlighted = 0
     @FocusState private var fieldFocused: Bool
@@ -66,7 +68,7 @@ struct MovePalette: View {
                         ForEach(Array(matches.enumerated()), id: \.element.id) { index, folder in
                             row(folder, active: index == activeIndex)
                                 .contentShape(Rectangle())
-                                .onTapGesture { model.commitPalette(folder) }
+                                .onTapGesture { move(to: folder) }
                         }
                     }
                 }
@@ -78,8 +80,8 @@ struct MovePalette: View {
 
     @ViewBuilder private var footer: some View {
         if let folder = highlightedFolder {
-            let total = model.selectedMessages.count
-            let applies = model.selectedMessages.filter { $0.accountID == folder.accountID }.count
+            let total = model.paletteMessages.count
+            let applies = model.paletteMessages.filter { $0.accountID == folder.accountID }.count
             if applies != total {
                 Divider()
                 Text("Moves \(applies) of \(total) selected messages")
@@ -118,6 +120,10 @@ struct MovePalette: View {
 
     private func commit() {
         guard let folder = highlightedFolder else { return }
-        model.commitPalette(folder)
+        move(to: folder)
+    }
+
+    private func move(to folder: FolderInfo) {
+        if model.commitPalette(folder) { onMoved?() }
     }
 }

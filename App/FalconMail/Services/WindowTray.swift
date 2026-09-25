@@ -3,41 +3,84 @@ import AppKit
 import ObjectiveC
 import FalconCore
 
+/// Which kind of window is key, for the commands that act on the one in front.
+enum FrontWindow: Equatable {
+    case mailbox
+    case popup(PopupKey)
+    case other
+
+    var popup: PopupKey? {
+        if case .popup(let key) = self { return key }
+        return nil
+    }
+}
+
+/// The message and compose windows of their own, and the tray along the foot of the mailbox
+/// window that FalconMail minimises them into instead of the Dock.
 @MainActor
 final class WindowTray: ObservableObject {
     static let shared = WindowTray()
     static let popupIdentifier = "falcon.popup"
 
-    struct Entry: Identifiable {
-        let id: Int
-        let title: String
-        weak var window: NSWindow?
-    }
-
-    @Published private(set) var entries: [Entry] = []
+    @Published private(set) var book = WindowTrayBook()
+    /// Opens a window for an entry the tray holds without one, as a message window put back
+    /// into the tray at launch has until it is first shown.
+    var openWindow: (@MainActor (PopupKey) -> Void)?
+    /// Told whenever another window comes to the front.
+    var frontChanged: (@MainActor (FrontWindow) -> Void)?
     private var popups: [WeakWindow] = []
+    private var popupWindows: [PopupKey: WeakWindow] = [:]
     private var mailboxWindows: [WeakWindow] = []
     private var observers: [NSObjectProtocol] = []
+    private var front = FrontWindow.mailbox {
+        didSet { if front != oldValue { frontChanged?(front) } }
+    }
 
     private init() {
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] n in
             guard let w = n.object as? NSWindow else { return }
-            MainActor.assumeIsolated { self?.remove(w) }
+            MainActor.assumeIsolated { self?.becameKey(w) }
         })
         observers.append(NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] n in
             guard let w = n.object as? NSWindow else { return }
-            MainActor.assumeIsolated {
-                self?.remove(w)
-                self?.popups.removeAll { $0.window == nil || $0.window === w }
-                self?.mailboxWindows.removeAll { $0.window == nil || $0.window === w }
-            }
+            MainActor.assumeIsolated { self?.willClose(w) }
         })
+    }
+
+    private func becameKey(_ window: NSWindow) {
+        front = kind(of: window)
+        if let key = key(for: window) { book.showing(key, title: window.title) }
+    }
+
+    private func willClose(_ window: NSWindow) {
+        if let key = key(for: window) {
+            book.closed(key)
+            popupWindows[key] = nil
+            if front == .popup(key) { front = .other }
+        }
+        popups.removeAll { $0.window == nil || $0.window === window }
+        mailboxWindows.removeAll { $0.window == nil || $0.window === window }
+    }
+
+    private func kind(of window: NSWindow) -> FrontWindow {
+        if mailboxWindows.contains(where: { $0.window === window }) { return .mailbox }
+        if let key = key(for: window) { return .popup(key) }
+        return .other
+    }
+
+    private func key(for window: NSWindow) -> PopupKey? {
+        popupWindows.first { $0.value.window === window }?.key
+    }
+
+    func window(for key: PopupKey) -> NSWindow? {
+        popupWindows[key]?.window
     }
 
     func register(mailbox window: NSWindow) {
         mailboxWindows.removeAll { $0.window == nil }
         guard !mailboxWindows.contains(where: { $0.window === window }) else { return }
         mailboxWindows.append(WeakWindow(window))
+        if window.isKeyWindow { front = .mailbox }
     }
 
     var mailboxWindowTakesUndo: Bool {
@@ -65,7 +108,11 @@ final class WindowTray: ObservableObject {
         return true
     }
 
-    func register(popup window: NSWindow) {
+    /// A message or compose window, holding what `key` names, has come on screen.
+    func register(popup window: NSWindow, key: PopupKey) {
+        popupWindows[key] = WeakWindow(window)
+        book.showing(key, title: window.title)
+        if window.isKeyWindow { front = .popup(key) }
         guard !popups.contains(where: { $0.window === window }) else { return }
         window.identifier = NSUserInterfaceItemIdentifier(WindowTray.popupIdentifier)
         popups.removeAll { $0.window == nil }
@@ -96,32 +143,61 @@ final class WindowTray: ObservableObject {
         window.setFrame(frame, display: true, animate: false)
     }
 
+    /// The yellow button, Minimize in the Window menu or Command-M on a message or compose
+    /// window: into the tray, out of sight.
     func minimize(_ window: NSWindow) {
-        remove(window)
-        entries.append(Entry(id: window.windowNumber, title: window.title.isEmpty ? "Window" : window.title, window: window))
+        // The hook swapped the two, so this is AppKit's own minimise, to the Dock.
+        guard let key = key(for: window) else { return window.falcon_miniaturize(nil) }
+        book.minimise(key, title: window.title)
         window.orderOut(nil)
     }
 
-    func restore(_ entry: Entry) {
-        entries.removeAll { $0.id == entry.id }
-        entry.window?.makeKeyAndOrderFront(nil)
+    /// Puts a message back into the tray without a window, as a launch does with those that were
+    /// in the tray at the last quit; its window opens when it is taken out.
+    func shelve(_ key: PopupKey, title: String) {
+        guard window(for: key) == nil else { return }
+        book.minimise(key, title: title)
     }
 
-    func close(_ entry: Entry) {
-        entries.removeAll { $0.id == entry.id }
-        guard let window = entry.window else { return }
-        // A window that may ask before it closes, as a message not yet sent does, comes back
-        // first, so its question has somewhere to appear.
-        if window.closeGuard != nil {
+    /// Brings `key`'s window to the front, from the tray if it is there. False when no window
+    /// holds it, and one should be opened.
+    func bringForward(_ key: PopupKey) -> Bool {
+        switch book.opening(key) {
+        case .open:
+            return false
+        case .bringForward:
+            guard let window = window(for: key) else {
+                book.closed(key)
+                return false
+            }
             window.makeKeyAndOrderFront(nil)
-            window.performClose(nil)
-        } else {
-            window.close()
+            return true
+        case .restoreFromTray:
+            restore(key)
+            return true
         }
     }
 
-    private func remove(_ window: NSWindow) {
-        entries.removeAll { $0.id == window.windowNumber }
+    func restore(_ key: PopupKey) {
+        guard let window = window(for: key) else {
+            book.closed(key)
+            openWindow?(key)
+            return
+        }
+        book.restore(key)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// The tray's close button, and Discard on a message being written in a window of its own.
+    /// Nothing is asked: a message not yet sent keeps what was written in Drafts as it closes.
+    func close(_ key: PopupKey) {
+        guard let window = window(for: key) else { return book.closed(key) }
+        window.close()
+    }
+
+    /// Close Window in the Message menu, or Command-W, on the message or compose window in front.
+    func performClose(_ key: PopupKey) {
+        window(for: key)?.performClose(nil)
     }
 
     nonisolated static func installMinimizeHook() {
@@ -135,15 +211,6 @@ final class WindowTray: ObservableObject {
         }
     }
 
-    /// Routes the close button, Close in the File menu and Command-W through a window's close
-    /// guard. SwiftUI keeps its windows' delegates to itself, so windowShouldClose is not ours to
-    /// answer; a window without a guard closes as it always did.
-    nonisolated static func installCloseHook() {
-        if let original = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.performClose(_:))),
-           let replacement = class_getInstanceMethod(NSWindow.self, #selector(NSWindow.falcon_performClose(_:))) {
-            method_exchangeImplementations(original, replacement)
-        }
-    }
 }
 
 final class WeakWindow {
@@ -151,22 +218,7 @@ final class WeakWindow {
     init(_ w: NSWindow) { window = w }
 }
 
-private var closeGuardKey: UInt8 = 0
-
 extension NSWindow {
-    /// Asked before the window closes at the user's request; false keeps it open, as when an
-    /// alert has gone up that will close it or not once answered. Closing it from code, as
-    /// sending a message does, is never asked.
-    var closeGuard: (@MainActor (NSWindow) -> Bool)? {
-        get { objc_getAssociatedObject(self, &closeGuardKey) as? @MainActor (NSWindow) -> Bool }
-        set { objc_setAssociatedObject(self, &closeGuardKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
-    }
-
-    @objc func falcon_performClose(_ sender: Any?) {
-        if let closeGuard, !closeGuard(self) { return }
-        falcon_performClose(sender)
-    }
-
     @objc func falcon_miniaturize(_ sender: Any?) {
         if identifier?.rawValue == WindowTray.popupIdentifier {
             MainActor.assumeIsolated { WindowTray.shared.minimize(self) }
@@ -184,14 +236,25 @@ extension NSWindow {
     }
 }
 
+/// Dresses the message or compose window this sits in as Outlook's, and tells the tray which
+/// message it holds.
 struct PopupWindowAccessor: NSViewRepresentable {
-    func makeNSView(context: Context) -> AccessorView { AccessorView() }
+    let key: PopupKey
+
+    func makeNSView(context: Context) -> AccessorView {
+        let view = AccessorView()
+        view.key = key
+        return view
+    }
+
     func updateNSView(_ nsView: AccessorView, context: Context) {}
 
     final class AccessorView: NSView {
+        var key: PopupKey?
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard let window else { return }
+            guard let window, let key else { return }
             // Message and compose windows draw Outlook's own title row too.
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
@@ -205,7 +268,7 @@ struct PopupWindowAccessor: NSViewRepresentable {
                 window.titleVisibility = .hidden
                 while !window.titlebarAccessoryViewControllers.isEmpty { window.removeTitlebarAccessoryViewController(at: 0) }
             }
-            WindowTray.shared.register(popup: window)
+            WindowTray.shared.register(popup: window, key: key)
         }
     }
 }
@@ -235,32 +298,55 @@ struct WindowTrayBar: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        if !tray.entries.isEmpty || !model.minimizedTabs.isEmpty {
+        if !tray.book.tray.isEmpty || !model.minimizedTabs.isEmpty {
             HStack(spacing: 8) {
                 ForEach(model.minimizedTabs) { tab in
                     HStack(spacing: 6) {
                         Image(systemName: model.icon(for: tab)).font(.caption)
-                        Text(model.title(for: tab)).font(.caption).lineLimit(1).frame(maxWidth: 220)
-                        Button { model.closeTabAsked(tab) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
+                        Text(model.title(for: tab)).font(.caption).lineLimit(1)
+                            .frame(maxWidth: 220, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+                        Button { model.closeTab(tab) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
                     .onTapGesture { model.openTab(tab) }
                 }
-                ForEach(tray.entries) { e in
+                ForEach(tray.book.tray) { entry in
                     HStack(spacing: 6) {
-                        Image(systemName: "macwindow").font(.caption)
-                        Text(e.title).font(.caption).lineLimit(1).frame(maxWidth: 260)
-                        Button { tray.close(e) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
+                        Image(systemName: WindowTrayBar.icon(for: entry.key)).font(.caption)
+                        // Hugs its title, as a tab's chip does, and cuts a long one short.
+                        Text(WindowTrayBar.title(for: entry)).font(.caption).lineLimit(1)
+                            .frame(maxWidth: 260, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+                        Button { tray.close(entry.key) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                            .buttonStyle(.plain)
+                            .help("Close")
                     }
                     .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-                    .onTapGesture { tray.restore(e) }
+                    .contentShape(RoundedRectangle(cornerRadius: 6))
+                    .onTapGesture { tray.restore(entry.key) }
+                    .help("Show this window again")
                 }
                 Spacer()
             }
             .padding(.horizontal, 12).padding(.vertical, 4)
             .background(.bar)
+        }
+    }
+
+    /// The same glyphs a message and a message being written have as tabs.
+    static func icon(for key: PopupKey) -> String {
+        switch key {
+        case .message: return "envelope.open"
+        case .compose: return "square.and.pencil"
+        }
+    }
+
+    static func title(for entry: WindowTrayBook.Entry) -> String {
+        guard entry.title.isEmpty else { return entry.title }
+        switch entry.key {
+        case .message: return "Message"
+        case .compose: return "New Message"
         }
     }
 }

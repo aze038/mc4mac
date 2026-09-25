@@ -32,12 +32,7 @@ struct ComposeView: View {
             if draft != nil { form } else { ProgressView() }
         }
         .frame(minWidth: 600, minHeight: embedded ? 0 : 480)
-        .background(embedded ? nil : PopupWindowAccessor())
-        .background {
-            if !embedded {
-                CloseGuardInstaller { window in model.mayCloseUnsent(draftID, over: window) { window.close() } }
-            }
-        }
+        .background(embedded ? nil : PopupWindowAccessor(key: .compose(draftID)))
         .onAppear {
             if !embedded { model.composeWindowDrafts.insert(draftID) }
             load()
@@ -46,7 +41,7 @@ struct ComposeView: View {
             editSessions.values.forEach { $0.stop() }
             if !embedded {
                 model.composeWindowDrafts.remove(draftID)
-                model.saveDraftToServer(draftID)
+                model.closeUnsent(draftID)
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
@@ -162,6 +157,7 @@ struct ComposeView: View {
                       importance: binding(\.importance),
                       canSend: !(draft?.to.isEmpty ?? true),
                       onSend: { send() },
+                      onDiscard: { discard() },
                       onAttachFile: { attach() },
                       onAttachFromDrive: { attachFromDrive() },
                       signatures: model.signatures.sorted,
@@ -402,7 +398,7 @@ struct ComposeView: View {
 
     private func discard() {
         editSessions.values.forEach { $0.stop() }
-        model.drafts[draftID] = nil
+        model.discardCompose(draftID, closesWindow: false)
         close()
     }
 

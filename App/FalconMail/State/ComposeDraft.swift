@@ -34,9 +34,9 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     }
 
     /// A digest of what the message held when it was opened, fresh or from the Drafts folder,
-    /// which closing compares against so it asks only when something would be lost. Nil for a
-    /// message that exists nowhere else, such as a send called back from the Outbox, which
-    /// always asks.
+    /// which closing compares against so that a message nobody changed closes without leaving a
+    /// copy in Drafts. Nil for a message that exists nowhere else, such as a send called back
+    /// from the Outbox, which closing always keeps.
     var openedDigest: String?
 
     /// Everything closing without saving would lose: who it is from and to, what it says and
@@ -48,9 +48,16 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         return UnsentMessage.fingerprint(fields.map { Data($0.utf8) } + [bodyRTF ?? Data()] + attached)
     }
 
-    var isUntouched: Bool { openedDigest == contentDigest }
+    /// Remembers what it holds now, as it opens from `origin`, or forgets it where nothing else
+    /// holds the message.
+    mutating func markOpened(as origin: UnsentMessage.Origin) {
+        openedDigest = origin.remembersOpening ? contentDigest : nil
+    }
 
-    mutating func markOpened() { openedDigest = contentDigest }
+    /// What closing it does: nothing is kept when nothing would be lost, else it goes to Drafts.
+    var closing: UnsentMessage.Closing {
+        UnsentMessage.closing(openedDigest: openedDigest, digest: contentDigest, blank: isBlank)
+    }
 
     var isBlank: Bool {
         to.trimmed.isEmpty && cc.trimmed.isEmpty && bcc.trimmed.isEmpty && subject.trimmed.isEmpty && attachments.isEmpty

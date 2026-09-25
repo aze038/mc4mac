@@ -254,6 +254,18 @@ struct ReadingSettings: View {
 
             Divider()
 
+            SettingsRow(label: "Open messages:") {
+                Picker("", selection: $model.openInWindowOnDoubleClick) {
+                    Text("In a separate window").tag(true)
+                    Text("In a tab in the main window").tag(false)
+                }
+                .pickerStyle(.radioGroup).labelsHidden()
+                Text("A double-click, Return or File › Open does this. A window minimises into the tray at the foot of the main window.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Divider()
+
             SettingsRow(label: "Left swipe:") {
                 Picker("", selection: $leftSwipe) {
                     ForEach(SwipeAction.allCases) { Text($0.title).tag($0.rawValue) }

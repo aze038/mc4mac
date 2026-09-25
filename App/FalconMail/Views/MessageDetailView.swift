@@ -197,7 +197,7 @@ struct MessageReaderView: View {
         .disabled(message.isServerOnly)
         Divider()
         if context != .tab { Button("Open in Tab") { model.openMessageTab(message) } }
-        if context != .window { Button("Open in Separate Window") { openWindow(value: message.id) } }
+        if context != .window { Button("Open in Separate Window") { model.showMessageWindow(message.id) { openWindow(value: $0) } } }
         Divider()
         Button("Save as .eml…") { saveAsEML() }
             .disabled(message.isServerOnly)
@@ -317,7 +317,7 @@ struct MessageReaderView: View {
         Task {
             let parsed = await model.parsedBody(for: message)
             model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)))
+                                     signature: model.signature(for: account, .replies)), origin: .reply)
         }
     }
 
@@ -325,11 +325,18 @@ struct MessageReaderView: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
+            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)), origin: .reply)
         }
     }
 
     private func saveAsEML() {
+        MessageFile.saveAsEML(message, model: model)
+    }
+}
+
+enum MessageFile {
+    /// Save as .eml: the message as it came, under its subject.
+    @MainActor static func saveAsEML(_ message: MessageSummary, model: AppModel) {
         let panel = NSSavePanel()
         let safe = message.subject.replacingOccurrences(of: "[/:\\\\]", with: "-", options: .regularExpression)
         panel.nameFieldStringValue = (safe.isEmpty ? "message" : String(safe.prefix(60))) + ".eml"
@@ -368,12 +375,19 @@ struct ReaderActionButton: View {
 }
 
 /// A message in its own window, the way Outlook opens one on a double-click: its own title row,
-/// a Message ribbon, then the message.
+/// a Message ribbon whose every action works on this message, then the message. It minimises
+/// into the tray as a compose window does.
 struct MessageWindowView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let messageID: String
     @State private var message: MessageSummary?
+
+    /// `message` is given only by the debug snapshots, which have no store to read it from.
+    init(messageID: String, message: MessageSummary? = nil) {
+        self.messageID = messageID
+        _message = State(initialValue: message)
+    }
 
     var body: some View {
         Group {
@@ -385,17 +399,41 @@ struct MessageWindowView: View {
                     MessageReaderView(message: message, context: .window)
                 }
                 .background(OLColor.reading)
-                .navigationTitle(message.subject.isEmpty ? "Message" : message.subject)
+                .overlay {
+                    if model.showsMovePalette, model.movePaletteWindow == messageID {
+                        MovePalette(onMoved: { dismiss() })
+                    }
+                }
+                .navigationTitle(message.subject.isEmpty ? "(no subject)" : message.subject)
             } else {
                 ProgressView()
             }
         }
         .frame(minWidth: 560, minHeight: 480)
-        .background(PopupWindowAccessor())
-        .task { message = await model.message(id: messageID) }
-        .onAppear { model.openMessageWindows.insert(messageID) }
-        .onDisappear { model.openMessageWindows.remove(messageID) }
+        .background(PopupWindowAccessor(key: .message(messageID)))
+        // Read again whenever stored messages change, so Read/Unread and Follow Up show, and
+        // toggle, what the message is now.
+        .task(id: model.openMessagesRevision) { await load() }
+        .onAppear {
+            model.openMessageWindows.insert(messageID)
+            if let message { model.messageWindowRows[messageID] = message }
+        }
+        .onDisappear {
+            model.openMessageWindows.remove(messageID)
+            model.messageWindowRows[messageID] = nil
+            if model.movePaletteWindow == messageID { model.closeMovePalette() }
+        }
         .ignoresSafeArea(.container, edges: .top)
+    }
+
+    private func load() async {
+        if let current = await model.message(id: messageID) {
+            message = current
+            if model.openMessageWindows.contains(messageID) { model.messageWindowRows[messageID] = current }
+        } else if message == nil {
+            // A window brought back for a message that is no longer stored has nothing to show.
+            dismiss()
+        }
     }
 
     private func titleRow(_ message: MessageSummary) -> some View {
@@ -408,7 +446,9 @@ struct MessageWindowView: View {
                 .lineLimit(1)
                 .padding(.horizontal, 200)
             HStack(spacing: OL.quickPitch - 20) {
-                RibbonQuickButton(symbol: "square.and.arrow.down", title: "Save as .eml") { NotificationCenter.default.post(name: .falconExport, object: nil) }
+                RibbonQuickButton(symbol: "square.and.arrow.down", title: "Save as .eml", enabled: !message.isServerOnly) {
+                    MessageFile.saveAsEML(message, model: model)
+                }
                 RibbonQuickButton(symbol: "arrow.uturn.backward", title: "Undo", enabled: model.canUndoAction) { model.undoLastAction() }
                 RibbonQuickButton(symbol: "arrow.uturn.forward", title: "Redo", enabled: false) {}
                 RibbonQuickButton(symbol: "envelope.badge.shield.half.filled", title: "Mark all as read", enabled: model.unifiedUnreadCount > 0) {
@@ -423,13 +463,15 @@ struct MessageWindowView: View {
     }
 }
 
-/// The ribbon of an opened message: Outlook's Message tab, the same tiles as the Home ribbon
-/// that act on one message.
+/// The ribbon of an opened message: Outlook's Message tab, the same tiles as the Home ribbon,
+/// each acting on this message alone, whatever the mailbox window has selected. An action that
+/// takes the message out of its folder closes the window, as Outlook's does.
 struct MessageWindowRibbon: View {
     @Environment(AppModel.self) private var model
     let message: MessageSummary
     let close: () -> Void
     @State private var tab = 0
+    @AppStorage(Pref.closeOriginalAfterReply) private var closeAfterReply = true
 
     /// A message found only on the server can be read and replied to, not changed.
     private var canChange: Bool { !message.isServerOnly }
@@ -453,12 +495,14 @@ struct MessageWindowRibbon: View {
                     RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: canChange) { model.forwardAsAttachment([message]) }
                 }
                 RibbonSeparator()
-                RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: canChange, action: { model.openMovePalette() }) {
-                    Button("Move to Folder…") { model.openMovePalette() }
+                RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: canChange,
+                                action: { model.openMovePalette(for: message) }) {
+                    Button("Move to Folder…") { model.openMovePalette(for: message) }
                     Button("Archive") { model.archive([message]); close() }
                 }
-                RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: canChange, action: { model.toggleJunk([message]) }) {
-                    Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { model.toggleJunk([message]) }
+                RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: canChange,
+                                action: { junk() }) {
+                    Button(model.isInJunk([message]) ? "Not Junk" : "Move to Junk") { junk() }
                 }
                 RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
                     Button("Run Rules Now") { model.runRulesNow() }
@@ -467,7 +511,9 @@ struct MessageWindowRibbon: View {
                 RibbonTile(title: "Read/Unread", symbol: message.isRead ? "envelope" : "envelope.open", enabled: canChange) { model.markRead([message], !message.isRead) }
                 RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
                     ForEach(model.categories) { category in
-                        Button(category.name) { model.toggleCategory(category, on: [message]) }
+                        Toggle(category.name, isOn: Binding(
+                            get: { model.categories(for: message).contains(category) },
+                            set: { _ in model.toggleCategory(category, on: [message]) }))
                     }
                 }
                 RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: canChange, action: { model.setFlagged([message], !message.isFlagged) }) {
@@ -478,12 +524,20 @@ struct MessageWindowRibbon: View {
         .background(OLColor.chrome, ignoresSafeAreaEdges: [])
     }
 
+    /// Junk and Not Junk both take the message to another folder.
+    private func junk() {
+        model.toggleJunk([message])
+        close()
+    }
+
     private func reply(all: Bool) {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBody(for: message)
             model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)))
+                                     signature: model.signature(for: account, .replies)), origin: .reply)
+            // Settings → Composing: "Close the original message window after replying or forwarding".
+            if closeAfterReply { close() }
         }
     }
 
@@ -491,7 +545,9 @@ struct MessageWindowRibbon: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
+            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)),
+                              origin: .reply)
+            if closeAfterReply { close() }
         }
     }
 }

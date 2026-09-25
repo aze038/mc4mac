@@ -29,7 +29,9 @@ struct FalconMailApp: App {
                 .environmentObject(model.updates)
                 .task {
                     await model.bootstrap()
-                    for id in model.windowsToRestore { openWindow(value: id) }
+                    let restored = model.messageWindowsToRestore
+                    for id in restored.open { openWindow(value: id) }
+                    await model.shelveMessageWindows(restored.tray)
                     #if DEBUG
                     if ComposeRibbonDemo.isRequested { openWindow(value: ComposeRibbonDemo.draft(in: model)) }
                     #endif
@@ -37,6 +39,13 @@ struct FalconMailApp: App {
                 .onAppear {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }
                     model.openComposeWindow = { openWindow(value: $0) }
+                    WindowTray.shared.openWindow = { key in
+                        switch key {
+                        case .message(let id): openWindow(value: id)
+                        case .compose(let id): openWindow(value: id)
+                        }
+                    }
+                    WindowTray.shared.frontChanged = { model.frontWindow = $0 }
                     appDelegate.model = model
                     SettingsWindows.shared.model = model
                     SettingsWindows.shared.updates = model.updates
@@ -57,6 +66,11 @@ struct FalconMailApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Message") { model.composeNew() }
                     .keyboardShortcut("n", modifiers: .command)
+                // As Outlook's File menu has it: the selected message, in a window of its own
+                // unless Settings → Reading says tabs.
+                Button("Open") { openSelected() }
+                    .keyboardShortcut("o", modifiers: .command)
+                    .disabled(model.currentThread == nil)
                 Divider()
                 Button("Add Account…") { NotificationCenter.default.post(name: .falconAddAccount, object: nil) }
                 Divider()
@@ -128,55 +142,70 @@ struct FalconMailApp: App {
                 ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates)
             }
         }
-        .defaultSize(width: 917, height: 1006)
+        .defaultSize(width: OL.composeWindowWidth, height: OL.composeWindowHeight)
         .windowStyle(.hiddenTitleBar)
     }
 
     @ViewBuilder private var replyCommands: some View {
-        Button("Reply") { model.replyToSelection(all: false) }.keyboardShortcut("r", modifiers: .command)
-        Button("Reply All") { model.replyToSelection(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
-        Button("Forward") { model.forwardSelection() }.keyboardShortcut("f", modifiers: [.command, .shift])
+        // Every command in this menu acts on the window in front: a message window's own message,
+        // nothing while a message is being written, else the selection.
+        Button("Reply") { model.menuReply(all: false) }.keyboardShortcut("r", modifiers: .command)
+            .disabled(model.menuTarget == .nothing)
+        Button("Reply All") { model.menuReply(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(model.menuTarget == .nothing)
+        Button("Forward") { model.menuForward() }.keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(model.menuTarget == .nothing)
     }
 
     @ViewBuilder private var windowCommands: some View {
-        Button("Open") { openSelectedInTab() }.keyboardShortcut("o", modifiers: .command)
         Button("Open in Separate Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
-        Button("Close Tab") { model.closeActiveTab() }.keyboardShortcut("w", modifiers: .command).disabled(model.activeTab == nil)
-        if let tab = model.activeTab {
+        // Command-W and Command-M act on the window in front: a message or compose window of its
+        // own closes, or goes into the tray through Minimize in the Window menu, and only in the
+        // mailbox window do they close or minimise the tab showing there.
+        Button(model.frontWindow.popup == nil ? "Close Tab" : "Close Window") { model.closeFront() }
+            .keyboardShortcut("w", modifiers: .command)
+            .disabled(!model.canCloseFront)
+        if model.frontWindow == .mailbox, let tab = model.activeTab {
             Button("Minimize Tab") { model.minimizeTab(tab) }.keyboardShortcut("m", modifiers: .command)
         }
+        // No shortcut: Command-Delete is Delete, and in the message's text it deletes to the
+        // start of the line.
+        Button("Discard Draft") { model.discardFrontDraft() }
+            .disabled(model.frontDraftID == nil)
+            .help("Closes the message being written and deletes its draft. Undo brings it back for ten seconds.")
     }
 
     @ViewBuilder private var fileCommands: some View {
-        Button("Archive") { model.archive(model.selectedMessages) }.keyboardShortcut("e", modifiers: .command)
-            .disabled(model.selectionIsReadOnly)
-        Button("Delete") { model.delete(model.selectedMessages) }.keyboardShortcut(.delete, modifiers: .command)
-            .disabled(model.selectionIsReadOnly)
-        Button("Move to Folder…") { model.openMovePalette() }
+        Button("Archive") { model.menuMoves { model.archive($0) } }.keyboardShortcut("e", modifiers: .command)
+            .disabled(model.menuCannotChange)
+        // Disabled while a message is being written, so that Command-Delete there deletes text.
+        Button("Delete") { model.menuMoves { model.delete($0) } }.keyboardShortcut(.delete, modifiers: .command)
+            .disabled(model.menuCannotChange)
+        Button("Move to Folder…") { model.menuMove() }
             .keyboardShortcut("m", modifiers: [.command, .shift])
-            .disabled(model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
-        Button(moveAgainTitle) { model.moveToLastTarget() }
+            .disabled(model.menuCannotChange)
+        Button(moveAgainTitle) { model.menuMoveAgain() }
             .keyboardShortcut("y", modifiers: [.command, .shift])
-            .disabled(model.lastMoveTarget == nil || model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
-        Button("Move to Junk") { model.moveToJunk(model.selectedMessages) }
-            .disabled(model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
-        Button("Not Junk") { model.markNotJunk(model.selectedMessages) }
-            .disabled(!model.selectionIsAllInJunk)
+            .disabled(model.lastMoveTarget == nil || model.menuCannotChange)
+        Button("Move to Junk") { model.menuMoves { model.moveToJunk($0) } }
+            .disabled(model.menuCannotChange)
+        Button("Not Junk") { model.menuMoves { model.markNotJunk($0) } }
+            .disabled(model.menuCannotChange || !model.isInJunk(model.menuMessages))
     }
 
     @ViewBuilder private var readStateCommands: some View {
-        Button("Mark as Read") { model.markRead(model.selectedMessages, true) }.keyboardShortcut("u", modifiers: [.command, .shift])
-            .disabled(model.selectionIsReadOnly)
-        Button("Mark as Unread") { model.markRead(model.selectedMessages, false) }.keyboardShortcut("u", modifiers: [.command, .option])
-            .disabled(model.selectionIsReadOnly)
+        Button("Mark as Read") { model.markRead(model.menuMessages, true) }.keyboardShortcut("u", modifiers: [.command, .shift])
+            .disabled(model.menuCannotChange)
+        Button("Mark as Unread") { model.markRead(model.menuMessages, false) }.keyboardShortcut("u", modifiers: [.command, .option])
+            .disabled(model.menuCannotChange)
         Button("Mark All as Read") { model.markAllReadInSelection() }
             .disabled(!model.canMarkAllRead)
             .help("Marks every unread message in the selected mailbox as read.")
-        Button(flagTitle) { model.toggleFlagOnSelection() }.keyboardShortcut("l", modifiers: [.command, .shift])
-            .disabled(model.selectionIsReadOnly)
-        Button("Mute Conversation") { model.muteSelection() }
+        Button(flagTitle) { model.menuToggleFlag() }.keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(model.menuCannotChange)
+        Button("Mute Conversation") { model.menuMute() }
             .keyboardShortcut("i", modifiers: [.command, .shift])
-            .disabled(model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
+            .disabled(model.menuCannotChange)
             .help("Outlook calls this Ignore. New replies are marked read and archived as they arrive.")
     }
 
@@ -213,7 +242,7 @@ struct FalconMailApp: App {
     }
 
     private var flagTitle: String {
-        model.firstSelectedMessage?.isFlagged == true ? "Unflag" : "Flag"
+        model.menuMessages.first?.isFlagged == true ? "Unflag" : "Flag"
     }
 
     private var undoTitle: String {
@@ -229,7 +258,7 @@ struct FalconMailApp: App {
         model.undoLastAction()
     }
 
-    private func openSelectedInTab() {
+    private func openSelected() {
         guard let thread = model.currentThread else { return }
         model.openMessage(thread.latest) { openWindow(value: $0) }
     }
@@ -270,7 +299,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         WindowTray.installMinimizeHook()
-        WindowTray.installCloseHook()
         #if DEBUG
         MainActor.assumeIsolated { RecipientDemo.startIfRequested() }
         #endif

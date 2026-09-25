@@ -3,7 +3,6 @@ import FalconCore
 
 struct OutboxView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         List(model.outboxItems) { item in
@@ -40,7 +39,7 @@ struct OutboxView: View {
     }
 
     private func reopen(_ item: OutboxItem) {
-        model.cancelAndReopen(item) { openWindow(value: $0) }
+        model.cancelAndReopen(item)
     }
 
     private func statusStyle(_ item: OutboxItem) -> Color {

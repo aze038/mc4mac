@@ -65,6 +65,6 @@ struct ContactsView: View {
         guard let account = model.accounts.first(where: { $0.id == c.accountID }) ?? model.accounts.first else { return }
         var draft = ComposeDraft.blank(account: account, signature: model.signature(for: account, .newMessages))
         draft.to = EmailAddress(name: c.name, address: c.email).rfc5322
-        model.openCompose(draft)
+        model.openCompose(draft, origin: .new)
     }
 }

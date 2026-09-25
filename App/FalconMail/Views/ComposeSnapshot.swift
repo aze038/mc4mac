@@ -5,8 +5,10 @@ import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
 /// ribbon over a body with ¶ showing its marks, the Table picker idle and with a size and text to
-/// convert, the address suggestions over a compose window's header, the alert on closing an
-/// unsent message, the main window's Home ribbon,
+/// convert, the address suggestions over a compose window's header, a message's own window with
+/// its Message ribbon, a compose window with Discard beside Send, the tray at the foot of the
+/// mailbox window holding a minimised message window and a minimised compose window, and the
+/// status bar offering Undo after a message is discarded, the main window's Home ribbon,
 /// which shares the compose ribbon's tiles, the Settings window's icon grid, its Signatures pane
 /// with two stand-in signatures, with none and with its notice of a damaged file set aside, its
 /// Notifications and Sounds pane and every other pane, the Privacy pane with its diagnostics
@@ -42,11 +44,11 @@ enum ComposeSnapshot {
             render(picker(hovering: TableSize(columns: 3, rows: 4), converts: true), size: menu, appearance: appearance,
                    to: "\(directory)/table-hover-\(name).png")
             suggestions(model, appearance: appearance, to: directory, name: name)
-            unsentAlert(appearance: appearance, to: "\(directory)/close-unsent-\(name).png")
             render(CommandBar().environment(model).frame(maxHeight: .infinity, alignment: .top),
                    size: NSSize(width: 1728, height: 140), appearance: appearance,
                    to: "\(directory)/home-\(name).png")
         }
+        windows(model, to: directory)
         signatures(model, to: directory)
         // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
         privacy(model, to: directory)
@@ -223,6 +225,55 @@ enum ComposeSnapshot {
         }
     }
 
+    /// The windows a message opens in and is written in, and where they go when minimised, all
+    /// over made-up mail: a message window, a compose window of a reply, the tray holding one of
+    /// each, and the status bar just after Discard.
+    @MainActor private static func windows(_ model: AppModel, to directory: String) {
+        let account = AccountInfo.google(email: "alex@example.com", displayName: "Alex Example")
+        model.accounts = [account]
+        let message = MessageSummary(
+            accountID: account.id, folderID: UUID(), uid: 7, messageID: "<figures-7@example.com>", inReplyTo: "",
+            references: [], subject: "Quarterly figures for the north office",
+            from: EmailAddress(name: "Sam Taylor", address: "sam.taylor@example.com"),
+            to: [EmailAddress(name: "Alex Example", address: "alex@example.com")], cc: [],
+            date: Date(timeIntervalSince1970: 1_790_000_000), flags: [.seen], size: 2048,
+            snippet: "Hello Alex, the figures for the quarter are in. North is up eight per cent on last year and "
+                + "South held steady. I have put the full breakdown in the shared folder; the summary is below. "
+                + "Could we go through it on Thursday before the board pack goes out?",
+            hasAttachments: false)
+        var reply = ComposeDraft(accountID: account.id)
+        reply.to = "Sam Taylor <sam.taylor@example.com>"
+        reply.subject = "Re: Quarterly figures for the north office"
+        reply.body = "Thanks Sam, Thursday at ten works for me.\n\nAlex\n"
+        let draftID = model.newDraft(reply)
+        defer { model.drafts[draftID] = nil }
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        for (name, appearance) in appearances {
+            let window = host(MessageWindowView(messageID: message.id, message: message)
+                                .themedRoot().environment(model).environmentObject(model.updates),
+                              size: NSSize(width: 917, height: 520), appearance: appearance, style: style)
+            capture(window, appearance: appearance, to: "\(directory)/message-window-\(name).png")
+            let compose = host(ComposeView(draftID: draftID).themedRoot().environment(model).environmentObject(model.updates),
+                               size: NSSize(width: OL.composeWindowWidth, height: 420), appearance: appearance, style: style)
+            capture(compose, appearance: appearance, to: "\(directory)/compose-window-\(name).png")
+        }
+        // Keys no window holds, so the tray keeps them as a launch puts back the ones minimised
+        // at the last quit.
+        WindowTray.shared.shelve(.message("snapshot-message"), title: "Quarterly figures for the north office")
+        WindowTray.shared.shelve(.compose(UUID()), title: "Re: Site visit on Friday")
+        let foot = NSSize(width: 1728, height: 64)
+        for (name, appearance) in appearances {
+            render(VStack(spacing: 0) { Spacer(minLength: 0); WindowTrayBar(); StatusBar() }.environment(model).themedRoot(),
+                   size: foot, appearance: appearance, to: "\(directory)/tray-\(name).png")
+        }
+        model.discarded.discard(reply, now: Date())
+        for (name, appearance) in appearances {
+            render(VStack(spacing: 0) { Spacer(minLength: 0); StatusBar() }.environment(model).themedRoot(),
+                   size: NSSize(width: 1728, height: 40), appearance: appearance, to: "\(directory)/discarded-\(name).png")
+        }
+        _ = model.discarded.undo(at: Date())
+    }
+
     @MainActor private static func textView(in view: NSView) -> NSTextView? {
         if let text = view as? NSTextView { return text }
         for child in view.subviews {
@@ -267,7 +318,7 @@ enum ComposeSnapshot {
         VStack(spacing: 0) {
             OLColor.chrome.frame(height: OL.titleRow)
             ComposeRibbon(tab: .constant(.message), formatter: formatter, showsBcc: .constant(false),
-                          importance: .constant("normal"), canSend: false, onSend: {}, onAttachFile: {},
+                          importance: .constant("normal"), canSend: false, onSend: {}, onDiscard: {}, onAttachFile: {},
                           onAttachFromDrive: {}, signatures: [], onInsertSignature: { _ in }, onEditSignatures: {},
                           onInsertTableDialog: {}, onCycleBackground: {})
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
@@ -291,7 +342,7 @@ enum ComposeSnapshot {
         return VStack(spacing: 0) {
             OLColor.chrome.frame(height: OL.titleRow)
             ComposeRibbon(tab: .constant(.message), formatter: formatter, showsBcc: .constant(false),
-                          importance: .constant("normal"), canSend: false, onSend: {}, onAttachFile: {},
+                          importance: .constant("normal"), canSend: false, onSend: {}, onDiscard: {}, onAttachFile: {},
                           onAttachFromDrive: {}, signatures: [], onInsertSignature: { _ in }, onEditSignatures: {},
                           onInsertTableDialog: {}, onCycleBackground: {})
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
@@ -382,17 +433,6 @@ enum ComposeSnapshot {
         }
         NSGraphicsContext.restoreGraphicsState()
         return rep
-    }
-
-    /// The alert's own content: its glass cannot be drawn off screen, so the content is laid on
-    /// the window background colour, and a window that is not key draws its default button grey
-    /// rather than blue.
-    @MainActor private static func unsentAlert(appearance: NSAppearance.Name, to path: String) {
-        let alert = UnsentMessageAlert.make()
-        alert.window.appearance = NSAppearance(named: appearance)
-        alert.layout()
-        guard let content = alert.window.contentView else { return }
-        capture(content, appearance: appearance, ground: .windowBackgroundColor, to: path)
     }
 
     @MainActor private static func render(_ view: some View, size: NSSize, appearance: NSAppearance.Name, to path: String) {
