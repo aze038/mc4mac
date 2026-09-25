@@ -1414,6 +1414,11 @@ final class AppModel {
         return [message.snippet, opened.bestText]
     }
 
+    #if DEBUG
+    /// For the debug snapshots, which have no account to fetch a message's text from.
+    func snapshotBody(_ parsed: MIMEMessage, for id: String) { bodyCache[id] = parsed }
+    #endif
+
     func parsedBody(for message: MessageSummary) async -> MIMEMessage? {
         if message.isServerOnly { return await serverBody(for: message) }
         if let cached = bodyCache[message.id] { return cached }

@@ -1,6 +1,7 @@
 #if DEBUG
 import SwiftUI
 import AppKit
+import WebKit
 import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
@@ -20,8 +21,10 @@ import FalconCore
 /// the web off and on, in both appearances into PNGs at twice their size in that directory, with
 /// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
-/// deleted, and the message list with made-up conversations, then quits. With
-/// `-FalconMailSnapshotOnly list` it draws the message list alone.
+/// deleted, the message list with made-up conversations, and a made-up conversation of four
+/// messages stacked in the reading pane and in its own window, newest and unread open, the rest
+/// folded, then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone, and
+/// with `-FalconMailSnapshotOnly stack` the conversation alone.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -36,8 +39,13 @@ enum ComposeSnapshot {
         let formatter = TextFormatter()
         formatter.attach(ComposeTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200)))
         let model = AppModel()
+        let only = UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly")
+        if only == "stack" {
+            conversationStack(model, to: directory)
+            exit(0)
+        }
         messageList(model, to: directory)
-        if UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly") == "list" { exit(0) }
+        if only == "list" { exit(0) }
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")
@@ -62,6 +70,7 @@ enum ComposeSnapshot {
         signatures(model, to: directory)
         inlinePictures(model, to: directory)
         replyQuotes(model, to: directory)
+        conversationStack(model, to: directory)
         // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
         privacy(model, to: directory)
         for (name, appearance) in appearances {
@@ -122,6 +131,83 @@ enum ComposeSnapshot {
         model.expandedThreadIDs = []
         model.selectedMessageIDs = []
         model.rebuildRows()
+    }
+
+    /// A made-up conversation of four messages as the reading pane stacks it and as its own
+    /// window shows it: the newest open, quoting the one under it behind •••, the unread one
+    /// under it open too, and the two oldest folded to a line each. Their text is handed to the
+    /// model as if fetched, and WebKit draws it as the app does.
+    @MainActor private static func conversationStack(_ model: AppModel, to directory: String) {
+        let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
+                                  imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [account]
+        let mail = StackSnapshotMail(accountID: account.id).messages
+        for (message, parsed) in mail { model.snapshotBody(parsed, for: message.id) }
+        let messages = mail.map(\.0)
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        for (name, appearance) in appearances {
+            let pane = host(ConversationStackView(messages: messages).environment(model).environmentObject(model.updates).themedRoot(),
+                            size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 840), appearance: appearance)
+            captureWithMessages(pane, appearance: appearance, to: "\(directory)/convstack-pane-\(name).png")
+            let window = host(MessageWindowView(messageID: messages[0].id, message: messages[0], conversation: messages)
+                                .themedRoot().environment(model).environmentObject(model.updates),
+                              size: NSSize(width: 917, height: 1006), appearance: appearance, style: style)
+            captureWithMessages(window, appearance: appearance, to: "\(directory)/convstack-window-\(name).png")
+        }
+    }
+
+    /// As `capture`, for a view holding messages, which WebKit draws in another process where
+    /// cacheDisplay cannot see them: once every message has loaded and been measured, and the
+    /// stack has stood still for three seconds, each message's own picture is laid over the view's
+    /// where it shows.
+    @MainActor private static func captureWithMessages(_ view: NSView, appearance: NSAppearance.Name, to path: String) {
+        let deadline = Date(timeIntervalSinceNow: 25)
+        var stillSince: Date?
+        while Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+            view.layoutSubtreeIfNeeded()
+            let messages = views(of: ReaderWebView.self, in: view).filter(\.fitsContent)
+            guard !messages.isEmpty, messages.allSatisfy(\.measured) else {
+                stillSince = nil
+                continue
+            }
+            let since = stillSince ?? Date()
+            stillSince = since
+            if Date().timeIntervalSince(since) > 3 { break }
+        }
+        guard let rep = image(of: view, appearance: appearance) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        for web in views(of: ReaderWebView.self, in: view) {
+            let shown = web.visibleRect.intersection(web.bounds)
+            guard !shown.isEmpty, let picture = picture(of: web) else { continue }
+            let inView = web.convert(shown, to: view)
+            let target = view.isFlipped
+                ? NSRect(x: inView.minX, y: view.bounds.height - inView.maxY, width: inView.width, height: inView.height) : inView
+            let source = web.isFlipped
+                ? NSRect(x: shown.minX, y: web.bounds.height - shown.maxY, width: shown.width, height: shown.height) : shown
+            picture.draw(in: target, from: source, operation: .sourceOver, fraction: 1)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        write(rep, to: path)
+    }
+
+    /// What WebKit has drawn of `web`, the size of its bounds. WebKit sometimes has nothing to
+    /// give the first time it is asked, so it is asked a few times.
+    @MainActor private static func picture(of web: WKWebView) -> NSImage? {
+        for _ in 0..<5 {
+            var result: NSImage?
+            var done = false
+            web.takeSnapshot(with: nil) { image, _ in
+                result = image
+                done = true
+            }
+            let deadline = Date(timeIntervalSinceNow: 5)
+            while !done, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05)) }
+            if let result { return result }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+        }
+        return nil
     }
 
     /// A made-up message whose subject is far too long for the reading header's one line. Its
@@ -779,6 +865,63 @@ private struct ListSnapshotMail {
             message(30, "Ravi Patel", "ravi@example.org", "Customs paperwork for container 7", daysAgo(12, hour: 10)),
         ])
         return [opened, dock, pallets, weekly, order, harbour, statement, customs]
+    }
+}
+
+/// Made-up mail for the conversation stack's snapshot: every name, address and word is invented.
+/// Newest first: Maya's reply quoting Tom's as Gmail does, Tom's unread reply quoting Maya's in
+/// plain text, Maya's question and Alex's first message.
+private struct StackSnapshotMail {
+    let accountID: UUID
+    private let folderID = UUID()
+
+    private let alex = EmailAddress(name: "Alex Example", address: "alex@example.com")
+    private let maya = EmailAddress(name: "Maya Lindqvist", address: "maya@example.com")
+    private let tom = EmailAddress(name: "Tom Okafor", address: "tom@example.net")
+    private let priya = EmailAddress(name: "Priya Raman", address: "priya@example.org")
+    private let subject = "Delivery windows for the north depot"
+
+    private static func date(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
+        Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute)) ?? Date()
+    }
+
+    private let firstText = "Hi Maya, Tom,\n\nFrom next week the north depot is closed on Mondays, so the deliveries need new "
+        + "windows. Could you agree two with the carrier?\n\nThanks,\nAlex"
+    private let questionText = "Hello Tom, could you ask the carrier for two delivery windows next week? The depot is closed "
+        + "on Monday and the dock is busy after four.\n\nMaya"
+    private let answerText = "Morning both,\n\nThe carrier can do Tuesday between 07:00 and 09:00, or Wednesday after 14:00. "
+        + "They need to know by Friday noon. Which suits the depot?\n\nTom"
+
+    var messages: [(MessageSummary, MIMEMessage)] {
+        let quotedQuestion = questionText.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
+        let answer = answerText + "\n\nOn Thu, 24 Sept 2026 at 16:40, Maya Lindqvist <maya@example.com> wrote:\n\n" + quotedQuestion
+        let replyHTML = """
+            <div dir="ltr"><div>Hi Tom,</div><div><br></div><div>Tuesday 07:00 to 09:00 works for us. I have booked dock two \
+            and told the night shift, so the driver can come straight in.</div><div><br></div><div>Priya, could you put it in \
+            the depot calendar?</div><div><br></div><div>Maya</div></div><br><div class="gmail_quote gmail_quote_container">\
+            <div dir="ltr" class="gmail_attr">On Fri, 25 Sept 2026 at 09:15, Tom Okafor &lt;tom@example.net&gt; wrote:<br></div>\
+            <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">\
+            <div dir="ltr">\(answerText.replacingOccurrences(of: "\n", with: "<br>"))</div></blockquote></div>
+            """
+        return [
+            message(4, from: maya, to: [alex, tom], cc: [priya], at: Self.date(25, 10, 42), read: true, html: replyHTML),
+            message(3, from: tom, to: [alex, maya], cc: [], at: Self.date(25, 9, 15), read: false, plain: answer),
+            message(2, from: maya, to: [tom], cc: [alex], at: Self.date(24, 16, 40), read: true, plain: questionText),
+            message(1, from: alex, to: [maya, tom], cc: [], at: Self.date(23, 11, 5), read: true, plain: firstText),
+        ]
+    }
+
+    private func message(_ uid: UInt32, from: EmailAddress, to: [EmailAddress], cc: [EmailAddress], at date: Date, read: Bool,
+                         plain: String? = nil, html: String? = nil) -> (MessageSummary, MIMEMessage) {
+        let type = html == nil ? "text/plain" : "text/html"
+        let raw = "From: \(from.rfc5322)\r\nSubject: \(uid == 1 ? subject : "Re: " + subject)\r\nMIME-Version: 1.0\r\n"
+            + "Content-Type: \(type); charset=utf-8\r\n\r\n" + (html ?? plain ?? "")
+        let parsed = MIMEParser.parse(Data(raw.utf8))
+        let summary = MessageSummary(accountID: accountID, folderID: folderID, uid: uid, messageID: "<stack-\(uid)@example.com>",
+                                     inReplyTo: "", references: [], subject: uid == 1 ? subject : "Re: " + subject, from: from,
+                                     to: to, cc: cc, date: date, flags: read ? [.seen] : [], size: raw.utf8.count,
+                                     snippet: parsed.snippet, hasAttachments: false, hasBody: true, threadKey: "stack")
+        return (summary, parsed)
     }
 }
 #endif
