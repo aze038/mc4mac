@@ -95,7 +95,8 @@ whole passes do not sync it, until a list at least a minute later leaves it out
 too; only then is it taken off the Mac. That second list comes from a whole
 pass run a minute after the first, not at the next pass on the usual schedule,
 so a folder deleted on the server goes about a minute after the first list
-without it. A list without `INBOX`, or an empty one, takes nothing off, since
+without it. A whole pass in between, such as Send & Receive, leaves that look
+where it was; it is dropped only once no folder waits for it. A list without `INBOX`, or an empty one, takes nothing off, since
 every IMAP server lists `INBOX` and one that does not has lost track of the
 account for a moment. When a folder synced on its own, for example after
 something was saved into it, is refused because it no longer exists, the

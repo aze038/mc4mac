@@ -137,6 +137,63 @@ final class FolderListTests: XCTestCase {
         XCTAssertEqual(inbox.count, 3)
     }
 
+    private func lists(_ h: EngineHarness) -> Int { h.server.commands.filter { $0.contains(" LIST ") }.count }
+
+    /// Send & Receive inside the confirmation time after the first list that left a folder out
+    /// neither takes the folder off early nor puts off the look for it: the folder still goes
+    /// about the confirmation time after that first list, not at the next whole pass an hour away.
+    func testSendAndReceiveInsideTheConfirmationTimeKeepsTheLookForAFolderLeftOut() async throws {
+        let h = try await running(gone: 1.0)
+        let hr = try await h.folder("HR")
+        h.server.removeMailbox("HR")
+        let asked = Date()
+        let first = await finishedCount(h)
+        await h.syncer.requestSync()
+        await assertEventually { await h.store.foldersLeftOut(accountID: h.account.id) == [hr.id] }
+        await assertEventually { await self.finishedCount(h) > first && h.server.idlingCount == 1 }
+        let listsBefore = lists(h)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let second = await finishedCount(h)
+        await h.syncer.requestSync(check: true)
+        await assertEventually { await self.finishedCount(h) > second && h.server.idlingCount == 1 }
+        XCTAssertEqual(lists(h), listsBefore + 1)
+        var stored = await h.store.folder(hr.id)
+        XCTAssertNotNil(stored, "the pass in between comes before the confirmation time")
+        await assertEventually("taken off by the look that was waiting", within: 5) { await h.store.folder(hr.id) == nil }
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(asked), 1.0, "not before the confirmation time")
+        stored = await h.store.folder(hr.id)
+        XCTAssertNil(stored)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory(h, hr).path))
+        XCTAssertEqual(lists(h) - listsBefore, 2, "Send & Receive, then the look")
+        // Nothing more is asked of the server until the next pass is due.
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertEqual(lists(h) - listsBefore, 2)
+    }
+
+    /// A folder that a list leaves out and the next lists again, before the confirmation time is
+    /// up, needs no look: nothing more is listed until the next whole pass.
+    func testAFolderListedAgainBeforeTheLookNeedsNone() async throws {
+        let h = try await running(gone: 0.5)
+        let hr = try await h.folder("HR")
+        h.server.leaveOutOfNextLists(["HR"])
+        let first = await finishedCount(h)
+        await h.syncer.requestSync()
+        await assertEventually { await h.store.foldersLeftOut(accountID: h.account.id) == [hr.id] }
+        await assertEventually { await self.finishedCount(h) > first && h.server.idlingCount == 1 }
+        let second = await finishedCount(h)
+        await h.syncer.requestSync(check: true)
+        await assertEventually { await self.finishedCount(h) > second && h.server.idlingCount == 1 }
+        let leftOut = await h.store.foldersLeftOut(accountID: h.account.id)
+        XCTAssertTrue(leftOut.isEmpty, "listed again")
+        let listsAfter = lists(h)
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertEqual(lists(h), listsAfter, "no look is left waiting")
+        let kept = try await h.folder("HR")
+        XCTAssertEqual(kept.id, hr.id)
+        let rows = try await h.uids(in: "HR")
+        XCTAssertEqual(rows.count, 2)
+    }
+
     /// A folder deleted on the server and then asked for on its own, as after saving into it or
     /// finding one of its messages gone: the SELECT the server refuses neither drops the
     /// connection nor takes the account offline. The folders are listed again at once, and the

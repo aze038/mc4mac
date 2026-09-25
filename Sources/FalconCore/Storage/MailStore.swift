@@ -227,7 +227,13 @@ public actor MailStore {
     /// The account's folders that a list from the server has left out. They wait for a later
     /// list to leave them out too before they are taken off the Mac.
     public func foldersLeftOut(accountID: UUID) -> Set<UUID> {
-        Set((folders[accountID] ?? []).map(\.id).filter { missingSince[$0] != nil })
+        Set(foldersLeftOutSince(accountID: accountID).keys)
+    }
+
+    /// When each of the account's folders that a list from the server has left out was first
+    /// left out. A list the confirmation time after that which leaves it out too takes it off.
+    public func foldersLeftOutSince(accountID: UUID) -> [UUID: Date] {
+        Dictionary(uniqueKeysWithValues: (folders[accountID] ?? []).compactMap { f in missingSince[f.id].map { (f.id, $0) } })
     }
 
     public func updateFolder(_ folder: FolderInfo) throws {
