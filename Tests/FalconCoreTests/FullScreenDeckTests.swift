@@ -169,6 +169,44 @@ final class FullScreenDeckTests: XCTestCase {
         XCTAssertEqual(deck.next(after: .window(b), backwards: false), .window(a))
     }
 
+    // MARK: Keys answered while the mailbox window fills the screen
+
+    private func key(_ code: UInt16, _ characters: String?, command: Bool = false, shift: Bool = false, option: Bool = false,
+                     control: Bool = false, function: Bool = false) -> FullScreenKey? {
+        FullScreenKey(keyCode: code, characters: characters, command: command, shift: shift, option: option, control: control,
+                      function: function)
+    }
+
+    func testCommandBacktickGoesRoundAndWithShiftTheOtherWay() {
+        XCTAssertEqual(key(50, "`", command: true), .cycle(backwards: false))
+        XCTAssertEqual(key(50, "~", command: true, shift: true), .cycle(backwards: true))
+        XCTAssertNil(key(50, "`"), "backtick alone is typed")
+        XCTAssertNil(key(50, "`", command: true, option: true))
+    }
+
+    func testCommandMSendsTheWindowInFrontToItsTab() {
+        XCTAssertEqual(key(46, "m", command: true), .minimise)
+        XCTAssertNil(key(46, "m", command: true, shift: true), "Command-Shift-M is Move to Folder")
+        XCTAssertNil(key(46, "m", command: true, option: true), "Command-Option-M is left to the Window menu")
+        XCTAssertNil(key(46, "m"))
+    }
+
+    func testControlCommandFAndGlobeFLeaveFullScreen() {
+        XCTAssertEqual(key(3, "f", command: true, control: true), .leaveFullScreen)
+        XCTAssertEqual(key(3, "f", function: true), .leaveFullScreen)
+        XCTAssertNil(key(3, "f", command: true), "Command-F is Find")
+        XCTAssertNil(key(3, "f", command: true, shift: true, control: true))
+        XCTAssertNil(key(3, "f", control: true))
+        XCTAssertNil(key(3, "f"))
+    }
+
+    func testOnALayoutWithoutLatinLettersTheKeysPlaceCounts() {
+        XCTAssertEqual(key(46, "ь", command: true), .minimise)
+        XCTAssertEqual(key(3, "а", command: true, control: true), .leaveFullScreen)
+        XCTAssertNil(key(45, "т", command: true))
+        XCTAssertNil(key(46, "n", command: true), "on a Latin layout the letter counts, wherever it is")
+    }
+
     // MARK: Minimising and bringing back, with the tray
 
     /// The tray and the windows showing, kept together as the window tray keeps them.

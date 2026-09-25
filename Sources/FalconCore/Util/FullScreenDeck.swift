@@ -67,6 +67,43 @@ public enum FullScreenLayout {
     }
 }
 
+/// A key FalconMail answers itself while its mailbox window fills the screen, rather than leaving
+/// it to the menus and macOS, which act on the window in front and may not count a window kept
+/// inside the mailbox window's space as one that can be minimised or leave full screen.
+public enum FullScreenKey: Equatable, Sendable {
+    /// Command-`, or Command-Shift-` going the other way: round the mailbox window and the
+    /// windows over it.
+    case cycle(backwards: Bool)
+    /// Command-M: the window over the mailbox that is in front goes to its tab.
+    case minimise
+    /// Control-Command-F, or Globe-F: the mailbox window leaves full screen, as it does when it
+    /// is the one in front.
+    case leaveFullScreen
+
+    /// The key pressed. `characters` is what it types without modifiers and `keyCode` its place
+    /// on the keyboard, which counts instead on a layout whose letters are not Latin, as the menus'
+    /// shortcuts do. Nil for any other key.
+    public init?(keyCode: UInt16, characters: String?, command: Bool, shift: Bool, option: Bool, control: Bool,
+                 function: Bool) {
+        func isLetter(_ letter: String, keyCode code: UInt16) -> Bool {
+            guard let characters, !characters.isEmpty, characters.unicodeScalars.allSatisfy(\.isASCII) else {
+                return keyCode == code
+            }
+            return characters.lowercased() == letter
+        }
+        let backtick = keyCode == 50 || ["`", "~"].contains(characters ?? "")
+        if command, !option, !control, backtick {
+            self = .cycle(backwards: shift)
+        } else if command, !shift, !option, !control, isLetter("m", keyCode: 46) {
+            self = .minimise
+        } else if !shift, !option, (command && control) || (function && !command && !control), isLetter("f", keyCode: 3) {
+            self = .leaveFullScreen
+        } else {
+            return nil
+        }
+    }
+}
+
 /// Which message and compose windows show while the mailbox window fills the screen, and in which
 /// order they stand, left to right. Those minimised are not here: they wait in the tray, which
 /// the status bar shows as tabs.

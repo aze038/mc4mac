@@ -53,19 +53,41 @@ final class FullScreenItems {
             MainActor.assumeIsolated { self?.stopFollowingHost() }
         })
         // Command-` goes round the mailbox window and the windows over it, whether or not macOS
-        // counts a child window among those it goes round.
+        // counts a child window among those it goes round; Command-M and the full-screen keys
+        // work in a window over it, whether or not the menus count it as one they can act on.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, FullScreenItems.isCycleKey(event) else { return event }
-            let backwards = event.modifierFlags.contains(.shift)
-            return MainActor.assumeIsolated { self.cycle(backwards: backwards) } ? nil : event
+            let held = event.modifierFlags
+            guard let self, let key = FullScreenKey(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers,
+                                                    command: held.contains(.command), shift: held.contains(.shift),
+                                                    option: held.contains(.option), control: held.contains(.control),
+                                                    function: held.contains(.function))
+            else { return event }
+            return MainActor.assumeIsolated { self.answer(key) } ? nil : event
         }
     }
 
-    /// Command-`, or Command-Shift-`, and nothing else held.
-    private static func isCycleKey(_ event: NSEvent) -> Bool {
-        let held = event.modifierFlags.intersection([.command, .option, .control])
-        guard held == .command else { return false }
-        return event.keyCode == 50 || ["`", "~"].contains(event.charactersIgnoringModifiers ?? "")
+    /// Answers `key`. False when it is left to the menus and macOS: always in a window that is
+    /// neither the mailbox window nor one showing over it.
+    private func answer(_ key: FullScreenKey) -> Bool {
+        switch key {
+        case .cycle(let backwards):
+            return cycle(backwards: backwards)
+        case .minimise:
+            guard let front = showingInFront else { return false }
+            onSendToTab?(front)
+            return true
+        case .leaveFullScreen:
+            // With the mailbox window in front, the menu does it.
+            guard showingInFront != nil, let host, host.styleMask.contains(.fullScreen) else { return false }
+            host.toggleFullScreen(nil)
+            return true
+        }
+    }
+
+    /// What the window over the mailbox that is in front holds, when one is.
+    private var showingInFront: PopupKey? {
+        guard let front = NSApp.keyWindow else { return nil }
+        return deck.showing.first { taken[$0]?.window.window === front }
     }
 
     /// Brings the next window round to the front. False when the window in front is neither the
@@ -76,7 +98,7 @@ final class FullScreenItems {
         let current: FullScreenDeck.Stop
         if front === host {
             current = .mailbox
-        } else if let key = taken.first(where: { $0.value.window.window === front })?.key, deck.showing.contains(key) {
+        } else if let key = showingInFront {
             current = .window(key)
         } else {
             return false
