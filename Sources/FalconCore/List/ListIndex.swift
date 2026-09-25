@@ -157,64 +157,29 @@ public struct ListBuild: Sendable {
 
 /// Outlook's "Show in groups" for dates: Today, Yesterday, Earlier this week, Earlier this month,
 /// then one group a month. Boundaries fall at local midnights, so they move only once a day and
-/// the anchors that place them are asked again only then.
+/// the anchors that place them are asked for only then. They are `GmailDateGroups`', so the
+/// anchors the engine keeps are the ones the list looks for.
 public struct ListDateGroups: Sendable {
     public let now: Date
     public let calendar: Calendar
     /// Today's first boundary, which anchors asked before midnight do not have.
-    public var startOfToday: Date { today }
-    private let today: Date
-    private let yesterday: Date
-    private let week: Date
-    private let month: Date
+    public var startOfToday: Date { calendar.startOfDay(for: now) }
 
     public init(now: Date, calendar: Calendar = .current) {
         self.now = now
         self.calendar = calendar
-        today = calendar.startOfDay(for: now)
-        yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today.addingTimeInterval(-86_400)
-        week = calendar.date(byAdding: .day, value: -6, to: today) ?? today.addingTimeInterval(-6 * 86_400)
-        month = calendar.date(byAdding: .month, value: -1, to: today) ?? today.addingTimeInterval(-30 * 86_400)
     }
 
     /// The group boundaries from newest to oldest: the four recent ones, then the first of each
     /// month back to `oldest`. With `daily`, every midnight of the last month as well, so rows
     /// of several accounts can be placed among each other to the day.
     public func boundaries(oldest: Date?, daily: Bool = false) -> [Date] {
-        var out = [today, yesterday, week, month]
-        if daily {
-            var day = yesterday
-            while let next = calendar.date(byAdding: .day, value: -1, to: day), next > month {
-                day = next
-                if day != week { out.append(day) }
-            }
-        }
-        var start = calendar.dateInterval(of: .month, for: month.addingTimeInterval(-1))?.start
-        let floor = oldest ?? now
-        while let boundary = start, boundary < month {
-            out.append(boundary)
-            guard boundary > floor else { break }
-            start = calendar.date(byAdding: .month, value: -1, to: boundary)
-        }
-        return Array(Set(out)).sorted(by: >)
+        GmailDateGroups.boundaries(now: now, oldest: oldest, daily: daily, calendar: calendar).map(\.date)
     }
-
-    private static let monthFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MMMM yyyy"
-        return f
-    }()
 
     /// The group a date falls in, as the list's own `dayKey` names them.
     public func title(for date: Date) -> String {
-        if date >= today { return "Today" }
-        if date >= yesterday { return "Yesterday" }
-        if date >= week { return "Earlier this week" }
-        if date >= month { return "Earlier this month" }
-        let formatter = ListDateGroups.monthFormatter
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        return formatter.string(from: date)
+        GmailDateGroups.title(for: date, now: now, calendar: calendar)
     }
 }
 

@@ -17,7 +17,7 @@ final class GmailBackfillTests: XCTestCase {
 
     func testTheStepsComeInOrder() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let start = clock.now()
         var refs: [GmailRef] = []
         for i in 0..<40 {
@@ -206,7 +206,7 @@ final class GmailBackfillTests: XCTestCase {
         var settings = listingOnly()
         settings.pageSize = 10
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let start = clock.now()
         // Archived mail, which only All Mail lists.
         let refs = (0..<60).map { gmail.add(subject: "Archived \($0)", labels: [], date: start.addingTimeInterval(-Double(60 - $0) * 3600)) }
@@ -216,7 +216,8 @@ final class GmailBackfillTests: XCTestCase {
         var fired = false
         let rig = GmailEngineRig(transport: gmail, clock: clock, settings: settings)
         rig.transport.onList { query in
-            if !fired, query.labels.isEmpty, query.query == nil, query.pageToken == "20" {
+            // The fake's page tokens are "offset.position.generation", as Gmail's behave.
+            if !fired, query.labels.isEmpty, query.query == nil, query.pageToken?.hasPrefix("20.") == true {
                 fired = true
                 gmail.delete(deleted.id)
             }
@@ -239,7 +240,7 @@ final class GmailBackfillTests: XCTestCase {
 
     func testFoldersTakeOutlooksNamesAndOrder() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let clients = gmail.addUserLabel(named: "Clients")
         let acme = gmail.addUserLabel(named: "Clients/Acme")
         gmail.addUserLabel(named: "Receipts", visibility: "labelHide")
@@ -272,7 +273,7 @@ final class GmailBackfillTests: XCTestCase {
 
     func testTheSwitchKeepsTheFoldersTheOwnerHad() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let clients = gmail.addUserLabel(named: "Clients")
         gmail.addUserLabel(named: "Clients/Acme")
         gmail.add(subject: "One", labels: [.inbox, clients], date: clock.now().addingTimeInterval(-100))
@@ -299,7 +300,7 @@ final class GmailBackfillTests: XCTestCase {
 
     func testTheNewestAreKeptWithTheirConversations() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let start = clock.now()
         var refs: [GmailRef] = []
         for i in 0..<30 {
@@ -310,8 +311,12 @@ final class GmailBackfillTests: XCTestCase {
         }
         var settings = GmailEngineSettings()
         settings.fillsCache = true
-        let store = MemoryGmailStore(accountID: gmail.accountID, cacheLimit: 10, cacheCeiling: 12)
-        let rig = GmailEngineRig(transport: gmail, store: store, clock: clock, settings: settings)
+        var limits = GmailFileStore.Limits()
+        limits.cacheLimit = 10
+        limits.cacheCeiling = 12
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("gmail-engine-\(UUID().uuidString)", isDirectory: true)
+        let store = RecordingGmailStore(accountID: gmail.accountID, directory: directory, limits: limits)
+        let rig = GmailEngineRig(transport: gmail, store: store, clock: clock, settings: settings, directory: directory)
         await rig.engine.start()
         try await eventually(timeout: 20, "the newest kept") {
             let complete = await rig.engine.state.backfill?.phase == .complete
@@ -320,7 +325,9 @@ final class GmailBackfillTests: XCTestCase {
             return complete && !filling && kept == 10
         }
         let cached = await store.cachedIDs()
-        XCTAssertEqual(cached, Set(refs.suffix(10).map(\.id)))
+        // The store keeps the newest message of each of the newest conversations first, as the
+        // list shows them: the 26th is the older member of the 28th's, so the 19th is kept instead.
+        XCTAssertEqual(cached, Set([29, 28, 27, 25, 24, 23, 22, 21, 20, 19].map { refs[$0].id }))
         XCTAssertEqual(gmail.units[.threadsGet], 80,
                        "the first screen's conversation is summarised once; the one with a member not kept costs one threads.get")
         let summaries = await store.threadSummaries([refs[5].threadID, refs[26].threadID, refs[29].threadID])
@@ -336,7 +343,7 @@ final class GmailBackfillTests: XCTestCase {
 
     func testDateAnchorsFindTheNewestMessageBeforeEachBoundary() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let start = clock.now()
         let refs = (0..<90).map { gmail.add(subject: "Mail \($0)", labels: [.inbox], date: start.addingTimeInterval(-Double(90 - $0) * day + 60)) }
         let rig = GmailEngineRig(transport: gmail, clock: clock, settings: listingOnly())

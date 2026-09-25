@@ -8,7 +8,7 @@ final class GmailHistoryTests: XCTestCase {
     private let day: TimeInterval = 86_400
 
     /// A mailbox of `count` Inbox messages, one a day, the newest a day before the clock, listed.
-    private func listedRig(_ gmail: MemoryGmailTransport, count: Int = 20, clock: ManualGmailClock = ManualGmailClock(),
+    private func listedRig(_ gmail: FakeGmail, count: Int = 20, clock: ManualGmailClock = ManualGmailClock(),
                            settings: GmailEngineSettings? = nil, parts: GmailEngineParts = GmailEngineParts())
         async throws -> (GmailEngineRig, [GmailRef]) {
         let start = clock.now()
@@ -44,7 +44,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testMailThatArrivedNowGoesOnTopAndOtherAddedMailGoesDeep() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let fresh = gmail.add(subject: "Fresh", labels: [.inbox, .unread], date: clock.now().addingTimeInterval(-5))
@@ -77,7 +77,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAMessageDated2037ChangesNothingAndNewMailIsStillAnnounced() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let future = gmail.add(subject: "Dated 2037", labels: [.inbox, .unread], date: Date(timeIntervalSince1970: 2_114_380_800))
@@ -101,7 +101,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testMailGmailTookLongerToScanStillCountsAsNew() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         _ = await rig.engine.check(reason: .schedule)
         clock.advance(by: 30)
@@ -116,7 +116,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAWrongClockOnTheMacDoesNotMatter() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         _ = await rig.engine.check(reason: .schedule)
         // The Mac's clock is two hours behind Gmail's.
@@ -133,7 +133,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAMessageAddedAndDeletedInOneCheckIsNeverFetched() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         let fetchesBefore = gmail.calls[.messagesGet] ?? 0
         let autosave = gmail.add(subject: "Autosave", labels: [.draft], date: clock.now())
@@ -151,7 +151,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAMessageDeletedBeforeItsFetchIsATombstoneAndNeverPlaced() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let brief = gmail.add(subject: "Here and gone", labels: [.inbox, .unread], date: clock.now())
@@ -171,7 +171,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAStreamOfWebDraftAutosavesPlacesOnlyTheLatest() async throws {
         let clock = ManualGmailClock(Date())
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         var draft = try await gmail.createDraft(mime("Plan", messageID: "<plan@example.com>", date: clock.now()), threadID: nil, work: .interactive)
         let fetchesBefore = gmail.calls[.messagesGet] ?? 0
@@ -198,7 +198,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testALabelChangeOnAMessageTheIndexMissedPlacesIt() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
         let missed = gmail.add(subject: "Missed by a listing", labels: [.inbox], date: clock.now().addingTimeInterval(-5.5 * day),
                                recordHistory: false)
@@ -217,7 +217,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testLabelChangesApplyInOrderAndTheLastWins() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
         gmail.relabel(refs[3].id, adding: [.unread])
         gmail.relabel(refs[3].id, removing: [.unread])
@@ -234,7 +234,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAFetchThatFailsForNowWaitsWithoutHoldingTheCursor() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let slow = gmail.add(subject: "Timed out", labels: [.inbox, .unread], date: clock.now())
@@ -254,7 +254,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testManyAddedMessagesAreMatchedAgainstOneSearchFirst() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let fresh = (0..<3).map { gmail.add(subject: "Fresh \($0)", labels: [.inbox, .unread], date: clock.now().addingTimeInterval(Double(-$0))) }
@@ -275,7 +275,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testDeepMailPackedIntoOneGapMovesItsNeighboursAndKeepsTheOrder() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, count: 6, clock: clock)
         // Twenty messages received between the two oldest, whose orders are one step apart.
         let low = clock.now().addingTimeInterval(-6 * day)
@@ -293,7 +293,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAnEchoOfTheOwnersChangeChangesNoCount() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
         for ref in refs.suffix(5) { gmail.relabel(ref.id, adding: [.unread]) }
         _ = await rig.engine.check(reason: .schedule)
@@ -301,65 +301,68 @@ final class GmailHistoryTests: XCTestCase {
         let unreadBefore = await inboxUnread()
         XCTAssertEqual(unreadBefore, 5)
 
-        let change = UUID()
+        let actions = await rig.installActions(undoWindow: 60)
         let target = refs[19].id
-        await rig.engine.hold(GmailHeldChange(id: change, labels: [target: [.unread]]))
-        try await rig.engine.showNow([.relabel(target, adding: [], removing: [.unread])])
+        _ = try await rig.engine.perform(try await rig.request(.markRead, [target], in: .inbox))
         let shown = await inboxUnread()
         XCTAssertEqual(shown, 4, "the change shows at once")
-        _ = try await gmail.modify(target, adding: [], removing: [.unread], work: .interactive)
+        // Read on the phone too, before FalconMail's own change has gone: the history's record of
+        // it is held back with the change, and changes nothing.
+        gmail.relabel(target, removing: [.unread])
         _ = await rig.engine.check(reason: .schedule)
         let afterEcho = await inboxUnread()
         XCTAssertEqual(afterEcho, 4, "its echo changes nothing")
-        await rig.engine.endHold(change, sent: true)
+        let sent = await actions.flushPending(within: 5)
+        XCTAssertTrue(sent)
         _ = await rig.engine.check(reason: .schedule)
         let settled = await inboxUnread()
         XCTAssertEqual(settled, 4)
 
         // A sent message goes in from Gmail's answer; its echo fetches nothing.
-        let answer = try await gmail.send(mime("Re: plan", messageID: "<reply@example.com>", date: clock.now(), from: "owner@example.com"),
-                                          threadID: nil, work: .interactive)
-        try await rig.engine.placeAtTop(answer)
+        let raw = mime("Re: plan", messageID: "<reply@example.com>", date: clock.now(), from: "owner@example.com")
+        let answer = try await gmail.send(raw, threadID: nil, work: .interactive)
+        await rig.engine.placeUploaded(answer, labels: answer.labels, raw: raw, replacing: nil, messageID: nil)
         let fetches = gmail.calls[.messagesGet] ?? 0
         let report = await rig.engine.check(reason: .schedule)
         XCTAssertEqual(gmail.calls[.messagesGet] ?? 0, fetches)
         XCTAssertTrue(report.placedAtTop.isEmpty && report.placedDeep.isEmpty)
-        let sent = await rig.engine.folders().first { $0.role == .sent }?.totalCount
-        XCTAssertEqual(sent, 1)
+        let sentCount = await rig.engine.folders().first { $0.role == .sent }?.totalCount
+        XCTAssertEqual(sentCount, 1)
         await rig.finish()
     }
 
     func testAPhoneDeleteDuringAHeldDeleteSurvivesUndo() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
+        let actions = await rig.installActions(undoWindow: 60)
         let target = refs[10].id
-        let change = UUID()
-        await rig.engine.hold(GmailHeldChange(id: change, labels: [target: [.trash]]))
-        try await rig.engine.showNow([.relabel(target, adding: [.trash], removing: [])])
+        let receipt = try await rig.engine.perform(try await rig.request(.delete, [target], in: .inbox))
+        let deleted = await rig.store.labels(of: target)
+        XCTAssertEqual(deleted, [.inbox, .trash], "shown at once, and held for the undo window")
         // Meanwhile the phone deletes it too, and stars it.
         gmail.relabel(target, adding: [.trash, .starred])
         _ = await rig.engine.check(reason: .schedule)
-        let kept = await rig.engine.keptRecords(for: change)
-        XCTAssertEqual(kept, [GmailKeptRecord(id: target, adding: [.trash], removing: [])])
         let starred = await rig.store.labels(of: target)
         XCTAssertEqual(starred, [.inbox, .trash, .starred], "what the change does not touch is applied at once")
         // The owner presses Undo: his own delete is taken back, and the phone's is not lost.
-        try await rig.engine.showNow([.relabel(target, adding: [], removing: [.trash])])
-        await rig.engine.endHold(change, sent: false)
+        let undone = await rig.engine.undo(receipt.id)
+        XCTAssertTrue(undone)
         let labels = await rig.store.labels(of: target)
         XCTAssertEqual(labels, [.inbox, .trash, .starred])
+        let pending = await actions.hasPendingChanges()
+        XCTAssertFalse(pending)
+        XCTAssertEqual(gmail.calls[.messagesModify] ?? 0, 0, "undone within the window, nothing was sent")
         await rig.finish()
     }
 
     func testAListingLeavesAHeldChangeAlone() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
+        await rig.installActions(undoWindow: 60)
         let target = refs[12].id
-        let change = UUID()
-        await rig.engine.hold(GmailHeldChange(id: change, labels: [target: [.inbox]]))
-        try await rig.engine.showNow([.relabel(target, adding: [], removing: [.inbox])])
+        _ = try await rig.engine.perform(try await rig.request(.archive, [target], in: .inbox))
         let result = try await rig.engine.relist(labels: [.label(.inbox)], allMail: false, replaceBits: true, confirmRemovals: false,
                                                  work: .background(.index))
         try await rig.store.commit(GmailJournalBatch(changes: result.changes))
@@ -434,23 +437,25 @@ final class GmailHistoryTests: XCTestCase {
 
     func testFalconMailsOwnImportNeverFloodsOrAnnounces() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         let old = clock.now().addingTimeInterval(-400 * day)
         // One import whose echo a check sees before its answer is recorded.
         let racedID = "<raced@import.example>"
         await rig.engine.willImport(messageID: racedID)
-        let raced = try await gmail.importMessage(mime("Raced", messageID: racedID, date: old), labels: [.inbox], options: GmailImportOptions(),
-                                                  work: .background(.transfer))
+        let racedRaw = mime("Raced", messageID: racedID, date: old)
+        let raced = try await gmail.importMessage(racedRaw, labels: [.inbox], options: GmailImportOptions(), work: .background(.transfer))
         let during = await rig.engine.check(reason: .schedule)
         XCTAssertEqual(during.waiting, [try XCTUnwrap(raced.gmailID)], "left for the next check while the import is on its way")
-        try await rig.engine.didImport(raced, messageID: racedID, date: old)
+        try await rig.engine.imported(try XCTUnwrap(raced.gmailID), messageID: racedID)
+        await rig.engine.placeImported(raced, labels: raced.labels, date: old, above: nil)
         for i in 0..<120 {
             let id = "<import\(i)@import.example>"
             await rig.engine.willImport(messageID: id)
             let answer = try await gmail.importMessage(mime("Import \(i)", messageID: id, date: old.addingTimeInterval(Double(i) * 60)),
                                                        labels: [.inbox], options: GmailImportOptions(), work: .background(.transfer))
-            try await rig.engine.didImport(answer, messageID: id, date: old)
+            try await rig.engine.imported(try XCTUnwrap(answer.gmailID), messageID: id)
+            await rig.engine.placeImported(answer, labels: answer.labels, date: old, above: nil)
         }
         clock.advance(by: 120)
         let fetches = gmail.calls[.messagesGet] ?? 0
@@ -458,7 +463,8 @@ final class GmailHistoryTests: XCTestCase {
         XCTAssertFalse(report.floodBegan)
         let flooding = await rig.engine.flood.isActive
         XCTAssertFalse(flooding)
-        XCTAssertFalse(gmail.isFloodMode)
+        let lowered = await gmail.isFloodMode()
+        XCTAssertFalse(lowered)
         XCTAssertEqual(gmail.calls[.messagesGet] ?? 0, fetches, "their echoes fetch nothing")
         XCTAssertTrue(rig.events.announced.isEmpty)
         let snapshot = await rig.store.index()
@@ -473,7 +479,7 @@ final class GmailHistoryTests: XCTestCase {
         settings.fillsCache = false
         settings.pageSize = 10
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, count: 60, clock: clock, settings: settings)
         let oldCursor = await rig.engine.historyCursor()
         let doomed = refs[40]
@@ -485,7 +491,8 @@ final class GmailHistoryTests: XCTestCase {
         let skipped = refs[49]
         var fired = false
         rig.transport.onList { query in
-            if !fired, query.labels.isEmpty, query.query == nil, query.pageToken == "10", query.maxResults == 10 {
+            // The fake's page tokens are "offset.position.generation", as Gmail's behave.
+            if !fired, query.labels.isEmpty, query.query == nil, query.pageToken?.hasPrefix("10.") == true, query.maxResults == 10 {
                 fired = true
                 gmail.delete(deletedDuring.id)
             }
@@ -520,7 +527,7 @@ final class GmailHistoryTests: XCTestCase {
         settings.fillsCache = false
         settings.confirmByListingAbove = 3
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, count: 30, clock: clock, settings: settings)
         let doomed = Array(refs[5..<10])
         for ref in doomed { gmail.delete(ref.id) }
@@ -540,7 +547,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testNewMailDuringAResyncIsStillAnnounced() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
         gmail.relabel(refs[0].id, adding: [.starred])
         gmail.expireHistory()
@@ -574,7 +581,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAFullRelistingRunsAtMostEverySixHoursUnlessTheOwnerAsks() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock)
         gmail.relabel(refs[0].id, adding: [.starred])
         gmail.expireHistory()
@@ -602,7 +609,7 @@ final class GmailHistoryTests: XCTestCase {
         var settings = GmailEngineSettings()
         settings.fillsCache = false
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = try await listedRig(gmail, clock: clock, settings: settings)
         gmail.relabel(refs[0].id, adding: [.starred])
         gmail.expireHistory()
@@ -633,7 +640,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAPokeDuringACheckSchedulesExactlyOneMore() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         rig.transport.clearLog()
         let entered = Flag()
@@ -652,7 +659,7 @@ final class GmailHistoryTests: XCTestCase {
 
     func testAQuietCheckSavesNothing() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = try await listedRig(gmail, clock: clock)
         _ = await rig.engine.check(reason: .schedule)
         let batches = await rig.store.batches.count

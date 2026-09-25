@@ -219,6 +219,8 @@ struct GmailChainPlan: Sendable {
     var query: GmailListQuery
     /// Keep the ids listed, to compare with the index afterwards.
     var collects: Bool
+    /// What a search teaches the index about every message it lists, such as having attachments.
+    var attributes: GmailRecordAttributes = []
 }
 
 /// What listing the mailbox again decided.
@@ -317,9 +319,9 @@ extension GmailAccountEngine {
                 continue
             }
             var refs = page.refs
-            if !plan.labels.isEmpty, !held.isEmpty {
+            if !plan.labels.isEmpty, let held = await parts.actions?.heldLabels(engine: self), !held.isEmpty {
                 // A change the owner made and Gmail has not confirmed wins over what the list says.
-                refs = refs.filter { ref in !plan.labels.contains { held.protects(ref.id, $0) != nil } }
+                refs = refs.filter { ref in plan.labels.isDisjoint(with: held.labels(for: ref.id)) }
             }
             var first: UInt32?
             var step = GmailOrderSpace.step
@@ -333,7 +335,7 @@ extension GmailAccountEngine {
             }
             try await store.appendListingPage(GmailListingPage(chain: plan.chain, run: plan.run, pageToken: token,
                                                                nextPageToken: page.nextPageToken, refs: refs, firstOrder: first,
-                                                               orderStep: step, labels: plan.labels))
+                                                               orderStep: step, labels: plan.labels, attributes: plan.attributes))
             listed += page.refs.count
             chainProgress[plan.chain] = GmailChainProgress(run: plan.run, nextPageToken: page.nextPageToken,
                                                            isComplete: page.nextPageToken == nil, listed: listed)
@@ -411,6 +413,7 @@ extension GmailAccountEngine {
         }
         if replaceBits {
             let inboxListed = listed[.label(.inbox)]
+            let held = await parts.actions?.heldLabels(engine: self) ?? .none
             for chain in chains {
                 let members = listed[chain] ?? []
                 let label: GmailLabelID
@@ -421,7 +424,7 @@ extension GmailAccountEngine {
                     for slot in after.byOrder {
                         let record = after.records[Int(slot)]
                         guard after.record(atSlot: slot, has: category), inboxListed.contains(record.id), !members.contains(record.id),
-                              !fresh.contains(record.id), held.protects(record.gmailID, category) == nil else { continue }
+                              !fresh.contains(record.id), !held.labels(for: record.gmailID).contains(category) else { continue }
                         result.changes.append(.relabel(record.gmailID, adding: [], removing: [category]))
                     }
                     continue
@@ -430,7 +433,7 @@ extension GmailAccountEngine {
                 for slot in after.byOrder {
                     let record = after.records[Int(slot)]
                     guard !members.contains(record.id), !fresh.contains(record.id), !record.attributes.contains(.provisional),
-                          after.record(atSlot: slot, has: label), held.protects(record.gmailID, label) == nil else { continue }
+                          after.record(atSlot: slot, has: label), !held.labels(for: record.gmailID).contains(label) else { continue }
                     result.changes.append(.relabel(record.gmailID, adding: [], removing: [label]))
                 }
             }
@@ -764,37 +767,24 @@ extension GmailAccountEngine {
         Task { try? await self.refreshDateAnchors(only: nil) }
     }
 
-    /// Asks the anchor of each boundary in `only`, or of every boundary back to the oldest message.
+    /// Asks the anchor of each boundary in `only`, or of every boundary back to the oldest message
+    /// that has none yet. The engine's filler asks, which the list asks through too, so the
+    /// anchors have one writer; the list is rebuilt when one was learnt.
     func refreshDateAnchors(only: [Date]?) async throws {
-        let boundaries: [Date]
-        if let only {
-            boundaries = only
-        } else {
-            let snapshot = await store.index()
-            var oldest: Date?
-            if let slot = liveOrder(snapshot).first {
-                oldest = try? await transport.message(snapshot.records[Int(slot)].gmailID, format: .minimal, work: .background(.index)).receivedDate
-            }
-            boundaries = GmailDateGroups.boundaries(now: now(), oldest: oldest).map(\.date)
-        }
-        var anchors = Dictionary((await store.dateAnchors()).map { ($0.boundary, $0) }, uniquingKeysWith: { a, _ in a })
-        for boundary in boundaries {
-            let page = try await transport.list(GmailListQuery(query: "before:\(Int(boundary.timeIntervalSince1970))", includeSpamTrash: true,
-                                                               maxResults: 1), work: .background(.index))
-            let ref = page.refs.first
-            let order: UInt32?
-            if let ref { order = await store.record(for: ref.id)?.order } else { order = nil }
-            anchors[boundary] = GmailDateAnchor(boundary: boundary, id: ref?.id, order: order, askedAt: now())
-        }
-        try await store.saveDateAnchors(anchors.values.sorted { $0.boundary > $1.boundary })
+        let learnt: Bool
+        if let only { learnt = try await anchorFiller.ask(only) } else { learnt = await anchorFiller.fill() }
         state.anchorsDay = Calendar.current.startOfDay(for: now())
         saveState(force: true)
+        if learnt { publishIndexChange(ids: [], everything: true) }
     }
 
     /// After mail was placed deep, only a boundary with a newly placed message directly above its
     /// anchor can have moved, so only those are asked again.
     func refreshAnchors(near placed: Set<UInt64>) async {
-        guard state.dateGroupsWanted == true, !placed.isEmpty else { return }
+        guard !placed.isEmpty else { return }
+        // A boundary whose older neighbour was not placed yet may have it now.
+        await anchorFiller.indexChanged()
+        guard state.dateGroupsWanted == true else { return }
         let anchors = await store.dateAnchors()
         guard !anchors.isEmpty else { return }
         let snapshot = await store.index()
@@ -1010,6 +1000,21 @@ extension GmailAccountEngine {
             pendingFloodEnd = false
             startFloodRelist(final: true)
         }
+        if !viewListingsWanted.isEmpty, relistTask == nil, listed {
+            let wanted = viewListingsWanted
+            viewListingsWanted = []
+            relistTask = Task {
+                await self.listForViews(wanted)
+                self.relistEnded()
+            }
+        }
+        if importRelistWanted, relistTask == nil, listed {
+            importRelistWanted = false
+            relistTask = Task {
+                await self.importRelist()
+                self.relistEnded()
+            }
+        }
         if labelsListWanted, relistTask == nil, state.backfill?.phase == .complete {
             labelsListWanted = false
             relistTask = Task {
@@ -1032,7 +1037,8 @@ extension GmailAccountEngine {
         if state.dateGroupsWanted == true, state.backfill?.phase == .complete,
            state.anchorsDay.map({ $0 < Calendar.current.startOfDay(for: current) }) ?? true {
             state.anchorsDay = Calendar.current.startOfDay(for: current)
-            Task { try? await self.refreshDateAnchors(only: GmailDateGroups.recent(now: current)) }
+            // Each boundary is a fixed midnight, so only the new day's are missing.
+            Task { try? await self.refreshDateAnchors(only: nil) }
         }
     }
 
@@ -1100,5 +1106,72 @@ extension GmailAccountEngine {
                         code: (error as? GoogleAPIError)?.kind.rawValue)
             labelsListWanted = true
         }
+    }
+}
+
+// MARK: - Listings a view asks for (§5.3, §5.5)
+
+/// What the list asks the engine to learn about every message, once, the first time a view needs
+/// it.
+public enum GmailViewListing: Hashable, Sendable {
+    /// Has attachments, or the Attachments sort: the `has:attachment` listing, about a fifth of
+    /// the mailbox in pages of 500.
+    case attachments
+    /// The Size sort: four `larger:` listings, about 1,900 units at 200,000, once.
+    case sizes
+}
+
+extension GmailAccountEngine {
+    /// The size bands, smallest first, each listed after the one below it, so a message in
+    /// several ends with the largest.
+    static let sizeListings: [(query: String, band: SizeBand)] = [("larger:25k", .small), ("larger:100k", .medium),
+                                                                   ("larger:1m", .large), ("larger:5m", .huge)]
+
+    /// Asks for a listing a view needs; it runs in the background once the mailbox is listed and
+    /// nothing else is being listed, and the list is told when it is in.
+    public func wantListing(_ listing: GmailViewListing) {
+        switch listing {
+        case .attachments where state.attachmentsKnown == true: return
+        case .sizes where state.sizesKnown == true: return
+        default: break
+        }
+        viewListingsWanted.insert(listing)
+        wakeLoop()
+    }
+
+    func listForViews(_ wanted: Set<GmailViewListing>) async {
+        do {
+            if wanted.contains(.attachments), state.attachmentsKnown != true {
+                var plan = plan(.search("has:attachment"), run: nextRun(for: [.search("has:attachment")]), collects: false)
+                plan.attributes = [.attachmentKnown, .hasAttachment]
+                _ = try await runChains([plan], work: .background(.index))
+                state.attachmentsKnown = true
+                saveState(force: true)
+            }
+            if wanted.contains(.sizes), state.sizesKnown != true {
+                for (query, band) in Self.sizeListings {
+                    var plan = plan(.search(query), run: nextRun(for: [.search(query)]), collects: false)
+                    var attributes: GmailRecordAttributes = [.sizeKnown]
+                    attributes.sizeBand = band
+                    plan.attributes = attributes
+                    _ = try await runChains([plan], work: .background(.index))
+                }
+                state.sizesKnown = true
+                saveState(force: true)
+            }
+            publishIndexChange(ids: [], everything: true)
+        } catch {
+            viewListingsWanted.formUnion(wanted)
+            Log.warning("gmail", "\(account.email): a listing a view asked for stopped; it goes on later", error: error, account: account,
+                        code: (error as? GoogleAPIError)?.kind.rawValue)
+        }
+    }
+
+    /// What the list needs to know of the listings: whether every message has its place, how
+    /// many there are meanwhile, and whether attachments and sizes are known for all.
+    public func listingState() async -> ListListingState {
+        await loadIfNeeded()
+        return ListListingState(allMailComplete: allMailComplete, allMailTotal: state.backfill?.total,
+                                attachmentsKnown: state.attachmentsKnown == true, sizesKnown: state.sizesKnown == true)
     }
 }

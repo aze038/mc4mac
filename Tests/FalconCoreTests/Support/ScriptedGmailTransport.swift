@@ -1,13 +1,13 @@
 import Foundation
 @testable import FalconCore
 
-/// `MemoryGmailTransport` with the failures a plain double cannot make, for sending, drafts,
+/// The in-memory Gmail over the real transport, with the failures it cannot make, for sending, drafts,
 /// imports and the archive job: an upload Gmail took whose answer never came (a timeout after
 /// acceptance), calls held at a gate until a test lets them go, and a Gmail that replaces a
 /// sent message's Message-ID without keeping FalconMail's anywhere. Everything else is the
 /// mailbox's own.
 final class ScriptedGmailTransport: GmailTransport, @unchecked Sendable {
-    let mailbox: MemoryGmailTransport
+    let mailbox: FakeGmail
     private let lock = NSLock()
     private var afterAccepting: [GmailMethod: [GoogleAPIError]] = [:]
     private var gates: [GmailMethod: Gate] = [:]
@@ -18,7 +18,7 @@ final class ScriptedGmailTransport: GmailTransport, @unchecked Sendable {
     private var _dropsOriginalMessageID = false
     private var _uploads: [GmailMethod: [Data]] = [:]
 
-    init(_ mailbox: MemoryGmailTransport = MemoryGmailTransport()) {
+    init(_ mailbox: FakeGmail = FakeGmail()) {
         self.mailbox = mailbox
     }
 

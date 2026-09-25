@@ -356,7 +356,9 @@ final class ListIndexTests: XCTestCase {
         let parts = boundaries.map { calendar.dateComponents([.month, .day, .hour], from: $0) }
         XCTAssertEqual(parts.map(\.hour), parts.map { _ in 0 }, "every boundary is a midnight")
         XCTAssertEqual(parts.prefix(4).map(\.day), [25, 24, 19, 25])
-        XCTAssertEqual(parts.dropFirst(4).map(\.month), [8, 7, 6, 5])
+        // Down to the month of the oldest message: nothing is older than its first day, so that
+        // boundary would cost 5 units to learn nothing.
+        XCTAssertEqual(parts.dropFirst(4).map(\.month), [8, 7, 6])
         XCTAssertEqual(groups.title(for: now), "Today")
         XCTAssertEqual(groups.title(for: boundaries[1]), "Yesterday")
         let daily = groups.boundaries(oldest: nil, daily: true)

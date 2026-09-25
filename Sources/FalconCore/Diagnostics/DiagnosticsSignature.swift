@@ -463,6 +463,10 @@ public enum DiagnosticsTitle {
         "interrupted": "FalconMail stopped while it was under way",
         "journalLinesSkipped": "some saved lines could not be read",
         "unknownClient": "the sign-in was made by a FalconMail this one cannot renew",
+        // Gmail's own allowances, which every app on the account shares, as the Gmail engine's
+        // sends, drafts, imports and archive jobs report them.
+        "uploadPaused": "Gmail paused uploads for the account",
+        "downloadPaused": "Gmail paused downloads for the account",
     ]
 
     /// The plain sentence for a crash of this code, which `CrashIdentity` adds its details to.

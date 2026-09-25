@@ -153,6 +153,12 @@ public final class TokenBucketEstimate: RowFetchBudget {
         pausedUntil = max(pausedUntil, time)
     }
 
+    /// What the account's real bucket holds at `time`, so the copy follows what other work spent.
+    public func setLevel(_ units: Double, at time: TimeInterval) {
+        refill(to: time)
+        level = min(capacity, units)
+    }
+
     private func refill(to time: TimeInterval) {
         if let updated, time > updated { level = min(capacity, level + (time - updated) * refillPerSecond) }
         if updated == nil || time > updated! { updated = time }

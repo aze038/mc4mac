@@ -288,6 +288,8 @@ final class FakeGmailMailbox: @unchecked Sendable {
         var batchFaults: [Fault] = []
         var acceptedTokens: Set<String>?
         var historyAddedCarriesLabels = true
+        /// Gmail's clock less the Mac's, sent in each answer's Date header; nil sends none.
+        var serverClockSkew: TimeInterval?
         var replacesMessageIDOnSend = false
         var draftReplacesMessageID = false
         var snippetInMetadata = true
@@ -360,10 +362,13 @@ final class FakeGmailMailbox: @unchecked Sendable {
 
     // MARK: - Setting it up and changing it as another device would
 
+    /// `recordHistory: false` puts the message in without a history record, as mail that was
+    /// there before a start point a test takes.
     @discardableResult
     func add(subject: String, from: String = "Ana <ana@example.com>", to: String = "owner@example.com", cc: String = "",
              text: String = "Hello", html: String? = nil, labels: Set<String> = ["INBOX"], date: Date? = nil,
-             messageID: String? = nil, threadID: String? = nil, attachments: [Attachment] = [], size: Int? = nil) -> Message {
+             messageID: String? = nil, threadID: String? = nil, attachments: [Attachment] = [], size: Int? = nil,
+             recordHistory: Bool = true) -> Message {
         lock.withLock {
             let id = newMessageID()
             let hex = String(id, radix: 16)
@@ -372,7 +377,7 @@ final class FakeGmailMailbox: @unchecked Sendable {
             let thread = threadID.map(threadNumber) ?? id
             let bytes = size ?? (text.utf8.count + (html?.utf8.count ?? 0) + attachments.reduce(0) { $0 + $1.data.count })
             let slot = insert(id: id, thread: thread, labels: bits(labels), date: date ?? clock(), size: bytes,
-                              hasAttachment: !attachments.isEmpty, content: content)
+                              hasAttachment: !attachments.isEmpty, content: content, recordHistory: recordHistory)
             return message(at: slot)
         }
     }
@@ -535,6 +540,12 @@ final class FakeGmailMailbox: @unchecked Sendable {
     }
 
     // MARK: - Behaviour
+
+    /// How far Gmail's clock is from the Mac's, as the Date header of every answer says.
+    var serverClockSkew: TimeInterval? {
+        get { lock.withLock { state.serverClockSkew } }
+        set { lock.withLock { state.serverClockSkew = newValue } }
+    }
 
     var historyAddedCarriesLabels: Bool {
         get { lock.withLock { state.historyAddedCarriesLabels } }
@@ -908,6 +919,14 @@ final class FakeGmailMailbox: @unchecked Sendable {
     private func respond(_ url: URL, _ status: Int, _ body: Any, headers: [String: String] = [:], data: Data? = nil) -> (HTTPURLResponse, Data) {
         var all = headers
         if all["Content-Type"] == nil { all["Content-Type"] = "application/json; charset=UTF-8" }
+        // Called under the lock.
+        if let skew = state.serverClockSkew {
+            let format = DateFormatter()
+            format.locale = Locale(identifier: "en_US_POSIX")
+            format.timeZone = TimeZone(identifier: "GMT")
+            format.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+            all["Date"] = format.string(from: Date().addingTimeInterval(skew))
+        }
         let bytes = data ?? (status == 204 ? Data() : FakeGmailMailbox.json(body))
         return (HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: all)!, bytes)
     }

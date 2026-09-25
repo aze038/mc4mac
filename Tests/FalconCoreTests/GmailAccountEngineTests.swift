@@ -7,7 +7,7 @@ import XCTest
 final class GmailAccountEngineTests: XCTestCase {
     private let day: TimeInterval = 86_400
 
-    private func listedRig(_ gmail: MemoryGmailTransport, clock: ManualGmailClock = ManualGmailClock(), count: Int = 10,
+    private func listedRig(_ gmail: FakeGmail, clock: ManualGmailClock = ManualGmailClock(), count: Int = 10,
                            parts: GmailEngineParts = GmailEngineParts()) async -> (GmailEngineRig, [GmailRef]) {
         let start = clock.now()
         let refs = (0..<count).map {
@@ -24,31 +24,34 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testAKeptMessageOpensFromTheMacAndAnotherFromGmail() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let fresh = gmail.add(subject: "Kept", text: "Kept text", labels: [.inbox, .unread], date: clock.now())
         _ = await rig.engine.check(reason: .schedule)
-        let units = gmail.totalUnits
+        // Opening reads messages and attachments; label counts asked after the check may still be
+        // on their way, and are not opening's.
+        func openingUnits() -> Int { (gmail.units[.messagesGet] ?? 0) + (gmail.units[.attachmentsGet] ?? 0) + (gmail.units[.threadsGet] ?? 0) }
+        let units = openingUnits()
         var opened: [OpenedMessage] = []
         for try await stage in await rig.engine.open(.gmail(account: rig.account.id, id: fresh.id), purpose: .window) { opened.append(stage) }
         XCTAssertEqual(opened.count, 1)
         XCTAssertTrue(opened[0].fromCache)
         XCTAssertEqual(opened[0].content.message.textPlain, "Kept text")
         XCTAssertEqual(opened[0].content.message.subject, "Kept")
-        XCTAssertEqual(gmail.totalUnits, units, "a kept message opens at no cost")
+        XCTAssertEqual(openingUnits(), units, "a kept message opens at no cost")
 
         opened = []
         for try await stage in await rig.engine.open(.gmail(account: rig.account.id, id: refs[0].id), purpose: .window) { opened.append(stage) }
         XCTAssertEqual(opened.map(\.fromCache), [false])
         XCTAssertEqual(opened.last?.content.listedAttachments.map(\.filename), ["attachment.pdf"])
-        XCTAssertEqual(gmail.totalUnits - units, 20, "one format=full")
+        XCTAssertEqual(openingUnits() - units, 20, "one format=full")
 
         // An attachment id Gmail no longer takes is replaced from a fresh structure.
         var stub = try XCTUnwrap(opened.last?.content.listedAttachments.first)
         stub.attachmentID = "expired"
         let data = try await rig.engine.attachmentData(stub, of: .gmail(account: rig.account.id, id: refs[0].id))
-        XCTAssertEqual(data, MemoryGmailTransport.attachmentBytes(refs[0].id))
+        XCTAssertEqual(data, gmail.mailbox.message(refs[0].id.hex)?.attachments.first?.data)
         let raw = try await rig.engine.rawMessage(.gmail(account: rig.account.id, id: refs[1].id))
         XCTAssertEqual(MIMEParser.parse(raw).headers.first("Subject"), "Old 1")
         await rig.finish()
@@ -57,7 +60,7 @@ final class GmailAccountEngineTests: XCTestCase {
     // MARK: - The parts other work items plug in
 
     func testWorkNotBuiltYetSaysSoPlainlyAndPartsPlugIn() async throws {
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = await listedRig(gmail)
         let request = MailActionRequest(verb: .archive, targets: .items([.message(.gmail(account: rig.account.id, id: refs[0].id))]),
                                         context: ListView(scope: .folder(UUID())))
@@ -82,7 +85,7 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testRulesAndMutesSeeNewMailFirstAndCanKeepItQuiet() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let actions = RecordingActions()
         let (rig, _) = await listedRig(gmail, clock: clock, parts: GmailEngineParts(actions: actions))
         clock.advance(by: 30)
@@ -101,7 +104,7 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testTheListHearsWhichMessagesChangedAndTheFoldersTheirCounts() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = await listedRig(gmail, clock: clock)
         let changes = await rig.engine.indexChanges()
         let folders = await rig.engine.folderUpdates()
@@ -122,22 +125,17 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testAnUndoneChangeWithManyKeptRecordsTakesTheLabelsFromGmail() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = await listedRig(gmail, clock: clock, count: 60)
-        let change = UUID()
-        var labels: [GmailMessageID: Set<GmailLabelID>] = [:]
-        for ref in refs { labels[ref.id] = [.inbox] }
-        await rig.engine.hold(GmailHeldChange(id: change, labels: labels))
-        try await rig.engine.showNow(refs.map { .relabel($0.id, adding: [], removing: [.inbox]) })
+        await rig.installActions(undoWindow: 60)
+        let receipt = try await rig.engine.perform(try await rig.request(.archive, refs.map(\.id), in: .inbox))
         // The phone archives every one of them too, and stars one.
         for ref in refs { gmail.relabel(ref.id, removing: [.inbox]) }
         gmail.relabel(refs[7].id, adding: [.starred])
         _ = await rig.engine.check(reason: .schedule)
-        let kept = await rig.engine.keptRecords(for: change)
-        XCTAssertEqual(kept.count, 60)
-        try await rig.engine.showNow(refs.map { .relabel($0.id, adding: [.inbox], removing: []) })
         let fetches = gmail.calls[.messagesGet] ?? 0
-        await rig.engine.endHold(change, sent: false)
+        let undone = await rig.engine.undo(receipt.id)
+        XCTAssertTrue(undone)
         XCTAssertEqual((gmail.calls[.messagesGet] ?? 0) - fetches, 60, "more than 50 kept: each message's labels are asked of Gmail")
         let first = await rig.store.labels(of: refs[0].id)
         let starred = await rig.store.labels(of: refs[7].id)
@@ -150,7 +148,7 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testALabelMadeOnAnotherDeviceIsReadAndListed() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, refs) = await listedRig(gmail, clock: clock)
         let label = gmail.addUserLabel(named: "Projects")
         gmail.relabel(refs[3].id, adding: [label])
@@ -170,7 +168,7 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testTheDailyLookReadsTheSendAsAddressesAndChecksTheCounts() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         gmail.sendAsAddresses = [GmailSendAs(sendAsEmail: "owner@example.com", isPrimary: true), GmailSendAs(sendAsEmail: "Sales@Example.com")]
         let (rig, _) = await listedRig(gmail, clock: clock)
         let own = await rig.engine.ownAddresses()
@@ -190,22 +188,24 @@ final class GmailAccountEngineTests: XCTestCase {
 
     // MARK: - Answers placed by other items
 
-    func testAnAnswerPlacesOrRelabelsAndARemovalGoes() async throws {
+    func testAnUploadIsPlacedOnTopOrKeepsItsPlaceAndARemovalGoes() async throws {
         let clock = ManualGmailClock(Date())
-        let gmail = MemoryGmailTransport()
-        let (rig, refs) = await listedRig(gmail, clock: clock)
+        let gmail = FakeGmail()
+        let (rig, _) = await listedRig(gmail, clock: clock)
         let raw = Data("From: owner@example.com\r\nTo: ana@example.com\r\nSubject: Plan\r\nMessage-ID: <plan@x>\r\n\r\nText".utf8)
         let draft = try await gmail.createDraft(raw, threadID: nil, work: .interactive)
         let message = try XCTUnwrap(draft.message)
-        try await rig.engine.placeAtTop(message)
-        let top = await rig.store.index().byOrder.last
+        await rig.engine.placeUploaded(message, labels: message.labels, raw: raw, replacing: nil, messageID: nil)
         let snapshot = await rig.store.index()
-        XCTAssertEqual(snapshot.records[Int(try XCTUnwrap(top))].gmailID, message.gmailID)
-        let again = try await gmail.modify(refs[1].id, adding: [.starred], removing: [], work: .interactive)
-        try await rig.engine.placeAtTop(again)
-        let starred = await rig.store.labels(of: refs[1].id)
-        XCTAssertEqual(starred, [.inbox, .starred], "a message already known only takes the answer's labels")
-        try await rig.engine.removeFromIndex([try XCTUnwrap(message.gmailID)])
+        let top = try XCTUnwrap(snapshot.byOrder.last)
+        XCTAssertEqual(snapshot.records[Int(top)].gmailID, message.gmailID)
+        let kept = await rig.store.cachedMessages([try XCTUnwrap(message.gmailID)])
+        XCTAssertEqual(kept.values.first?.subject, "Plan", "its row is kept from the bytes uploaded, at no cost")
+        // Saved again with Gmail's Message-ID: the same place.
+        await rig.engine.placeUploaded(message, labels: message.labels, raw: raw, replacing: nil, messageID: "<gmail-plan@mail.gmail.com>")
+        let again = await rig.store.index()
+        XCTAssertEqual(again.byOrder.last, top)
+        await rig.engine.forget([try XCTUnwrap(message.gmailID)])
         let gone = await rig.store.record(for: try XCTUnwrap(message.gmailID))
         XCTAssertTrue(gone?.attributes.contains(.tombstone) ?? true)
         await rig.finish()
@@ -215,7 +215,7 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testAReplyToAKeptConversationExtendsItsSummaryAtNoCost() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let first = gmail.add(subject: "Rates", labels: [.inbox, .unread], date: clock.now())
@@ -235,7 +235,7 @@ final class GmailAccountEngineTests: XCTestCase {
 
     func testAfterARelaunchMailFromTheLastDayIsAnnouncedAndOlderMailIsNot() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let (rig, _) = await listedRig(gmail, clock: clock)
         await rig.engine.stop()
         // Two days away: mail came in all the while.

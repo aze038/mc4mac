@@ -301,6 +301,8 @@ public final class GmailHTTPTransport: GmailTransport, @unchecked Sendable {
     let api: GoogleAPI
     private let lock = NSLock()
     private var batchAddress = 0
+    /// Gmail's time less the Mac's, from the Date header of its last answer.
+    private var clockOffset: TimeInterval?
 
     public init(api: GoogleAPI, budget: GmailBudget, endpoints: GmailEndpoints = .google,
                 options: GmailTransportOptions = GmailTransportOptions()) {
@@ -702,6 +704,7 @@ public final class GmailHTTPTransport: GmailTransport, @unchecked Sendable {
             }
             refreshNow = false
             let (data, http) = answer
+            noteServerDate(http)
             await budget.finish(ticket, down: data.count, up: up)
             if (200..<300).contains(http.statusCode) { return Reply(data: data, response: http, sentAt: ticket.admittedAt) }
             let refusal = GoogleErrorParser.parse(status: http.statusCode, body: data, retryAfter: http.value(forHTTPHeaderField: "Retry-After"),
@@ -718,6 +721,22 @@ public final class GmailHTTPTransport: GmailTransport, @unchecked Sendable {
             // A plain rate refusal waits in the budget's pause, which every call shares.
             if refusal.kind != .rateLimited || refusal.isConcurrencyLimit { try await budget.sleep(wait) }
         }
+    }
+
+    private static let httpDate: DateFormatter = {
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.timeZone = TimeZone(identifier: "GMT")
+        format.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return format
+    }()
+
+    /// Keeps how far Gmail's clock is from the Mac's. The header counts whole seconds, so a Mac
+    /// within two seconds of Gmail is taken to agree with it.
+    private func noteServerDate(_ http: HTTPURLResponse) {
+        guard let text = http.value(forHTTPHeaderField: "Date"), let date = GmailHTTPTransport.httpDate.date(from: text) else { return }
+        let offset = date.timeIntervalSinceNow
+        lock.withLock { clockOffset = abs(offset) < 2 ? 0 : offset }
     }
 
     /// What a failure that is not Gmail's answer means. None of these reached Gmail except a
@@ -738,5 +757,13 @@ public final class GmailHTTPTransport: GmailTransport, @unchecked Sendable {
         default:
             return GoogleAPIError(kind: .other, detail: String(describing: type(of: error)), delivery: .notSent)
         }
+    }
+}
+
+/// New mail is decided by Gmail's clock (§4.3), which the engine reads from here, so a Mac whose
+/// clock is wrong still announces it.
+extension GmailHTTPTransport: GmailServerClock {
+    public func gmailClockOffset() async -> TimeInterval? {
+        lock.withLock { clockOffset }
     }
 }

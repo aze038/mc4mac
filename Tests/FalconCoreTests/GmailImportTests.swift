@@ -21,23 +21,26 @@ final class GmailImportTests: XCTestCase {
     // MARK: - Helpers
 
     private struct Rig {
-        let mailbox: MemoryGmailTransport
+        let mailbox: FakeGmail
         let transport: ScriptedGmailTransport
-        let store: MemoryGmailStore
+        let store: any GmailStore
         let importer: GmailImporter
     }
 
-    private func rig(transport: ScriptedGmailTransport? = nil, store: MemoryGmailStore? = nil, allowance: (any GmailImportAllowance)? = nil,
+    private func rig(transport: ScriptedGmailTransport? = nil, store: (any GmailStore)? = nil, allowance: (any GmailImportAllowance)? = nil,
                      jobFile: URL? = nil, clock: TestClock? = nil, sleeps: SleepLog? = nil) -> Rig {
-        let transport = transport ?? ScriptedGmailTransport(MemoryGmailTransport(email: owner))
-        let store = store ?? MemoryGmailStore(accountID: transport.mailbox.accountID)
+        let transport = transport ?? ScriptedGmailTransport(FakeGmail(email: owner))
+        let store = store ?? GmailTestPlacer.store(accountID: transport.mailbox.accountID, root: root)
         let now: @Sendable () -> Date = clock?.reading ?? { @Sendable in Date() }
+        let gmailClock = transport.mailbox.clock
         let sleep: @Sendable (TimeInterval) async throws -> Void = { seconds in
             sleeps?.append(seconds)
             clock?.advance(seconds)
+            // The transport's budget waits out Gmail's pauses by the same time.
+            gmailClock.advance(seconds)
         }
         let importer = GmailImporter(accountID: transport.mailbox.accountID, email: owner, transport: transport, store: store,
-                                     placer: GmailStorePlacer(store: store, now: now),
+                                     placer: GmailTestPlacer.engine(transport: transport, store: store, now: now),
                                      allowance: allowance ?? RollingImportAllowance(now: now), jobFile: jobFile, now: now, sleep: sleep)
         return Rig(mailbox: transport.mailbox, transport: transport, store: store, importer: importer)
     }
@@ -211,6 +214,24 @@ final class GmailImportTests: XCTestCase {
         XCTAssertEqual(sleeps.all.reduce(0, +), 86_400, accuracy: 5)
     }
 
+    func testWithTheAppsTrafficMeterAnImportKeepsToItsOneLedger() async throws {
+        let clock = TestClock(Date())
+        let limits = TrafficLimits(background: 1_000_000, download: 1_000_000, upload: 1_000_000,
+                                   api: APITrafficLimits(background: 8_000, download: 15_000, imports: 1_000, upload: 4_000))
+        let meter = TrafficMeter(layout: FileLayout(root: root), limits: limits, now: clock.reading)
+        let account = UUID()
+        let allowance = TrafficMeterImportAllowance(meter: meter, accountID: account)
+        let now = clock.reading()
+        let first = await allowance.whenAllows(600)
+        XCTAssertEqual(first, now)
+        // What the transport's budget books as imported is what the importer reads.
+        meter.recordAPI(up: 800, imported: 800, for: account)
+        let later = await allowance.whenAllows(600)
+        XCTAssertGreaterThan(later, now, "past the day's imports it waits for the oldest hour to leave")
+        let other = await TrafficMeterImportAllowance(meter: meter, accountID: UUID()).whenAllows(600)
+        XCTAssertEqual(other, now, "each account has its own")
+    }
+
     func testTheDaysUploadsAreRememberedAcrossARelaunch() async throws {
         let clock = TestClock(Date())
         let file = root.appendingPathComponent("importBytes.json")
@@ -256,7 +277,11 @@ final class GmailImportTests: XCTestCase {
         let outcome = try await r.importer.run([imported(eml("Once", date: date("2022-05-01T10:00:00Z")))], into: .inbox)
         XCTAssertEqual(outcome.imported, 1)
         XCTAssertEqual(r.mailbox.messages.count, 1)
-        XCTAssertEqual(sleeps.all, [30])
+        // A rate refusal only says Gmail did nothing, so the transport waits out its 30 seconds
+        // and asks once more itself; the import never sees it.
+        XCTAssertEqual(r.mailbox.attempts[.messagesImport], 2)
+        XCTAssertGreaterThanOrEqual(r.mailbox.clock.slept, 30)
+        XCTAssertEqual(sleeps.all, [])
     }
 
     func testAnImportGmailTookWithoutAnsweringIsNotImportedTwice() async throws {

@@ -732,3 +732,54 @@ public actor GmailBudget {
         pump()
     }
 }
+
+/// The list's copy of the account's bucket, kept to the real one: each time the list asks, the
+/// budget's level is read again in the background, so the "Loading more" footer follows what
+/// checks, the cache fill and every other piece of work spent, not only the rows it fetched.
+public final class GmailBudgetEstimate: RowFetchBudget, @unchecked Sendable {
+    private let budget: GmailBudget
+    private let lock = NSLock()
+    private let estimate: TokenBucketEstimate
+    private var reading = false
+
+    public init(budget: GmailBudget) {
+        self.budget = budget
+        estimate = TokenBucketEstimate(capacity: Double(budget.policy.capacity), refillPerMinute: Double(budget.policy.refillPerMinute),
+                                       backgroundFloor: Double(budget.policy.backgroundReserve))
+    }
+
+    public func wait(for units: Int, priority: RowPriority, at time: TimeInterval) -> TimeInterval {
+        let wait = lock.withLock { estimate.wait(for: units, priority: priority, at: time) }
+        follow(at: time)
+        return wait
+    }
+
+    public func spend(_ units: Int, at time: TimeInterval) {
+        lock.withLock { estimate.spend(units, at: time) }
+    }
+
+    public func pause(until time: TimeInterval) {
+        lock.withLock { estimate.pause(until: time) }
+    }
+
+    private func follow(at time: TimeInterval) {
+        let start = lock.withLock { () -> Bool in
+            guard !reading else { return false }
+            reading = true
+            return true
+        }
+        guard start else { return }
+        let budget = self.budget
+        Task { [weak self] in
+            let level = await budget.available()
+            self?.took(level, at: time)
+        }
+    }
+
+    private func took(_ level: Int, at time: TimeInterval) {
+        lock.withLock {
+            estimate.setLevel(Double(level), at: time)
+            reading = false
+        }
+    }
+}

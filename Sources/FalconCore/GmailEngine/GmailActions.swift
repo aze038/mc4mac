@@ -398,7 +398,6 @@ public protocol GmailActionsHost: AnyObject, Sendable {
 extension GmailActionsHost {
     public func messages(in view: ListView) async -> [GmailMessageID]? { nil }
     public func draftIDs(for ids: [GmailMessageID]) async -> [GmailMessageID: String] { [:] }
-    public func ownAddresses() async -> Set<String> { [] }
     public func updatesAreOther() async -> Bool { false }
 }
 
@@ -564,9 +563,11 @@ public actor GmailActions {
         ops = kept
         invalidateHeld()
         if !expired.isEmpty {
-            save()
-            Log.info("gmail", "dropped \(expired.count) changes older than a day, \(expired.reduce(0) { $0 + $1.messageCount }) messages")
+            Log.info("gmail", "dropping \(expired.count) changes older than a day, \(expired.reduce(0) { $0 + $1.messageCount }) messages")
             for op in expired { await settle(Set(op.messageIDs.map(\.raw)), clearing: op.kind == .deleteForever) }
+            // Written only once their rows are back, so a stop in the middle drops them again at
+            // the next start rather than leave the rows as the change showed them.
+            if !Task.isCancelled { save() }
         }
         for op in kept { await show(op) }
         if !kept.isEmpty { Log.info("gmail", "sending \(kept.count) changes left from the last run") }
@@ -1612,13 +1613,16 @@ public actor GmailActions {
 
     /// A change older than a day: dropped, and its rows put back from Gmail's state.
     private func expire(_ id: UUID) async {
-        guard let i = ops.firstIndex(where: { $0.id == id }) else { return }
-        let op = ops.remove(at: i)
+        guard let op = ops.first(where: { $0.id == id }) else { return }
+        // Its rows go back from Gmail's state first: a stop meanwhile leaves the change on disk,
+        // and the next start drops it and puts them back then.
+        await settle(Set(op.messageIDs.map(\.raw)), clearing: op.kind == .deleteForever)
+        guard !Task.isCancelled, let i = ops.firstIndex(where: { $0.id == id }) else { return }
+        ops.remove(at: i)
         runtime[id] = nil
         invalidateHeld()
         save()
         Log.info("gmail", "change \(op.verb) dropped after a day unsent: \(op.messageCount) messages")
-        await settle(Set(op.messageIDs.map(\.raw)), clearing: op.kind == .deleteForever)
     }
 
     private enum GapResult { case checked, retry(after: TimeInterval), dropped }

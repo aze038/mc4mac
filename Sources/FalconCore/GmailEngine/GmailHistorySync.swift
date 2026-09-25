@@ -255,6 +255,8 @@ extension GmailAccountEngine {
             token = page.nextPageToken
         } while token != nil
         report.records = records.count
+        // The owner's changes on their way win over what the history says of their labels.
+        if let actions = parts.actions { records = await actions.screen(records, engine: self) }
 
         var ids: Set<UInt64> = []
         for record in records {
@@ -286,12 +288,11 @@ extension GmailAccountEngine {
         }
         for ref in reduction.vanished { awaiting[ref.id.raw] = nil }
         for relabel in reduction.relabels {
-            let kept = held.filter(relabel.id, adding: relabel.adding, removing: relabel.removing)
-            guard !kept.adding.isEmpty || !kept.removing.isEmpty else { continue }
-            changes.append(.relabel(relabel.id, adding: kept.adding, removing: kept.removing))
+            guard !relabel.adding.isEmpty || !relabel.removing.isEmpty else { continue }
+            changes.append(.relabel(relabel.id, adding: relabel.adding, removing: relabel.removing))
             touched.insert(relabel.id)
             report.relabelled.append(relabel.id)
-            if !provisional.contains(relabel.id.raw) { changedLabels.formUnion(kept.adding.union(kept.removing)) }
+            if !provisional.contains(relabel.id.raw) { changedLabels.formUnion(relabel.adding.union(relabel.removing)) }
         }
 
         var toPlace = reduction.unknown
@@ -316,6 +317,7 @@ extension GmailAccountEngine {
         publishIndexChange(ids: touched)
         await announce(placement.top, gmailNow: startedAt, report: &report)
         refreshCounts(of: changedLabels)
+        if changedLabels.contains(.draft), let uploads = parts.uploads { await uploads.draftsChanged(engine: self) }
         if !placement.deep.isEmpty, state.dateGroupsWanted == true {
             let placed = Set(placement.deep.map(\.raw))
             Task { await self.refreshAnchors(near: placed) }

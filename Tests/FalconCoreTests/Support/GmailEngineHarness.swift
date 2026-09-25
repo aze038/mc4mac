@@ -214,18 +214,18 @@ final class HookedGmailTransport: GmailTransport, GmailServerClock, @unchecked S
     func usage() async -> GmailUsage { await inner.usage() }
 }
 
-/// One account's engine over a transport and a store, with a hand-moved clock and every event
-/// kept. Its files live in a temporary folder of their own, removed at the end.
+/// One account's engine over a transport and the real store on disk, with a hand-moved clock and
+/// every event kept. Its files live in a temporary folder of their own, removed at the end.
 struct GmailEngineRig {
     let account: AccountInfo
     let transport: HookedGmailTransport
-    let store: MemoryGmailStore
+    let store: RecordingGmailStore
     let clock: ManualGmailClock
     let events: GmailEventRecorder
     let engine: GmailAccountEngine
     let directory: URL
 
-    init(transport inner: any GmailTransport, email: String = "owner@example.com", store existing: MemoryGmailStore? = nil,
+    init(transport inner: any GmailTransport, email: String = "owner@example.com", store existing: RecordingGmailStore? = nil,
          clock: ManualGmailClock = ManualGmailClock(), settings: GmailEngineSettings? = nil, hints: [FolderInfo] = [],
          parts: GmailEngineParts = GmailEngineParts(), muted: (@Sendable (MessageSummary) async -> Bool)? = nil,
          directory: URL? = nil) {
@@ -233,7 +233,7 @@ struct GmailEngineRig {
         transport = HookedGmailTransport(inner)
         self.directory = directory ?? FileManager.default.temporaryDirectory.appendingPathComponent("gmail-engine-\(UUID().uuidString)",
                                                                                                     isDirectory: true)
-        store = existing ?? MemoryGmailStore(accountID: account.id, files: GmailFiles(directory: self.directory))
+        store = existing ?? RecordingGmailStore(accountID: account.id, directory: self.directory)
         self.clock = clock
         let events = GmailEventRecorder()
         self.events = events
@@ -243,9 +243,10 @@ struct GmailEngineRig {
                                     folderHints: hints, parts: parts, muted: muted, events: { events.record($0) })
     }
 
-    /// The same store and folder under a new engine, as after a relaunch.
-    func relaunched(settings: GmailEngineSettings? = nil) -> GmailEngineRig {
-        GmailEngineRig(transport: transport.inner, email: account.email, store: store, clock: clock, settings: settings, directory: directory)
+    /// The same folder under a new engine and a new store, which reads back what the last one
+    /// wrote, as after a relaunch.
+    func relaunched(settings: GmailEngineSettings? = nil, parts: GmailEngineParts = GmailEngineParts()) -> GmailEngineRig {
+        GmailEngineRig(transport: transport.inner, email: account.email, clock: clock, settings: settings, parts: parts, directory: directory)
     }
 
     /// Steps 0 to 4 and 7 of the first load, without the loop or the cache: every message listed.
@@ -268,4 +269,90 @@ func eventually(timeout: TimeInterval = 10, _ what: String = "condition", _ cond
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     XCTFail("timed out waiting for \(what)")
+}
+
+/// The real store on disk, with every batch committed to it kept in order, so a test can see what
+/// the engine journaled as well as what the index now holds.
+final class RecordingGmailStore: GmailStore, @unchecked Sendable {
+    let inner: GmailFileStore
+    private let lock = NSLock()
+    private var _batches: [GmailJournalBatch] = []
+    private var _pages: [GmailListingPage] = []
+
+    init(_ inner: GmailFileStore) { self.inner = inner }
+
+    convenience init(accountID: UUID, directory: URL, limits: GmailFileStore.Limits = GmailFileStore.Limits()) {
+        self.init(GmailFileStore(accountID: accountID, files: GmailFiles(directory: directory), limits: limits))
+    }
+
+    var batches: [GmailJournalBatch] { lock.withLock { _batches } }
+    var pages: [GmailListingPage] { lock.withLock { _pages } }
+
+    var accountID: UUID { inner.accountID }
+    var files: GmailFiles { inner.files }
+    func load() async throws -> GmailStoreLoad { try await inner.load() }
+    func index() async -> GmailIndexSnapshot { await inner.index() }
+    func record(for id: GmailMessageID) async -> GmailIndexRecord? { await inner.record(for: id) }
+    func labels(of id: GmailMessageID) async -> Set<GmailLabelID>? { await inner.labels(of: id) }
+    func commit(_ batch: GmailJournalBatch) async throws {
+        try await inner.commit(batch)
+        lock.withLock { _batches.append(batch) }
+    }
+    func appendListingPage(_ page: GmailListingPage) async throws {
+        try await inner.appendListingPage(page)
+        lock.withLock { _pages.append(page) }
+    }
+    func compact() async throws { try await inner.compact() }
+    func labelTable() async -> [GmailLabelEntry] { await inner.labelTable() }
+    @discardableResult
+    func saveLabelTable(_ entries: [GmailLabelEntry]) async throws -> [GmailLabelEntry] { try await inner.saveLabelTable(entries) }
+    func dateAnchors() async -> [GmailDateAnchor] { await inner.dateAnchors() }
+    func saveDateAnchors(_ anchors: [GmailDateAnchor]) async throws { try await inner.saveDateAnchors(anchors) }
+    func cachedMessages(_ ids: [GmailMessageID]) async -> [GmailMessageID: GmailCachedMessage] { await inner.cachedMessages(ids) }
+    func cachedIDs() async -> Set<GmailMessageID> { await inner.cachedIDs() }
+    @discardableResult
+    func cache(_ message: GmailCachedMessage, body: GmailReducedBody?) async throws -> [GmailMessageID] {
+        try await inner.cache(message, body: body)
+    }
+    func body(of id: GmailMessageID) async throws -> GmailReducedBody? { try await inner.body(of: id) }
+    func uncache(_ ids: [GmailMessageID]) async throws { try await inner.uncache(ids) }
+    func setPinned(_ ids: Set<GmailMessageID>) async { await inner.setPinned(ids) }
+    func noteFolderShown(_ label: GmailLabelID?, rows: Int, at date: Date) async { await inner.noteFolderShown(label, rows: rows, at: date) }
+    func messagesToCache(limit: Int) async -> [GmailMessageID] { await inner.messagesToCache(limit: limit) }
+    func searchCached(_ query: String, limit: Int) async -> [GmailMessageID] { await inner.searchCached(query, limit: limit) }
+    func threadSummaries(_ ids: [GmailThreadID]) async -> [GmailThreadID: GmailThreadSummary] { await inner.threadSummaries(ids) }
+    func saveThreadSummaries(_ summaries: [GmailThreadSummary]) async throws { try await inner.saveThreadSummaries(summaries) }
+    func removeThreadSummaries(_ ids: [GmailThreadID]) async throws { try await inner.removeThreadSummaries(ids) }
+    func noteImported(_ ids: [GmailMessageID], at date: Date) async throws { try await inner.noteImported(ids, at: date) }
+    func wasImported(_ id: GmailMessageID) async -> Bool { await inner.wasImported(id) }
+}
+
+extension GmailEngineRig {
+    /// G5's actions installed on this engine, as an account has them: they keep the owner's
+    /// changes, and the engine asks them what those changes hold back. Waits take real time, a
+    /// little at a time, while the undo window is read from the rig's clock, so a window ends only
+    /// when the test moves the clock past it.
+    @discardableResult
+    func installActions(undoWindow: TimeInterval = 0) async -> GmailActions {
+        let clock = self.clock
+        let actionClock = GmailActionClock(now: { clock.now() }, sleep: { seconds in
+            try await Task.sleep(nanoseconds: UInt64(min(max(seconds, 0), 0.02) * 1_000_000_000))
+        })
+        let actions = GmailActions(accountID: account.id, transport: transport, store: store,
+                                   mutes: MuteStore(layout: FileLayout(root: directory)), rules: nil, host: engine,
+                                   undoWindow: undoWindow, clock: actionClock)
+        let parts = engine.parts
+        engine.install(GmailEngineParts(listSource: parts.listSource, actions: actions, uploads: parts.uploads, search: parts.search))
+        await actions.start(engine: engine)
+        return actions
+    }
+
+    func key(_ id: GmailMessageID) -> RowKey { .gmail(account: account.id, id: id) }
+
+    /// A change on these messages in the folder of `role`, as the owner makes it.
+    func request(_ verb: MailActionRequest.Verb, _ ids: [GmailMessageID], in role: FolderRole) async throws -> MailActionRequest {
+        let folders = await engine.folders()
+        let folder = try XCTUnwrap(folders.first { $0.role == role })
+        return MailActionRequest(verb: verb, targets: .items(ids.map { .message(key($0)) }), context: ListView(scope: .folder(folder.id)))
+    }
 }

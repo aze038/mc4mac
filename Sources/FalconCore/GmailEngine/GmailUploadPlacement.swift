@@ -17,6 +17,16 @@ public protocol GmailUploadPlacing: Sendable {
     /// thread.
     func placeUploaded(_ message: GmailMessage, labels: Set<GmailLabelID>, raw: Data, replacing previous: GmailMessageID?,
                        messageID: String?) async
+    /// An import is about to upload the message with this Message-ID. Until Gmail answers, a
+    /// check that sees a message nobody placed leaves it for the next check rather than take it
+    /// for another app's import.
+    func willImport(messageID: String?) async
+    /// Gmail took an import: the message goes into the import log before anything else can see
+    /// it, so its echo in the history is never new mail, never starts flood mode, and never runs
+    /// rules or notifications.
+    func imported(_ id: GmailMessageID, messageID: String?) async throws
+    /// The upload of an import did not reach Gmail, or Gmail refused it.
+    func importFailed(messageID: String?) async
     /// A message FalconMail imported, placed among the mail of its own day: just above
     /// `neighbour`, the newest message received before that day, or at the very bottom when no
     /// message is older. Never at the top, so an import never looks like new mail.
@@ -26,6 +36,11 @@ public protocol GmailUploadPlacing: Sendable {
     /// An import ended, or has run for a day. Its messages are placed to the day only; listing
     /// All Mail again puts each in its exact place, which only the engine can start.
     func importEnded() async
+}
+
+extension GmailUploadPlacing {
+    public func willImport(messageID: String?) async {}
+    public func importFailed(messageID: String?) async {}
 }
 
 /// The store's part of placing uploads, with no list to tell. The engine calls it from inside
@@ -60,6 +75,10 @@ public actor GmailStorePlacer: GmailUploadPlacing {
         } catch {
             Log.info("gmail", "could not place an uploaded message in the index; the history's echo will: \(error.localizedDescription)")
         }
+    }
+
+    public func imported(_ id: GmailMessageID, messageID: String?) async throws {
+        try await store.noteImported([id], at: now())
     }
 
     public func placeImported(_ message: GmailMessage, labels: Set<GmailLabelID>, date: Date, above neighbour: GmailMessageID?) async {

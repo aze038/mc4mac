@@ -262,8 +262,11 @@ public struct GmailSender: MessageSender {
         func wait(_ seconds: TimeInterval) -> Date { Date().addingTimeInterval(max(1, seconds)) }
         func at(_ date: Date) -> String { GoogleAPIError.timeText(date) }
         switch refusal.kind {
+        case .offline where refusal.delivery == .unknown:
+            // The connection was there and dropped during the upload: Gmail may have the message.
+            return SendFailure(next: .confirm, sentence: "", cause: refusal)
         case .offline:
-            // The transport says offline only when no connection could be made.
+            // No connection could be made, so Gmail never saw the message.
             return SendFailure(next: .retry, sentence: "FalconMail couldn't reach Gmail. It sends the message by itself once it can.",
                                cause: refusal)
         case .temporary:

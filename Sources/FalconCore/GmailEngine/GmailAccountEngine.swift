@@ -89,8 +89,12 @@ public struct GmailEngineUnavailable: Error, LocalizedError, Equatable {
 
 // MARK: - Parts other work items build
 
-/// Actions, rules and mutes (G5).
+/// Actions, rules and mutes (G5). They keep the owner's changes that Gmail has not confirmed,
+/// so they decide what of the history and of a listing those changes hold back (§4.6, §7.5).
 public protocol GmailEngineActions: Sendable {
+    /// The engine has read its store; the actions carry on from the last run.
+    func start(engine: GmailAccountEngine) async
+    func stop(engine: GmailAccountEngine) async
     func perform(_ request: MailActionRequest, engine: GmailAccountEngine) async throws -> ActionReceipt
     func undo(_ receiptID: UUID, engine: GmailAccountEngine) async -> Bool
     func hasPendingChanges(engine: GmailAccountEngine) async -> Bool
@@ -100,14 +104,47 @@ public protocol GmailEngineActions: Sendable {
     /// Mail that arrived now, before it is announced, for rules and mutes. Returns the messages
     /// that must not be announced, because a mute or a rule has taken them out of the Inbox.
     func arrived(_ arrivals: [GmailArrival], engine: GmailAccountEngine) async -> Set<GmailMessageID>
+    /// A check's history records, less the label changes that a change of the owner's still on
+    /// its way holds back, which are kept with that change and applied if it ends unsent.
+    func screen(_ records: [GmailHistoryRecord], engine: GmailAccountEngine) async -> [GmailHistoryRecord]
+    /// The labels changes on their way are about, message by message, which listings and
+    /// resyncs leave alone.
+    func heldLabels(engine: GmailAccountEngine) async -> GmailHeldLabels
+    func setUndoWindow(_ seconds: TimeInterval, engine: GmailAccountEngine) async
+    /// The network came back: what waits to be retried is tried now.
+    func networkChanged(engine: GmailAccountEngine) async
+}
+
+extension GmailEngineActions {
+    public func start(engine: GmailAccountEngine) async {}
+    public func stop(engine: GmailAccountEngine) async {}
+    public func screen(_ records: [GmailHistoryRecord], engine: GmailAccountEngine) async -> [GmailHistoryRecord] { records }
+    public func heldLabels(engine: GmailAccountEngine) async -> GmailHeldLabels { .none }
+    public func setUndoWindow(_ seconds: TimeInterval, engine: GmailAccountEngine) async {}
+    public func networkChanged(engine: GmailAccountEngine) async {}
 }
 
 /// Drafts and imports (G6).
 public protocol GmailEngineUploads: Sendable {
+    /// The engine has read its store: discards whose undo window ended meanwhile are finished.
+    func start(engine: GmailAccountEngine) async
     func saveDraft(_ raw: Data, as draft: DraftRef, engine: GmailAccountEngine) async throws -> DraftRef
     func deleteDraft(_ draft: DraftRef, engine: GmailAccountEngine) async throws
     func importMessages(_ messages: [ImportedMessage], into folderID: UUID, engine: GmailAccountEngine,
                         progress: @escaping @Sendable (Int) -> Void) async throws
+    /// Gmail's draft ids for draft messages, for actions that delete drafts.
+    func draftIDs(for ids: [GmailMessageID], engine: GmailAccountEngine) async -> [GmailMessageID: String]
+    /// Drafts changed on Gmail, as the index's DRAFT bits show.
+    func draftsChanged(engine: GmailAccountEngine) async
+    /// At quit: every discard's window ends now and saves on their way are waited for.
+    func flush(within seconds: TimeInterval, engine: GmailAccountEngine) async -> Bool
+}
+
+extension GmailEngineUploads {
+    public func start(engine: GmailAccountEngine) async {}
+    public func draftIDs(for ids: [GmailMessageID], engine: GmailAccountEngine) async -> [GmailMessageID: String] { [:] }
+    public func draftsChanged(engine: GmailAccountEngine) async {}
+    public func flush(within seconds: TimeInterval, engine: GmailAccountEngine) async -> Bool { true }
 }
 
 /// Search (G4).
@@ -152,33 +189,6 @@ public struct GmailIndexChange: Sendable, Equatable {
     public init(ids: Set<GmailMessageID> = [], everything: Bool = false) {
         self.ids = ids
         self.everything = everything
-    }
-}
-
-/// A change the owner made that Gmail has not confirmed yet (§4.6, §7.5). While it is held or on
-/// its way, history records and listings leave alone the labels it touches on its messages, so a
-/// row he has just archived never comes back; the records skipped are kept with it.
-public struct GmailHeldChange: Codable, Hashable, Sendable {
-    public var id: UUID
-    public var labels: [GmailMessageID: Set<GmailLabelID>]
-
-    public init(id: UUID, labels: [GmailMessageID: Set<GmailLabelID>]) {
-        self.id = id
-        self.labels = labels
-    }
-}
-
-/// A history record skipped because a held change touched its labels, kept so that it can be
-/// applied if the change ends without reaching Gmail. G5 keeps them in its pending changes.
-public struct GmailKeptRecord: Codable, Hashable, Sendable {
-    public var id: GmailMessageID
-    public var adding: Set<GmailLabelID>
-    public var removing: Set<GmailLabelID>
-
-    public init(id: GmailMessageID, adding: Set<GmailLabelID>, removing: Set<GmailLabelID>) {
-        self.id = id
-        self.adding = adding
-        self.removing = removing
     }
 }
 
@@ -229,6 +239,10 @@ struct GmailEngineState: Codable, Equatable {
     var sendAsAt: Date?
     var anchorsDay: Date?
     var dateGroupsWanted: Bool?
+    /// The `has:attachment` listing has filled every message's attachment bit.
+    var attachmentsKnown: Bool?
+    /// The `larger:` listings have given every message its size band.
+    var sizesKnown: Bool?
 }
 
 // MARK: - The engine
@@ -245,9 +259,13 @@ public actor GmailAccountEngine: MailAccountEngine {
     /// Whether a conversation is muted, which G5's mutes answer; nil mutes nothing.
     nonisolated let mutedCheck: (@Sendable (MessageSummary) async -> Bool)?
     private nonisolated let partsBox: PartsBox
+    /// Finds and keeps date anchors, for the engine and for the list, which asks through it.
+    public nonisolated let anchorFiller: GmailDateAnchorFiller
 
     // What was loaded, and the cursor.
-    var loaded = false
+    /// Reading the store happens once; everyone who asks meanwhile waits for it, since the actor
+    /// takes other calls while it reads, and one that found it only begun would see no cursor.
+    private var loading: Task<Void, Never>?
     var running = false
     var cursor: HistoryID?
     var state = GmailEngineState()
@@ -266,7 +284,6 @@ public actor GmailAccountEngine: MailAccountEngine {
     /// Messages placed by checks while a relisting runs, which the relisting must not take for
     /// gone or strip of labels it listed before they came.
     var placedDuringRelist: Set<UInt64>?
-    var held = HeldChanges()
     var flood = GmailFloodDetector()
     var importLog = GmailImportLog()
     var schedule: GmailPollSchedule
@@ -286,6 +303,14 @@ public actor GmailAccountEngine: MailAccountEngine {
     var sendAsAddresses: Set<String> = []
     var selectedLabel: GmailLabelID??
     var undoWindow: TimeInterval = 10
+    var pinned: [String: Set<GmailMessageID>] = [:]
+    var updatesOther = false
+    /// An import ended: All Mail is listed again to put each imported message in its exact place.
+    var importRelistWanted = false
+    var viewListingsWanted: Set<GmailViewListing> = []
+    /// Places imported mail among its own day, as §9.1 has it; the engine calls it from its own
+    /// isolation, so the store keeps one writer.
+    nonisolated let importPlacer: GmailStorePlacer
     public private(set) var checksCompleted = 0
     /// What the daily health report counts (§10.3).
     public internal(set) var figures = GmailEngineFigures()
@@ -321,6 +346,8 @@ public actor GmailAccountEngine: MailAccountEngine {
         mutedCheck = muted
         sink = events
         partsBox = PartsBox(parts)
+        anchorFiller = GmailDateAnchorFiller(store: store, transport: transport, now: { clock.now() })
+        importPlacer = GmailStorePlacer(store: store, now: { clock.now() })
         schedule = GmailPollSchedule(settings: settings.schedule, now: clock.now())
         healthTracker = GmailHealthTracker(email: account.email)
     }
@@ -341,6 +368,8 @@ public actor GmailAccountEngine: MailAccountEngine {
         guard !running else { return }
         running = true
         await loadIfNeeded()
+        await parts.actions?.start(engine: self)
+        await parts.uploads?.start(engine: self)
         if let first = healthTracker.starting() { setHealth(first) }
         loopTask = Task { await self.loop() }
         if state.backfill?.phase != .complete {
@@ -352,6 +381,7 @@ public actor GmailAccountEngine: MailAccountEngine {
 
     public func stop() async {
         running = false
+        await parts.actions?.stop(engine: self)
         loopTask?.cancel()
         sleepTask?.cancel()
         backfillTask?.cancel()
@@ -378,8 +408,16 @@ public actor GmailAccountEngine: MailAccountEngine {
     /// Reads what the store and `state.json` kept: the cursor, a resync left unfinished, messages
     /// waiting to be placed, the top of the order and the label table.
     func loadIfNeeded() async {
-        guard !loaded else { return }
-        loaded = true
+        if let loading {
+            await loading.value
+            return
+        }
+        let task = Task { await self.load() }
+        loading = task
+        await task.value
+    }
+
+    private func load() async {
         do {
             let load = try await store.load()
             cursor = load.cursor
@@ -422,6 +460,7 @@ public actor GmailAccountEngine: MailAccountEngine {
             return GmailCheckReport(reason: reason, skipped: true)
         case .sendAndReceive, .wake, .networkChange:
             schedule.clearHolds()
+            if reason == .networkChange { await parts.actions?.networkChanged(engine: self) }
         case .schedule, .changeCommitted:
             break
         }
@@ -526,6 +565,7 @@ public actor GmailAccountEngine: MailAccountEngine {
 
     public func setUndoWindow(_ seconds: TimeInterval) async {
         undoWindow = seconds
+        await parts.actions?.setUndoWindow(seconds, engine: self)
     }
 
     /// The view the owner has open, whose folder is listed first while the index is built.
@@ -653,8 +693,13 @@ public actor GmailAccountEngine: MailAccountEngine {
         await parts.actions?.hasPendingChanges(engine: self) ?? false
     }
 
+    /// Changes and drafts both wait for Gmail at quit, side by side, for at most `seconds`.
     public func flushPending(within seconds: TimeInterval) async -> Bool {
-        await parts.actions?.flushPending(within: seconds, engine: self) ?? true
+        let parts = self.parts
+        async let changes = parts.actions?.flushPending(within: seconds, engine: self) ?? true
+        async let drafts = parts.uploads?.flush(within: seconds, engine: self) ?? true
+        let (sent, saved) = await (changes, drafts)
+        return sent && saved
     }
 
     public func runRulesOnInbox() async throws {
@@ -826,101 +871,26 @@ extension GmailAccountEngine {
         account.ownAddresses.union(sendAsAddresses)
     }
 
-    /// Shows a change the owner made at once (§7.3 step 1). It is journaled without a cursor, so
-    /// a crash before the next check drops it, and the pending change it belongs to, which G5
-    /// keeps, shows it again.
+    /// Shows a change the owner made at once (§7.3 step 1). The store journals it with the cursor
+    /// where it stands, so it survives a relaunch; the actions, which keep the change until Gmail
+    /// has it, show it again at launch in any case.
     public func showNow(_ changes: [GmailChange]) async throws {
         guard !changes.isEmpty else { return }
         try await store.commit(GmailJournalBatch(changes: changes))
         publishIndexChange(ids: Set(changes.compactMap(\.messageID)))
     }
 
-    /// From now until `endHold`, history records and listings leave alone the labels this change
-    /// touches on its messages; records skipped are kept with it. `kept` brings back records kept
-    /// before a relaunch.
-    public func hold(_ change: GmailHeldChange, kept: [GmailKeptRecord] = []) {
-        held.hold(change, kept: kept)
+    /// The owner's own messages that must stay on the Mac whatever their age, by who asks: changes
+    /// waiting to reach Gmail, drafts, and messages open in a window or tab.
+    public func setPinned(_ ids: Set<GmailMessageID>, for owner: String) async {
+        pinned[owner] = ids.isEmpty ? nil : ids
+        await store.setPinned(pinned.values.reduce(into: Set<GmailMessageID>()) { $0.formUnion($1) })
     }
 
-    /// The records skipped so far for a held change, for G5 to keep with it.
-    public func keptRecords(for changeID: UUID) -> [GmailKeptRecord] {
-        held.kept(for: changeID)
-    }
-
-    /// The change reached Gmail (`sent`), and the next check settles the state; or it ended
-    /// without being sent, by Undo, a refusal or a 404, and the records kept with it are applied
-    /// so nothing done on another device meanwhile is lost. With more than 50 messages kept,
-    /// their labels are taken from Gmail instead, one `format=minimal` each.
-    public func endHold(_ changeID: UUID, sent: Bool) async {
-        let kept = held.end(changeID)
-        guard !sent, !kept.isEmpty else {
-            if sent { Task { await self.poke(reason: .changeCommitted) } }
-            return
-        }
-        var changes: [GmailChange] = []
-        let ids = Set(kept.map(\.id))
-        if ids.count > 50 {
-            for chunk in Array(ids).sorted().chunked(10) {
-                guard let answers = try? await transport.batch(chunk.map { .message($0, .minimal) }, work: .interactive) else { continue }
-                for id in chunk {
-                    switch answers[.message(id, .minimal)] {
-                    case .success(let answer)?:
-                        guard let message = answer.message, let ref = message.ref,
-                              let current = await store.labels(of: id), let record = await store.record(for: id) else { continue }
-                        let adding = message.labels.subtracting(current).filter { held.protects(id, $0) == nil }
-                        let removing = current.subtracting(message.labels).filter { held.protects(id, $0) == nil }
-                        if !adding.isEmpty || !removing.isEmpty {
-                            changes.append(.relabel(ref.id, adding: Set(adding), removing: Set(removing)))
-                        }
-                        _ = record
-                    case .failure(let error)? where error.kind == .notFound:
-                        changes.append(.tombstone(id))
-                    default:
-                        continue
-                    }
-                }
-            }
-        } else {
-            for record in kept {
-                let adding = record.adding.filter { held.protects(record.id, $0) == nil }
-                let removing = record.removing.filter { held.protects(record.id, $0) == nil }
-                if !adding.isEmpty || !removing.isEmpty {
-                    changes.append(.relabel(record.id, adding: Set(adding), removing: Set(removing)))
-                }
-            }
-        }
-        guard !changes.isEmpty else { return }
-        do {
-            try await store.commit(GmailJournalBatch(changes: changes))
-            publishIndexChange(ids: ids)
-        } catch {
-            Log.error("gmail", "\(account.email): records kept with an undone change could not be applied", error: error, account: account)
-        }
-    }
-
-    /// A message Gmail just gave FalconMail in an answer, such as a sent message or a saved draft,
-    /// goes into the index at once, above everything, so Sent and the conversation update before
-    /// the send returns; its echo in the history then changes nothing (§4.6, §8.1).
-    public func placeAtTop(_ answer: GmailMessage) async throws {
-        guard let ref = answer.ref else { return }
-        await loadIfNeeded()
-        if let record = await store.record(for: ref.id), !record.attributes.contains(.tombstone) {
-            try await store.commit(GmailJournalBatch(changes: [.relabel(ref.id, adding: answer.labels, removing: [])]))
-        } else {
-            let order = GmailOrderSpace.top(count: 1, above: ceiling)[0]
-            ceiling = order
-            try await store.commit(GmailJournalBatch(changes: [.place(ref, order: order, labels: answer.labels,
-                                                                      attributes: Self.attributes(of: answer))]))
-        }
-        placedDuringRelist?.insert(ref.id.raw)
-        publishIndexChange(ids: [ref.id])
-    }
-
-    /// A message Gmail deleted on FalconMail's behalf, such as the draft a save replaced.
-    public func removeFromIndex(_ ids: [GmailMessageID]) async throws {
-        guard !ids.isEmpty else { return }
-        try await store.commit(GmailJournalBatch(changes: ids.map { .tombstone($0) }))
-        publishIndexChange(ids: Set(ids))
+    /// Settings ▸ Reading: Updates counts as Other rather than Focused, for Move to Focused and
+    /// Move to Other as for the list.
+    public func setUpdatesAreOther(_ other: Bool) {
+        updatesOther = other
     }
 
     /// What a message's answer tells the index beyond its labels: its size band, and whether it
@@ -936,59 +906,6 @@ extension GmailAccountEngine {
             if !GmailMessageContent.textStage(message).listedAttachments.isEmpty { attributes.insert(.hasAttachment) }
         }
         return attributes
-    }
-}
-
-// MARK: - Held changes
-
-/// The owner's changes on their way to Gmail, and the history records they held back.
-struct HeldChanges: Sendable {
-    private var changes: [UUID: GmailHeldChange] = [:]
-    private var keptRecords: [UUID: [GmailKeptRecord]] = [:]
-    /// Which change protects each message's labels.
-    private var owners: [UInt64: [GmailLabelID: UUID]] = [:]
-
-    var isEmpty: Bool { changes.isEmpty }
-
-    mutating func hold(_ change: GmailHeldChange, kept: [GmailKeptRecord]) {
-        changes[change.id] = change
-        keptRecords[change.id, default: []] += kept
-        for (id, labels) in change.labels {
-            for label in labels { owners[id.raw, default: [:]][label] = change.id }
-        }
-    }
-
-    func protects(_ id: GmailMessageID, _ label: GmailLabelID) -> UUID? {
-        owners[id.raw]?[label]
-    }
-
-    func protectsAny(_ id: GmailMessageID) -> Bool { owners[id.raw] != nil }
-
-    func kept(for id: UUID) -> [GmailKeptRecord] { keptRecords[id] ?? [] }
-
-    /// A label change from the history or a listing, with what a held change protects taken out
-    /// and kept with that change.
-    mutating func filter(_ id: GmailMessageID, adding: Set<GmailLabelID>, removing: Set<GmailLabelID>)
-        -> (adding: Set<GmailLabelID>, removing: Set<GmailLabelID>) {
-        guard let protected = owners[id.raw] else { return (adding, removing) }
-        var keep: [UUID: (adding: Set<GmailLabelID>, removing: Set<GmailLabelID>)] = [:]
-        var outAdding = adding
-        var outRemoving = removing
-        for label in adding { if let owner = protected[label] { keep[owner, default: ([], [])].adding.insert(label); outAdding.remove(label) } }
-        for label in removing { if let owner = protected[label] { keep[owner, default: ([], [])].removing.insert(label); outRemoving.remove(label) } }
-        for (owner, record) in keep {
-            keptRecords[owner, default: []].append(GmailKeptRecord(id: id, adding: record.adding, removing: record.removing))
-        }
-        return (outAdding, outRemoving)
-    }
-
-    mutating func end(_ id: UUID) -> [GmailKeptRecord] {
-        guard let change = changes.removeValue(forKey: id) else { return keptRecords.removeValue(forKey: id) ?? [] }
-        for (message, labels) in change.labels {
-            for label in labels where owners[message.raw]?[label] == id { owners[message.raw]?[label] = nil }
-            if owners[message.raw]?.isEmpty == true { owners[message.raw] = nil }
-        }
-        return keptRecords.removeValue(forKey: id) ?? []
     }
 }
 

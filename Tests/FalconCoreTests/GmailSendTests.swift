@@ -20,22 +20,22 @@ final class GmailSendTests: XCTestCase {
     // MARK: - Helpers
 
     private struct Rig {
-        let mailbox: MemoryGmailTransport
+        let mailbox: FakeGmail
         let transport: ScriptedGmailTransport
-        let store: MemoryGmailStore
+        let store: any GmailStore
         let sender: GmailSender
         let outbox: Outbox
         let layout: FileLayout
     }
 
-    private func rig(layout: FileLayout? = nil, mailbox: MemoryGmailTransport? = nil, transport: ScriptedGmailTransport? = nil,
+    private func rig(layout: FileLayout? = nil, mailbox: FakeGmail? = nil, transport: ScriptedGmailTransport? = nil,
                      placer: (any GmailUploadPlacing)? = nil, deleteDraft: (@Sendable (String) async throws -> Void)? = nil,
                      confirmAfter: [TimeInterval] = [0.05, 0.15]) -> Rig {
-        let mailbox = mailbox ?? transport?.mailbox ?? MemoryGmailTransport(email: owner)
+        let mailbox = mailbox ?? transport?.mailbox ?? FakeGmail(email: owner)
         let transport = transport ?? ScriptedGmailTransport(mailbox)
-        let store = MemoryGmailStore(accountID: mailbox.accountID)
+        let store = GmailTestPlacer.store(accountID: mailbox.accountID, root: root)
         let sender = GmailSender(accountID: mailbox.accountID, email: owner, transport: transport,
-                                 placer: placer ?? GmailStorePlacer(store: store), deleteDraft: deleteDraft, cursor: { mailbox.historyID })
+                                 placer: placer ?? GmailTestPlacer.engine(transport: transport, store: store), deleteDraft: deleteDraft, cursor: { mailbox.historyID })
         let layout = layout ?? FileLayout(root: root)
         let outbox = Outbox(layout: layout, sender: sender, undoWindow: 0, confirmAfter: confirmAfter, retryDelay: { _ in 0 })
         return Rig(mailbox: mailbox, transport: transport, store: store, sender: sender, outbox: outbox, layout: layout)
@@ -51,7 +51,7 @@ final class GmailSendTests: XCTestCase {
 
     private func item(_ outbox: Outbox) async -> OutboxItem? { await outbox.snapshot().first }
 
-    private func sentMessages(_ mailbox: MemoryGmailTransport) -> [MemoryGmailTransport.Message] {
+    private func sentMessages(_ mailbox: FakeGmail) -> [FakeGmail.Message] {
         mailbox.messages.filter { $0.labels.contains(.sent) }
     }
 
@@ -90,9 +90,9 @@ final class GmailSendTests: XCTestCase {
     }
 
     func testTheSentRowIsInTheIndexBeforeTheOutboxMarksItSent() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
-        let store = MemoryGmailStore(accountID: mailbox.accountID)
-        let watching = WatchingPlacer(GmailStorePlacer(store: store))
+        let mailbox = FakeGmail(email: owner)
+        let store = GmailTestPlacer.store(accountID: mailbox.accountID, root: root)
+        let watching = WatchingPlacer(GmailTestPlacer.engine(transport: mailbox, store: store))
         let r = rig(mailbox: mailbox, placer: watching)
         watching.outbox = r.outbox
         _ = try await r.outbox.enqueue(accountID: mailbox.accountID, from: owner, message: Self.message(), sendAt: Date())
@@ -117,10 +117,10 @@ final class GmailSendTests: XCTestCase {
     }
 
     func testTheSentRowIsThereWhenSendReturns() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         mailbox.replacesMessageIDOnSend = true
-        let store = MemoryGmailStore(accountID: mailbox.accountID)
-        let sender = GmailSender(accountID: mailbox.accountID, email: owner, transport: mailbox, placer: GmailStorePlacer(store: store))
+        let store = GmailTestPlacer.store(accountID: mailbox.accountID, root: root)
+        let sender = GmailSender(accountID: mailbox.accountID, email: owner, transport: mailbox, placer: GmailTestPlacer.engine(transport: mailbox, store: store))
         let raw = MIMEBuilder.build(Self.message())
         var item = OutboxItem(accountID: mailbox.accountID, subject: "Rates", recipients: ["ana@example.com"], sender: owner,
                               sendAt: Date(), undoWindow: 0)
@@ -177,6 +177,17 @@ final class GmailSendTests: XCTestCase {
         XCTAssertEqual(r.mailbox.attempts[.messagesSend], 1)
         let sentID = await item(r.outbox)?.gmailSentID
         XCTAssertEqual(sentID, sentMessages(r.mailbox).first?.ref.id)
+    }
+
+    func testAnUploadWhoseConnectionDroppedIsLookedForAndNeverSentAgainByItself() async throws {
+        let r = rig()
+        // Over HTTP: Gmail takes the upload and the connection drops before its answer, which the
+        // transport reports as offline with its delivery unknown, never as a failure before upload.
+        r.mailbox.mailbox.inject(.acceptedThenDropped, for: .messagesSend)
+        _ = try await r.outbox.enqueue(accountID: r.mailbox.accountID, from: owner, message: Self.message(), sendAt: Date())
+        await assertEventually { await self.item(r.outbox)?.status == .sent }
+        XCTAssertEqual(sentMessages(r.mailbox).count, 1, "confirmed from Gmail's records, not sent a second time")
+        XCTAssertEqual(r.mailbox.attempts[.messagesSend], 1)
     }
 
     func testSendingAHeldMessageAgainLooksForItFirst() async throws {
@@ -278,7 +289,7 @@ final class GmailSendTests: XCTestCase {
     }
 
     func testACrashMidSendIsNeverSentAgainWithoutTheOwner() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let crashing = ScriptedGmailTransport(mailbox)
         let gate = crashing.hold(.messagesSend)
         let before = rig(layout: FileLayout(root: root.appendingPathComponent("before")), transport: crashing)
@@ -314,7 +325,7 @@ final class GmailSendTests: XCTestCase {
     }
 
     func testACrashAfterGmailTookTheMessageIsFoundAtLaunchAndMarkedSent() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let crashing = ScriptedGmailTransport(mailbox)
         let late = crashing.holdAfterAccepting(.messagesSend)
         let before = rig(layout: FileLayout(root: root.appendingPathComponent("before")), transport: crashing)
@@ -444,7 +455,7 @@ final class GmailSendTests: XCTestCase {
     // MARK: - Routing
 
     func testSwitchedGoogleAccountsSendThroughGmailAndOthersBySMTP() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let gmail = GmailSender(accountID: mailbox.accountID, email: owner, transport: mailbox)
         let smtp = CountingSender()
         let other = UUID()
@@ -536,12 +547,12 @@ final class GmailSendTests: XCTestCase {
 
 /// Watches the Outbox at the moment a sent message is placed.
 final class WatchingPlacer: GmailUploadPlacing, @unchecked Sendable {
-    private let inner: GmailStorePlacer
+    private let inner: any GmailUploadPlacing
     private let lock = NSLock()
     private var _outbox: Outbox?
     private var _statuses: [OutboxItem.Status] = []
 
-    init(_ inner: GmailStorePlacer) {
+    init(_ inner: any GmailUploadPlacing) {
         self.inner = inner
     }
 
@@ -564,6 +575,7 @@ final class WatchingPlacer: GmailUploadPlacing, @unchecked Sendable {
         await inner.placeImported(message, labels: labels, date: date, above: neighbour)
     }
 
+    func imported(_ id: GmailMessageID, messageID: String?) async throws { try await inner.imported(id, messageID: messageID) }
     func forget(_ ids: [GmailMessageID]) async { await inner.forget(ids) }
     func importEnded() async { await inner.importEnded() }
 }

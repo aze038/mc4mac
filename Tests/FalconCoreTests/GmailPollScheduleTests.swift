@@ -42,7 +42,7 @@ final class GmailPollScheduleTests: XCTestCase {
 
     func testTheLoopChecksOnItsOwnAtTheOwnersPace() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         for i in 0..<5 { gmail.add(subject: "Old \(i)", labels: [.inbox], date: clock.now().addingTimeInterval(-Double(5 - i) * 86_400)) }
         let rig = GmailEngineRig(transport: gmail, clock: clock)
         await rig.engine.start()

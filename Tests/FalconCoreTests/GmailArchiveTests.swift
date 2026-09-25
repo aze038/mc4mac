@@ -38,7 +38,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testRemovingALabelFolderLeavesTheInboxCopy() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let clients = mailbox.addUserLabel(named: "Clients")
         let both = mailbox.add(subject: "In the Inbox too", labels: [.inbox, clients], date: longAgo)
         let only = mailbox.add(subject: "Only in Clients", labels: [clients], date: longAgo)
@@ -61,7 +61,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testArchivingTheInboxTakesOnlyINBOXAndKeepsTheStar() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let starred = mailbox.add(subject: "Starred", labels: [.inbox, .starred, .unread], date: longAgo)
         let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox])
         _ = try await ArchiveJob.run(request: request(["Inbox"]), account: account, source: source, storage: storage()) { _ in }
@@ -71,7 +71,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testArchivingArchiveItselfMovesTheMailToDeletedItems() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let a = mailbox.add(subject: "Old one", labels: [.inbox], date: longAgo)
         let b = mailbox.add(subject: "Old two", labels: [], date: longAgo)
         let source = GmailArchiveSource(transport: mailbox, folders: ["Archive": GmailLabelID?.none])
@@ -83,7 +83,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testSentDraftsDeletedItemsAndJunkEmailAreKeptOnGmail() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let sent = mailbox.add(subject: "Sent long ago", labels: [.sent], date: longAgo)
         let junk = mailbox.add(subject: "Junk long ago", labels: [.spam], date: longAgo)
         let deleted = mailbox.add(subject: "Deleted long ago", labels: [.trash], date: longAgo)
@@ -99,7 +99,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testNothingIsRemovedUntilTheArchiveIsWritten() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let kept = mailbox.add(subject: "Kept", labels: [.inbox], date: longAgo)
         let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox])
         do {
@@ -111,7 +111,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testAMessageDeletedSinceTheListingIsSkippedAndNotRemoved() async throws {
-        let transport = ScriptedGmailTransport(MemoryGmailTransport(email: owner))
+        let transport = ScriptedGmailTransport(FakeGmail(email: owner))
         let mailbox = transport.mailbox
         let gone = mailbox.add(subject: "Deleted meanwhile", labels: [.inbox], date: longAgo)
         let stays = mailbox.add(subject: "Archived", labels: [.inbox], date: longAgo)
@@ -129,7 +129,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testTheJobKeepsToItsPaceAndHoldsAtItsAllowance() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         for i in 0..<25 { mailbox.add(subject: "Old \(i)", labels: [.inbox], date: longAgo.addingTimeInterval(Double(i))) }
         let clock = TestClock(Date())
         let sleeps = SleepLog()
@@ -149,11 +149,15 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testTheJobCarriesOnAfterADroppedConnectionAndAPause() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         for i in 0..<3 { mailbox.add(subject: "Old \(i)", labels: [.inbox], date: longAgo.addingTimeInterval(Double(i))) }
         mailbox.fail(nil, with: GoogleAPIError(kind: .offline, detail: "URLError -1009"))
         let sleeps = SleepLog()
-        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox], sleep: { sleeps.append($0) })
+        // The job's waits move the transport's clock too, so the pause Gmail asked for is over when it tries again.
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox], sleep: {
+            sleeps.append($0)
+            mailbox.clock.advance($0)
+        })
         mailbox.fail(.messagesList, with: GoogleAPIError(kind: .downloadLimit, httpStatus: 429, retryAfter: 900))
         let outcome = try await ArchiveJob.run(request: request(["Inbox"], remove: false), account: account, source: source,
                                                storage: storage()) { _ in }
@@ -162,7 +166,7 @@ final class GmailArchiveTests: XCTestCase {
     }
 
     func testAFolderWithNoGmailLabelIsRefusedBeforeAnythingIsWritten() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let source = GmailArchiveSource(transport: mailbox, folders: [:])
         do {
             _ = try await ArchiveJob.run(request: request(["Nowhere"]), account: account, source: source, storage: storage()) { _ in }

@@ -20,21 +20,21 @@ final class GmailDraftTests: XCTestCase {
     // MARK: - Helpers
 
     private struct Rig {
-        let mailbox: MemoryGmailTransport
+        let mailbox: FakeGmail
         let transport: ScriptedGmailTransport
-        let store: MemoryGmailStore
+        let store: any GmailStore
         let drafts: GmailDrafts
         let file: URL
     }
 
     private func rig(file: URL? = nil, transport: ScriptedGmailTransport? = nil, clock: TestClock? = nil,
                      retryInterval: TimeInterval = 0.1) -> Rig {
-        let transport = transport ?? ScriptedGmailTransport(MemoryGmailTransport(email: owner))
+        let transport = transport ?? ScriptedGmailTransport(FakeGmail(email: owner))
         let mailbox = transport.mailbox
-        let store = MemoryGmailStore(accountID: mailbox.accountID)
+        let store = GmailTestPlacer.store(accountID: mailbox.accountID, root: root)
         let file = file ?? root.appendingPathComponent("drafts.json")
         let now: @Sendable () -> Date = clock?.reading ?? { @Sendable in Date() }
-        let drafts = GmailDrafts(accountID: mailbox.accountID, email: owner, transport: transport, placer: GmailStorePlacer(store: store),
+        let drafts = GmailDrafts(accountID: mailbox.accountID, email: owner, transport: transport, placer: GmailTestPlacer.engine(transport: transport, store: store),
                                  file: file, cursor: { mailbox.historyID }, now: now, retryInterval: retryInterval)
         return Rig(mailbox: mailbox, transport: transport, store: store, drafts: drafts, file: file)
     }
@@ -49,11 +49,11 @@ final class GmailDraftTests: XCTestCase {
                  stableMessageID: "<\(localID.uuidString.lowercased()).falconmail@example.com>")
     }
 
-    private func draftMessages(_ mailbox: MemoryGmailTransport) -> [MemoryGmailTransport.Message] {
+    private func draftMessages(_ mailbox: FakeGmail) -> [FakeGmail.Message] {
         mailbox.messages.filter { $0.labels.contains(.draft) }
     }
 
-    private func header(_ name: String, of message: MemoryGmailTransport.Message) -> String? {
+    private func header(_ name: String, of message: FakeGmail.Message) -> String? {
         message.headers.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
 
@@ -94,7 +94,7 @@ final class GmailDraftTests: XCTestCase {
         XCTAssertEqual(cached?.subject, "Rates for October")
     }
 
-    private func store(_ r: Rig) -> MemoryGmailStore { r.store }
+    private func store(_ r: Rig) -> any GmailStore { r.store }
 
     func testBccIsKeptInGmailsCopyOfTheDraft() async throws {
         let r = rig()
@@ -144,7 +144,7 @@ final class GmailDraftTests: XCTestCase {
     }
 
     func testAQuitBeforeCreateAnsweredSavesTheDraftExactlyOnceAtTheNextLaunch() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let crashing = ScriptedGmailTransport(mailbox)
         let late = crashing.holdAfterAccepting(.draftsCreate)
         let before = rig(file: root.appendingPathComponent("before.json"), transport: crashing)
@@ -267,7 +267,7 @@ final class GmailDraftTests: XCTestCase {
     }
 
     func testADiscardLeftByAQuitIsFinishedAtTheNextLaunch() async throws {
-        let mailbox = MemoryGmailTransport(email: owner)
+        let mailbox = FakeGmail(email: owner)
         let offline = ScriptedGmailTransport(mailbox)
         let before = rig(transport: offline, retryInterval: 3_600)
         let draft = ref(accountID: mailbox.accountID)

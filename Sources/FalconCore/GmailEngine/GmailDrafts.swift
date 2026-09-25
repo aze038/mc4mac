@@ -426,9 +426,11 @@ public actor GmailDrafts {
             link.ref.threadID = nil
             state.links[link.ref.localID.uuidString] = link
             return try await transport.createDraft(body, threadID: nil, work: .interactive)
-        } catch let refusal as GoogleAPIError where refusal.kind == .offline || (400..<500).contains(refusal.httpStatus) {
+        } catch let refusal as GoogleAPIError where (refusal.kind == .offline && refusal.delivery != .unknown)
+                    || (400..<500).contains(refusal.httpStatus) {
             // No connection was made, or Gmail refused it: this create made no draft, so only
-            // an earlier unanswered one, if any, is still looked for.
+            // an earlier unanswered one, if any, is still looked for. A connection that dropped
+            // during the upload may have made one, which is looked for like any unanswered create.
             (link.creating, link.createSince) = before
             state.links[link.ref.localID.uuidString] = link
             persist()

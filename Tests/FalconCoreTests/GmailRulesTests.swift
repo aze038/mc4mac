@@ -218,7 +218,7 @@ final class GmailRulesTests: XCTestCase {
     }
 
     func testAnArrivalReadFromAFullMessage() async throws {
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let ref = gmail.add(subject: "Order 7", from: "Shop <shop@example.com>", cc: "Ben <ben@example.com>", text: "Tracking 123",
                             labels: [.inbox, .unread, .categoryUpdates], messageID: "<order-7@shop.example.com>")
         let full = try await gmail.message(ref.id, format: .full, work: .checks)

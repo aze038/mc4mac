@@ -722,11 +722,11 @@ final class GmailActionTests: XCTestCase {
     func testTwoHundredThousandArchivedInBulkWithinTheBudget() async throws {
         let clock = ActionClock(instant: true)
         let accountID = UUID()
-        let inner = MemoryGmailTransport(accountID: accountID)
+        let inner = FakeGmail(accountID: accountID)
         let transport = RecordingTransport(inner, clock: clock, recordOnly: true)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("falcon-gmail-bulk-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = MemoryGmailStore(accountID: accountID, files: GmailFiles(layout: FileLayout(root: root), accountID: accountID))
+        let store = GmailFileStore(accountID: accountID, files: GmailFiles(layout: FileLayout(root: root), accountID: accountID))
         let total = 200_000
         for page in 0..<(total / 500) {
             let refs = (0..<500).map { i -> GmailRef in

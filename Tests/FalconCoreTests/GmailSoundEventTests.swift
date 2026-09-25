@@ -4,7 +4,7 @@ import XCTest
 /// What the engine tells the app (§4.7), and what `MailSoundGate` then plays: every row of the
 /// design's table, and a short wait Google asks for changing nothing at all.
 final class GmailSoundEventTests: XCTestCase {
-    private func listedRig(_ gmail: MemoryGmailTransport, clock: ManualGmailClock) async -> GmailEngineRig {
+    private func listedRig(_ gmail: FakeGmail, clock: ManualGmailClock) async -> GmailEngineRig {
         let start = clock.now()
         for i in 0..<10 { gmail.add(subject: "Old \(i)", labels: [.inbox], date: start.addingTimeInterval(-Double(10 - i) * 86_400)) }
         let rig = GmailEngineRig(transport: gmail, clock: clock)
@@ -26,7 +26,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testNewMailInTheInboxGoesOutAsTheIMAPEngineSendsIt() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         let fresh = gmail.add(subject: "Quote for Friday", from: "Ana <ana@example.com>", labels: [.inbox, .unread], date: clock.now(),
@@ -51,7 +51,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testMailFromTheOwnerOrOutsideTheInboxIsNotAnnounced() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         clock.advance(by: 30)
         gmail.add(subject: "My own", from: "Owner <owner@example.com>", labels: [.inbox], date: clock.now())
@@ -68,7 +68,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testSendAndReceiveSaysWhetherItFoundNewMail() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         let start = clock.now()
         var quiet = gate()
@@ -90,7 +90,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testOnlySendAndReceiveAndWakingSayTheyStarted() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         for reason in [PokeReason.schedule, .networkChange, .changeCommitted] {
             _ = await rig.engine.check(reason: reason)
@@ -103,7 +103,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testProgressInTheStatusBarAlwaysEnds() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         for i in 0..<5 { gmail.add(subject: "Old \(i)", labels: [.inbox], date: clock.now().addingTimeInterval(-Double(5 - i) * 86_400)) }
         let rig = GmailEngineRig(transport: gmail, clock: clock)
         await rig.engine.runBackfill()
@@ -125,7 +125,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testAFailedCheckIsQuietThenOfflineAfterTwoMinutesThenRecovers() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         let start = clock.now()
         var sounds = gate()
@@ -157,7 +157,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testOfflineSaysTheMailOnThisMacStaysAvailable() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         gmail.failAlways(.historyList, with: GoogleAPIError(kind: .offline, detail: "URLError -1009"))
         _ = await rig.engine.check(reason: .schedule)
@@ -190,7 +190,7 @@ final class GmailSoundEventTests: XCTestCase {
         ]
         for (error, health, sentence, recheck) in cases {
             let clock = ManualGmailClock()
-            let gmail = MemoryGmailTransport()
+            let gmail = FakeGmail()
             let rig = await listedRig(gmail, clock: clock)
             let start = clock.now()
             var sounds = gate()
@@ -215,7 +215,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testAThirtySecondRetryAfterChangesNoHealthState() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         rig.transport.fail(.historyList, with: GoogleAPIError(kind: .rateLimited, httpStatus: 429, retryAfter: 30))
         let failed = await rig.engine.check(reason: .schedule)
@@ -235,7 +235,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testAWaitOfMoreThanAMinuteIsAPauseNotAFailure() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         let start = clock.now()
         var sounds = gate()
@@ -259,7 +259,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testShortWaitsThatAddUpToMoreThanAMinuteArePaused() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         for _ in 0..<3 {
             rig.transport.fail(.historyList, with: GoogleAPIError(kind: .rateLimited, httpStatus: 429, retryAfter: 25))
@@ -273,7 +273,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testADailyCapAndABandwidthLimitSaySoInTheirOwnWords() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         rig.transport.fail(.historyList, with: GoogleAPIError(kind: .quotaExhausted, httpStatus: 403, reason: "dailyLimitExceeded"))
         _ = await rig.engine.check(reason: .schedule)
@@ -284,7 +284,7 @@ final class GmailSoundEventTests: XCTestCase {
         let next = await rig.engine.schedule.nextCheck(after: clock.now())
         XCTAssertEqual(next, midnight, "held until midnight Pacific")
 
-        let other = await listedRig(MemoryGmailTransport(), clock: clock)
+        let other = await listedRig(FakeGmail(), clock: clock)
         other.transport.fail(.historyList, with: GoogleAPIError(kind: .downloadLimit, httpStatus: 429, retryAfter: 3_600))
         _ = await other.engine.check(reason: .schedule)
         let until = clock.now().addingTimeInterval(3_600)
@@ -298,7 +298,7 @@ final class GmailSoundEventTests: XCTestCase {
 
     func testAMessageGoingOutIsLookedForTwoAndTenSecondsLater() async throws {
         let clock = ManualGmailClock()
-        let gmail = MemoryGmailTransport()
+        let gmail = FakeGmail()
         let rig = await listedRig(gmail, clock: clock)
         let report = await rig.engine.check(reason: .messageSent)
         XCTAssertTrue(report.skipped, "not at once: Gmail files it a moment later")

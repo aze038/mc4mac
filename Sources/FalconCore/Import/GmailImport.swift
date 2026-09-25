@@ -18,7 +18,9 @@ public actor GmailImporter {
     public nonisolated let email: String
     private let transport: any GmailTransport
     private let store: any GmailStore
-    private let placer: (any GmailUploadPlacing)?
+    /// Logs and places what was imported: the account's engine, which is the store's only
+    /// writer, or on its own the store's part of that.
+    private let placer: any GmailUploadPlacing
     private let allowance: any GmailImportAllowance
     private let jobFile: URL?
     private let perMinute: Int
@@ -45,7 +47,7 @@ public actor GmailImporter {
         self.email = email
         self.transport = transport
         self.store = store
-        self.placer = placer
+        self.placer = placer ?? GmailStorePlacer(store: store, now: now)
         self.allowance = allowance
         self.jobFile = jobFile
         self.perMinute = max(1, perMinute)
@@ -168,15 +170,15 @@ public actor GmailImporter {
         while true {
             try await pace(bytes: message.raw.count)
             try beforeUpload(messageID)
+            await placer.willImport(messageID: messageID)
+            let answer: GmailMessage
             do {
-                let answer = try await transport.importMessage(message.raw, labels: labels, options: GmailImportOptions(),
-                                                               work: .background(.transfer))
-                await allowance.record(message.raw.count)
-                recent.append(now())
-                try await placed(answer, labels: labels, date: date, outcome: &outcome)
-                return
+                answer = try await transport.importMessage(message.raw, labels: labels, options: GmailImportOptions(),
+                                                           work: .background(.transfer))
             } catch let refusal as GoogleAPIError {
-                let mayHaveGone = refusal.kind == .temporary
+                await placer.importFailed(messageID: messageID)
+                // A dropped connection or a timeout may come after Gmail took the upload.
+                let mayHaveGone = refusal.delivery == .unknown || refusal.kind == .temporary
                     || (refusal.kind == .other && (refusal.httpStatus == 0 || refusal.httpStatus >= 500))
                 if refusal.kind == .offline || mayHaveGone {
                     // Tried again after a pause; an upload that may have gone is looked for
@@ -203,7 +205,15 @@ public actor GmailImporter {
                         ? "Gmail refused a message as too large to import." : "Gmail refused a message. Details are in the log."))
                     return
                 }
+                continue
+            } catch {
+                await placer.importFailed(messageID: messageID)
+                throw error
             }
+            await allowance.record(message.raw.count)
+            recent.append(now())
+            try await placed(answer, labels: labels, date: date, messageID: messageID, outcome: &outcome)
+            return
         }
     }
 
@@ -218,26 +228,27 @@ public actor GmailImporter {
         let labels = GmailImporter.labels(for: message, into: label)
         let found = GmailMessage(id: ref.id.hex, threadId: ref.threadID.hex, labelIds: labels.map(\.value).sorted())
         let date = message.date ?? MIMEParser.parseHeaders(message.raw).first("Date").flatMap(RFC5322Date.parse) ?? now()
-        try await placed(found, labels: labels, date: date, outcome: &outcome)
+        try await placed(found, labels: labels, date: date, messageID: messageID, outcome: &outcome)
         return true
     }
 
-    private func placed(_ answer: GmailMessage, labels: Set<GmailLabelID>, date: Date, outcome: inout GmailImportOutcome) async throws {
+    private func placed(_ answer: GmailMessage, labels: Set<GmailLabelID>, date: Date, messageID: String?,
+                        outcome: inout GmailImportOutcome) async throws {
         guard let id = GmailMessageID.fromGmail(answer.id, in: "messages.import") else { return }
         // Logged before anything else can see the message, so its echo is never new mail.
-        try await store.noteImported([id], at: now())
+        try await placer.imported(id, messageID: messageID)
         outcome.imported += 1
         outcome.ids.append(id)
         do {
             let neighbour = try await neighbour(before: date)
-            await placer?.placeImported(answer, labels: answer.labels.isEmpty ? labels : answer.labels, date: date, above: neighbour)
+            await placer.placeImported(answer, labels: answer.labels.isEmpty ? labels : answer.labels, date: date, above: neighbour)
         } catch {
             // Imported all the same; listing All Mail when the import ends places it.
             Log.info("import", "\(email): could not find where an imported message goes yet: \(error.localizedDescription)")
         }
         if let last = lastRelisting ?? outcome.startedAt, now().timeIntervalSince(last) >= GmailImporter.relistingInterval {
             lastRelisting = now()
-            await placer?.importEnded()
+            await placer.importEnded()
         }
     }
 
@@ -255,7 +266,7 @@ public actor GmailImporter {
     private func ended(_ outcome: GmailImportOutcome) async {
         neighbours = [:]
         lastRelisting = nil
-        if outcome.imported > 0 { await placer?.importEnded() }
+        if outcome.imported > 0 { await placer.importEnded() }
     }
 
     // MARK: - Pace
@@ -383,6 +394,26 @@ public protocol GmailImportAllowance: Sendable {
     /// When `bytes` more may be imported: now, or when the rolling day has room.
     func whenAllows(_ bytes: Int) async -> Date
     func record(_ bytes: Int) async
+}
+
+/// The day's import allowance as the app's traffic meter keeps it. The transport's budget books
+/// every upload into the meter already, and refuses an import past the meter's own limit, so with
+/// a meter the importer reads that one ledger rather than keep a second.
+public struct TrafficMeterImportAllowance: GmailImportAllowance {
+    public let meter: TrafficMeter
+    public let accountID: UUID
+
+    public init(meter: TrafficMeter, accountID: UUID) {
+        self.meter = meter
+        self.accountID = accountID
+    }
+
+    public func whenAllows(_ bytes: Int) async -> Date {
+        meter.whenAllowsAPI(.imports, adding: bytes, for: accountID)
+    }
+
+    /// The budget has booked it by the time the upload is answered.
+    public func record(_ bytes: Int) async {}
 }
 
 /// A rolling 24-hour ledger of import uploads, kept in a small file so a relaunch does not

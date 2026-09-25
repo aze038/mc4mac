@@ -40,6 +40,13 @@ Sources/FalconCore
   Contacts   GooglePeopleClient
   Calendar   GoogleCalendarClient (events, Google Meet links)
   Diagnostics DiagnosticsCenter  Redaction, on-disk queue, uploads (docs/DIAGNOSTICS.md)
+  Engine     EngineContracts   What every account's engine offers the list and the app
+  Gmail      GmailHTTPTransport  Every Gmail API call, within the account's GmailBudget
+  GmailEngine GmailAccountEngine  A Google account on the Gmail API, behind a switch that is off
+             GmailFileStore    Its index, journal and newest 1,000 under Accounts/<id>/Gmail/
+             GmailActions, GmailDrafts, GmailImporter, GmailSender
+             GmailAccountAssembly  One account's engine with every part installed
+  List       ListIndex, GmailListSource  Views of the index built off the main thread
 ```
 
 ## Data flow
@@ -210,6 +217,12 @@ where the daily triage symbolicates crashes; dSYMs are never uploaded.
 - Folder roles come from RFC 6154 special-use attributes.
 - Google Drive access uses the `drive.file` scope, which only sees files the
   app created and does not require Google's restricted-scope review.
+- The Gmail API engine opens no IMAP or SMTP connection for its account.
+  Its engine is the only writer of its store: the list, the actions, drafts,
+  sending and imports hand it Gmail's answers through the contracts in
+  `GmailAccountEngine.swift`, `GmailActions.swift` (`GmailActionsHost`) and
+  `GmailUploadPlacement.swift`, and `GmailAccountAssembly` puts them together.
+  The switch stays off for every account until the app routes to it.
 
 ## Why not SQLite, Core Data or SwiftData
 

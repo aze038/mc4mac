@@ -8,6 +8,7 @@ import XCTest
 final class ActionClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current: Date
+    private var followers: [VirtualClock] = []
     let instant: Bool
 
     init(_ start: Date = Date(timeIntervalSince1970: 1_790_000_000), instant: Bool = false) {
@@ -18,7 +19,17 @@ final class ActionClock: @unchecked Sendable {
     var now: Date { lock.withLock { current } }
 
     func advance(_ seconds: TimeInterval) {
-        lock.withLock { current = current.addingTimeInterval(seconds) }
+        let followers = lock.withLock { () -> [VirtualClock] in
+            current = current.addingTimeInterval(seconds)
+            return self.followers
+        }
+        for clock in followers { clock.advance(seconds) }
+    }
+
+    /// Moves `clock` on whenever this one moves, as the transport's budget and the actions share
+    /// the Mac's time in the app.
+    func link(_ clock: VirtualClock) {
+        lock.withLock { followers.append(clock) }
     }
 
     var clock: GmailActionClock {
@@ -37,8 +48,8 @@ final class ActionClock: @unchecked Sendable {
 /// the account's folders, and runs a small check for changes that screens history through the
 /// actions as the engine's own check does.
 final class ActionsHost: GmailActionsHost, @unchecked Sendable {
-    let store: MemoryGmailStore
-    let gmail: MemoryGmailTransport
+    let store: any GmailStore
+    let gmail: FakeGmail
     private let lock = NSLock()
     private var _cursor: HistoryID?
     private var _folders: [FolderInfo] = []
@@ -52,7 +63,7 @@ final class ActionsHost: GmailActionsHost, @unchecked Sendable {
     private var _viewMessages: [GmailMessageID]?
     weak var actions: GmailActions?
 
-    init(store: MemoryGmailStore, gmail: MemoryGmailTransport) {
+    init(store: any GmailStore, gmail: FakeGmail) {
         self.store = store
         self.gmail = gmail
     }
@@ -135,11 +146,12 @@ final class ActionsHost: GmailActionsHost, @unchecked Sendable {
     }
 }
 
-/// One Google account's actions against the in-memory Gmail and store, with its folders.
+/// One Google account's actions against the in-memory Gmail over the real transport, and the real
+/// store on disk, with its folders.
 final class ActionsFixture: @unchecked Sendable {
     let accountID: UUID
-    let gmail: MemoryGmailTransport
-    let store: MemoryGmailStore
+    let gmail: FakeGmail
+    let store: any GmailStore
     let host: ActionsHost
     let layout: FileLayout
     let root: URL
@@ -153,18 +165,19 @@ final class ActionsFixture: @unchecked Sendable {
     var userLabels: [String: GmailLabelID] = [:]
 
     init(accountID: UUID = UUID(), clock: ActionClock = ActionClock(), undoWindow: TimeInterval = 60, userLabels: [String] = ["Clients", "Projects"],
-         root existing: URL? = nil, gmail existingGmail: MemoryGmailTransport? = nil, store existingStore: MemoryGmailStore? = nil,
-         bulkUnitsPerMinute: Int = 1_500, transport: ((MemoryGmailTransport) -> any GmailTransport)? = nil) async throws {
+         root existing: URL? = nil, gmail existingGmail: FakeGmail? = nil, store existingStore: (any GmailStore)? = nil,
+         bulkUnitsPerMinute: Int = 1_500, transport: ((FakeGmail) -> any GmailTransport)? = nil) async throws {
         self.accountID = accountID
         self.clock = clock
         root = existing ?? FileManager.default.temporaryDirectory.appendingPathComponent("falcon-gmail-actions-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         layout = FileLayout(root: root)
-        gmail = existingGmail ?? MemoryGmailTransport(accountID: accountID)
-        store = existingStore ?? MemoryGmailStore(accountID: accountID, files: GmailFiles(layout: FileLayout(root: root), accountID: accountID))
+        gmail = existingGmail ?? FakeGmail(accountID: accountID)
+        store = existingStore ?? GmailFileStore(accountID: accountID, files: GmailFiles(layout: FileLayout(root: root), accountID: accountID))
         host = ActionsHost(store: store, gmail: gmail)
         mutes = MuteStore(layout: layout)
         rules = RuleStore(layout: layout)
+        clock.link(gmail.clock)
         wire = transport?(gmail) ?? gmail
         actions = GmailActions(accountID: accountID, transport: wire, store: store, mutes: mutes, rules: rules, host: host,
                                undoWindow: undoWindow, clock: clock.clock, bulkUnitsPerMinute: bulkUnitsPerMinute)
@@ -278,7 +291,7 @@ final class ActionsFixture: @unchecked Sendable {
 /// Stands between the actions and the in-memory Gmail, to count calls by kind of work, to time
 /// them by the test clock, and to stand in for `batchModify` on a mailbox too large to keep.
 final class RecordingTransport: GmailTransport, @unchecked Sendable {
-    let inner: MemoryGmailTransport
+    let inner: any GmailTransport
     let clock: ActionClock
     private let lock = NSLock()
     private var _bulkCalls: [(at: Date, method: GmailMethod, ids: Int, work: WorkClass)] = []
@@ -288,7 +301,7 @@ final class RecordingTransport: GmailTransport, @unchecked Sendable {
     /// The `modify` calls, counted from 1, that fail as a busy Gmail would.
     var failingModifyCalls: Set<Int> = []
 
-    init(_ inner: MemoryGmailTransport, clock: ActionClock, recordOnly: Bool = false) {
+    init(_ inner: any GmailTransport, clock: ActionClock, recordOnly: Bool = false) {
         self.inner = inner
         self.clock = clock
         self.recordOnly = recordOnly

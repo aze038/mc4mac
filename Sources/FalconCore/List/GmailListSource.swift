@@ -89,9 +89,9 @@ public actor GmailListSource: ListSourceExtras {
     /// When anchors were last asked for, so that failing to reach Gmail does not make every
     /// refresh ask again.
     private var anchorsAskedAt: TimeInterval?
-    /// Boundaries whose newest older message the index does not hold yet, left until tomorrow.
-    private var anchorsUnplaced: Set<Date> = []
-    private var oldestDate: Date?
+    /// Asks Gmail for anchors and keeps them. On its own the list uses one over its store; the
+    /// engine hands it its own.
+    private var anchorFiller: GmailDateAnchorFiller
     private var needsTold: Set<ListNeed> = []
     /// How many rows each folder showed at once when last told to the engine.
     private var shownRows: [UUID: Int] = [:]
@@ -126,6 +126,7 @@ public actor GmailListSource: ListSourceExtras {
         self.now = now
         self.sleep = sleep
         scheduler = RowFetchScheduler(budget: budget)
+        anchorFiller = GmailDateAnchorFiller(store: store, transport: transport, now: now)
         let forget = WeakBox<GmailListSource>()
         watchers = ListWatchers { view in Task { await forget.value?.forget(view) } }
         let (incoming, requests) = AsyncStream.makeStream(of: (keys: [RowKey], lane: Lane).self)
@@ -389,9 +390,11 @@ public actor GmailListSource: ListSourceExtras {
         for need in build.needs {
             if case .anchors(let account) = need, account == accountID {
                 askAnchors(daily: view.scope.mergesAccounts)
-            } else if needsTold.insert(need).inserted {
+            } else if let onNeed, needsTold.insert(need).inserted {
                 // Once: the engine lists it in the background, and says so with the listing state.
-                onNeed?(need)
+                // Until someone listens it is not counted as told, so a view built before the
+                // engine is connected still asks.
+                onNeed(need)
             }
         }
         if !build.textWanted.isEmpty, !textAsked.contains(view) {
@@ -609,13 +612,17 @@ public actor GmailListSource: ListSourceExtras {
     }
 
     /// Date anchors for group headers and for placing rows among other accounts': one `before:`
-    /// listing each, 5 units, asked only for boundaries not known yet.
+    /// listing each, 5 units, asked only for boundaries not known yet, through the engine's
+    /// filler, which is the only writer of anchors. The engine is told once that this account's
+    /// views want them, so it keeps them up after midnight and after deep placements.
     private func askAnchors(daily: Bool) {
         let time = uptime()
+        if let onNeed, needsTold.insert(.anchors(accountID)).inserted { onNeed(.anchors(accountID)) }
         guard anchorTask == nil, !isOffline, anchorsAskedAt.map({ time - $0 >= 60 }) ?? true else { return }
         anchorsAskedAt = time
+        let filler = anchorFiller
         anchorTask = Task { [weak self] in
-            let learnt = await self?.fillAnchors(daily: daily) ?? false
+            let learnt = await filler.fill(daily: daily)
             await self?.anchorsDone(learnt: learnt)
         }
     }
@@ -625,37 +632,30 @@ public actor GmailListSource: ListSourceExtras {
         if learnt { await refresh() }
     }
 
-    /// Whether any anchor was learnt. A boundary Gmail could not be asked about is asked again
-    /// at the next try, a minute later at the soonest.
-    private func fillAnchors(daily: Bool) async -> Bool {
-        let groups = ListDateGroups(now: now())
-        if oldestDate == nil, let first = snapshotOfIndex.byOrder.first {
-            let id = snapshotOfIndex.records[Int(first)].gmailID
-            if let cached = await store.cachedMessages([id])[id] {
-                oldestDate = cached.date
-            } else {
-                oldestDate = try? await transport.message(id, format: .minimal, work: .background(.index)).receivedDate
-            }
+    /// Rows' text the engine fetched for its own reasons, such as new mail and the first screen,
+    /// shown without asking Gmail again.
+    public func engineRows(_ rows: [RowKey: MessageRowContent]) {
+        remember(rows.filter { $0.key.accountID == accountID })
+    }
+
+    /// Every message of this account a view shows, conversations opened out, for a change on a
+    /// whole view that the index cannot work out alone, such as a search. Nil while the view is
+    /// not listed in full, when acting on what is known would silently leave the rest.
+    public func messageIDs(in view: ListView) async -> [GmailMessageID]? {
+        var flat = view
+        flat.conversations = false
+        flat.dateGroups = false
+        let snapshot = await build(flat).snapshot
+        guard snapshot.complete else { return nil }
+        return snapshot.rows.indices.compactMap { i in
+            guard case .gmail(let account, let id)? = snapshot.rowKey(at: i), account == accountID else { return nil }
+            return id
         }
-        let wanted = groups.boundaries(oldest: oldestDate, daily: daily)
-        anchorsUnplaced.formIntersection(wanted)
-        var anchors = await store.dateAnchors().filter { wanted.contains($0.boundary) }
-        let have = Set(anchors.map(\.boundary))
-        var learnt = false
-        for boundary in wanted where !have.contains(boundary) && !anchorsUnplaced.contains(boundary) {
-            let query = GmailListQuery(query: "before:\(Int(boundary.timeIntervalSince1970))", includeSpamTrash: true, maxResults: 1)
-            guard let page = try? await transport.list(query, work: .background(.index)) else { break }
-            let ref = page.refs.first
-            let order = ref.flatMap { snapshotOfIndex.record(for: $0.id)?.order }
-            if ref != nil, order == nil {
-                anchorsUnplaced.insert(boundary)
-                continue
-            }
-            anchors.append(GmailDateAnchor(boundary: boundary, id: ref?.id, order: order, askedAt: now()))
-            learnt = true
-        }
-        if learnt { try? await store.saveDateAnchors(anchors.sorted { $0.boundary > $1.boundary }) }
-        return learnt
+    }
+
+    /// The engine's filler, so that its anchors and the list's are one set with one writer.
+    public func setAnchorFiller(_ filler: GmailDateAnchorFiller) {
+        anchorFiller = filler
     }
 
     // MARK: - Building rows and summaries
