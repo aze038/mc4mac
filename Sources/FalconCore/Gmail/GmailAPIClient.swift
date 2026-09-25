@@ -66,6 +66,24 @@ public struct GmailMessage: Decodable, Sendable, Hashable {
     }
 }
 
+/// An address the account sends from, as Gmail's settings keep it, with the signature Gmail
+/// puts under messages sent from it, as HTML.
+public struct GmailSendAs: Decodable, Sendable, Hashable {
+    public var sendAsEmail: String
+    public var displayName: String?
+    public var signature: String?
+    public var isPrimary: Bool?
+    public var isDefault: Bool?
+
+    public init(sendAsEmail: String, displayName: String? = nil, signature: String? = nil, isPrimary: Bool? = nil, isDefault: Bool? = nil) {
+        self.sendAsEmail = sendAsEmail
+        self.displayName = displayName
+        self.signature = signature
+        self.isPrimary = isPrimary
+        self.isDefault = isDefault
+    }
+}
+
 /// Read-only calls to the Gmail API for one account. Every call books its units with the
 /// account's `GmailQuotaLimiter` first and only ever throws `GoogleAPIError` or cancellation.
 public struct GmailAPIClient: Sendable {
@@ -134,6 +152,13 @@ public struct GmailAPIClient: Sendable {
             throw GoogleAPIError(kind: .other, detail: "attachment without data")
         }
         return data
+    }
+
+    /// The addresses the account sends from, each with its Gmail signature (users.settings.sendAs.list).
+    public func sendAs() async throws -> [GmailSendAs] {
+        struct Reply: Decodable { var sendAs: [GmailSendAs]? }
+        let reply: Reply = try await call(.sendAsList, path: "settings/sendAs")
+        return reply.sendAs ?? []
     }
 
     private func call<T: Decodable>(_ method: GmailMethod, path: String, query: [URLQueryItem] = []) async throws -> T {

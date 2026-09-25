@@ -86,10 +86,14 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
     /// there. Text it sets no font or colour for takes `attributes`, and the blank lines it
     /// ends with are left out, as the signature's own block adds them. Nil when it cannot be
     /// read.
+    ///
+    /// Each picture it shows by cid:, as a signature from Outlook shows its own, is the one of
+    /// `parts` with that Content-ID, at the size the HTML gives it; one no part answers is left
+    /// out.
     @MainActor
-    public static func text(fromHTML html: String, pictures: [String: Data],
+    public static func text(fromHTML html: String, parts: [MIMEAttachment] = [], pictures: [String: Data],
                             attributes: [NSAttributedString.Key: Any]) -> NSAttributedString? {
-        guard let read = InlinePictures.text(fromHTML: ComposedBody.readingStyle(attributes) + html, parts: [],
+        guard let read = InlinePictures.text(fromHTML: ComposedBody.readingStyle(attributes) + html, parts: parts,
                                              attributes: attributes, remote: pictures) else { return nil }
         let text = NSMutableAttributedString(attributedString: ComposedBody.readable(read, attributes: attributes))
         let string = text.string as NSString

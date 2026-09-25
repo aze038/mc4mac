@@ -367,15 +367,85 @@ public enum InlinePictures {
         return Data(output)
     }
 
-    /// A JPEG with its JFIF header saying `dpi`; nil for one without that header.
+    /// A JPEG saying `dpi` wherever it states a resolution: in its JFIF header, and in the TIFF
+    /// tags of its Exif block, which ImageIO reads before the JFIF header, as a picture saved by
+    /// Word or taken by a camera has one. A JPEG that states none is given a JFIF header. Nil
+    /// for what is not laid out as a JPEG.
     private static func jpeg(_ data: Data, dpi: (Double, Double)) -> Data? {
         var bytes = [UInt8](data)
-        guard bytes.count > 18, bytes[2] == 0xFF, bytes[3] == 0xE0, Array(bytes[6..<11]) == Array("JFIF\0".utf8) else { return nil }
+        guard bytes.count > 4, bytes[0] == 0xFF, bytes[1] == 0xD8 else { return nil }
         let x = UInt16(max(1, min(65_535, dpi.0.rounded()))), y = UInt16(max(1, min(65_535, dpi.1.rounded())))
-        bytes[13] = 1
-        bytes[14] = UInt8(x >> 8); bytes[15] = UInt8(x & 0xFF)
-        bytes[16] = UInt8(y >> 8); bytes[17] = UInt8(y & 0xFF)
+        var stated = false
+        var offset = 2
+        // The segments before the picture's own data, each a marker and a length that counts
+        // itself.
+        while offset + 4 <= bytes.count, bytes[offset] == 0xFF {
+            let marker = bytes[offset + 1]
+            if marker == 0xDA || marker == 0xD9 { break }
+            let length = Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            let start = offset + 4, end = offset + 2 + length
+            guard length >= 2, end <= bytes.count else { return nil }
+            if marker == 0xE0, end - start >= 12, Array(bytes[start..<(start + 5)]) == Array("JFIF\0".utf8) {
+                bytes[start + 7] = 1
+                bytes[start + 8] = UInt8(x >> 8); bytes[start + 9] = UInt8(x & 0xFF)
+                bytes[start + 10] = UInt8(y >> 8); bytes[start + 11] = UInt8(y & 0xFF)
+                stated = true
+            } else if marker == 0xE1, end - start >= 14, Array(bytes[start..<(start + 6)]) == Array("Exif\0\0".utf8) {
+                if exifResolution(&bytes, tiff: start + 6, end: end, dpi: dpi) { stated = true }
+            }
+            offset = end
+        }
+        if !stated {
+            let header: [UInt8] = [0xFF, 0xE0, 0x00, 0x10] + Array("JFIF\0".utf8) + [1, 1, 1, UInt8(x >> 8), UInt8(x & 0xFF),
+                                                                                 UInt8(y >> 8), UInt8(y & 0xFF), 0, 0]
+            bytes.insert(contentsOf: header, at: 2)
+        }
         return Data(bytes)
+    }
+
+    /// Sets the XResolution, YResolution and ResolutionUnit tags of the first image of the TIFF
+    /// block at `tiff`, in either byte order, where it has them. Returns whether it states a
+    /// resolution now.
+    private static func exifResolution(_ bytes: inout [UInt8], tiff: Int, end: Int, dpi: (Double, Double)) -> Bool {
+        let little: Bool
+        switch (bytes[tiff], bytes[tiff + 1]) {
+        case (0x49, 0x49): little = true
+        case (0x4D, 0x4D): little = false
+        default: return false
+        }
+        func read(_ at: Int, _ size: Int) -> Int? {
+            guard at >= tiff, at + size <= end else { return nil }
+            var value = 0
+            for index in 0..<size {
+                value |= Int(bytes[at + index]) << (8 * (little ? index : size - 1 - index))
+            }
+            return value
+        }
+        func write(_ value: Int, _ at: Int, _ size: Int) {
+            guard at >= tiff, at + size <= end else { return }
+            for index in 0..<size {
+                bytes[at + index] = UInt8(truncatingIfNeeded: value >> (8 * (little ? index : size - 1 - index)))
+            }
+        }
+        guard let first = read(tiff + 4, 4), let count = read(tiff + first, 2) else { return false }
+        var found = 0
+        for entry in 0..<count {
+            let at = tiff + first + 2 + entry * 12
+            guard let tag = read(at, 2), let type = read(at + 2, 2) else { return false }
+            switch (tag, type) {
+            case (0x011A, 5), (0x011B, 5):
+                guard let place = read(at + 8, 4), tiff + place + 8 <= end else { continue }
+                let value = tag == 0x011A ? dpi.0 : dpi.1
+                write(Int(max(1, min(4_000_000, (value * 1000).rounded()))), tiff + place, 4)
+                write(1000, tiff + place + 4, 4)
+                found += 1
+            case (0x0128, 3):
+                write(2, at + 8, 2)
+            default:
+                continue
+            }
+        }
+        return found == 2
     }
 
     /// A message's HTML as the composer's body, its pictures in it again: each picture the HTML

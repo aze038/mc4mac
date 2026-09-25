@@ -6,10 +6,22 @@ import FalconCore
 /// box holding the signatures by name, with + − and Edit under the list and the chosen one's
 /// preview on white beside it; under "Choose default signature:", a box with each account's
 /// signatures for new messages and for replies and forwards.
+///
+/// Beside + and − a small action menu offers Import from Outlook… and Import from Gmail…, and
+/// while there are no signatures the empty preview offers the same. An import shows its sheet
+/// (SignatureImportSheet), and what it did is said in a line under the boxes.
 struct SignaturesSettings: View {
     @Environment(AppModel.self) private var model
     @State private var selection: UUID?
     @State private var accountID: UUID?
+    @State private var importing: SignatureImportSession?
+    /// What the last import did, for the line under the boxes.
+    @State private var imported: String?
+
+    #if DEBUG
+    /// What the debug snapshots show as the last import.
+    static var snapshotImported: String?
+    #endif
 
     private var library: SignatureLibrary { model.signatures }
 
@@ -24,9 +36,15 @@ struct SignaturesSettings: View {
                 .frame(width: SignatureTable.size.width, height: SignatureTable.size.height)
                 .at(x: 36, y: 53)
             SignatureListBar(canRemove: selection != nil, canEdit: selection != nil,
-                             add: { add() }, remove: { askToRemove() }, edit: { selection.map(edit) })
+                             add: { add() }, remove: { askToRemove() }, edit: { selection.map(edit) },
+                             importFrom: { beginImport($0) }, gmailAvailable: gmailAvailable)
                 .at(x: 36, y: 184)
             SignaturePreview(text: library.signature(selection).map(previewText)).at(x: 276, y: 53)
+            if library.sorted.isEmpty {
+                SignatureImportOffer(gmailAvailable: gmailAvailable) { beginImport($0) }
+                    .frame(width: 296, height: 134)
+                    .at(x: 278, y: 71)
+            }
 
             ClassicText("Choose default signature:", weight: .bold).at(x: 18.6, baseline: 244)
             ClassicBox(width: 572, height: 96).at(x: 20, y: 257)
@@ -44,13 +62,52 @@ struct SignaturesSettings: View {
             .disabled(model.accounts.isEmpty)
             if let problem = library.problem {
                 SignaturesNotice(problem: problem).frame(width: 572, alignment: .leading).at(x: 20, y: 357)
+            } else if let imported {
+                SignatureImportNotice(text: imported).frame(width: 572, alignment: .leading).at(x: 20, y: 357)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             if selection == nil { selection = library.sorted.first?.id }
             if accountID == nil { accountID = model.accounts.first?.id }
+            #if DEBUG
+            if imported == nil { imported = Self.snapshotImported }
+            #endif
         }
+        .sheet(item: $importing) { session in
+            SignatureImportSheet(session: session, perform: { performImport(session) }, close: { importing = nil })
+        }
+    }
+
+    /// Whether any account can be asked for its Gmail signatures: a Google account signed in
+    /// through Google.
+    private var gmailAvailable: Bool {
+        model.accounts.contains(where: model.usesGmailAPI)
+    }
+
+    /// Opens the import sheet and starts reading. Only here, when the owner asks, does FalconMail
+    /// read Outlook's data or ask Gmail, so macOS asks its question about another app's data
+    /// then and never at launch.
+    private func beginImport(_ source: SignatureImportSession.Source) {
+        guard importing == nil else { return }
+        let session = SignatureImportSession(source: source)
+        importing = session
+        Task { await session.start(model: model) }
+    }
+
+    /// Imports what the sheet has chosen; the sheet then says what was done until it is closed,
+    /// and the line under the boxes goes on saying what came in.
+    private func performImport(_ session: SignatureImportSession) {
+        guard session.canImport else { return }
+        // A signature being written that the import replaces is closed first, so its editor
+        // does not write the old words back over the new.
+        for row in session.rows where row.included && row.nameTaken && row.clash == .replace {
+            if let existing = library.book.signature(named: row.signature.name) { SignatureEditorWindows.shared.close(existing.id) }
+        }
+        let result = session.importChosen(into: library, accounts: model.accounts)
+        if let first = result.outcome.imported.first { selection = first }
+        if let account = result.outcome.defaults.first?.accountID { accountID = account }
+        imported = result.line
     }
 
     /// Outlook names an account by its owner and address.
@@ -111,6 +168,48 @@ struct SignaturesSettings: View {
         library.remove(signature.id)
         let after = library.sorted
         selection = after.isEmpty ? nil : after[min(index, after.count - 1)].id
+    }
+}
+
+/// While there are no signatures, the empty preview offers to bring them in from Outlook or
+/// Gmail, in small link-like buttons on its white page.
+struct SignatureImportOffer: View {
+    let gmailAvailable: Bool
+    let begin: (SignatureImportSession.Source) -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text("No signatures yet.")
+                .font(.system(size: 12))
+                .foregroundStyle(Color(white: 0.45))
+            Button("Import from Outlook…") { begin(.outlook) }
+            Button("Import from Gmail…") { begin(.gmail) }
+                .disabled(!gmailAvailable)
+                .help(gmailAvailable ? "" : "Add a Google account to import its Gmail signature.")
+        }
+        .buttonStyle(.link)
+        .font(.system(size: 12))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.colorScheme, .light)
+    }
+}
+
+/// What the last import brought in, in the place of the notice about the signatures file, which
+/// comes first when there is one: a green tick and a line, the whole of it in its help tag.
+struct SignatureImportNotice: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text(text)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .font(.system(size: 11))
+        .help(text)
     }
 }
 
@@ -272,13 +371,16 @@ struct SignatureTable: View {
 
 // MARK: - the bar under the list
 
-/// Joined + and − at the left of a bar as wide as the list, Edit at its right end.
+/// Joined + and − at the left of a bar as wide as the list, Edit at its right end. Beside −
+/// stands the action menu, a gear with a small arrow, holding the imports.
 struct SignatureListBar: View {
     let canRemove: Bool
     let canEdit: Bool
     let add: () -> Void
     let remove: () -> Void
     let edit: () -> Void
+    var importFrom: (SignatureImportSession.Source) -> Void = { _ in }
+    var gmailAvailable = false
 
     private static let bar = Classic.colour(light: 0xE6E6E6, dark: 0x3B3D48)
     private static let barEdge = Classic.colour(light: 0xC4C4C4, dark: 0x464752)
@@ -294,10 +396,19 @@ struct SignatureListBar: View {
             Self.bar.frame(width: 225, height: 20).at(x: 1, y: 1)
             box(x: 0, width: 23)
             box(x: 22, width: 23)
+            box(x: 44, width: 33)
             box(x: 171, width: 56)
             Self.joint.frame(width: 1, height: 20).at(x: 22, y: 1)
             Self.inner.frame(width: 1, height: 20).at(x: 44, y: 1)
+            Self.inner.frame(width: 1, height: 20).at(x: 76, y: 1)
             Self.inner.frame(width: 1, height: 20).at(x: 171, y: 1)
+            actionGlyph
+                .frame(width: 31, height: 20)
+                .overlay(MenuAnchor(title: "Import Signatures", items: [
+                    ("Import from Outlook…", true, { importFrom(.outlook) }),
+                    ("Import from Gmail…", gmailAvailable, { importFrom(.gmail) }),
+                ]))
+                .at(x: 45, y: 1)
             Button(action: add) { glyph(plus: true) }
                 .buttonStyle(.plain).accessibilityLabel("Add").at(x: 1, y: 1)
             Button(action: remove) { glyph(plus: false) }
@@ -321,6 +432,20 @@ struct SignatureListBar: View {
             .at(x: x + 1, y: 1)
     }
 
+    /// AppKit's action gear and a small arrow under it saying it opens a menu.
+    private var actionGlyph: some View {
+        HStack(spacing: 2) {
+            Image(nsImage: NSImage(named: NSImage.actionTemplateName) ?? NSImage())
+                .renderingMode(.template)
+                .resizable()
+                .frame(width: 13, height: 13)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 6, weight: .bold))
+        }
+        .foregroundStyle(Self.ink)
+        .offset(x: 0.5)
+    }
+
     /// The + and − in one point lines ten and a half points long.
     private func glyph(plus: Bool) -> some View {
         Canvas { context, size in
@@ -337,6 +462,61 @@ struct SignatureListBar: View {
         .frame(width: 21, height: 20)
         .opacity(plus || canRemove ? 1 : 0.4)
         .contentShape(Rectangle())
+    }
+}
+
+/// A transparent button over the view it overlays that opens `items` as a menu just under it,
+/// as a pull-down does; an item given false is shown but cannot be chosen.
+struct MenuAnchor: NSViewRepresentable {
+    let title: String
+    let items: [(String, Bool, () -> Void)]
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        view.setAccessibilityElement(true)
+        view.setAccessibilityRole(.menuButton)
+        view.setAccessibilityLabel(title)
+        view.toolTip = title
+        return view
+    }
+
+    func updateNSView(_ view: AnchorView, context: Context) {
+        view.items = items
+    }
+
+    final class AnchorView: NSView {
+        var items: [(String, Bool, () -> Void)] = []
+        private var actions: [() -> Void] = []
+
+        override var isFlipped: Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            popUp()
+        }
+
+        override func accessibilityPerformPress() -> Bool {
+            popUp()
+            return true
+        }
+
+        private func popUp() {
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            actions = items.map(\.2)
+            for (index, (title, enabled, _)) in items.enumerated() {
+                let item = NSMenuItem(title: title, action: #selector(choose(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = index
+                item.isEnabled = enabled
+                menu.addItem(item)
+            }
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 2), in: self)
+        }
+
+        @objc private func choose(_ item: NSMenuItem) {
+            guard actions.indices.contains(item.tag) else { return }
+            actions[item.tag]()
+        }
     }
 }
 

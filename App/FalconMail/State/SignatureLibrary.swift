@@ -93,6 +93,18 @@ final class SignatureLibrary {
         scheduleSave()
     }
 
+    /// Brings in signatures imported from Outlook or Gmail, as SignatureBook.importing does, and
+    /// keeps them at once. What an editor still holds is taken first, so a signature being
+    /// written that an import replaces is replaced, not written back over it.
+    @discardableResult
+    func importSignatures(_ items: [SignatureImportItem]) -> SignatureImportOutcome {
+        for (id, text) in pendingTexts { book.setText(text, of: id, plainIn: RichText.bodyAttributes) }
+        pendingTexts = [:]
+        let outcome = book.importing(items)
+        saveNow()
+        return outcome
+    }
+
     func setDefault(_ id: UUID?, for accountID: UUID, _ use: SignatureUse) {
         book.setDefault(id, for: accountID, use)
         saveNow()

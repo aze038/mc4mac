@@ -23,12 +23,15 @@ import FalconCore
 /// writes down beside them the words and buttons of the question asked before a signature is
 /// deleted, the message list with made-up conversations, a made-up conversation of four
 /// messages stacked in the reading pane and in its own window, the newest open and the rest
-/// folded, the unread one with its blue dot, and the mailbox window filling a 1728 × 1117 point screen with a message window alone
-/// in the middle and two minimised to tabs in its status bar, then with a message window and a
-/// compose window side by side and one tab, and those tabs close up, then quits. With
-/// `-FalconMailSnapshotOnly list` it draws the message list alone, with `stack` the conversation
-/// alone, with `fullscreen` the mailbox window filling the screen alone, and `stack50` times a
-/// conversation of fifty messages instead, writing how long it held up the main thread.
+/// folded, the unread one with its blue dot, and the mailbox window filling a 1728 × 1117 point
+/// screen with a message window alone in the middle and two minimised to tabs in its status bar,
+/// then with a message window and a compose window side by side and one tab, and those tabs
+/// close up, then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone,
+/// with `stack` the conversation alone, with `fullscreen` the mailbox window filling the screen
+/// alone, with `signature-import` only the Signatures pane offering an import, the import sheets
+/// for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
+/// signatures, and `stack50` times a conversation of fifty messages instead, writing how long it
+/// held up the main thread.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -56,6 +59,10 @@ enum ComposeSnapshot {
             fullScreen(model, to: directory)
             exit(0)
         }
+        if only == "signature-import" {
+            signatureImport(model, to: directory, prefix: "fm-sig-import")
+            exit(0)
+        }
         messageList(model, to: directory)
         if only == "list" { exit(0) }
         for (name, appearance) in appearances {
@@ -81,6 +88,7 @@ enum ComposeSnapshot {
         windows(model, to: directory)
         fullScreen(model, to: directory)
         signatures(model, to: directory)
+        signatureImport(model, to: directory, prefix: "signature-import")
         inlinePictures(model, to: directory)
         replyQuotes(model, to: directory)
         conversationStack(model, to: directory)
@@ -279,6 +287,111 @@ enum ComposeSnapshot {
                        date: Date(timeIntervalSince1970: 1_790_000_000), flags: [.seen], size: 0,
                        snippet: "Please see the schedule below.", hasAttachments: false)
     }
+
+    /// The Signatures pane with no signatures, offering to import them, and with one, its action
+    /// menu beside + and −; the import sheet over made-up signatures from Outlook, one of them
+    /// named as a signature already here, and from Gmail, with its logo; the sheet saying macOS
+    /// refused; and the pane after the import, saying what it did. Nothing is read from Outlook
+    /// or asked of Gmail: the signatures are written here, the logo drawn here.
+    @MainActor private static func signatureImport(_ model: AppModel, to directory: String, prefix: String) {
+        let alex = AccountInfo.google(email: "alex@example.com", displayName: "Alex Example")
+        let office = AccountInfo(email: "office@example.org", displayName: "Example Office", provider: "imap",
+                                 imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [alex, office]
+        var book = SignatureBook()
+        let mine = book.add(startingWith: "Alex")
+        book.rename(mine.id, to: "Test Signature")
+        let logo = madeUpLogo()
+        let outlook = [
+            SignatureCandidate(name: "Test Signature", origin: .outlook(profile: "Main Profile"), html: madeUpWordSignature,
+                               pictures: [MIMEAttachment(picture: logo, filename: "image001.jpg", mimeType: "image/jpeg",
+                                                         contentID: "image001.jpg@01DD0000.00000000")],
+                               defaultAddresses: ["alex@example.com", "office@example.org"]),
+            SignatureCandidate(name: "Test Signature – short", origin: .outlook(profile: "Main Profile"),
+                               html: "<p class=MsoNormal><span style='font-size:10.0pt;font-family:\"Helvetica Neue\"'>Alex</span></p>"),
+        ]
+        let gmailLogo = "https://lh3.example.com/logo.jpg"
+        let gmail = SignatureCandidate(name: "Gmail – alex@example.com", origin: .gmail(account: "alex@example.com"),
+                                       html: "<div dir=\"ltr\"><div><b>Alex Example</b></div><div>Operations Lead</div>"
+                                           + "<img src=\"\(gmailLogo)\" width=\"96\" height=\"29\"></div>",
+                                       defaultAddresses: ["alex@example.com"], defaultsKnown: true)
+        for (name, appearance) in appearances {
+            model.signatures = SignatureLibrary(book: SignatureBook())
+            captureSettings(.signatures, model: model, active: true, appearance: appearance, to: "\(directory)/\(prefix)-pane-empty-\(name).png")
+            model.signatures = SignatureLibrary(book: book)
+            captureSettings(.signatures, model: model, active: true, appearance: appearance, to: "\(directory)/\(prefix)-pane-\(name).png")
+
+            let session = SignatureImportSession(source: .outlook)
+            session.origin = "From the Outlook profile “Main Profile”."
+            session.defaultsKnown = false
+            session.prepare(outlook, model: model, remote: [:])
+            render(SignatureImportSheet(session: session, perform: {}, close: {}).environment(model).themedRoot(),
+                   size: SignatureImportSheet.size, appearance: appearance, to: "\(directory)/\(prefix)-sheet-\(name).png")
+
+            let fromGmail = SignatureImportSession(source: .gmail)
+            fromGmail.origin = "From the Gmail settings of alex@example.com."
+            fromGmail.prepare([gmail], model: model, remote: [gmailLogo: logo])
+            render(SignatureImportSheet(session: fromGmail, perform: {}, close: {}).environment(model).themedRoot(),
+                   size: SignatureImportSheet.size, appearance: appearance, to: "\(directory)/\(prefix)-gmail-sheet-\(name).png")
+
+            let refused = SignatureImportSession(source: .outlook)
+            refused.stage = .failed(SignatureImportSession.sentence(for: .notAllowed), privacy: true)
+            render(SignatureImportSheet(session: refused, perform: {}, close: {}).environment(model).themedRoot(),
+                   size: NSSize(width: SignatureImportSheet.size.width, height: SignatureImportSheet.shortHeight), appearance: appearance,
+                   to: "\(directory)/\(prefix)-sheet-refused-\(name).png")
+
+            // The import done, Test Signature replacing the one here: the sheet saying what it
+            // did, then the pane with the line saying so.
+            let library = SignatureLibrary(book: book)
+            session.setClash(.replace, session.rows[0].id)
+            let result = session.importChosen(into: library, accounts: model.accounts)
+            render(SignatureImportSheet(session: session, perform: {}, close: {}).environment(model).themedRoot(),
+                   size: NSSize(width: SignatureImportSheet.size.width, height: SignatureImportSheet.shortHeight), appearance: appearance,
+                   to: "\(directory)/\(prefix)-sheet-done-\(name).png")
+            model.signatures = library
+            SignaturesSettings.snapshotImported = result.line
+            captureSettings(.signatures, model: model, active: true, appearance: appearance, to: "\(directory)/\(prefix)-pane-after-\(name).png")
+            SignaturesSettings.snapshotImported = nil
+        }
+        model.signatures = SignatureLibrary(book: SignatureBook())
+        model.accounts = []
+    }
+
+    /// A made-up logo, 192 × 58 pixels, as a JPEG like the one Word keeps.
+    private static func madeUpLogo() -> Data {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 192, pixelsHigh: 58, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        guard let rep else { return Data() }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor(red: 0.12, green: 0.22, blue: 0.39, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: 192, height: 58).fill()
+        NSColor.systemOrange.setFill()
+        NSRect(x: 0, y: 0, width: 58, height: 58).fill()
+        ("EXAMPLE" as NSString).draw(at: NSPoint(x: 70, y: 18), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 20),
+                                                                                 .foregroundColor: NSColor.white])
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) ?? Data()
+    }
+
+    /// Word's HTML for a made-up signature, as Legacy Outlook keeps one: MsoNormal paragraphs in
+    /// points, conditional comments, and its picture drawn by VML for Word beside an ordinary one.
+    private static let madeUpWordSignature = """
+        <html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" \
+        xmlns="http://www.w3.org/TR/REC-html40"><head><style><!--
+        p.MsoNormal, li.MsoNormal, div.MsoNormal {margin:0cm; font-size:12.0pt; font-family:"Calibri",sans-serif;}
+        --></style><!--[if gte mso 9]><xml><o:shapedefaults v:ext="edit" spidmax="1026" /></xml><![endif]--></head>\
+        <body lang=EN-GB link="#0563C1" vlink="#954F72"><div class=WordSection1><p class=MsoNormal><b><span \
+        style='font-size:10.0pt;font-family:"Helvetica Neue";color:#1F3864'>Alex Example<o:p></o:p></span></b></p>\
+        <p class=MsoNormal><span style='font-size:9.0pt;font-family:"Helvetica Neue";color:#444444'>Operations Lead | \
+        Example Freight Ltd<o:p></o:p></span></p><p class=MsoNormal><span style='font-size:9.0pt;font-family:Helvetica;\
+        color:black'>Tel: +44 20 7946 0000 | <a href="https://example.com/"><span style='color:#0563C1'>example.com</span>\
+        </a><o:p></o:p></span></p><p class=MsoNormal><span style='font-size:10.0pt;color:black'><!--[if gte vml 1]><v:shape \
+        id="Picture_x0020_1" style='width:72pt;height:21.75pt'><v:imagedata src="cid:image001.jpg@01DD0000.00000000" \
+        o:title=""/></v:shape><![endif]--><![if !vml]><img width=96 height=29 style='width:1.0in;height:.302in' \
+        src="cid:image001.jpg@01DD0000.00000000" v:shapes="Picture_x0020_1"><![endif]></span></p>\
+        <p class=MsoNormal><o:p>&nbsp;</o:p></p></div></body></html>
+        """
 
     /// A Settings window at `pane`, built as the app builds it but drawn as it looks in front
     /// when `active`.
