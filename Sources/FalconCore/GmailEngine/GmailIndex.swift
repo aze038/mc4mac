@@ -84,17 +84,6 @@ final class GmailIndex {
         return out
     }
 
-    /// The live messages of one conversation, oldest first.
-    func liveMembers(ofThread thread: GmailThreadID) -> [Int32] {
-        var out: [Int32] = []
-        records.withUnsafeBufferPointer { buffer in
-            for i in buffer.indices where buffer[i].threadID == thread.raw && !buffer[i].attributes.contains(.tombstone) {
-                out.append(Int32(i))
-            }
-        }
-        return out.sorted { precedes($0, $1) }
-    }
-
     /// Whether every listing of All Mail seen so far has reached its end, so a message still known
     /// only from a label's listing was skipped by it rather than not reached yet.
     var allMailListed: Bool {
@@ -107,14 +96,16 @@ final class GmailIndex {
         return any
     }
 
-    /// What the index costs in memory, for the budget of about 13 MB at 200,000 messages. A
-    /// dictionary's storage is its buckets, of which it keeps a quarter free.
+    /// What the index takes in memory, for the budget of about 13 MB at 200,000 messages: its
+    /// arrays as far as they are filled, and its table of ids whole, buckets left free included.
+    /// An array's capacity would overstate it: room reserved but never written takes no memory,
+    /// and a large block that malloc hands back from its cache can be twice the size asked for.
     var approximateMemory: Int {
         let buckets = max(1, Int((Double(slotByID.capacity) / 0.75).rounded(.up))).nextPowerOfTwo
         let dictionary = buckets * (MemoryLayout<UInt64>.stride + MemoryLayout<Int32>.stride) + buckets / 8
-        let lists = overflow.values.reduce(0) { $0 + $1.capacity * MemoryLayout<Int32>.stride }
+        let lists = overflow.values.reduce(0) { $0 + $1.count * MemoryLayout<Int32>.stride }
         let waiting = pending.count * (MemoryLayout<GmailPendingPlacement>.stride + 16)
-        return records.capacity * MemoryLayout<GmailIndexRecord>.stride + byOrder.capacity * MemoryLayout<Int32>.stride
+        return records.count * MemoryLayout<GmailIndexRecord>.stride + byOrder.count * MemoryLayout<Int32>.stride
             + dictionary + lists + waiting
     }
 
@@ -172,6 +163,7 @@ final class GmailIndex {
     /// One page of a listing: places what All Mail lists, sets the bits a label's listing gives,
     /// and learns attributes from a search. It never removes anything.
     func apply(_ page: GmailListingPage) {
+        reserveRoom(for: page)
         let mask = bits(page.labels)
         let listedLabels = page.labels.filter { overflow[$0] != nil }
         let attributes = page.attributes.subtracting(GmailIndex.ownAttributes)
@@ -275,6 +267,21 @@ final class GmailIndex {
             let holds = cached.contains(records[i].id) && !records[i].attributes.contains(.tombstone)
             if holds { records[i].attributes.insert(.cached) } else { records[i].attributes.remove(.cached) }
         }
+    }
+
+    /// All Mail's first page gives the newest message the order N × 16, N being how many
+    /// messages the listing is about to place (design §2.3), so room for all of them is taken at
+    /// once. Growing page by page would copy the index every time it doubled, and the copies left
+    /// behind take memory until the allocator gives it back: about three times the index at
+    /// 200,000. Room reserved and never filled takes address space but no memory, and a million
+    /// messages is as far as it goes.
+    private func reserveRoom(for page: GmailListingPage) {
+        guard case .allMail = page.chain, page.pageToken == nil, let first = page.firstOrder, page.orderStep > 0 else { return }
+        let expected = min(Int(first / page.orderStep) + 1, 1_000_000)
+        guard expected > records.capacity else { return }
+        records.reserveCapacity(expected)
+        byOrder.reserveCapacity(expected)
+        slotByID.reserveCapacity(expected)
     }
 
     /// Frees the room arrays keep for growing, once a listing has placed everything: 200,000

@@ -30,13 +30,21 @@ final class GmailDiskIO: @unchecked Sendable {
 
     /// Called before each write, with what is about to be written. Tests only.
     var beforeWrite: ((Write) -> Void)?
+    /// Whether a write fails as it would on a full disk: an append after writing half of its
+    /// bytes. Tests only.
+    var refuse: ((Write) -> Bool)?
 
     init() {}
+
+    private func refused(_ write: Write, _ url: URL) throws {
+        if refuse?(write) == true { throw GmailDiskError.posix("write", ENOSPC, url) }
+    }
 
     /// Writes `data` to a new file beside `url`, flushes it, and renames it over `url`, so a reader
     /// finds either the old file whole or the new one whole.
     func replace(_ data: Data, at url: URL) throws {
         beforeWrite?(.replace(url, data))
+        try refused(.replace(url, data), url)
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
@@ -70,6 +78,10 @@ final class GmailDiskIO: @unchecked Sendable {
     func append(_ data: Data, to fd: Int32, url: URL, length: Int, barrier: Bool) throws {
         beforeWrite?(.append(url, data))
         do {
+            if refuse?(.append(url, data)) == true {
+                try GmailDiskIO.writeAll(data.prefix(data.count / 2), to: fd, url: url)
+                throw GmailDiskError.posix("write", ENOSPC, url)
+            }
             try GmailDiskIO.writeAll(data, to: fd, url: url)
             if barrier, fcntl(fd, F_BARRIERFSYNC) != 0, fsync(fd) != 0 {
                 throw GmailDiskError.posix("fsync", errno, url)
@@ -602,6 +614,10 @@ final class GmailJournal {
     /// Records written since the snapshot, which decides when to compact.
     private(set) var operations: Int
     private var fd: Int32 = -1
+    /// Set while starting the journal of a new generation. Until that has worked, the file on disk
+    /// may still be the old generation's, which the next launch would rightly ignore, so nothing
+    /// may be appended to it.
+    private var restarting: UInt64?
 
     private init(url: URL, io: GmailDiskIO, generation: UInt64, length: Int, operations: Int) {
         self.url = url
@@ -668,16 +684,19 @@ final class GmailJournal {
     /// After a compaction: the snapshot now holds everything, so the journal starts again empty
     /// under the next generation.
     func restart(generation next: UInt64) throws {
+        restarting = next
+        try io.replace(GmailJournalCodec.header(generation: next), at: url)
         if fd >= 0 { close(fd) }
         fd = -1
-        try io.replace(GmailJournalCodec.header(generation: next), at: url)
+        fd = try GmailDiskIO.openForAppend(url)
         generation = next
         length = GmailJournalCodec.headerLength
         operations = 0
-        fd = try GmailDiskIO.openForAppend(url)
+        restarting = nil
     }
 
     private func write(_ data: Data, operations added: Int) throws {
+        if let next = restarting { try restart(generation: next) }
         guard fd >= 0 else { throw GmailDiskError.notLoaded }
         try io.append(data, to: fd, url: url, length: length, barrier: true)
         length += data.count
