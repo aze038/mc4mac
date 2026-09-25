@@ -20,8 +20,12 @@ import FalconCore
 /// the web off and on, in both appearances into PNGs at twice their size in that directory, with
 /// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
-/// deleted, and the message list with made-up conversations, then quits. With
-/// `-FalconMailSnapshotOnly list` it draws the message list alone.
+/// deleted, the message list with made-up conversations, and the mailbox window filling a
+/// 1728 × 1117 point screen with a message window alone in the middle and two minimised to tabs
+/// in its status bar, then with a message window and a compose window side by side and one tab,
+/// and those tabs close up, then quits. With `-FalconMailSnapshotOnly list` it draws the message
+/// list alone, and with `-FalconMailSnapshotOnly fullscreen` the mailbox window filling the screen
+/// alone.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -36,8 +40,13 @@ enum ComposeSnapshot {
         let formatter = TextFormatter()
         formatter.attach(ComposeTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200)))
         let model = AppModel()
+        let only = UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly")
+        if only == "fullscreen" {
+            fullScreen(model, to: directory)
+            exit(0)
+        }
         messageList(model, to: directory)
-        if UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly") == "list" { exit(0) }
+        if only == "list" { exit(0) }
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")
@@ -59,6 +68,7 @@ enum ComposeSnapshot {
             }
         }
         windows(model, to: directory)
+        fullScreen(model, to: directory)
         signatures(model, to: directory)
         inlinePictures(model, to: directory)
         replyQuotes(model, to: directory)
@@ -296,6 +306,187 @@ enum ComposeSnapshot {
                    size: NSSize(width: 1728, height: 40), appearance: appearance, to: "\(directory)/discarded-\(name).png")
         }
         _ = model.discarded.undo(at: Date())
+    }
+
+    /// The mailbox window filling a 1728 × 1117 point screen, under the 37 point band a screen
+    /// with a camera housing keeps at its top, as Outlook's was captured: a message window alone
+    /// in the middle, at its own size, with a message and a message being written minimised to
+    /// tabs in the status bar; then that message window and a compose window side by side, one
+    /// tab left; and the status bar's tabs close up. The mailbox window and each window over it
+    /// are drawn as the app draws them and put together where the layout places them, with the
+    /// rounded corners, outline and shadow macOS gives a window, the green button off as it is
+    /// there. All the mail is made up.
+    @MainActor private static func fullScreen(_ model: AppModel, to directory: String) {
+        let screen = NSSize(width: 1728, height: 1117)
+        let mailbox = NSRect(x: 0, y: 0, width: screen.width, height: screen.height - 37)
+        var area = mailbox
+        area.origin.y += OL.fullScreenStatus
+        area.size.height -= OL.fullScreenStatus
+
+        let account = AccountInfo.google(email: "alex@example.com", displayName: "Alex Example")
+        model.accounts = [account]
+        let threads = ListSnapshotMail(accountID: account.id).threads
+        model.threads = threads
+        model.messages = threads.flatMap(\.messages)
+        model.storedInSelection = model.messages.count
+        model.rebuildRows()
+        defer {
+            model.threads = []
+            model.messages = []
+            model.rebuildRows()
+        }
+        let message = MessageSummary(
+            accountID: account.id, folderID: UUID(), uid: 7, messageID: "<figures-7@example.com>", inReplyTo: "",
+            references: [], subject: "Quarterly figures for the north office",
+            from: EmailAddress(name: "Sam Taylor", address: "sam.taylor@example.com"),
+            to: [EmailAddress(name: "Alex Example", address: "alex@example.com")], cc: [],
+            date: Date(timeIntervalSince1970: 1_790_000_000), flags: [.seen], size: 2048,
+            snippet: "Hello Alex, the figures for the quarter are in. North is up eight per cent on last year and "
+                + "South held steady. I have put the full breakdown in the shared folder; the summary is below. "
+                + "Could we go through it on Thursday before the board pack goes out?",
+            hasAttachments: false)
+        var reply = ComposeDraft(accountID: account.id)
+        reply.to = "Sam Taylor <sam.taylor@example.com>"
+        reply.subject = "Re: Quarterly figures for the north office"
+        reply.body = "Thanks Sam, Thursday at ten works for me.\n\nAlex\n"
+        let replyID = model.newDraft(reply)
+        // What the tabs hold: a message minimised, and a message being written minimised.
+        let delivery = "snapshot-delivery"
+        model.messageWindowRows[delivery] = MessageSummary(
+            accountID: account.id, folderID: UUID(), uid: 8, messageID: "<delivery-8@example.net>", inReplyTo: "", references: [],
+            subject: "Delivery on Friday", from: EmailAddress(name: "Jordan Lee", address: "jordan@example.net"),
+            to: [EmailAddress(name: "Alex Example", address: "alex@example.com")], cc: [], date: Date(timeIntervalSince1970: 1_790_003_600),
+            flags: [.seen], size: 1024, hasAttachments: false)
+        var site = ComposeDraft(accountID: account.id)
+        site.subject = "Re: Site visit on Friday"
+        let siteID = model.newDraft(site)
+        defer {
+            model.drafts[replyID] = nil
+            model.drafts[siteID] = nil
+            model.messageWindowRows[delivery] = nil
+        }
+        for entry in WindowTray.shared.book.tray { WindowTray.shared.close(entry.key) }
+
+        let messageSize = FullScreenItems.openingSize(of: .message(message.id))
+        let composeSize = FullScreenItems.openingSize(of: .compose(replyID))
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        for (name, appearance) in appearances {
+            func messageWindow(_ frame: NSRect, inFront: Bool) -> NSBitmapImageRep? {
+                itemWindow(MessageWindowView(messageID: message.id, message: message)
+                            .themedRoot().environment(model).environmentObject(model.updates),
+                           size: frame.size, appearance: appearance, style: style, inFront: inFront)
+            }
+            func mailboxWindow() -> NSBitmapImageRep? {
+                image(of: host(MainWindow(snapshotFillsScreen: true).themedRoot().environment(model).environmentObject(model.updates),
+                               size: mailbox.size, appearance: appearance),
+                      appearance: appearance)
+            }
+
+            WindowTray.shared.shelve(.message(delivery), title: "Delivery on Friday")
+            WindowTray.shared.shelve(.compose(siteID), title: "Re: Site visit on Friday")
+            let alone = FullScreenLayout.frames(for: [messageSize], in: area)
+            guard let backdrop = mailboxWindow(), let window = messageWindow(alone[0], inFront: true),
+                  let one = screenImage(screen, mailbox: (backdrop, mailbox), windows: [(window, alone[0])], appearance: appearance)
+            else { continue }
+            write(one, to: "\(directory)/fullscreen-one-\(name).png")
+            let foot = NSRect(x: 0, y: 0, width: screen.width, height: 96)
+            write(draw([(one, NSRect(x: 0, y: 0, width: screen.width, height: screen.height))], size: foot.size),
+                  to: "\(directory)/fullscreen-tabs-\(name).png")
+
+            // The compose window's tab clicked: its window comes back beside the message window.
+            WindowTray.shared.close(.compose(siteID))
+            let pair = FullScreenLayout.frames(for: [messageSize, composeSize], in: area)
+            // The compose window, just brought back, is in front.
+            guard let backdropWithOneTab = mailboxWindow(), let left = messageWindow(pair[0], inFront: false),
+                  let right = itemWindow(ComposeView(draftID: replyID).themedRoot().environment(model).environmentObject(model.updates),
+                                         size: pair[1].size, appearance: appearance, style: style),
+                  let two = screenImage(screen, mailbox: (backdropWithOneTab, mailbox), windows: [(left, pair[0]), (right, pair[1])],
+                                        appearance: appearance)
+            else { continue }
+            write(two, to: "\(directory)/fullscreen-two-\(name).png")
+            WindowTray.shared.close(.message(delivery))
+        }
+    }
+
+    /// A message or compose window as it stands over the mailbox window filling the screen: its
+    /// frame, traffic lights and all, the green button off, drawn as the window in front when
+    /// `inFront` and as one behind otherwise.
+    @MainActor private static func itemWindow(_ view: some View, size: NSSize, appearance: NSAppearance.Name,
+                                              style: NSWindow.StyleMask, inFront: Bool = true) -> NSBitmapImageRep? {
+        let frame = NSRect(origin: .zero, size: size)
+        let window = inFront ? InFrontWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
+            : NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = NSHostingView(rootView: view)
+        window.setFrame(frame, display: false)
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
+        guard let themeFrame = window.contentView?.superview, let drawn = image(of: themeFrame, appearance: appearance) else { return nil }
+        guard inFront else { return drawn }
+        // AppKit draws the buttons lit only in an app that is active, which the snapshot never
+        // is, so the close and minimise buttons of the window in front are lit here, where AppKit
+        // put them.
+        let lit: [(NSWindow.ButtonType, Int)] = [(.closeButton, 0xFF5F57), (.miniaturizeButton, 0xFEBC2E)]
+        let circles = lit.compactMap { type, colour -> (NSRect, NSColor)? in
+            guard let button = window.standardWindowButton(type) else { return nil }
+            let box = button.convert(button.bounds, to: themeFrame)
+            let side = min(box.width, box.height)
+            return (NSRect(x: box.midX - side / 2, y: box.midY - side / 2, width: side, height: side), NSColor(hex: colour))
+        }
+        guard let rep = draw([(drawn, frame)], size: size) else { return drawn }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        for (circle, colour) in circles {
+            colour.setFill()
+            NSBezierPath(ovalIn: circle).fill()
+            NSColor.black.withAlphaComponent(0.12).setStroke()
+            let edge = NSBezierPath(ovalIn: circle.insetBy(dx: 0.25, dy: 0.25))
+            edge.lineWidth = 0.5
+            edge.stroke()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
+    }
+
+    /// Drawn as the window in front, which a window never shown is not.
+    private final class InFrontWindow: NSWindow {
+        override var isKeyWindow: Bool { true }
+        override var isMainWindow: Bool { true }
+    }
+
+    /// A screen `size` points big: black where the camera housing's band is, the mailbox window
+    /// in its frame, and each window over it in its own, rounded, outlined and shadowed as macOS
+    /// draws a window.
+    private static func screenImage(_ size: NSSize, mailbox: (NSBitmapImageRep, NSRect), windows: [(NSBitmapImageRep, NSRect)],
+                                    appearance: NSAppearance.Name) -> NSBitmapImageRep? {
+        guard let rep = bitmap(size) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.black.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        mailbox.0.draw(in: mailbox.1, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: false, hints: nil)
+        let dark = appearance == .darkAqua
+        for (window, frame) in windows {
+            let outline = NSBezierPath(roundedRect: frame, xRadius: 12, yRadius: 12)
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(dark ? 0.6 : 0.35)
+            shadow.shadowBlurRadius = 28
+            shadow.shadowOffset = NSSize(width: 0, height: -10)
+            shadow.set()
+            NSColor.black.setFill()
+            outline.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            NSGraphicsContext.saveGraphicsState()
+            outline.addClip()
+            window.draw(in: frame, from: .zero, operation: .copy, fraction: 1, respectFlipped: false, hints: nil)
+            NSGraphicsContext.restoreGraphicsState()
+            let edge = NSBezierPath(roundedRect: frame.insetBy(dx: 0.25, dy: 0.25), xRadius: 11.75, yRadius: 11.75)
+            edge.lineWidth = 0.5
+            (dark ? NSColor.white.withAlphaComponent(0.22) : NSColor.black.withAlphaComponent(0.22)).setStroke()
+            edge.stroke()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep
     }
 
     /// A new message from an account whose signature for new messages has a logo, words typed
