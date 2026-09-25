@@ -250,7 +250,7 @@ struct MessageTableView: NSViewRepresentable {
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !applying, let table else { return }
             let rows = table.selectedRowIndexes
-            let messageRows = controller.snapshot.rows.lazy.filter { $0.displayKind != .header }.count
+            let messageRows = controller.snapshot.messageRowCount
             let selection = rows.count == messageRows && messageRows > 0 ? ListSelection.all() : ListSelection(rows: rows)
             controller.setSelection(selection)
             parent.onSelectionChange(selection)

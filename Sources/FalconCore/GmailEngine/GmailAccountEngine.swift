@@ -883,6 +883,25 @@ extension GmailAccountEngine {
         return labelEntries
     }
 
+    /// The messages of the conversation `id` belongs to that a folder shows, newest first (see
+    /// `GmailIndexSnapshot.conversationMembers`): the folder `folderID`'s, every one but those in
+    /// Junk Email and Deleted Items for a folder with no label such as Archive, and the Inbox's
+    /// for All Inboxes (`folderID` nil). Nil when the index does not hold `id`.
+    ///
+    /// Worked out here rather than on the main thread: the first conversation asked for after the
+    /// index changes groups the index by conversation once, and every other costs its own size.
+    public func conversationMembers(of id: GmailMessageID, folderID: UUID?) async -> [GmailMessageID]? {
+        let snapshot = await index()
+        guard let record = snapshot.record(for: id) else { return nil }
+        let label: GmailLabelID?
+        if let folderID {
+            label = await labels().first { $0.folderID == folderID }?.id
+        } else {
+            label = .inbox
+        }
+        return snapshot.conversationMembers(thread: record.threadID, label: label)
+    }
+
     /// The newest history id the index is known to match, which a send saves before it goes as
     /// the point to look for it from (§8.2).
     public func historyCursor() async -> HistoryID? {

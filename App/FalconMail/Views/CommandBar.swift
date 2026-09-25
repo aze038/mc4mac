@@ -100,9 +100,9 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple, enabled: hasSingle) { model.replyToSelection(all: false) }
-            RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: OLColor.replyPurple, enabled: hasSingle) { model.replyToSelection(all: true) }
-            RibbonTile(title: "Forward", symbol: "arrowshape.turn.up.right", tint: OLColor.forwardBlue, enabled: hasSingle) { model.forwardSelection() }
+            RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple, enabled: hasSingle) { model.afterSelectionRead { model.replyToSelection(all: false) } }
+            RibbonTile(title: "Reply\nto All", symbol: "arrowshape.turn.up.left.2", tint: OLColor.replyPurple, enabled: hasSingle) { model.afterSelectionRead { model.replyToSelection(all: true) } }
+            RibbonTile(title: "Forward", symbol: "arrowshape.turn.up.right", tint: OLColor.forwardBlue, enabled: hasSingle) { model.afterSelectionRead { model.forwardSelection() } }
             RibbonMiniColumn {
                 RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
                     model.showModule(.calendar)
@@ -289,10 +289,10 @@ struct MoveMenuItems: View {
         if !recent.isEmpty { Divider() }
         Button("Move to Folder…") { model.openMovePalette() }
         if let last = model.lastMoveTarget {
-            Button("Move Again to \(last.name)") { model.moveToLastTarget() }
+            Button("Move Again to \(last.name)") { model.afterSelectionRead { model.moveToLastTarget() } }
         }
         Divider()
-        Button("Archive") { model.archive(model.selectedMessages) }
+        Button("Archive") { model.afterSelectionRead { model.archive(model.selectedMessages) } }
     }
 }
 
@@ -302,7 +302,7 @@ struct CategoryMenuItems: View {
     var body: some View {
         ForEach(model.categories) { category in
             Button {
-                model.toggleCategory(category, on: model.selectedMessages)
+                model.afterSelectionRead { model.toggleCategory(category, on: model.selectedMessages) }
             } label: {
                 if model.selectionHasCategory(category) {
                     Label(category.name, systemImage: "checkmark")
@@ -312,7 +312,7 @@ struct CategoryMenuItems: View {
             }
         }
         Divider()
-        Button("Clear Categories") { model.clearCategories(on: model.selectedMessages) }
+        Button("Clear Categories") { model.afterSelectionRead { model.clearCategories(on: model.selectedMessages) } }
         Button("Edit Categories…") { SettingsWindows.shared.show(.categories) }
     }
 }

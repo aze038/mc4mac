@@ -314,9 +314,13 @@ public struct ListSnapshot: Sendable {
     public let sources: [UUID]
     /// Stored rows' ids, which their `slot` points into. Empty for a view of Google rows.
     public let storedKeys: [String]
+    /// How many rows are group headers, counted once where the snapshot is built, off the main
+    /// thread, so the table never counts 200,000 rows on each change of the selection.
+    public let headerCount: Int
 
+    /// `headerCount` is counted from `rows` when the builder does not already know it.
     public init(view: ListView, rows: ContiguousArray<DisplayRecord>, headers: [Int: String] = [:],
-                complete: Bool, itemCount: Int, sources: [UUID], storedKeys: [String] = []) {
+                complete: Bool, itemCount: Int, sources: [UUID], storedKeys: [String] = [], headerCount: Int? = nil) {
         self.view = view
         self.rows = rows
         self.headers = headers
@@ -324,7 +328,19 @@ public struct ListSnapshot: Sendable {
         self.itemCount = itemCount
         self.sources = sources
         self.storedKeys = storedKeys
+        if let headerCount {
+            self.headerCount = headerCount
+        } else {
+            var counted = 0
+            rows.withUnsafeBufferPointer { buffer in
+                for record in buffer where record.kind == DisplayKind.header.rawValue { counted += 1 }
+            }
+            self.headerCount = counted
+        }
     }
+
+    /// The rows that stand for messages: every row but the group headers.
+    public var messageRowCount: Int { rows.count - headerCount }
 
     public static func empty(_ view: ListView) -> ListSnapshot {
         ListSnapshot(view: view, rows: [], complete: false, itemCount: 0, sources: [])
@@ -342,6 +358,71 @@ public struct ListSnapshot: Sendable {
         let source = Int(record.source)
         guard sources.indices.contains(source) else { return nil }
         return .gmail(account: sources[source], id: GmailMessageID(raw: record.key))
+    }
+
+    /// The first row showing `key`, as a pass from the top would find it; nil when none does.
+    /// With `line` given, a row that is (true) or is not (false) a message line of an opened
+    /// conversation is preferred, since a conversation's row and its newest message's line share
+    /// a key; any row of the key is taken when there is none such.
+    ///
+    /// One pass comparing the rows' numbers, with no key built for each row.
+    public func row(of key: RowKey, line: Bool? = nil) -> Int? {
+        rowIndexes(of: [key], line: line)[key]
+    }
+
+    /// `row(of:line:)` for many keys in one pass over the rows.
+    public func rowIndexes(of keys: [RowKey], line: Bool? = nil) -> [RowKey: Int] {
+        guard !keys.isEmpty else { return [:] }
+        // What each key is in the rows' own numbers: its account's place and its message id, or
+        // the place of its stored id.
+        let distinct = Set(keys)
+        var gmail: [UInt64: [(source: UInt8, key: RowKey)]] = [:]
+        var storedIDs = Set<String>()
+        for key in distinct {
+            switch key {
+            case .gmail(let account, let id):
+                for (i, source) in sources.enumerated() where source == account && i <= Int(UInt8.max) {
+                    gmail[id.raw, default: []].append((UInt8(i), key))
+                }
+            case .stored(let id):
+                storedIDs.insert(id)
+            }
+        }
+        var stored: [Int32: RowKey] = [:]
+        if !storedIDs.isEmpty {
+            for (slot, id) in storedKeys.enumerated() where storedIDs.contains(id) { stored[Int32(slot)] = .stored(id) }
+        }
+        guard !gmail.isEmpty || !stored.isEmpty else { return [:] }
+        var found: [RowKey: Int] = [:]
+        var fallback: [RowKey: Int] = [:]
+        let wanted = distinct.count
+        // One Google message, the usual case, is compared by its number alone.
+        let only: UInt64? = gmail.count == 1 && stored.isEmpty ? gmail.keys.first : nil
+        let storedRow = DisplayBits.storedRow.rawValue
+        rows.withUnsafeBufferPointer { buffer in
+            for i in buffer.indices {
+                let record = buffer[i]
+                if let only, record.key != only { continue }
+                if record.kind == DisplayKind.header.rawValue { continue }
+                let key: RowKey?
+                if record.bits & storedRow != 0 {
+                    key = stored.isEmpty ? nil : stored[record.slot]
+                } else if let candidates = gmail[record.key] {
+                    key = candidates.first { $0.source == record.source }?.key
+                } else {
+                    key = nil
+                }
+                guard let key, found[key] == nil else { continue }
+                if let line, (record.kind == DisplayKind.child.rawValue) != line {
+                    if fallback[key] == nil { fallback[key] = i }
+                    continue
+                }
+                found[key] = i
+                if found.count == wanted { break }
+            }
+        }
+        for (key, row) in fallback where found[key] == nil { found[key] = row }
+        return found
     }
 }
 

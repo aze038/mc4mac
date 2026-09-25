@@ -703,6 +703,8 @@ struct ListBuilder {
         let records = rows.records
         var out: ContiguousArray<DisplayRecord>
         var headers: [Int: String] = [:]
+        // The records carry no headers of their own: those go in only here.
+        var headerCount = 0
         if !showHeaders, children.isEmpty {
             out = records
         } else {
@@ -713,6 +715,7 @@ struct ListBuilder {
                 let group = Int(record.group)
                 if showHeaders, group != lastGroup, titles.indices.contains(group), !titles[group].isEmpty {
                     out.append(.header(group: record.group))
+                    headerCount += 1
                     headers[group] = titles[group]
                 }
                 lastGroup = group
@@ -730,7 +733,7 @@ struct ListBuilder {
         }
 
         let snapshot = ListSnapshot(view: view, rows: out, headers: headers, complete: complete, itemCount: itemCount,
-                                    sources: sources, storedKeys: storedKeys)
+                                    sources: sources, storedKeys: storedKeys, headerCount: headerCount)
         return ListBuild(snapshot: snapshot, needs: needs, textWanted: textWanted, hiddenMessages: hidden,
                          listedByDateBefore: listedByDateBefore)
     }

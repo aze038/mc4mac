@@ -163,14 +163,19 @@ public struct GmailIndexSnapshot: Sendable {
     public let labelSlots: [GmailLabelID: Int]
     /// The members of shown labels that have no bit slot, as sorted record slots.
     public let overflow: [GmailLabelID: ContiguousArray<Int32>]
+    /// The live slots grouped by conversation, built once the first time a conversation's
+    /// messages are asked for, and shared by every snapshot of the index until it next changes.
+    public let threadOrder: GmailThreadOrder
 
     public init(records: ContiguousArray<GmailIndexRecord>, byOrder: ContiguousArray<Int32>, slotByID: [UInt64: Int32],
-                labelSlots: [GmailLabelID: Int], overflow: [GmailLabelID: ContiguousArray<Int32>]) {
+                labelSlots: [GmailLabelID: Int], overflow: [GmailLabelID: ContiguousArray<Int32>],
+                threadOrder: GmailThreadOrder = GmailThreadOrder()) {
         self.records = records
         self.byOrder = byOrder
         self.slotByID = slotByID
         self.labelSlots = labelSlots
         self.overflow = overflow
+        self.threadOrder = threadOrder
     }
 
     public static let empty = GmailIndexSnapshot(records: [], byOrder: [], slotByID: [:], labelSlots: [:], overflow: [:])
@@ -196,6 +201,55 @@ public struct GmailIndexSnapshot: Sendable {
         let bits = records[Int(slot)].labelBits
         var out = Set(labelSlots.compactMap { bits & (1 << UInt64($0.value)) != 0 ? $0.key : nil })
         for label in overflow.keys where record(atSlot: slot, has: label) { out.insert(label) }
+        return out
+    }
+}
+
+/// The live slots of an index grouped by conversation, each conversation's oldest first as in
+/// `byOrder`, so that the messages of one conversation are found by a binary search rather than a
+/// pass over the whole mailbox. Built lazily, at most once, from the first snapshot that asks;
+/// the index hands a new one to its snapshots whenever a change could move a message between
+/// conversations or in the order.
+public final class GmailThreadOrder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var built: ContiguousArray<Int32>?
+
+    public init() {}
+
+    /// Whether the grouping has been built yet.
+    public var isBuilt: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return built != nil
+    }
+
+    func slots(in snapshot: GmailIndexSnapshot) -> ContiguousArray<Int32> {
+        lock.lock()
+        defer { lock.unlock() }
+        if let built { return built }
+        let made = GmailThreadOrder.build(snapshot)
+        built = made
+        return made
+    }
+
+    private struct Entry {
+        var thread: UInt64
+        var rank: Int32
+    }
+
+    static func build(_ snapshot: GmailIndexSnapshot) -> ContiguousArray<Int32> {
+        let byOrder = snapshot.byOrder
+        var entries = ContiguousArray<Entry>()
+        entries.reserveCapacity(byOrder.count)
+        snapshot.records.withUnsafeBufferPointer { records in
+            for rank in byOrder.indices {
+                entries.append(Entry(thread: records[Int(byOrder[rank])].threadID, rank: Int32(rank)))
+            }
+        }
+        entries.sort { $0.thread != $1.thread ? $0.thread < $1.thread : $0.rank < $1.rank }
+        var out = ContiguousArray<Int32>()
+        out.reserveCapacity(entries.count)
+        for entry in entries { out.append(byOrder[Int(entry.rank)]) }
         return out
     }
 }

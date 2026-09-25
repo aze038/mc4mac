@@ -115,7 +115,13 @@ struct MainWindow: View {
             switch model.selection {
             case .outbox, .archive: EmptyView()
             default:
-                if let thread = model.currentThread, thread.messages.count > 1 {
+                if let placeholder = model.engineList.readingPlaceholder {
+                    // Rows just selected in the table: shown at once by what their rows say,
+                    // their messages filling in once read, whatever an earlier read still does.
+                    ReadingPlaceholderView(placeholder: placeholder, selectedCount: selectedCount) {
+                        model.engineList.retryRead()
+                    }
+                } else if let thread = model.currentThread, thread.messages.count > 1 {
                     // A conversation's own row: all its messages, one under another.
                     ConversationStackView(messages: thread.messages)
                         .id(thread.id)
@@ -124,9 +130,6 @@ struct MainWindow: View {
                         .id(thread.latest.id)
                 } else if selectedCount > 1 {
                     ContentUnavailableView("\(ListStatusText.number(selectedCount)) conversations selected", systemImage: "envelope.badge")
-                } else if model.engineList.isShown, model.engineList.selectionCount == 1, model.engineList.isReading {
-                    // Being read from Gmail; the message shows in a moment.
-                    Color.clear
                 } else {
                     ContentUnavailableView("No message selected", systemImage: "envelope.open")
                 }
@@ -428,5 +431,63 @@ struct ImportSheet: View {
         }
         .padding(24).frame(width: 460)
         .onAppear { target = folder }
+    }
+}
+
+/// The reading pane for rows just selected in the table while their messages are read: the
+/// sender, subject, date and preview their row already shows, a spinner while the message is
+/// read, and, once the read has taken more than ten seconds, a line saying so with Try Again.
+struct ReadingPlaceholderView: View {
+    let placeholder: ListReadingPlaceholder
+    let selectedCount: Int
+    let retry: () -> Void
+
+    var body: some View {
+        if placeholder.targets.count > 1 {
+            ContentUnavailableView("\(ListStatusText.number(max(selectedCount, placeholder.targets.count))) conversations selected",
+                                   systemImage: "envelope.badge")
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(placeholder.subject.isEmpty ? " " : placeholder.subject)
+                    .font(.system(size: 22))
+                    .foregroundStyle(OLColor.text)
+                    .lineLimit(2)
+                if let from = placeholder.from {
+                    HStack(alignment: .top, spacing: 12) {
+                        AvatarView(name: from.displayName, address: from.address, size: OL.readingAvatar)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(from.name.isEmpty ? from.address : "\(from.name) <\(from.address)>")
+                                .font(.system(size: OL.readingSenderFont, weight: .semibold))
+                                .foregroundStyle(OLColor.text)
+                                .lineLimit(1)
+                            if let date = placeholder.date {
+                                Text(date.formatted(date: .complete, time: .shortened))
+                                    .font(.system(size: OL.readingSenderFont))
+                                    .foregroundStyle(OLColor.textMuted)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+                if placeholder.timedOut {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.circle")
+                        Text("This message is taking longer than usual to open.")
+                        Button("Try Again", action: retry).buttonStyle(.link)
+                    }
+                    .font(.system(size: OL.statusFont))
+                    .foregroundStyle(OLColor.textMuted)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                if !placeholder.snippet.isEmpty {
+                    Text(placeholder.snippet).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(OLColor.reading)
+        }
     }
 }

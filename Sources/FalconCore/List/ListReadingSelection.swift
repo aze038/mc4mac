@@ -99,10 +99,35 @@ extension GmailIndexSnapshot {
     ///
     /// These are the messages the reading pane stacks and a command on the conversation's row acts
     /// on, so a Delete in the Inbox never reaches the owner's own replies in Sent.
+    ///
+    /// Only the conversation's own messages are looked at, found in `threadOrder`, which is built
+    /// once per change of the index: a conversation in a mailbox of 200,000 costs its own size.
     public func conversationMembers(thread: UInt64, label: GmailLabelID?, limit: Int = 200) -> [GmailMessageID] {
+        let grouped = threadOrder.slots(in: self)
+        // The first of the conversation's slots, by binary search on the thread.
+        var low = 0
+        var high = grouped.count
+        while low < high {
+            let mid = (low + high) / 2
+            if records[Int(grouped[mid])].threadID < thread { low = mid + 1 } else { high = mid }
+        }
+        var end = low
+        while end < grouped.count, records[Int(grouped[end])].threadID == thread { end += 1 }
+        return conversationMembers(slots: grouped[low..<end].reversed(), thread: thread, label: label, limit: limit)
+    }
+
+    /// The same by a pass over the whole order, as it was worked out before `threadOrder`: kept
+    /// for the tests, which check the two agree.
+    func conversationMembersByScan(thread: UInt64, label: GmailLabelID?, limit: Int = 200) -> [GmailMessageID] {
+        conversationMembers(slots: byOrder.reversed(), thread: thread, label: label, limit: limit)
+    }
+
+    /// The members among `slots`, which go newest first.
+    private func conversationMembers<S: Sequence>(slots: S, thread: UInt64, label: GmailLabelID?, limit: Int) -> [GmailMessageID]
+        where S.Element == Int32 {
         let hidden: [GmailLabelID] = [.spam, .trash, .chat]
         var out: [GmailMessageID] = []
-        for slot in byOrder.reversed() {
+        for slot in slots {
             let record = records[Int(slot)]
             guard record.threadID == thread, !record.attributes.contains(.tombstone) else { continue }
             if let label {
