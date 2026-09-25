@@ -613,9 +613,12 @@ extension AppModel {
     /// Gmail cannot take it, when it goes by itself later; either way the copy on this Mac stays.
     func saveEngineDraft(_ draft: ComposeDraft, account: AccountInfo, reason: DraftSaveReason) async throws {
         guard let assembly = await runningAssembly(account.id) else { throw DraftsUnavailable() }
-        let raw = MIMEBuilder.build(try draft.outgoing(from: account, asDraft: true))
+        // Built as a draft saved to an IMAP Drafts folder is, Bcc kept, from the boxes read as
+        // OutgoingRecipients reads them when the message is sent.
+        let message = try draft.outgoing(from: account, asDraft: true)
+        let raw = MIMEBuilder.build(message, keepingBcc: true)
         let ref = await engineDraftRef(for: draft, account: account, assembly: assembly)
-        _ = try await assembly.drafts.save(raw, as: ref, bcc: AddressParser.parse(draft.bcc), reason: reason)
+        _ = try await assembly.drafts.save(raw, as: ref, bcc: message.bcc, reason: reason)
     }
 
     /// The automatic save while a message is written on the Gmail engine, at most once a minute
@@ -628,9 +631,10 @@ extension AppModel {
         engineAutosavedAt[draft.id] = now
         Task {
             guard let assembly = await runningAssembly(account.id),
-                  let raw = try? MIMEBuilder.build(draft.outgoing(from: account, asDraft: true)) else { return }
+                  let message = try? draft.outgoing(from: account, asDraft: true) else { return }
+            let raw = MIMEBuilder.build(message, keepingBcc: true)
             let ref = await engineDraftRef(for: draft, account: account, assembly: assembly)
-            _ = try? await assembly.drafts.autosave(raw, as: ref, bcc: AddressParser.parse(draft.bcc))
+            _ = try? await assembly.drafts.autosave(raw, as: ref, bcc: message.bcc)
         }
     }
 

@@ -664,13 +664,18 @@ public actor GmailDrafts {
     }
 
     /// The bytes of one save: the draft's one Message-ID, its header, and Bcc, which Gmail
-    /// keeps in a draft and the app's .eml does not carry.
+    /// keeps in a draft, so the draft opens again, and is sent, with its Bcc recipients, as a
+    /// draft saved to an IMAP Drafts folder keeps them (MIMEBuilder's `keepingBcc`). A Bcc header
+    /// already in `raw` stays when `bcc` is empty; `bcc` given replaces it, each address once,
+    /// with its name.
     static func stamped(_ raw: Data, ref: DraftRef, bcc: [EmailAddress]) -> Data {
         let stable = ref.stableMessageID.hasPrefix("<") ? ref.stableMessageID : "<\(ref.stableMessageID)>"
         var fields: [(name: String, value: String)] = [("Message-ID", stable), (draftHeader, ref.localID.uuidString.lowercased())]
         var names: Set<String> = ["Message-ID", draftHeader]
-        if !bcc.isEmpty {
-            fields.append(("Bcc", bcc.map(\.address).joined(separator: ", ")))
+        var seen = Set<String>()
+        let blind = bcc.filter { !$0.address.trimmed.isEmpty && seen.insert($0.address.trimmed.lowercased()).inserted }
+        if !blind.isEmpty {
+            fields.append(("Bcc", blind.map(MIMEBuilder.encodeAddress).joined(separator: ", ")))
             names.insert("Bcc")
         }
         return RawHeaders.setting(fields, removing: names, in: raw)
