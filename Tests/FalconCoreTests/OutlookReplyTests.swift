@@ -84,27 +84,27 @@ final class OutlookReplyTests: XCTestCase {
         XCTAssertEqual(ReplyHeader.html(original(), attribution: .none, font: .outlook), "")
     }
 
-    /// Reply, Reply All and Forward all put the same heading above the original, and its text
-    /// goes in the plain part exactly as Outlook's does.
-    func testReplyReplyAllAndForwardCarryTheSameHeadingInBothParts() throws {
+    /// Reply, Reply All and Forward all quote the original through ComposeDraft.history, so each
+    /// sends this: the heading in the plain part exactly as in the HTML part, Cc included.
+    func testTheSentMessageCarriesTheHeadingInBothParts() throws {
         let parsed = OutlookChainFixtures.message(html: OutlookChainFixtures.wordDocument(body: OutlookChainFixtures.paragraph("The figures are in.")),
                                                   from: sam, to: [alex], cc: [jo], subject: "Figures")
-        for subject in ["Re: Figures", "Re: Figures", "Fwd: Figures"] {
-            let sent = reply(to: parsed, saying: "Thanks, noted.")
-            XCTAssertTrue(sent.plain.hasPrefix("""
-                Thanks, noted.
+        let sent = reply(to: parsed, saying: "Thanks, noted.")
+        XCTAssertTrue(sent.plain.hasPrefix("""
+            Thanks, noted.
 
 
-                From: Sam Sender <sam@example.com>
-                Date: \(ReplyHeader.date(instant))
-                To: Alex Example <alex@example.com>
-                Cc: Jo Park <jo@example.com>
-                Subject: Figures
+            From: Sam Sender <sam@example.com>
+            Date: \(ReplyHeader.date(instant))
+            To: Alex Example <alex@example.com>
+            Cc: Jo Park <jo@example.com>
+            Subject: Figures
 
-                The figures are in.
-                """), "\(subject): \(sent.plain)")
-            XCTAssertTrue(sent.html.contains("<b>Cc: </b>Jo Park &lt;jo@example.com&gt;<br><b>Subject: </b>Figures</p>"), sent.html)
-        }
+            The figures are in.
+            """), sent.plain)
+        XCTAssertTrue(sent.html.contains("<b>From: </b>Sam Sender &lt;sam@example.com&gt;<br><b>Date: </b>\(ReplyHeader.date(instant))<br>"
+                                         + "<b>To: </b>Alex Example &lt;alex@example.com&gt;<br><b>Cc: </b>Jo Park &lt;jo@example.com&gt;<br>"
+                                         + "<b>Subject: </b>Figures</p>"), sent.html)
     }
 
     // MARK: - English whatever the Mac's language
@@ -368,7 +368,7 @@ final class OutlookReplyTests: XCTestCase {
                        + "<p style=\"margin:0\">Hello Sam,</p>\n<p style=\"margin:0\">&nbsp;</p>\n"
                        + "<p style=\"margin:0\">The figures are <b>final</b>, see <a href=\"https://example.com/r?a=1&amp;b=2\">the report</a>"
                        + " and <span style=\"color:#bf0000\">this</span><span style=\"font-size:18pt\"> in big</span>"
-                       + "<span style=\"font-family:Georgia,serif;font-size:12pt\"> and Georgia</span>.</p>\n"
+                       + "<span style=\"font-family:Georgia,serif\"> and Georgia</span>.</p>\n"
                        + "<p style=\"margin:0\">&nbsp;</p>\n<p style=\"margin:0\">Kind regards,</p>\n<p style=\"margin:0\">Alex</p>"
                        + "</div></body></html>")
     }

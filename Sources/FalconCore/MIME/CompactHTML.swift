@@ -37,8 +37,8 @@ public enum CompactHTML {
                 if name == "p" { paragraphContent = output.endIndex }
             case ("br", false):
                 // An empty paragraph is Outlook's &nbsp;, which gives it its height.
-                if let start = paragraphContent, onlyEmptyTags(String(output[start...])),
-                   source.substring(from: position).hasPrefix("</p>") {
+                if let start = paragraphContent, position + 4 <= source.length,
+                   source.substring(with: NSRange(location: position, length: 4)) == "</p>", onlyEmptyTags(String(output[start...])) {
                     output += "&nbsp;"
                 } else {
                     output += "<br>"
@@ -130,7 +130,7 @@ public enum CompactHTML {
             output.append("font-family:\(ComposeFont(family: familyName(family), size: font.size).cssFamily)")
         }
         let size = CGFloat(Double(words[sizeIndex].dropLast(2).split(separator: "/").first ?? "") ?? Double(font.size))
-        if abs(size - font.size) >= 0.01 || family.lowercased() != defaultFace {
+        if abs(size - font.size) >= 0.01 {
             output.append("font-size:\(ComposeFont.points(size))")
         }
         for word in words[..<sizeIndex] {
