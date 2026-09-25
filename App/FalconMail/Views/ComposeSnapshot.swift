@@ -64,6 +64,10 @@ enum ComposeSnapshot {
             fullScreen(model, to: directory)
             exit(0)
         }
+        if only == "engine" {
+            EngineSnapshot.render(model, to: directory)
+            exit(0)
+        }
         if only == "signature-import" {
             signatureImport(model, to: directory, prefix: "fm-sig-import")
             exit(0)

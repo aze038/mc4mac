@@ -170,7 +170,10 @@ struct StatusBar: View {
     /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail. Nothing is claimed
     /// to be up to date while an account cannot sync; what stops it is shown on its own.
     private var stateText: String? {
-        guard model.statusText == "Up to date" || model.statusText == "Ready" else { return model.statusText }
+        guard model.statusText == "Up to date" || model.statusText == "Ready" else {
+            // An account's pause is said once, beside Items, not again here.
+            return pausedNotices.contains { $0.text == model.statusText } ? nil : model.statusText
+        }
         if let list { return list.stateText(everyAccountReachable: model.everyAccountReachable) }
         if !model.gmailEngineAccounts.isEmpty, !model.engineList.everyFolderListed { return nil }
         return model.everyAccountReachable ? ListStatusText.upToDate : nil

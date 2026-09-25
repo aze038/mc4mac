@@ -44,6 +44,8 @@ final class EngineList {
     @ObservationIgnored private var emptiedWait: Task<Void, Never>?
     @ObservationIgnored private var listedCheck: Task<Void, Never>?
     @ObservationIgnored private let waiting = WaitingListSource()
+    /// False only in the offscreen snapshots, which run no engine to ask.
+    @ObservationIgnored private var asksEngines = true
     /// The view each message window was opened from, by the window's message id, which its
     /// commands' folder rules are read from.
     @ObservationIgnored private var windowViews: [String: ListView] = [:]
@@ -110,7 +112,7 @@ final class EngineList {
 
     /// Asks each engine whether it has listed everything, for "All folders are up to date.".
     func checkEveryFolderListed() {
-        guard let model else { return }
+        guard let model, asksEngines else { return }
         listedCheck?.cancel()
         let engines = model.gmailEngineAccounts.compactMap { model.engine(for: $0) }
         let waiting = model.gmailEngineAccounts.count != engines.count
@@ -454,6 +456,26 @@ final class EngineList {
         return message
     }
 }
+
+#if DEBUG
+extension EngineList {
+    /// For the offscreen snapshots, which run no engine: shows `view` from `source` as an engine's
+    /// list would be shown.
+    func snapshotShow(_ view: ListView, from source: any ListSource, model: AppModel, everyFolderListed: Bool) async {
+        self.model = model
+        asksEngines = false
+        isShown = true
+        waitingFor = nil
+        await controller.show(view, from: source)
+        snapshotEveryFolderListed(everyFolderListed)
+    }
+
+    func snapshotEveryFolderListed(_ listed: Bool) {
+        everyFolderListed = listed
+        controller.everyFolderListed = listed
+    }
+}
+#endif
 
 /// The list's source while a Google account's engine has not started: nothing, until it has.
 final class WaitingListSource: ListSource, @unchecked Sendable {
