@@ -23,6 +23,9 @@ struct MessageTableView: NSViewRepresentable {
     /// The menu for the rows a right-click acts on.
     var menu: (ListSelection) -> NSMenu? = { _ in nil }
     var onSelectionChange: (ListSelection) -> Void = { _ in }
+    /// A click on a row, or an arrow key, by the owner: the reading side goes back to the
+    /// selection from any tab that had it, even when the row clicked was already selected.
+    var onOwnerChoice: () -> Void = {}
     /// The buttons a trackpad swipe on a row shows, from either edge.
     var rowActions: (Int, NSTableView.RowActionEdge) -> [NSTableViewRowAction] = { _, _ in [] }
 
@@ -432,9 +435,12 @@ protocol MessageTableEvents: AnyObject {
     func hover(row: Int)
     func menu(forRow row: Int) -> NSMenu?
     func refreshVisible()
+    func ownerChose()
 }
 
-extension MessageTableView.Coordinator: MessageTableEvents {}
+extension MessageTableView.Coordinator: MessageTableEvents {
+    func ownerChose() { parent.onOwnerChoice() }
+}
 
 final class MessageNSTableView: NSTableView {
     weak var events: MessageTableEvents?
@@ -458,6 +464,8 @@ final class MessageNSTableView: NSTableView {
             }
         }
         super.keyDown(with: event)
+        // Up and down move the selection, and the reading side follows it.
+        if event.keyCode == 125 || event.keyCode == 126 { events?.ownerChose() }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -469,6 +477,7 @@ final class MessageNSTableView: NSTableView {
             return
         }
         super.mouseDown(with: event)
+        if row >= 0 { events?.ownerChose() }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {

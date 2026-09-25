@@ -291,7 +291,26 @@ extension AppModel {
     private func selectRow(at index: Int) {
         let current = rows
         guard current.indices.contains(index) else { return }
-        selectedMessageIDs = [current[index].id]
+        selectFromList([current[index].id])
+    }
+
+    /// The owner chose `ids` in the list: by a click, the arrow keys or the commands that move
+    /// through it. The reading pane shows what was chosen, at once, even when a message or
+    /// compose tab had the mailbox window's reading side; the tab stays open in the tab strip.
+    /// `byOwner` is false for a change the list makes by itself, as SwiftUI's may when its
+    /// rows change, which leaves a tab showing where it is.
+    func selectFromList(_ ids: Set<String>, byOwner: Bool = true) {
+        guard ids != selectedMessageIDs else { return }
+        selectedMessageIDs = ids
+        if byOwner { showSelectionInReader() }
+    }
+
+    /// A click in the list, on the row already selected as on any other: whatever tab had the
+    /// reading side gives it back to the selection.
+    func showSelectionInReader() {
+        guard activeTab != nil, !selectedMessageIDs.isEmpty, showsMessageList else { return }
+        Log.info("reader", "a row chosen in the list takes the reading pane back from a tab")
+        showMail()
     }
 
     func selectNextThread() {
@@ -326,7 +345,7 @@ extension AppModel {
             statusText = "No more unread conversations"
             return
         }
-        selectedMessageIDs = [next.id]
+        selectFromList([next.id])
     }
 
     func selectPreviousUnread() {
@@ -337,6 +356,6 @@ extension AppModel {
             statusText = "No earlier unread conversations"
             return
         }
-        selectedMessageIDs = [previous.id]
+        selectFromList([previous.id])
     }
 }

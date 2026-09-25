@@ -111,6 +111,15 @@ struct PendingUndo: Identifiable {
     var receipts: [ActionReceipt] = []
 }
 
+/// What a fetch of a message's text for a reader came to.
+enum ReaderBody: Sendable {
+    case parsed(MIMEMessage)
+    /// Its account is not running, or the fetch was called off.
+    case unavailable
+    /// The sentence saying why, and the folder names it holds.
+    case failed(String, [String])
+}
+
 struct MessageThread: Identifiable, Hashable {
     var id: String { latest.id }
     var messages: [MessageSummary]
@@ -440,6 +449,8 @@ final class AppModel {
     @ObservationIgnored private var knownSentIDs = Set<UUID>()
     @ObservationIgnored var soundGate = MailSoundGate(isEnabled: SoundLibrary.isEnabled)
     @ObservationIgnored private var bodyCache: [String: MIMEMessage] = [:]
+    /// The texts readers are waiting for, each fetched once however many readers want it.
+    @ObservationIgnored private let readerFetches = SharedFetches<String, ReaderBody>()
     @ObservationIgnored var listeners: [Task<Void, Never>] = []
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
@@ -1124,8 +1135,13 @@ final class AppModel {
                              names: { [weak self] in self?.accountName($0) ?? "Account" },
                              folders: { [weak self] in self?.folder($0)?.name ?? "Folder" })
         rebuildRows()
-        let valid = selectedMessageIDs.filter { rowIndex[$0] != nil }
-        if valid != selectedMessageIDs { selectedMessageIDs = valid }
+        // A conversation's row takes its newest message's id, so a reply arriving renames it,
+        // and folding a conversation takes away its message lines: the selection moves to the
+        // row now showing what was selected rather than being dropped, and the reading pane
+        // keeps showing it. Only what is no longer listed at all is let go.
+        let kept = ReadingSelection.carried(selectedMessageIDs, rows: Set(rowIndex.keys),
+                                            conversations: threads.map { $0.messages.map(\.id) })
+        if kept != selectedMessageIDs { selectedMessageIDs = kept }
     }
 
     func runSearch(fetchRows: Bool = true) async {
@@ -1621,6 +1637,74 @@ final class AppModel {
         bodyCache[message.id] = parsed
         if bodyCache.count > 200 { bodyCache.removeAll() }
         return parsed
+    }
+
+    /// How long a reader waits for a message's text before showing its first words with a
+    /// line saying it is still coming, and how much silence from the server a fetch for a
+    /// reader sits through before the connection is given up and opened afresh.
+    static let readerBodyDeadline: TimeInterval = 12
+    static let readerReplyPatience: TimeInterval = 20
+    /// How many times a reader waits out the deadline before it stops and offers Try Again.
+    static let readerBodyRounds = 4
+
+    /// A message's text for the reading pane, a message window or tab, or a card of the
+    /// conversation stack. Never waits on the server for ever: after `readerBodyDeadline` the
+    /// reader is told through `slow`, shows the message's first words and waits again, joining
+    /// the same fetch, which gives up a connection that has fallen silent and so is tried again
+    /// on a fresh one. Two readers of one message, as the pane and the window a double-click
+    /// opened, share one fetch rather than queueing a second behind it, and a reader that moves
+    /// on stops waiting at once. `problem` is the sentence the reader shows in place of the text.
+    func readerBody(for message: MessageSummary, slow: (String) -> Void) async -> (parsed: MIMEMessage?, problem: String?) {
+        if let cached = bodyCache[message.id] { return (cached, nil) }
+        // A Google account on the Gmail API opens through its engine, never over IMAP; the
+        // engine's own opener waits and gives up on its own, and a failure is shown in the pane.
+        if usesGmailEngine(message.accountID) {
+            do {
+                return (try await engineBody(for: message, purpose: .window), nil)
+            } catch is CancellationError {
+                return (nil, nil)
+            } catch {
+                if Task.isCancelled { return (nil, nil) }
+                Log.warning("reader", "a message's text could not be opened through the Gmail API for the reader: \(error.localizedDescription)")
+                return (nil, error.localizedDescription)
+            }
+        }
+        let coordinator = coordinator
+        let patience = AppModel.readerReplyPatience
+        for round in 1...AppModel.readerBodyRounds {
+            let outcome = await readerFetches.value(for: message.id, within: AppModel.readerBodyDeadline) {
+                guard let syncer = await coordinator.syncer(for: message.accountID) else { return .unavailable }
+                do {
+                    return .parsed(try await syncer.parsedMessage(for: message, replyWithin: patience))
+                } catch is CancellationError {
+                    return .unavailable
+                } catch {
+                    return .failed(error.localizedDescription, Log.names(heldBy: error))
+                }
+            }
+            switch outcome {
+            case .finished(.parsed(let parsed)):
+                bodyCache[message.id] = parsed
+                if bodyCache.count > 200 { bodyCache.removeAll() }
+                return (parsed, nil)
+            case .finished(.unavailable), .cancelled:
+                return (nil, nil)
+            case .finished(.failed(let sentence, let names)):
+                Log.warning("reader", "a message's text could not be fetched for the reader: \(sentence)", names: names)
+                return (nil, sentence)
+            case .timedOut:
+                Log.warning("reader", "a message's text took longer than \(Int(AppModel.readerBodyDeadline)) s to fetch (round \(round) of \(AppModel.readerBodyRounds)); its first words are shown meanwhile",
+                            details: ["inFlight": String(readerFetches.inFlight)])
+                if Task.isCancelled { return (nil, nil) }
+                // Still nothing after a second wait: the connection the text comes over is closed
+                // when it has gone quiet, so that the fetch starts again on a fresh one.
+                if round >= 2, let syncer = await coordinator.syncer(for: message.accountID) {
+                    _ = await syncer.dropOpConnection(ifQuietFor: AppModel.readerReplyPatience)
+                }
+                if round < AppModel.readerBodyRounds { slow("This message is taking longer than usual to download. FalconMail is still trying.") }
+            }
+        }
+        return (nil, "This message could not be downloaded just now.")
     }
 
     func rawBody(for message: MessageSummary) async -> Data? {

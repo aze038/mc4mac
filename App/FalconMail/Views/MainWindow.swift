@@ -115,6 +115,10 @@ struct MainWindow: View {
             switch model.selection {
             case .outbox, .archive: EmptyView()
             default:
+                // Each reader is made afresh for each row chosen, named by the row and by what it
+                // shows, so that nothing of the one before, its text or its web view, stays on
+                // screen: a conversation's row and one of its message lines are different rows.
+                let row = model.selectedMessageIDs.count == 1 ? model.selectedMessageIDs.first ?? "" : ""
                 if let placeholder = model.engineList.readingPlaceholder {
                     // Rows just selected in the table: shown at once by what their rows say,
                     // their messages filling in once read, whatever an earlier read still does.
@@ -124,10 +128,10 @@ struct MainWindow: View {
                 } else if let thread = model.currentThread, thread.messages.count > 1 {
                     // A conversation's own row: all its messages, one under another.
                     ConversationStackView(messages: thread.messages)
-                        .id(thread.id)
+                        .id("stack|\(row)|\(thread.id)")
                 } else if let thread = model.currentThread {
                     MessageReaderView(message: thread.latest, conversation: model.currentConversation)
-                        .id(thread.latest.id)
+                        .id("reader|\(row)|\(thread.latest.id)")
                 } else if selectedCount > 1 {
                     ContentUnavailableView("\(ListStatusText.number(selectedCount)) conversations selected", systemImage: "envelope.badge")
                 } else {
