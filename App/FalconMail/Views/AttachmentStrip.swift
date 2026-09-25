@@ -7,6 +7,8 @@ final class QuickLookHost: NSView, QLPreviewPanelDataSource, QLPreviewPanelDeleg
     var urls: [URL] = []
     var currentIndex = 0 { didSet { if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { QLPreviewPanel.shared().reloadData() } } }
     var onSelectionChange: ((Int) -> Void)?
+    /// Opens the chosen item when the item's file may not be on the Mac yet; nil opens its URL.
+    var onOpen: ((Int) -> Void)?
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -68,7 +70,7 @@ final class QuickLookHost: NSView, QLPreviewPanelDataSource, QLPreviewPanelDeleg
 
     func openCurrent() {
         guard urls.indices.contains(currentIndex) else { return }
-        NSWorkspace.shared.open(urls[currentIndex])
+        if let onOpen { onOpen(currentIndex) } else { NSWorkspace.shared.open(urls[currentIndex]) }
     }
 }
 
@@ -76,6 +78,7 @@ struct QuickLookHostView: NSViewRepresentable {
     let urls: [URL]
     @Binding var selectedIndex: Int
     let focusToken: Int
+    var onOpen: ((Int) -> Void)? = nil
 
     func makeNSView(context: Context) -> QuickLookHost {
         let host = QuickLookHost()
@@ -86,6 +89,7 @@ struct QuickLookHostView: NSViewRepresentable {
     func updateNSView(_ host: QuickLookHost, context: Context) {
         context.coordinator.parent = self
         host.urls = urls
+        host.onOpen = onOpen
         if host.currentIndex != selectedIndex { host.currentIndex = selectedIndex }
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
