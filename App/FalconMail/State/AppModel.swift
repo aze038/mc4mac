@@ -202,6 +202,14 @@ final class AppModel {
     var tabTitles: [String: String] = [:]
     var cacheSizeBytes = 0
     var showsMovePalette = false
+    /// The messages the palette was opened for, when not the selection.
+    var movePaletteMessages: [MessageSummary]?
+    /// The message window the palette is open over, nil for the mailbox window.
+    var movePaletteWindow: String?
+    /// Moves on whenever stored messages change, so a message open in a window or tab of its own
+    /// reads its flags again and its ribbon shows what it is now.
+    var openMessagesRevision = 0
+    @ObservationIgnored var openMessagesRefresh: Task<Void, Never>?
     var focusSearchToken = 0
     var keyChordHint: String?
     var mutedThreads: [MutedThread] = []
@@ -348,10 +356,13 @@ final class AppModel {
         get { loadRemoteImagesStorage }
         set { loadRemoteImagesStorage = newValue; Preferences.set(newValue, "loadRemoteImages") }
     }
-    private var openInWindowStorage = Preferences.bool("openInWindowOnDoubleClick", default: false)
+    private var openInWindowStorage = MessageOpening.opensInWindow(
+        stored: UserDefaults.standard.object(forKey: MessageOpening.preferenceKey) as? Bool)
+    /// Settings → Reading: whether a double-clicked message opens in a window of its own, as
+    /// Outlook's does, or in a tab of the mailbox window.
     var openInWindowOnDoubleClick: Bool {
         get { openInWindowStorage }
-        set { openInWindowStorage = newValue; Preferences.set(newValue, "openInWindowOnDoubleClick") }
+        set { openInWindowStorage = newValue; Preferences.set(newValue, MessageOpening.preferenceKey) }
     }
     private var appearanceStorage = Preferences.string("appearance", default: AppAppearance.system.rawValue)
     var appearance: String {
@@ -627,7 +638,9 @@ final class AppModel {
                 case .foldersChanged(let accountID):
                     self.folders[accountID] = await self.store.folders(for: accountID)
                     self.refreshDockBadge()
-                case .messagesChanged(let folderID): self.scheduleReload(for: folderID)
+                case .messagesChanged(let folderID):
+                    self.scheduleReload(for: folderID)
+                    self.noteStoredMessagesChanged()
                 case .contactsChanged: self.contactList = await self.contacts.all()
                 }
             }
@@ -1190,12 +1203,34 @@ final class AppModel {
             return
         }
         guard WindowTray.shared.orderMailboxWindowFront() else { return }
+        movePaletteMessages = nil
+        movePaletteWindow = nil
+        showsMovePalette = true
+    }
+
+    /// Move in a message window's ribbon: the palette opens over that window and moves that
+    /// message, whatever the mailbox window has selected.
+    func openMovePalette(for message: MessageSummary) {
+        guard !message.isServerOnly else {
+            statusText = AppModel.readOnlyNotice
+            return
+        }
+        movePaletteMessages = [message]
+        movePaletteWindow = message.id
         showsMovePalette = true
     }
 
     func closeMovePalette() {
         showsMovePalette = false
+        movePaletteMessages = nil
+        movePaletteWindow = nil
     }
+
+    /// What the open palette moves: the message of the window it opened over, else the selection.
+    var paletteMessages: [MessageSummary] {
+        movePaletteMessages ?? selectedMessages
+    }
+
 
     func moveToLastTarget() {
         let list = selectedMessages
@@ -1208,7 +1243,7 @@ final class AppModel {
     }
 
     private var moveScope: [FolderInfo] {
-        let accountIDs = Set(selectedMessages.map(\.accountID))
+        let accountIDs = Set(paletteMessages.map(\.accountID))
         return accounts.flatMap { folders[$0.id] ?? [] }.filter { $0.isSelectable && accountIDs.contains($0.accountID) }
     }
 
@@ -1251,9 +1286,12 @@ final class AppModel {
         return a.path.localizedCaseInsensitiveCompare(b.path) == .orderedAscending
     }
 
-    func commitPalette(_ folder: FolderInfo) {
-        showsMovePalette = false
-        move(selectedMessages, to: folder)
+    /// False when nothing it holds could move there, as when it is the folder they are in.
+    @discardableResult
+    func commitPalette(_ folder: FolderInfo) -> Bool {
+        let list = paletteMessages
+        closeMovePalette()
+        return move(list, to: folder)
     }
 
     func forwardAsAttachment(_ messages: [MessageSummary]) {
@@ -1535,16 +1573,18 @@ final class AppModel {
         perform(list) { try await $0.delete($1) }
     }
 
-    func move(_ list: [MessageSummary], to folder: FolderInfo) {
+    @discardableResult
+    func move(_ list: [MessageSummary], to folder: FolderInfo) -> Bool {
         applyMove(list, to: folder)
     }
 
-    private func applyMove(_ list: [MessageSummary], to folder: FolderInfo) {
+    private func applyMove(_ list: [MessageSummary], to folder: FolderInfo) -> Bool {
         let targets = actionable(list).filter { $0.accountID == folder.accountID && $0.folderID != folder.id }
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else { return false }
         moveTargets.record(folder: folder)
         removeFromList(targets)
         perform(targets) { try await $0.move($1, to: folder) }
+        return true
     }
 
     func isInJunk(_ list: [MessageSummary]) -> Bool {
@@ -1722,10 +1762,39 @@ final class AppModel {
         return draft.id
     }
 
+    /// Double-click, Return, Open in the File menu and Open in Separate Window. A draft in Drafts
+    /// opens to be written; any other message opens to be read, in a window of its own unless
+    /// the owner chose tabs.
     func openMessage(_ message: MessageSummary, forceWindow: Bool = false, openWindow: (String) -> Void) {
-        if folder(message.folderID)?.role == .drafts { return editStoredDraft(message) }
-        markReadOnOpen(message)
-        if forceWindow || openInWindowOnDoubleClick { openWindow(message.id) } else { openMessageTab(message) }
+        let inDrafts = folder(message.folderID)?.role == .drafts
+        switch MessageOpening.destination(inDraftsFolder: inDrafts, opensInWindow: openInWindowOnDoubleClick, forceWindow: forceWindow) {
+        case .editDraft:
+            editStoredDraft(message)
+        case .window:
+            markReadOnOpen(message)
+            showMessageWindow(message.id, openWindow: openWindow)
+        case .tab:
+            markReadOnOpen(message)
+            openMessageTab(message)
+        }
+    }
+
+    /// Opening a message whose window is already open brings that window forward, out of the
+    /// tray if it is there, rather than opening a second one.
+    func showMessageWindow(_ id: String, openWindow: (String) -> Void) {
+        if !WindowTray.shared.bringForward(.message(id)) { openWindow(id) }
+    }
+
+    /// Coalesced, since a busy sync can change stored messages dozens of times a second.
+    private func noteStoredMessagesChanged() {
+        let showsOne = !openMessageWindows.isEmpty || (tabs + minimizedTabs).contains { if case .message = $0 { return true } else { return false } }
+        guard showsOne, openMessagesRefresh == nil else { return }
+        openMessagesRefresh = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard let self else { return }
+            self.openMessagesRevision &+= 1
+            self.openMessagesRefresh = nil
+        }
     }
 
     private func editStoredDraft(_ message: MessageSummary) {

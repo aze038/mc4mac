@@ -6,6 +6,36 @@ public enum PopupKey: Hashable, Codable, Sendable {
     case compose(UUID)
 }
 
+/// Where opening a message puts it. Legacy Outlook opens a double-clicked message in a window of
+/// its own, and so does FalconMail unless the owner chose tabs in Settings → Reading.
+public enum MessageOpening {
+    public enum Destination: Equatable, Sendable {
+        /// A draft in the Drafts folder opens to be written, never to be read.
+        case editDraft
+        case window
+        case tab
+    }
+
+    /// Whether a message opens in a window when the owner has never chosen.
+    public static let opensInWindowByDefault = true
+
+    /// The setting's key in the app's defaults: the one earlier builds kept, unset there unless
+    /// changed by hand, so the same choice means the same in either build.
+    public static let preferenceKey = "openInWindowOnDoubleClick"
+
+    /// The owner's choice from what the defaults hold under `preferenceKey`, nil when unset.
+    public static func opensInWindow(stored: Bool?) -> Bool {
+        stored ?? opensInWindowByDefault
+    }
+
+    /// Where a message opens: by double-click, Return or Open (`forceWindow` false), which follow
+    /// the setting, or by Open in Separate Window (`forceWindow` true).
+    public static func destination(inDraftsFolder: Bool, opensInWindow: Bool, forceWindow: Bool) -> Destination {
+        if inDraftsFolder { return .editDraft }
+        return forceWindow || opensInWindow ? .window : .tab
+    }
+}
+
 /// The message and compose windows that are open, each either on screen or minimised into the
 /// tray along the foot of the mailbox window, where FalconMail keeps them instead of the Dock.
 public struct WindowTrayBook: Equatable, Sendable {

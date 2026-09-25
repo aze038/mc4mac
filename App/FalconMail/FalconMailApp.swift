@@ -66,6 +66,11 @@ struct FalconMailApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New Message") { model.composeNew() }
                     .keyboardShortcut("n", modifiers: .command)
+                // As Outlook's File menu has it: the selected message, in a window of its own
+                // unless Settings → Reading says tabs.
+                Button("Open") { openSelected() }
+                    .keyboardShortcut("o", modifiers: .command)
+                    .disabled(model.currentThread == nil)
                 Divider()
                 Button("Add Account…") { NotificationCenter.default.post(name: .falconAddAccount, object: nil) }
                 Divider()
@@ -148,7 +153,6 @@ struct FalconMailApp: App {
     }
 
     @ViewBuilder private var windowCommands: some View {
-        Button("Open") { openSelectedInTab() }.keyboardShortcut("o", modifiers: .command)
         Button("Open in Separate Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
         // Command-W and Command-M act on the window in front: a message or compose window of its
         // own closes, or goes into the tray through Minimize in the Window menu, and only in the
@@ -248,7 +252,7 @@ struct FalconMailApp: App {
         model.undoLastAction()
     }
 
-    private func openSelectedInTab() {
+    private func openSelected() {
         guard let thread = model.currentThread else { return }
         model.openMessage(thread.latest) { openWindow(value: $0) }
     }

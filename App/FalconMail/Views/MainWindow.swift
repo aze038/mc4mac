@@ -23,7 +23,7 @@ struct MainWindow: View {
             }
             ZStack {
                 moduleContent
-                if model.showsMovePalette {
+                if model.showsMovePalette, model.movePaletteWindow == nil {
                     MovePalette()
                 }
             }

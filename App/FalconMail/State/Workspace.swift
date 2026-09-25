@@ -245,6 +245,6 @@ struct MessageTabView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: messageID) { message = await model.message(id: messageID) }
+        .task(id: "\(messageID)|\(model.openMessagesRevision)") { message = await model.message(id: messageID) ?? message }
     }
 }
