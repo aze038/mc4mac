@@ -19,6 +19,9 @@ final class SignatureLibrary {
     /// Carried-over signatures already read as HTML this session, so one that cannot be read
     /// is not fetched for again.
     @ObservationIgnored private var importedHTML: Set<UUID> = []
+    /// HTML just pasted into an editor as a signature, kept with the signature while its text
+    /// still reads as that HTML did (see Signature.setEditedText).
+    @ObservationIgnored private var pastedHTML: [UUID: SignatureSource] = [:]
 
     init(store: SignatureStore) {
         let opened = store.open()
@@ -26,6 +29,8 @@ final class SignatureLibrary {
         book = opened.book
         problem = opened.problem
         writable = opened.writable
+        // A draft kept with a signature sends the signature's own HTML after a relaunch too.
+        SignatureSources.register(book.signatures)
     }
 
     #if DEBUG
@@ -93,13 +98,27 @@ final class SignatureLibrary {
         scheduleSave()
     }
 
+    /// A signature's HTML pasted into its editor as `text`, which it is sent as while the
+    /// editor's text still reads as it.
+    func pasted(html: String, as text: NSAttributedString, into id: UUID) {
+        pastedHTML[id] = SignatureSource(html: html, text: text)
+    }
+
+    private func takePendingTexts() {
+        for (id, text) in pendingTexts {
+            book.setEditedText(text, of: id, plainIn: RichText.bodyAttributes, pasted: pastedHTML[id])
+            pastedHTML[id] = nil
+        }
+        pendingTexts = [:]
+        SignatureSources.register(book.signatures)
+    }
+
     /// Brings in signatures imported from Outlook or Gmail, as SignatureBook.importing does, and
     /// keeps them at once. What an editor still holds is taken first, so a signature being
     /// written that an import replaces is replaced, not written back over it.
     @discardableResult
     func importSignatures(_ items: [SignatureImportItem]) -> SignatureImportOutcome {
-        for (id, text) in pendingTexts { book.setText(text, of: id, plainIn: RichText.bodyAttributes) }
-        pendingTexts = [:]
+        takePendingTexts()
         let outcome = book.importing(items)
         saveNow()
         return outcome
@@ -113,8 +132,7 @@ final class SignatureLibrary {
     func saveNow() {
         pendingSave?.cancel()
         pendingSave = nil
-        for (id, text) in pendingTexts { book.setText(text, of: id, plainIn: RichText.bodyAttributes) }
-        pendingTexts = [:]
+        takePendingTexts()
         guard writable, let store else { return }
         try? store.save(book)
     }

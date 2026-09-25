@@ -127,6 +127,7 @@ struct SignatureEditorView: View {
             SignatureTextEditor(text: initialText, onChange: { library.setText($0, of: id) }, onReady: { view in
                 formatter.attach(view)
                 (view as? ComposeTextView)?.onInsertLink = { formatter.insertLink() }
+                (view as? ComposeTextView)?.onPasteSignatureHTML = { html, text in library.pasted(html: html, as: text, into: id) }
             })
         }
         .background(SignatureEditorLook.chrome)

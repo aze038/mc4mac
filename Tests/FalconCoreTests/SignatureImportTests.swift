@@ -195,7 +195,9 @@ final class SignatureImportTests: XCTestCase {
         XCTAssertEqual(content.pictures.count, 1, "the logo shown twice is sent once")
         XCTAssertEqual(content.pictures.first?.mimeType, "image/jpeg")
         XCTAssertFalse(content.html.contains(address), "the logo is still fetched from the web: \(content.html)")
-        XCTAssertTrue(content.html.contains("<img width=\"60\" height=\"20\""), content.html)
+        // The signature goes out as Gmail keeps it, only the logo's src made its cid:.
+        let cid = try XCTUnwrap(content.pictures.first?.contentID)
+        XCTAssertTrue(content.html.contains("<img src=\"cid:\(cid)\" width=\"60\" height=\"20\">"), content.html)
     }
 
     @MainActor
