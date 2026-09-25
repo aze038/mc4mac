@@ -131,7 +131,7 @@ enum ListRow: Identifiable, Hashable {
     case thread(MessageThread)
     case message(MessageSummary, threadID: String)
 
-    static let childPrefix = "child:"
+    static let childPrefix = ReadMarking.messageLineTag
     static let groupPrefix = "group:"
 
     var id: String {

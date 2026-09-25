@@ -274,7 +274,7 @@ struct MessageListView: View {
                 switch action {
                 case .archive: model.archive(thread.messages)
                 case .delete: model.delete(thread.messages)
-                case .markRead: model.markRead(thread.messages, !thread.latest.isRead)
+                case .markRead: model.markRead(thread.messages, ReadMarking.readUnreadMarksRead(thread.messages))
                 case .flag: model.setFlagged(thread.messages, !thread.latest.isFlagged)
                 case .move: model.openMovePalette()
                 case .junk: model.toggleJunk(thread.messages)
@@ -359,7 +359,7 @@ struct MessageListView: View {
         }
         Divider()
         Group {
-            Button(thread.latest.isRead ? "Mark as Unread" : "Mark as Read") { model.markRead(thread.messages, !thread.latest.isRead) }
+            Button(ReadMarking.readUnreadMarksRead(thread.messages) ? "Mark as Read" : "Mark as Unread") { model.markRead(thread.messages, ReadMarking.readUnreadMarksRead(thread.messages)) }
             Button(thread.latest.isFlagged ? "Unflag" : "Flag") { model.setFlagged(thread.messages, !thread.latest.isFlagged) }
             Button("Archive") { model.archive(thread.messages) }
             Button(model.isInJunk(thread.messages) ? "Not Junk" : "Move to Junk") { model.toggleJunk(thread.messages) }
@@ -491,7 +491,7 @@ struct ConversationRow: View {
 
     private func symbol(_ action: QuickAction) -> String {
         switch action {
-        case .markRead: return thread.latest.isRead ? "envelope.badge" : "envelope.open"
+        case .markRead: return ReadMarking.readUnreadMarksRead(thread.messages) ? "envelope.open" : "envelope.badge"
         case .flag: return thread.latest.isFlagged ? "flag.slash" : "flag"
         default: return action.symbol
         }
@@ -503,7 +503,7 @@ struct ConversationRow: View {
         case .archive: model.archive(thread.messages)
         case .flag: model.setFlagged(thread.messages, !thread.latest.isFlagged)
         case .move: model.openMovePalette()
-        case .markRead: model.markRead(thread.messages, !thread.latest.isRead)
+        case .markRead: model.markRead(thread.messages, ReadMarking.readUnreadMarksRead(thread.messages))
         case .snooze: model.mute([thread])
         }
     }

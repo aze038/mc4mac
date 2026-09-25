@@ -120,7 +120,7 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Read/Unread", symbol: first?.isRead == false ? "envelope.open" : "envelope", enabled: canChange) { model.toggleReadOnSelection() }
+            RibbonTile(title: "Read/Unread", symbol: ReadMarking.readUnreadMarksRead(model.selectedMessages) ? "envelope.open" : "envelope", enabled: canChange) { model.toggleReadOnSelection() }
             RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
                 CategoryMenuItems()
             }

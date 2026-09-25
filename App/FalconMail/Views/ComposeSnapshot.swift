@@ -22,8 +22,8 @@ import FalconCore
 /// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
 /// deleted, the message list with made-up conversations, a made-up conversation of four
-/// messages stacked in the reading pane and in its own window, newest and unread open, the rest
-/// folded, and the mailbox window filling a 1728 × 1117 point screen with a message window alone
+/// messages stacked in the reading pane and in its own window, the newest open and the rest
+/// folded, the unread one with its blue dot, and the mailbox window filling a 1728 × 1117 point screen with a message window alone
 /// in the middle and two minimised to tabs in its status bar, then with a message window and a
 /// compose window side by side and one tab, and those tabs close up, then quits. With
 /// `-FalconMailSnapshotOnly list` it draws the message list alone, with `stack` the conversation
@@ -147,9 +147,9 @@ enum ComposeSnapshot {
     }
 
     /// A made-up conversation of four messages as the reading pane stacks it and as its own
-    /// window shows it: the newest open, quoting the one under it behind •••, the unread one
-    /// under it open too, and the two oldest folded to a line each. Their text is handed to the
-    /// model as if fetched, and WebKit draws it as the app does.
+    /// window shows it: the newest open, quoting the one under it behind •••, and the other three
+    /// folded to a line each, the unread one under it with its blue dot and blue sender. Their
+    /// text is handed to the model as if fetched, and WebKit draws it as the app does.
     @MainActor private static func conversationStack(_ model: AppModel, to directory: String) {
         let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
                                   imapHost: "example.invalid", smtpHost: "example.invalid")
@@ -170,10 +170,10 @@ enum ComposeSnapshot {
     }
 
     /// A made-up conversation of fifty messages, each quoting all before it as Gmail does, stacked
-    /// in the reading pane twice: read, so that only the newest is open, and unread, so that all
-    /// fifty are. How long the main thread is held up is written to convstack-50-timing.txt: the
-    /// first layout, and the longest the main thread went unanswered while every message loaded
-    /// and was measured. The unread stack is drawn to convstack-50-light.png.
+    /// in the reading pane twice: read, as it opens with only the newest open, and unread, with
+    /// all fifty opened as Expand all opens them. How long the main thread is held up is written
+    /// to convstack-50-timing.txt: the first layout, and the longest the main thread went
+    /// unanswered while every message loaded and was measured. The unread stack is drawn to convstack-50-light.png.
     @MainActor private static func longConversation(_ model: AppModel, to directory: String) {
         let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
                                   imapHost: "example.invalid", smtpHost: "example.invalid")
@@ -184,7 +184,8 @@ enum ComposeSnapshot {
             for (message, parsed) in mail { model.snapshotBody(parsed, for: message.id) }
             let messages = mail.map(\.0)
             let started = Date()
-            let pane = host(ConversationStackView(messages: messages).environment(model).environmentObject(model.updates).themedRoot(),
+            let pane = host(ConversationStackView(messages: messages, expandedAll: unread).environment(model)
+                                .environmentObject(model.updates).themedRoot(),
                             size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 840), appearance: .aqua)
             pane.layoutSubtreeIfNeeded()
             let firstLayout = Date().timeIntervalSince(started)
