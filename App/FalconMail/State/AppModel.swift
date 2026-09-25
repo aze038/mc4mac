@@ -580,6 +580,10 @@ final class AppModel {
         SoundLibrary.carryOverEarlierChoices()
         play(soundGate.launched())
         do { try await store.load() } catch { showAlert(for: error) }
+        // Google accounts on the Gmail API, paused or not, are held to it before anything can
+        // send or show their IMAP store's rows.
+        await coordinator.prime()
+        applyRoster(await coordinator.roster)
         restoredState = session.load()
         previousSession = restoredState
         unsentDrafts.isOpen = { [weak self] id in self?.draftsStorage[id] != nil }

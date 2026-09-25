@@ -73,6 +73,93 @@ final class EngineRoutingTests: XCTestCase {
         XCTAssertEqual(rig.imap.loginCount, 0)
     }
 
+    /// Launches `account` once so it moves to the Gmail API, pauses it when `paused`, and quits,
+    /// leaving the guard as a new process finds it.
+    private func switchedAndQuit(_ account: inout AccountInfo, on first: CoordinatorRig, paused: Bool) async throws {
+        first.gmail(for: account)
+        try first.writePreviousRelease(account)
+        try await first.launch()
+        let route = await first.coordinator.sendRoute(for: account.id)
+        if case .gmail = route {} else { XCTFail("the account moved to the Gmail API at the first launch") }
+        if paused {
+            account.isEnabled = false
+            try await first.store.saveAccount(account)
+        }
+        await first.quit()
+        TransportGuard.shared.allowMailServers(for: account.id)
+    }
+
+    func testAPausedAccountOnTheGmailAPIStaysOnItAfterARelaunchAndNeverUsesSMTPOrIMAP() async throws {
+        let earlier = try rig()
+        var account = earlier.googleAccount()
+        try await switchedAndQuit(&account, on: earlier, paused: true)
+        let google = account
+        let relaunched = try CoordinatorRig(root: earlier.root, switches: earlier.switches)
+        rigs.append(relaunched)
+        relaunched.gmail(for: google, mailbox: earlier.gmail(for: google).mailbox)
+        try await relaunched.launch()
+
+        let route = await relaunched.coordinator.sendRoute(for: google.id)
+        if case .gmailUnavailable = route {} else { XCTFail("a paused account on the Gmail API never sends by SMTP") }
+        XCTAssertTrue(TransportGuard.shared.blocks(user: google.email), "IMAP and SMTP are refused for it")
+        let sealed = await relaunched.store.isSealed(google.id)
+        XCTAssertTrue(sealed, "its IMAP store stays as it was")
+        let roster = await relaunched.coordinator.roster
+        XCTAssertTrue(roster.gmailAccounts.contains(google.id))
+        XCTAssertNil(roster.running[google.id], "a paused account's engine does not run")
+
+        let message = OutgoingMessage(from: EmailAddress(address: google.email), to: [EmailAddress(address: "ben@example.com")],
+                                      subject: "Waits", textBody: "Hello")
+        let queued = try await relaunched.outbox.enqueue(accountID: google.id, from: google.email, message: message)
+        try await eventually(timeout: 10, "an attempt") { (await relaunched.outbox.snapshot().first { $0.id == queued.id }?.attempts ?? 0) > 0 }
+        let item = await relaunched.outbox.snapshot().first { $0.id == queued.id }
+        XCTAssertNotEqual(item?.status, .sent)
+        XCTAssertTrue(relaunched.smtp.accounts.isEmpty, "no SMTP for a Google account on the Gmail API")
+        XCTAssertEqual(relaunched.imap.loginCount + earlier.imap.loginCount, 0)
+        XCTAssertTrue(relaunched.connector.calls.isEmpty)
+    }
+
+    func testMailQueuedAtLaunchNeverGoesBySMTPBeforeItsAccountStartsAndThenGoesThroughGmail() async throws {
+        let earlier = try rig()
+        var account = earlier.googleAccount()
+        try await switchedAndQuit(&account, on: earlier, paused: false)
+        let google = account
+        let relaunched = try CoordinatorRig(root: earlier.root, switches: earlier.switches)
+        rigs.append(relaunched)
+        let gmail = relaunched.gmail(for: google, mailbox: earlier.gmail(for: google).mailbox)
+        let sentBefore = gmail.calls[.messagesSend] ?? 0
+        try await relaunched.launch { coordinator in
+            // The Outbox runs before any account's engine has started, as when the owner clicks
+            // Retry or sends at once after launch.
+            do {
+                let message = OutgoingMessage(from: EmailAddress(address: google.email), to: [EmailAddress(address: "ben@example.com")],
+                                              subject: "Early", textBody: "Hello")
+                let queued = try await relaunched.outbox.enqueue(accountID: google.id, from: google.email, message: message)
+                try await eventually(timeout: 10, "an attempt") {
+                    (await relaunched.outbox.snapshot().first { $0.id == queued.id }?.attempts ?? 0) > 0
+                }
+            } catch {
+                XCTFail("could not queue: \(error)")
+            }
+            let early = await coordinator.sendRoute(for: google.id)
+            if case .gmailUnavailable = early {} else { XCTFail("waits for its engine, never SMTP") }
+            XCTAssertTrue(relaunched.smtp.accounts.isEmpty, "nothing went by SMTP before the account started")
+            await coordinator.prime()
+            XCTAssertTrue(TransportGuard.shared.blocks(user: google.email), "held to the Gmail API before any engine starts")
+            let sealed = await relaunched.store.isSealed(google.id)
+            XCTAssertTrue(sealed)
+            let running = await coordinator.assembly(for: google.id)
+            XCTAssertNil(running)
+        }
+        let early = await relaunched.outbox.snapshot().first { $0.subject == "Early" }
+        let id = try XCTUnwrap(early?.id)
+        try await eventually(timeout: 30, "sent through Gmail") { await relaunched.outbox.snapshot().first { $0.id == id }?.status == .sent }
+        XCTAssertEqual((gmail.calls[.messagesSend] ?? 0) - sentBefore, 1)
+        XCTAssertTrue(relaunched.smtp.accounts.isEmpty)
+        XCTAssertEqual(relaunched.imap.loginCount + earlier.imap.loginCount, 0)
+        XCTAssertTrue(relaunched.connector.calls.isEmpty)
+    }
+
     // MARK: - Actions
 
     func testAnActionForAnAccountWithNoEngineSaysSoInsteadOfSkippingInSilence() async throws {
