@@ -84,8 +84,15 @@ public actor GmailListSource: ListSourceExtras {
     private var conversationRow: [UInt64: RowKey] = [:]
     private var refreshed = false
     private var refreshing: Task<Void, Never>?
-    private var anchorsAsked: Set<Date> = []
+    private var rebuilding: Task<Void, Never>?
     private var anchorTask: Task<Void, Never>?
+    /// When anchors were last asked for, so that failing to reach Gmail does not make every
+    /// refresh ask again.
+    private var anchorsAskedAt: TimeInterval?
+    /// Boundaries whose newest older message the index does not hold yet, left until tomorrow.
+    private var anchorsUnplaced: Set<Date> = []
+    private var oldestDate: Date?
+    private var needsTold: Set<ListNeed> = []
     private var textAsked: Set<ListView> = []
 
     private nonisolated let watchers: ListWatchers
@@ -199,6 +206,7 @@ public actor GmailListSource: ListSourceExtras {
 
     public func setListingState(_ state: ListListingState) async {
         listing = state
+        needsTold = []
         await refresh()
     }
 
@@ -307,7 +315,20 @@ public actor GmailListSource: ListSourceExtras {
         textAsked.remove(view)
     }
 
+    /// Builds every watched view again and sends what changed. One at a time: two running at once
+    /// would each work out their change from the same snapshot, and the second would not fit what
+    /// the first had sent.
     private func rebuildWatched() async {
+        let previous = rebuilding
+        let task = Task { [weak self] in
+            await previous?.value
+            await self?.rebuildNow()
+        }
+        rebuilding = task
+        await task.value
+    }
+
+    private func rebuildNow() async {
         // A view watched only for its footers, as All Inboxes watches each account's, is built by
         // whoever merges it.
         for view in watchers.diffViews {
@@ -341,7 +362,8 @@ public actor GmailListSource: ListSourceExtras {
         for need in build.needs {
             if case .anchors(let account) = need, account == accountID {
                 askAnchors(daily: view.scope.mergesAccounts)
-            } else {
+            } else if needsTold.insert(need).inserted {
+                // Once: the engine lists it in the background, and says so with the listing state.
                 onNeed?(need)
             }
         }
@@ -562,42 +584,51 @@ public actor GmailListSource: ListSourceExtras {
     /// Date anchors for group headers and for placing rows among other accounts': one `before:`
     /// listing each, 5 units, asked only for boundaries not known yet.
     private func askAnchors(daily: Bool) {
-        guard anchorTask == nil, !isOffline else { return }
+        let time = uptime()
+        guard anchorTask == nil, !isOffline, anchorsAskedAt.map({ time - $0 >= 60 }) ?? true else { return }
+        anchorsAskedAt = time
         anchorTask = Task { [weak self] in
-            await self?.fillAnchors(daily: daily)
-            await self?.anchorsDone()
+            let learnt = await self?.fillAnchors(daily: daily) ?? false
+            await self?.anchorsDone(learnt: learnt)
         }
     }
 
-    private func anchorsDone() async {
+    private func anchorsDone(learnt: Bool) async {
         anchorTask = nil
-        await refresh()
+        if learnt { await refresh() }
     }
 
-    private func fillAnchors(daily: Bool) async {
+    /// Whether any anchor was learnt. A boundary Gmail could not be asked about is asked again
+    /// at the next try, a minute later at the soonest.
+    private func fillAnchors(daily: Bool) async -> Bool {
         let groups = ListDateGroups(now: now())
-        var oldest: Date?
-        if let first = snapshotOfIndex.byOrder.first {
+        if oldestDate == nil, let first = snapshotOfIndex.byOrder.first {
             let id = snapshotOfIndex.records[Int(first)].gmailID
             if let cached = await store.cachedMessages([id])[id] {
-                oldest = cached.date
+                oldestDate = cached.date
             } else {
-                oldest = try? await transport.message(id, format: .minimal, work: .background(.index)).receivedDate
+                oldestDate = try? await transport.message(id, format: .minimal, work: .background(.index)).receivedDate
             }
         }
-        let wanted = groups.boundaries(oldest: oldest, daily: daily)
+        let wanted = groups.boundaries(oldest: oldestDate, daily: daily)
+        anchorsUnplaced.formIntersection(wanted)
         var anchors = await store.dateAnchors().filter { wanted.contains($0.boundary) }
         let have = Set(anchors.map(\.boundary))
-        for boundary in wanted where !have.contains(boundary) && !anchorsAsked.contains(boundary) {
-            anchorsAsked.insert(boundary)
+        var learnt = false
+        for boundary in wanted where !have.contains(boundary) && !anchorsUnplaced.contains(boundary) {
             let query = GmailListQuery(query: "before:\(Int(boundary.timeIntervalSince1970))", includeSpamTrash: true, maxResults: 1)
             guard let page = try? await transport.list(query, work: .background(.index)) else { break }
             let ref = page.refs.first
             let order = ref.flatMap { snapshotOfIndex.record(for: $0.id)?.order }
-            if ref != nil, order == nil { continue }
+            if ref != nil, order == nil {
+                anchorsUnplaced.insert(boundary)
+                continue
+            }
             anchors.append(GmailDateAnchor(boundary: boundary, id: ref?.id, order: order, askedAt: now()))
+            learnt = true
         }
-        try? await store.saveDateAnchors(anchors.sorted { $0.boundary > $1.boundary })
+        if learnt { try? await store.saveDateAnchors(anchors.sorted { $0.boundary > $1.boundary }) }
+        return learnt
     }
 
     // MARK: - Building rows and summaries

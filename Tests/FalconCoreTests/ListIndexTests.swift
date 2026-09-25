@@ -307,10 +307,22 @@ final class ListIndexTests: XCTestCase {
         XCTAssertTrue(titles.contains("August 2026"))
     }
 
-    func testDateGroupsWithoutAnchorsAskForThem() async {
+    func testDateGroupsWithoutAnchorsOrWithYesterdaysAskForThem() async {
         let account = ListFixtures.account(ListFixtures.index([M(labels: [.inbox], thread: 0)]))
         let build = await build(account, ListView(scope: .folder(folder(.inbox)), dateGroups: true))
         XCTAssertTrue(build.needs.contains(.anchors(account.accountID)))
+
+        // Asked yesterday: the recent boundaries have moved since midnight.
+        let now = Date()
+        let yesterday = ListDateGroups(now: now.addingTimeInterval(-86_400)).boundaries(oldest: nil)
+            .map { GmailDateAnchor(boundary: $0, id: nil, order: nil, askedAt: now.addingTimeInterval(-86_400)) }
+        let old = ListFixtures.account(account.index, id: account.accountID, anchors: yesterday)
+        let stale = await self.build(old, ListView(scope: .folder(folder(.inbox)), dateGroups: true))
+        XCTAssertTrue(stale.needs.contains(.anchors(account.accountID)))
+        let today = ListDateGroups(now: now).boundaries(oldest: nil).map { GmailDateAnchor(boundary: $0, id: nil, order: nil, askedAt: now) }
+        let new = ListFixtures.account(account.index, id: account.accountID, anchors: today)
+        let fresh = await self.build(new, ListView(scope: .folder(folder(.inbox)), dateGroups: true))
+        XCTAssertFalse(fresh.needs.contains(.anchors(account.accountID)))
     }
 
     func testBoundariesFallAtMidnightsAndGoBackAMonthAtATime() {

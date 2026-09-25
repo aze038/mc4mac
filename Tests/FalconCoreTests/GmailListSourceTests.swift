@@ -303,6 +303,52 @@ final class GmailListSourceTests: XCTestCase {
         XCTAssertEqual(box.transport.totalUnits, before)
     }
 
+    func testAnchorsGmailCouldNotGiveAreAskedForAgainAMinuteLaterAndNeverInALoop() async throws {
+        let box = try await mailbox(count: 12, pairs: 0, replies: 0, spacing: 3 * 86_400)
+        final class Clock: @unchecked Sendable { var now: TimeInterval = 1_000 }
+        let clock = Clock()
+        let source = GmailListSource(accountID: box.accountID, email: box.transport.email, store: box.store, transport: box.transport,
+                                     archiveFolderID: box.archive, uptime: { clock.now })
+        box.transport.failAlways(.messagesList, with: GoogleAPIError(kind: .offline))
+        let view = ListView(scope: .folder(box.folder(.inbox)), conversations: false, dateGroups: true)
+        _ = await source.snapshot(of: view)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        _ = await source.snapshot(of: view)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(box.transport.attempts[.messagesList], 1, "one try, and no refresh that asks again")
+        let none = await box.store.dateAnchors()
+        XCTAssertTrue(none.isEmpty)
+
+        box.transport.failAlways(.messagesList, with: nil)
+        clock.now += 61
+        _ = await source.snapshot(of: view)
+        var anchors: [GmailDateAnchor] = []
+        for _ in 0..<100 {
+            anchors = await box.store.dateAnchors()
+            if !anchors.isEmpty { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertFalse(anchors.isEmpty, "asked again once a minute had passed")
+    }
+
+    func testWhatAViewNeedsListedIsToldToTheEngineOnceUntilItsListingStateChanges() async throws {
+        let box = try await mailbox(count: 5, pairs: 0, replies: 0)
+        let source = box.source()
+        final class Told: @unchecked Sendable {
+            let lock = NSLock()
+            var needs: [ListNeed] = []
+        }
+        let told = Told()
+        await source.setOnNeed { need in told.lock.withLock { told.needs.append(need) } }
+        let view = ListView(scope: .folder(box.folder(.inbox)), filters: [.attachments])
+        _ = await source.snapshot(of: view)
+        _ = await source.snapshot(of: view)
+        XCTAssertEqual(told.lock.withLock { told.needs }, [.attachments(box.accountID)])
+        await source.setListingState(ListListingState(attachmentsKnown: true))
+        _ = await source.snapshot(of: view)
+        XCTAssertEqual(told.lock.withLock { told.needs }.count, 1, "listed now, so nothing more is asked")
+    }
+
     func testSortingBySenderFetchesUpTo200RowsInTheBackgroundAndScrollingKeepsThemQueued() async throws {
         let box = try await mailbox(count: 260, pairs: 0, replies: 0)
         let source = box.source()
@@ -323,8 +369,9 @@ final class GmailListSourceTests: XCTestCase {
         let a = try await mailbox(count: 5, pairs: 0, replies: 0, cached: 5, email: "a@example.com")
         let b = try await mailbox(count: 5, pairs: 0, replies: 0, cached: 0, email: "b@example.com")
         // b's anchors are known, so its rows without dates are placed without asking for any.
-        try await b.store.saveDateAnchors([GmailDateAnchor(boundary: Calendar.current.startOfDay(for: Date()).addingTimeInterval(-86_400 * 400),
-                                                           id: nil, order: nil, askedAt: Date())])
+        try await b.store.saveDateAnchors(ListDateGroups(now: Date()).boundaries(oldest: nil, daily: true).map {
+            GmailDateAnchor(boundary: $0, id: nil, order: nil, askedAt: Date())
+        })
         let index = ListIndex()
         let sourceA = a.source(index: index)
         let sourceB = b.source(index: index)

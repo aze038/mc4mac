@@ -161,6 +161,8 @@ public struct ListBuild: Sendable {
 public struct ListDateGroups: Sendable {
     public let now: Date
     public let calendar: Calendar
+    /// Today's first boundary, which anchors asked before midnight do not have.
+    public var startOfToday: Date { today }
     private let today: Date
     private let yesterday: Date
     private let week: Date
@@ -563,8 +565,10 @@ struct ListBuilder {
         if wantsDateGroups, !dating.isEmpty {
             rows.dateGroups = records.map { Int32(dating.group(of: index.records[Int($0.slot)].order)) }
         }
-        // Anchors are asked for only when a row has no date of its own to go by.
-        if wantsDateGroups, dating.isEmpty, !records.isEmpty, rows.dates.contains(where: { $0 == nil }) || rows.dates.isEmpty {
+        // Anchors are asked for only when a row has no date of its own to go by, and again after
+        // midnight, when the recent groups' boundaries have moved.
+        let stale = dating.isEmpty || !account.anchors.contains { $0.boundary == groups.startOfToday }
+        if wantsDateGroups, stale, !records.isEmpty, rows.dates.contains(where: { $0 == nil }) || rows.dates.isEmpty {
             needs.insert(.anchors(account.accountID))
         }
         if view.sort.key == .folder {
