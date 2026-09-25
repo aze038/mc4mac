@@ -36,6 +36,16 @@ enum IMAPTurn {
     @TaskLocal static var held: Set<UUID> = []
 }
 
+/// How long someone waiting on the answer is prepared to sit through silence, when that is less
+/// than the connection's own response deadline: the reading pane opening a message will not
+/// wait a minute on a connection that has gone quiet. Set around a unit of work, it shortens
+/// the silence allowed in every reply within it; a connection that falls silent for longer is
+/// given up, so that its turn is free and the next fetch opens a fresh one, rather than
+/// holding every reader behind it.
+public enum IMAPReplyPatience {
+    @TaskLocal public static var seconds: TimeInterval?
+}
+
 /// One IMAP connection. Every command holds the connection's turn from the moment it is sent
 /// until its tagged reply has been read, and `withMailbox` holds it across a SELECT and the
 /// commands that depend on it. An actor alone is not enough: it lets another caller in at every
@@ -48,6 +58,9 @@ public actor IMAPClient {
     /// Names the connection in the log: the account's own address, never anyone else's.
     public let label: String
     public let deadlines: IMAPDeadlines
+    /// The user name it will sign in as, which `TransportGuard` is asked about before it
+    /// connects; `label` when not given, which for an account's connection is its address.
+    public let user: String?
     private let traffic: TrafficTap
     private var connection: StreamConnection?
     private var tagCounter = 0
@@ -64,9 +77,10 @@ public actor IMAPClient {
     public private(set) var selectedMailbox: String?
     private var selectedStatus: IMAPMailboxStatus?
 
-    public init(host: String, port: UInt16 = 993, tls: Bool = true, label: String? = nil, traffic: TrafficTap = .none,
+    public init(host: String, port: UInt16 = 993, tls: Bool = true, label: String? = nil, user: String? = nil, traffic: TrafficTap = .none,
                 deadlines: IMAPDeadlines = .standard) {
         self.host = host
+        self.user = user
         self.port = port
         self.tls = tls
         self.label = label ?? host
@@ -92,6 +106,8 @@ public actor IMAPClient {
     }
 
     public func connect() async throws {
+        // A Google account on the Gmail API never opens an IMAP connection (§12.5).
+        try TransportGuard.shared.check(.imap, host: host, user: user ?? label)
         try await locked {
             let c = StreamConnection(host: host, port: port, tls: tls, tap: traffic)
             try await c.connect(deadline: deadlines.connect)
@@ -102,6 +118,13 @@ public actor IMAPClient {
             }
             if capabilities.isEmpty { try await refreshCapabilities() }
         }
+    }
+
+    /// How long the connection has been quiet (see `StreamConnection.quietFor`); unlimited
+    /// once it has gone.
+    public func quietFor() async -> TimeInterval {
+        guard let connection else { return .infinity }
+        return await connection.quietFor()
     }
 
     public func hasCapability(_ name: String) -> Bool {
@@ -601,7 +624,7 @@ public actor IMAPClient {
     /// not the server closes it too.
     private func readResponse(deadline: TimeInterval? = nil) async throws -> IMAPResponse {
         guard let connection else { throw FalconError.network("not connected") }
-        let silence = deadline ?? deadlines.response
+        let silence = deadline ?? min(deadlines.response, IMAPReplyPatience.seconds ?? deadlines.response)
         let response: IMAPResponse
         do {
             var parts: [IMAPRawPart] = []

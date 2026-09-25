@@ -634,6 +634,22 @@ public actor AccountSyncer {
         if opClient === client { opClient = nil }
     }
 
+    /// Closes the op connection when it has been quiet for `seconds`, as when someone has been
+    /// kept waiting to read a message behind work on a connection that died without a word.
+    /// Whatever held it then fails at once, as on any lost connection, and the next piece of
+    /// work opens a fresh one instead of waiting behind it. True when it was closed.
+    public func dropOpConnection(ifQuietFor seconds: TimeInterval) async -> Bool {
+        guard let c = opClient else { return false }
+        let quiet = await c.quietFor()
+        guard quiet >= seconds, opClient === c else { return false }
+        opClient = nil
+        Log.warning("sync", "\(account.email): the op connection was quiet for \(quiet.isFinite ? Int(quiet) : -1) s while a message was waited for; it is closed and opened afresh",
+                    account: account)
+        // Not waited for: saying goodbye on a dead path could itself take as long.
+        Task { await c.logout() }
+        return true
+    }
+
     /// Runs `work` as one unit on the op connection. A connection that fails is discarded so
     /// the next call opens a fresh one. Work that sent nothing the server could act on, because
     /// the connection was already gone when its turn came or an APPEND failed before the server
@@ -1702,6 +1718,15 @@ public actor AccountSyncer {
         return MIMEParser.parse(raw)
     }
 
+    /// `message`'s text for someone waiting to read it, who will not sit through more than
+    /// `patience` seconds of silence from the server: a connection that stays quiet longer is
+    /// given up and the fetch fails, so that the connection is opened afresh for the next one
+    /// rather than holding it and every fetch behind it (see `IMAPReplyPatience`).
+    public func parsedMessage(for message: MessageSummary, replyWithin patience: TimeInterval) async throws -> MIMEMessage {
+        let raw = try await IMAPReplyPatience.$seconds.withValue(patience) { try await body(for: message) }
+        return MIMEParser.parse(raw)
+    }
+
     /// The rows of `group` that still name the message they were read for, in the store of a
     /// folder whose record was read first. One read before the folder was renumbered, or since
     /// removed, carries a UID that now names another message or none, so it is left out, and
@@ -1894,6 +1919,15 @@ public actor AccountSyncer {
             held[id]?.task?.cancel()
             await commit(id)
         }
+    }
+
+    /// Sends every action still waiting for the server, those held for Undo and those kept from
+    /// an earlier session, without starting a sync: the account's last use of IMAP before it
+    /// moves to the Gmail API (§12.1). Returns how many still wait, as when the Mac is offline.
+    public func sendWaitingActions() async -> Int {
+        await flushPending()
+        await replayPendingOperations()
+        return await pendingActions.all().filter { $0.accountID == account.id }.count
     }
 
     /// Runs an action on the server under the UIDVALIDITY it was queued with, so that a

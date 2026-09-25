@@ -21,23 +21,25 @@ import FalconCore
 /// the web off and on, in both appearances into PNGs at twice their size in that directory, with
 /// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
-/// deleted, the message list with made-up conversations, a made-up conversation of four
-/// messages stacked in the reading pane and in its own window, the newest open and the rest
-/// folded, the unread one with its blue dot, the mailbox window filling a 1728 × 1117 point
-/// screen with a message window alone in the middle and two minimised to tabs in its status bar,
-/// then with a message window and a compose window side by side and one tab, and those tabs
-/// close up, and a reply to a made-up chain from Outlook for Mac, Outlook for Windows and Gmail
-/// as its compose window shows it, also made narrower and wider, as the reader shows what it
-/// sends and as that HTML reads 600 and 1200 points wide, written as outlook-chain-reply.eml,
-/// then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone, with
-/// `stack` the conversation alone, with `fullscreen` the mailbox window filling the screen
-/// alone, with `signature-import` only the Signatures pane offering an import, the import sheets
-/// for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
-/// signatures, with `chain` the reply to the chain alone, and `stack50` times a conversation of
-/// fifty messages instead, writing how long it held up the main thread, and with
-/// `sent-recipients` a made-up message the owner sent to people in To, Cc and Bcc, as the
-/// reading pane, its own window and its conversation show it, with the Outbox, the status bar
-/// while it is sending and the compose window that wrote it.
+/// deleted, the message list with made-up conversations, the message table not yet shown (see
+/// `MessageTableSnapshot`), a made-up conversation of four messages stacked in the reading pane
+/// and in its own window, the newest open and the rest folded, the unread one with its blue dot,
+/// the mailbox window filling a 1728 × 1117 point screen with a message window alone in the
+/// middle and two minimised to tabs in its status bar, then with a message window and a compose
+/// window side by side and one tab, and those tabs close up, and a reply to a made-up chain from
+/// Outlook for Mac, Outlook for Windows and Gmail as its compose window shows it, also made
+/// narrower and wider, as the reader shows what it sends and as that HTML reads 600 and 1200
+/// points wide, written as outlook-chain-reply.eml, then quits. With
+/// `-FalconMailSnapshotOnly list` it draws the message list alone, with `table` the message table
+/// alone, with `stack` the conversation alone, with `engine` a made-up Google account on the Gmail
+/// API (see `EngineSnapshot`), with `fullscreen` the mailbox window filling the screen alone, with
+/// `signature-import` only the Signatures pane offering an import, the import sheets for Outlook
+/// and Gmail, macOS's refusal and the pane after an import, all with made-up signatures, with
+/// `chain` the reply to the chain alone, and `stack50` times a conversation of fifty messages
+/// instead, writing how long it held up the main thread, and with `sent-recipients` a made-up
+/// message the owner sent to people in To, Cc and Bcc, as the reading pane, its own window and its
+/// conversation show it, with the Outbox, the status bar while it is sending and the compose
+/// window that wrote it.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -53,6 +55,10 @@ enum ComposeSnapshot {
         formatter.attach(ComposeTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200)))
         let model = AppModel()
         let only = UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly")
+        if only == "table" {
+            MessageTableSnapshot.render(to: directory)
+            exit(0)
+        }
         if only == "stack" {
             conversationStack(model, to: directory)
             exit(0)
@@ -63,6 +69,14 @@ enum ComposeSnapshot {
         }
         if only == "fullscreen" {
             fullScreen(model, to: directory)
+            exit(0)
+        }
+        if only == "gmail-switch" {
+            GmailSwitchSnapshot.render(model, to: directory)
+            exit(0)
+        }
+        if only == "engine" {
+            EngineSnapshot.render(model, to: directory)
             exit(0)
         }
         if only == "signature-import" {
@@ -79,6 +93,7 @@ enum ComposeSnapshot {
             outlookChain(model, to: directory)
             exit(0)
         }
+        MessageTableSnapshot.render(to: directory)
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")

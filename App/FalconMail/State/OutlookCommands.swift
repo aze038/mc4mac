@@ -91,19 +91,51 @@ extension AppModel {
 
     var canEmptyCurrentFolder: Bool {
         guard case .folder(let id) = selection, let folder = folder(id) else { return false }
-        return (folder.role == .trash || folder.role == .junk) && !messages.isEmpty
+        guard folder.role == .trash || folder.role == .junk else { return false }
+        // A Google folder on the Gmail engine knows its whole count, not only the rows loaded.
+        return !messages.isEmpty || (isGmailEngineFolder(folder) && folder.totalCount > 0)
     }
 
     func emptyCurrentFolder() {
         guard case .folder(let id) = selection, let folder = folder(id) else { return }
+        guard confirmDeleteForever(messagesToDelete(in: folder), in: folder) else { return }
+        purgeEverything(in: folder)
+    }
+
+    /// How many messages deleting everything in `folder` removes: every message the folder holds
+    /// on a Google account on the Gmail engine, whose list is never cut short; the rows loaded
+    /// otherwise, which is what v1.10.0 deletes.
+    func messagesToDelete(in folder: FolderInfo) -> Int {
+        isGmailEngineFolder(folder) ? max(folder.totalCount, messages.count) : messages.count
+    }
+
+    /// Asks before anything is deleted for good, with the count, from the menu and the ribbon's
+    /// Delete All alike. Nothing that cannot be brought back is deleted without it.
+    func confirmDeleteForever(_ count: Int, in folder: FolderInfo) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Delete everything in \(folder.name)?"
-        alert.informativeText = "\(messages.count) messages are removed from the server and cannot be brought back."
+        alert.informativeText = "\(count) messages are removed from the server and cannot be brought back."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Delete All")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        purgeEverything(in: folder)
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// A folder of a Google account that runs on the Gmail engine: every such folder but Archive
+    /// carries its Gmail label, and Archive sits beside them. No IMAP folder carries a label.
+    func isGmailEngineFolder(_ folder: FolderInfo) -> Bool {
+        if folder.gmailLabelID != nil { return true }
+        guard folder.role == .all else { return false }
+        return (folders[folder.accountID] ?? []).contains { $0.gmailLabelID != nil }
+    }
+
+    /// Whether a command can be used in the folder shown, by Gmail's rules for a Google account
+    /// on the Gmail engine: Archive is not offered in Sent or Drafts, nor Move in Drafts. Every
+    /// other account keeps every command, as before.
+    func allowsCommand(_ verb: MailActionRequest.Verb) -> Bool {
+        guard case .folder(let id) = selection, let folder = folder(id), isGmailEngineFolder(folder),
+              let kind = GmailActionFolder(folder: folder) else { return true }
+        return GmailActionRules.isAvailable(verb, in: kind)
     }
 
     func createFolderPrompt(for account: AccountInfo) {
@@ -176,8 +208,22 @@ extension AppModel {
         }
     }
 
+    // Outlook's colour categories stay on this Mac, keyed by the row's id: `acc:folder:uid` for a
+    // stored message, and `acc:gm:<hex>` for a Google message on the Gmail engine, whose id is
+    // its key's string form. A Google message keeps its Gmail id in every folder it is shown in,
+    // so its categories follow it wherever it is filed.
+
     func categories(for message: MessageSummary) -> [MailCategory] {
-        let names = Set(categoryAssignments[message.id] ?? [])
+        categories(forID: message.id)
+    }
+
+    /// For rows the list knows by key only, as a Google account's rows on the Gmail engine.
+    func categories(forKey key: RowKey) -> [MailCategory] {
+        categories(forID: key.stringValue)
+    }
+
+    private func categories(forID id: String) -> [MailCategory] {
+        let names = Set(categoryAssignments[id] ?? [])
         return categories.filter { names.contains($0.name) }
     }
 
@@ -188,23 +234,37 @@ extension AppModel {
     }
 
     func toggleCategory(_ category: MailCategory, on messages: [MessageSummary]) {
-        let messages = actionable(messages)
-        guard !messages.isEmpty else { return }
+        toggleCategory(category, onIDs: actionable(messages).map(\.id))
+    }
+
+    func toggleCategory(_ category: MailCategory, onKeys keys: [RowKey]) {
+        toggleCategory(category, onIDs: keys.map(\.stringValue))
+    }
+
+    private func toggleCategory(_ category: MailCategory, onIDs ids: [String]) {
+        guard !ids.isEmpty else { return }
         var map = categoryAssignments
-        let adding = !messages.allSatisfy { (map[$0.id] ?? []).contains(category.name) }
-        for message in messages {
-            var names = Set(map[message.id] ?? [])
+        let adding = !ids.allSatisfy { (map[$0] ?? []).contains(category.name) }
+        for id in ids {
+            var names = Set(map[id] ?? [])
             if adding { names.insert(category.name) } else { names.remove(category.name) }
-            if names.isEmpty { map[message.id] = nil } else { map[message.id] = Array(names).sorted() }
+            if names.isEmpty { map[id] = nil } else { map[id] = Array(names).sorted() }
         }
         categoryAssignments = map
     }
 
     func clearCategories(on messages: [MessageSummary]) {
-        let messages = actionable(messages)
-        guard !messages.isEmpty else { return }
+        clearCategories(onIDs: actionable(messages).map(\.id))
+    }
+
+    func clearCategories(onKeys keys: [RowKey]) {
+        clearCategories(onIDs: keys.map(\.stringValue))
+    }
+
+    private func clearCategories(onIDs ids: [String]) {
+        guard !ids.isEmpty else { return }
         var map = categoryAssignments
-        for message in messages { map[message.id] = nil }
+        for id in ids { map[id] = nil }
         categoryAssignments = map
     }
 }

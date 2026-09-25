@@ -103,6 +103,10 @@ public struct FolderInfo: Codable, Hashable, Sendable, Identifiable {
     public var totalCount: Int
     public var unreadCount: Int
     public var lastSyncDate: Date?
+    /// The Gmail label a Google account's folder shows; nil for an IMAP folder and for Archive,
+    /// which is all of Gmail's mail rather than one label. Such folders keep their cursor fields
+    /// at 0 and are never written to folders.json.
+    public var gmailLabelID: GmailLabelID?
 
     public init(id: UUID = UUID(), accountID: UUID, path: String, name: String, delimiter: String,
                 role: FolderRole, attributes: [String], isSelectable: Bool) {
@@ -151,6 +155,18 @@ public struct MessageSummary: Codable, Hashable, Sendable, Identifiable {
     public var hasAttachments: Bool
     public var hasBody: Bool
     public var threadKey: String
+    /// Gmail's own ids, labels and receipt time, for a row the Gmail engine built. Nil for every
+    /// other row: nil optionals are left out when a summary is written, so files keep the shape
+    /// earlier builds wrote and read.
+    public var gmailID: GmailMessageID?
+    public var gmailThreadID: GmailThreadID?
+    public var labelIDs: [GmailLabelID]?
+    /// When Gmail received the message, which orders a Google account's mail; `date` is the date
+    /// the row shows.
+    public var internalDate: Date?
+    /// For a message the owner sent, kept in its Sent copy.
+    public var bcc: [EmailAddress]?
+    public var replyTo: [EmailAddress]?
 
     public static func makeID(accountID: UUID, folderID: UUID, uid: UInt32) -> String {
         "\(accountID.uuidString):\(folderID.uuidString):\(uid)"

@@ -151,6 +151,17 @@ for a message held because FalconMail stopped while sending it, `unknownClient` 
 sign-in made by a FalconMail this one cannot renew. The areas are listed in
 `docs/ARCHITECTURE.md`.
 
+A Google account on the Gmail API engine reports in its own area, `gmail`, whose codes are the kinds
+of Google's refusals as the engine names them (`rateLimited`, `quotaExhausted`, `apiDisabled`,
+`insufficientPermissions`, `needsSignIn`, `clientRejected`, `notFound`, `temporary`, `offline`,
+`historyExpired`, `domainPolicy`, `gmailNotEnabled`, `sendingLimit`, `downloadLimit`, `uploadLimit`,
+`tooLarge`, `other`) and what the engine did about the mailbox: `resync` when it listed it again
+after Gmail's change list expired, `floodMode` when another app was importing into it, and
+`imapBlocked`, `imapUsed`, `sendUnconfirmed`, `sendHeld`, `draftSaveFailed` and `uploadPaused` for
+the checks around it. Each has a plain title of its own, such as *Gmail's change list had expired,
+so FalconMail listed the mailbox again*. Like every other line, none carries a subject, an address or
+a message's text.
+
 A crash or hang is grouped by what went wrong and where, from its own report, and never by an
 address or an offset, which change with every build:
 

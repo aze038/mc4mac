@@ -204,9 +204,7 @@ public actor GmailOpener {
     private var lastOpened: GmailOpenedMessage?
 
     public init(client: GmailAPIClient, settle: TimeInterval = 0.3,
-                sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
-                    try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                }) {
+                sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
         self.client = client
         self.settle = settle
         self.sleep = sleep

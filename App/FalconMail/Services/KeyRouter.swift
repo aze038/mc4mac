@@ -78,18 +78,26 @@ final class KeyRouter {
         return true
     }
 
+    /// The keys that act on the selection wait for the rows the table shows selected to be read
+    /// into the app's selection (see `AppModel.afterSelectionRead`), so Delete pressed just after
+    /// moving down a row deletes that row, never the one selected before.
     private func perform(_ event: NSEvent) {
-        let selected = model.selectedMessages
+        let model = self.model
         let shift = event.modifierFlags.contains(.shift)
         let trashKey = event.keyCode == Code.delete || event.keyCode == Code.forwardDelete || (event.keyCode == Code.three && shift)
         if trashKey {
-            guard !selected.isEmpty else { return }
-            model.delete(selected)
+            model.afterSelectionRead {
+                let selected = model.selectedMessages
+                guard !selected.isEmpty else { return }
+                model.delete(selected)
+            }
             return
         }
         if event.characters == "!" {
-            guard !selected.isEmpty else { return }
-            model.toggleJunkOnSelection()
+            model.afterSelectionRead {
+                guard !model.selectedMessages.isEmpty else { return }
+                model.toggleJunkOnSelection()
+            }
             return
         }
         if !shift, applyFilterKey(event.keyCode) { return }
@@ -100,12 +108,15 @@ final class KeyRouter {
         case "n": model.selectNextUnread()
         case "p": model.selectPreviousUnread()
         case "c": model.composeNew()
-        case "r": model.replyToSelection(all: shift)
-        case "a": model.replyToSelection(all: true)
-        case "f": model.forwardSelection()
+        case "r": model.afterSelectionRead { model.replyToSelection(all: shift) }
+        case "a": model.afterSelectionRead { model.replyToSelection(all: true) }
+        case "f": model.afterSelectionRead { model.forwardSelection() }
         case "/": model.focusSearch()
         case "g": beginChord()
-        default: performOnSelection(key, shift: shift, selected: selected)
+        default:
+            model.afterSelectionRead { [weak self] in
+                self?.performOnSelection(key, shift: shift, selected: model.selectedMessages)
+            }
         }
     }
 

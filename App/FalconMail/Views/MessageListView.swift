@@ -43,16 +43,208 @@ struct MessageListView: View {
                 ProgressView("Searching…").padding()
             }
             searchNoticeBar
-            rowList
-            loadOlderBar
-            moreResultsBar
+            if model.engineList.isShown {
+                waitingDraftsBar
+                tableList
+            } else {
+                rowList
+                loadOlderBar
+                moreResultsBar
+            }
         }
         .background(OLColor.list)
-        .onChange(of: model.selectedMessageIDs) { _, _ in model.selectionDidChange() }
+        .onChange(of: model.selectedMessageIDs) { _, ids in
+            model.engineList.appSelectionChanged(ids)
+            model.selectionDidChange()
+        }
+        // The table's view follows the list's settings; the stored list rebuilds itself.
+        .onChange(of: model.listSortSpec) { _, _ in model.engineList.refreshIfShown(model) }
+        .onChange(of: model.groupByThread) { _, _ in model.engineList.refreshIfShown(model) }
+        .onChange(of: model.showInGroups) { _, _ in model.engineList.refreshIfShown(model) }
+        .onChange(of: model.filters) { _, _ in model.engineList.refreshIfShown(model) }
+        .onChange(of: focusedInbox) { _, _ in model.engineList.refreshIfShown(model) }
+        // An account moving to or from the Gmail API, or its engine starting, changes where the
+        // list is read from.
+        .onChange(of: model.gmailEngineAccounts) { _, _ in Task { await model.reloadMessages() } }
+        .onChange(of: Set(model.engineAssemblies.keys)) { _, _ in Task { await model.reloadMessages() } }
+        // A search on the Gmail engines shows its hits as the table's view, and its end the
+        // folder again.
+        .onChange(of: model.engineSearch?.id) { _, _ in model.engineList.refreshIfShown(model) }
+    }
+
+    // MARK: - The table
+
+    /// Every message of the folder, whatever its size, drawn only as it scrolls into view. A row
+    /// the Mac has not seen yet is grey for a moment, with its unread dot, flag and clip already
+    /// right, and fills in when its text arrives.
+    private var tableList: some View {
+        let list = model.engineList
+        return MessageTableView(
+            controller: list.controller, showsPreview: showPreview, namesRecipients: namesRecipients, quickActions: quickActions,
+            categories: { key in model.categories(forKey: key).map { NSColor($0.swatch) } },
+            onOpen: { key in list.open(key) { openWindow(value: $0) } },
+            onQuickAction: { action, key in runQuickAction(action, on: key) },
+            menu: { _ in tableMenu() },
+            onSelectionChange: { _ in list.tableSelectionChanged() },
+            onOwnerChoice: { if model.activeTab != nil, model.showsMessageList { model.showMail() } },
+            rowActions: { row, edge in swipeActions(row: row, edge: edge) })
+            .overlay {
+                if let email = list.waitingFor {
+                    ContentUnavailableView {
+                        Label("Connecting to \(email)", systemImage: "hourglass")
+                    } description: {
+                        Text("Its mail shows here as soon as Gmail answers.")
+                    }
+                } else if list.controller.rowCount == 0, list.controller.view != nil, !model.isSearching {
+                    ContentUnavailableView(emptyTitle, systemImage: model.filters.isEmpty ? "tray" : "line.3.horizontal.decrease.circle")
+                }
+            }
+    }
+
+    /// Drafts of a Google account on the Gmail API saved on this Mac while Gmail could not take
+    /// them: each is named above the table, with Open, until Gmail has it and it is a row.
+    @ViewBuilder private var waitingDraftsBar: some View {
+        let waiting = model.waitingDraftsShown
+        if !waiting.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(waiting, id: \.localID) { draft in
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock")
+                        Text(draft.subject.isEmpty ? "(no subject)" : draft.subject).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 4)
+                        Button("Open") { model.reopenWaitingDraft(draft.localID) }
+                            .buttonStyle(QuietLinkStyle())
+                    }
+                }
+                Text("Saved on this Mac. It goes to Gmail by itself when it can.")
+                    .foregroundStyle(OLColor.textDim)
+            }
+            .font(.system(size: OL.statusFont))
+            .foregroundStyle(OLColor.textMuted)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+        }
+    }
+
+    /// A row's quick action acts on that row, whatever is selected, as on the stored list.
+    private func runQuickAction(_ action: QuickAction, on key: RowKey) {
+        let list = model.engineList
+        if action == .move {
+            list.select(key)
+            list.whenRead { model.openMovePalette() }
+            return
+        }
+        Task {
+            guard let thread = await list.thread(forKey: key) else { return }
+            switch action {
+            case .delete: model.delete(thread.messages)
+            case .archive: model.archive(thread.messages)
+            case .flag: model.setFlagged(thread.messages, !thread.latest.isFlagged)
+            case .markRead: model.markRead(thread.messages, ReadMarking.readUnreadMarksRead(thread.messages))
+            case .snooze: model.mute([thread])
+            case .move: break
+            }
+        }
+    }
+
+    /// The swipes Settings → Reading sets, on a row whose text has arrived: nobody acts on a row
+    /// he cannot read.
+    private func swipeActions(row: Int, edge: NSTableView.RowActionEdge) -> [NSTableViewRowAction] {
+        let list = model.engineList
+        let action = SwipeAction(rawValue: edge == .leading ? leftSwipeRaw : rightSwipeRaw) ?? .none
+        guard action != .none, let key = list.controller.key(at: row), list.controller.rowContent(at: row) != nil,
+              list.controller.record(at: row)?.displayKind != .header else { return [] }
+        let style: NSTableViewRowAction.Style = action == .delete ? .destructive : .regular
+        let title = SwipeActionTitle.text(action)
+        let made = NSTableViewRowAction(style: style, title: title) { _, _ in
+            if action == .move {
+                list.select(key)
+                list.whenRead { model.openMovePalette() }
+                return
+            }
+            Task {
+                guard let thread = await list.thread(forKey: key) else { return }
+                switch action {
+                case .archive: model.archive(thread.messages)
+                case .delete: model.delete(thread.messages)
+                case .markRead: model.markRead(thread.messages, ReadMarking.readUnreadMarksRead(thread.messages))
+                case .flag: model.setFlagged(thread.messages, !thread.latest.isFlagged)
+                case .junk: model.toggleJunk(thread.messages)
+                case .move, .none: break
+                }
+            }
+        }
+        if action == .flag { made.backgroundColor = .systemOrange } else if action != .delete { made.backgroundColor = .controlAccentColor }
+        return [made]
+    }
+
+    /// The menu of the rows a right-click acts on, as the stored list's: its commands act on the
+    /// selection once it has been read.
+    private func tableMenu() -> NSMenu? {
+        let list = model.engineList
+        let snapshot = list.controller.snapshot
+        let rows = list.controller.selection.indexes(in: snapshot)
+        guard let first = rows.first else { return nil }
+        let records = rows.map { snapshot.rows[$0] }
+        let anyUnread = records.contains { $0.unread > 0 || $0.displayBits.contains(.unread) }
+        let allFlagged = records.allSatisfy { $0.displayBits.contains(.flagged) }
+        let tooMany = list.selectionCount > ActionTargets.largestItemList
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        func item(_ title: String, enabled: Bool = true, _ run: @escaping @MainActor () -> Void) {
+            let made = ClosureMenuItem(title: title) {
+                if tooMany {
+                    model.statusText = ListStatusText.tooManySelected
+                    return
+                }
+                list.whenRead(run)
+            }
+            made.isEnabled = enabled
+            menu.addItem(made)
+        }
+        if let key = snapshot.rowKey(at: first) {
+            item("Open") { list.open(key) { openWindow(value: $0) } }
+            item("Open in Separate Window") {
+                guard let thread = model.currentThread else { return }
+                model.openMessage(thread.latest, conversation: model.currentConversation, forceWindow: true) { openWindow(value: $0) }
+            }
+        }
+        if rows.count == 1, snapshot.rows[first].displayKind == .conversation {
+            let open = snapshot.rows[first].displayBits.contains(.expanded)
+            menu.addItem(ClosureMenuItem(title: open ? "Collapse Conversation" : "Expand Conversation") {
+                Task { await list.controller.toggleExpanded(row: first) }
+            })
+        }
+        menu.addItem(.separator())
+        item(anyUnread ? "Mark as Read" : "Mark as Unread") { model.markRead(model.selectedMessages, anyUnread) }
+        item(allFlagged ? "Unflag" : "Flag") { model.setFlagged(model.selectedMessages, !allFlagged) }
+        item("Archive", enabled: model.allowsCommand(.archive)) { model.archive(model.selectedMessages) }
+        // Read from the folder shown, since the rows just right-clicked may not have been read yet.
+        let inJunk = namesFolderRole == .junk
+        item(inJunk ? "Not Junk" : "Move to Junk", enabled: model.allowsCommand(inJunk ? .notJunk : .junk)) {
+            model.toggleJunk(model.selectedMessages)
+        }
+        if rows.count == 1 {
+            let shown = (model.currentConversation ?? model.currentThread).flatMap { $0.id == snapshot.rowKey(at: first)?.stringValue ? $0 : nil }
+            item(shown.map(model.isMuted) == true ? "Unmute Conversation" : "Mute Conversation") {
+                if let thread = model.currentConversation ?? model.currentThread { model.toggleMute(thread) }
+            }
+        }
+        item("Delete", enabled: model.allowsCommand(.delete)) { model.delete(model.selectedMessages) }
+        return menu
+    }
+
+    /// Focused and Other split the Inbox, and All Inboxes, as Outlook's do; in the table's other
+    /// folders there is nothing to split.
+    private var showsFocusedTabs: Bool {
+        guard focusedInbox, model.showsMessageList else { return false }
+        guard model.engineList.isShown else { return true }
+        let filters = model.listView(for: model.selection)?.filters ?? []
+        return filters.contains(.focused) || filters.contains(.other)
     }
 
     @ViewBuilder private var focusedTabs: some View {
-        if focusedInbox && model.showsMessageList {
+        if showsFocusedTabs {
             Picker("", selection: Binding(get: { model.focusedTab }, set: { model.focusedTab = $0; Task { await model.reloadMessages() } })) {
                 ForEach(FocusedTab.allCases) { Text($0.title).tag($0) }
             }
@@ -85,7 +277,8 @@ struct MessageListView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(OLColor.divider).frame(height: 1).padding(.bottom, OL.listTopInset)
         }
-        .help(model.storedInSelection > model.messages.count
+        .help(model.engineList.isShown ? model.engineList.controller.itemsText
+              : model.storedInSelection > model.messages.count
               ? "Showing the newest \(model.messages.count) of \(model.storedInSelection) messages"
               : "\(model.threads.count) conversations")
     }
@@ -192,9 +385,14 @@ struct MessageListView: View {
     }
 
     private var rowList: some View {
-        @Bindable var model = model
+        // Every choice the owner makes in the list goes through `selectFromList`, which gives
+        // the reading pane back to the selection when a tab had it.
+        let chosen = Binding(get: { model.selectedMessageIDs }, set: { ids in
+            let event = NSApp.currentEvent?.type
+            model.selectFromList(ids, byOwner: event == .leftMouseDown || event == .leftMouseUp || event == .keyDown)
+        })
         return ScrollViewReader { proxy in
-            List(model.rows, selection: $model.selectedMessageIDs) { row in
+            List(model.rows, selection: chosen) { row in
                 rowView(row)
                     .tag(row.id)
                     .listRowInsets(EdgeInsets())
@@ -213,7 +411,15 @@ struct MessageListView: View {
                 today = Date()
             }
             .background(ListTableTuner())
-            .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest, conversation: t) { openWindow(value: $0) } } })
+            .background(DoubleClickMonitor(action: {
+                if let t = model.currentThread { model.openMessage(t.latest, conversation: t) { openWindow(value: $0) } }
+            }, onClick: { row in
+                if let row, model.rows.indices.contains(row), !model.rows[row].isGroup {
+                    model.selectFromList([model.rows[row].id])
+                } else {
+                    model.showSelectionInReader()
+                }
+            }))
             .onKeyPress(.return) {
                 guard let t = model.currentThread else { return .ignored }
                 model.openMessage(t.latest, conversation: t) { openWindow(value: $0) }
@@ -344,6 +550,12 @@ struct MessageListView: View {
         return false
     }
 
+    /// The role of the folder shown, nil for All Inboxes and the smart folders.
+    private var namesFolderRole: FolderRole? {
+        guard case .folder(let id) = model.selection else { return nil }
+        return model.folder(id)?.role
+    }
+
     /// Sent and Drafts name who the mail went to, as Outlook's do: their sender is always the
     /// owner.
     private var namesRecipients: Bool {
@@ -367,6 +579,36 @@ struct MessageListView: View {
             Button("Delete", role: .destructive) { model.delete(thread.messages) }
         }
         .disabled(!MessageActions.allowsChanges(thread.messages))
+    }
+}
+
+/// A menu item that runs a closure, for the menus built for the table's rows.
+final class ClosureMenuItem: NSMenuItem {
+    private let run: @MainActor () -> Void
+
+    init(title: String, run: @escaping @MainActor () -> Void) {
+        self.run = run
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    @objc private func fire() { MainActor.assumeIsolated { run() } }
+}
+
+/// A swipe's words, as the stored list's swipes say them.
+enum SwipeActionTitle {
+    static func text(_ action: SwipeAction) -> String {
+        switch action {
+        case .none: return ""
+        case .archive: return "Archive"
+        case .delete: return "Delete"
+        case .markRead: return "Read/Unread"
+        case .flag: return "Flag"
+        case .move: return "Move"
+        case .junk: return "Junk"
+        }
     }
 }
 

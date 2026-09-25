@@ -146,7 +146,42 @@ final class ComposeTextView: NSTextView {
     /// fetched once and put in its place, as Outlook's signature editor does with a signature
     /// copied from a web page. Elsewhere such pictures are left out.
     var fetchesPastedRemotePictures = false
+    /// Where HTML pasted as a signature goes, with what it reads as, for the signature editor,
+    /// which pastes such HTML as importing it would.
+    var onPasteSignatureHTML: ((String, NSAttributedString) -> Void)?
     var remotePictureLoader = RemotePictureLoader.web
+    /// Set in a compose window: files dragged onto the body are attached, as Outlook attaches
+    /// them, rather than written in as their path or a file:// link. Text, and a picture moved
+    /// within the text, still drop into it. `onFileDragOver` shows the window's "Drop to attach".
+    var onDropAttachments: (([OutgoingAttachment]) -> Void)?
+    var onFileDragOver: ((Bool) -> Void)?
+
+    private func attaches(_ sender: NSDraggingInfo) -> Bool {
+        onDropAttachments != nil && ComposeFileDrop.takesAsAttachments(sender)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard attaches(sender) else { return super.draggingEntered(sender) }
+        onFileDragOver?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard attaches(sender) else { return super.draggingUpdated(sender) }
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onFileDragOver?(false)
+        super.draggingExited(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard attaches(sender), let onDropAttachments else { return super.performDragOperation(sender) }
+        onFileDragOver?(false)
+        return ComposeFileDrop.receive(sender.draggingPasteboard, deliver: onDropAttachments)
+    }
+
 
     /// An empty body has no glyphs, so its layout manager is never asked to draw any; with ¶ on,
     /// the ¶ of its one empty paragraph is still drawn, as Word draws it.
@@ -194,6 +229,14 @@ final class ComposeTextView: NSTextView {
     /// As it came, pictures included, which are made as every picture put into a text is (see
     /// InlinePictures.pasted).
     @objc func pasteKeepingSourceFormatting() {
+        // A signature copied from Gmail or a web page comes in as importing it would bring it
+        // in, its tables and pictures laid out as its HTML lays them out, and that HTML is kept
+        // to be sent for it.
+        if let onPasteSignatureHTML, let signature = Signature.pasted(from: .general, attributes: RichText.bodyAttributes) {
+            onPasteSignatureHTML(signature.html, signature.text)
+            insertPasted(signature.text)
+            return
+        }
         guard let source = ComposeTextView.attributedFromPasteboard(keepingRemotePictures: fetchesPastedRemotePictures) else {
             pasteAsRichText(nil)
             return

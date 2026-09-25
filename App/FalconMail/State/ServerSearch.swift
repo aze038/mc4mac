@@ -37,7 +37,8 @@ extension AppModel {
     func gmailClient(for accountID: UUID) -> GmailAPIClient? {
         guard let account = accounts.first(where: { $0.id == accountID }), usesGmailAPI(account) else { return nil }
         if let client = gmailClients[accountID] { return client }
-        let client = GmailAPIClient(api: GoogleAPI(tokens: tokens, accountID: accountID))
+        let client = GmailAPIClient(api: GoogleAPI(tokens: tokens, accountID: accountID),
+                                    limiter: GmailQuotaLimiter(sleep: GmailWait.sleep))
         gmailClients[accountID] = client
         return client
     }
@@ -45,9 +46,16 @@ extension AppModel {
     func gmailOpener(for accountID: UUID) -> GmailOpener? {
         guard let client = gmailClient(for: accountID) else { return nil }
         if let opener = gmailOpeners[accountID] { return opener }
-        let opener = GmailOpener(client: client)
+        let opener = GmailOpener(client: client, sleep: GmailWait.sleep)
         gmailOpeners[accountID] = opener
         return opener
+    }
+
+    /// A search on the Gmail engines that asked for ids only while the owner typed now fetches
+    /// the text of the first hits too, as Return or a pause of a second and a half asks.
+    func fetchEngineSearchRows() {
+        guard let run = engineSearch else { return }
+        Task { await coordinator.search(run.query, id: run.id, accounts: run.accounts, fetchRows: true) }
     }
 
     /// Where a search looks, from the Search settings: every mailbox, the current account, or the
@@ -81,9 +89,23 @@ extension AppModel {
     /// Runs a submitted search. Each account answers on its own and its first page shows the
     /// moment it arrives, merged with the others by date. The rows on screen stay until then, so
     /// the list never goes blank while Gmail is asked.
-    func startSearch(_ query: String) async {
+    func startSearch(_ query: String, fetchRows: Bool = true) async {
         cancelServerSearch()
-        let scopes = searchScopes()
+        var scopes = searchScopes()
+        // Google accounts on the Gmail API search through their engines, whose hits are rows every
+        // action works on, shown as the list's view of the search.
+        let onEngine = Set(scopes.map(\.account.id).filter { engineAssemblies[$0] != nil })
+        if !onEngine.isEmpty {
+            let run = EngineSearchRun(id: UUID(), query: query, accounts: onEngine)
+            engineSearch = run
+            Task { await coordinator.search(query, id: run.id, accounts: onEngine, fetchRows: fetchRows) }
+            scopes.removeAll { onEngine.contains($0.account.id) }
+            guard !scopes.isEmpty else {
+                messages = []
+                rebuildThreads()
+                return
+            }
+        }
         let viaGmail = gmailAccounts(in: scopes)
         let run = ServerSearchRun(query: query, scopes: scopes, viaGmail: viaGmail)
         serverSearch = run
@@ -122,6 +144,10 @@ extension AppModel {
     }
 
     func cancelServerSearch() {
+        if let run = engineSearch {
+            engineSearch = nil
+            Task { await coordinator.endSearch(run.id, accounts: run.accounts) }
+        }
         serverSearch?.task?.cancel()
         serverSearch = nil
         searchNotice = nil
@@ -216,9 +242,11 @@ extension AppModel {
         rebuildThreads()
     }
 
-    /// A stored message or one found only on the server, for a tab or window that has only the id.
+    /// A stored message, one found only on the server, or a Gmail row of an account on the Gmail
+    /// API, for a tab or window that has only the id.
     func message(id: String) async -> MessageSummary? {
         if let row = serverRows[id] { return row }
+        if RowKey(string: id)?.isGmail == true { return await engineMessage(id: id) }
         return try? await store.message(id: id)
     }
 
@@ -285,6 +313,18 @@ extension AppModel {
     func serverAttachmentData(_ message: MessageSummary, _ stub: GmailAttachmentStub) async -> Data? {
         let key = message.id + "#" + stub.id
         if let data = serverAttachmentBytes[key] { return data }
+        if !message.isServerOnly, usesGmailEngine(message.accountID) {
+            do {
+                let data = try await engineAttachmentData(message, stub)
+                if let data, openedServerMessages[message.id] != nil { serverAttachmentBytes[key] = data }
+                return data
+            } catch is CancellationError {
+                return nil
+            } catch {
+                reportServerError(error, accountID: message.accountID, doing: "fetch an attachment of")
+                return nil
+            }
+        }
         guard let reference = GmailServerRow.reference(from: message.id), let client = gmailClient(for: reference.accountID) else { return nil }
         do {
             let data = try await client.attachmentData(messageID: reference.gmailID, stub: stub)
@@ -302,7 +342,7 @@ extension AppModel {
     /// message found only on the server has them all fetched first.
     func parsedBodyForForwarding(_ message: MessageSummary) async -> MIMEMessage? {
         let parsed = await parsedBody(for: message)
-        guard message.isServerOnly, var opened = openedServerMessages[message.id] else { return parsed }
+        guard fetchesAttachmentsFromGmail(message), var opened = openedServerMessages[message.id] else { return parsed }
         for stub in opened.unfetchedAttachments {
             guard let data = await serverAttachmentData(message, stub) else { continue }
             opened.add(data, for: stub)
@@ -318,7 +358,7 @@ extension AppModel {
     }
 
     /// Keeps the twenty most recently opened messages; their fetched attachments go with them.
-    private func remember(_ opened: GmailOpenedMessage, for id: String) {
+    func remember(_ opened: GmailOpenedMessage, for id: String) {
         openedServerMessages[id] = opened
         openedServerOrder.removeAll { $0 == id }
         openedServerOrder.append(id)

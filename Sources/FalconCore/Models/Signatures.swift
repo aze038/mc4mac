@@ -11,12 +11,23 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
     public var plain: String
     /// The formatted text as flat RTFD, which unlike RTF keeps pictures.
     public var rich: Data?
+    /// The HTML the signature was made from, as its owner made it in Gmail or on a web page and
+    /// it was imported or pasted, kept while its text is as that HTML reads, so that it is what
+    /// is sent (see SignatureSource). Nil for a signature written or changed here, and absent
+    /// from what an earlier build kept, which ignores it.
+    public var html: String?
 
-    public init(id: UUID = UUID(), name: String, plain: String = "", rich: Data? = nil) {
+    public init(id: UUID = UUID(), name: String, plain: String = "", rich: Data? = nil, html: String? = nil) {
         self.id = id
         self.name = name
         self.plain = plain
         self.rich = rich
+        self.html = html
+    }
+
+    /// Its HTML as what is sent for it, recognised in a message by its text.
+    public var source: SignatureSource? {
+        html.map { SignatureSource(html: $0, text: text) }
     }
 
     /// The signature as it is drawn. Plain text carries no formatting of its own, so it takes
@@ -26,6 +37,8 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
                                                             documentAttributes: nil) else {
             return NSAttributedString(string: plain)
         }
+        // RTFD may not keep how a table from the HTML is laid out, so it is laid out again.
+        if let html { SignatureTables.honour(html, in: text) }
         return text
     }
 
@@ -33,14 +46,34 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
     /// plain text alone. It then opens messages exactly as a plain signature does, where RTF would
     /// turn the system font into Helvetica Neue for the whole message and drop carriage returns.
     public mutating func setText(_ text: NSAttributedString, plainIn base: [NSAttributedString.Key: Any] = [:]) {
+        setText(text, html: nil, plainIn: base)
+    }
+
+    /// The same for text read from `html`, a signature's own HTML as it was imported or pasted,
+    /// which is then what is sent for it; nil, as for any text written or changed here, drops
+    /// the HTML the signature had, so what is sent is what the editor shows.
+    public mutating func setText(_ text: NSAttributedString, html: String?, plainIn base: [NSAttributedString.Key: Any] = [:]) {
+        self.html = html
         guard Signature.isSetOnly(in: base, text) else {
             plain = text.string.replacingOccurrences(of: Signature.pictureMark, with: "")
             rich = text.rtfd(from: NSRange(location: 0, length: text.length),
                              documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
             return
         }
+        // Words alone go into a message as plain text, which sends no HTML of its own.
+        self.html = nil
         plain = text.string
         rich = nil
+    }
+
+    /// The text as the signature editor leaves it. The HTML the signature was imported or pasted
+    /// with, or `pasted`, HTML just pasted into the editor, is kept, and still sent, only while
+    /// the text still reads as that HTML did: the same words, pictures and emphasis. Any other
+    /// change makes it a signature written here, sent as the editor shows it.
+    public mutating func setEditedText(_ text: NSAttributedString, plainIn base: [NSAttributedString.Key: Any] = [:],
+                                       pasted: SignatureSource? = nil) {
+        let kept = [pasted, source].compactMap { $0 }.first { $0.matches(text) }
+        setText(text, html: kept?.html, plainIn: base)
     }
 
     /// Whether every run of `text` says no more than `base` does. The plain paragraph style a
@@ -96,6 +129,7 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
         guard let read = InlinePictures.text(fromHTML: ComposedBody.readingStyle(attributes) + html, parts: parts,
                                              attributes: attributes, remote: pictures) else { return nil }
         let text = NSMutableAttributedString(attributedString: ComposedBody.readable(read, attributes: attributes))
+        SignatureTables.honour(html, in: text)
         let string = text.string as NSString
         var end = string.length
         while end > 0, let scalar = Unicode.Scalar(string.character(at: end - 1)),
@@ -104,6 +138,27 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
         }
         text.deleteCharacters(in: NSRange(location: end, length: string.length - end))
         return text
+    }
+
+    /// What pasting into the signature editor makes of HTML on `pasteboard`, as a signature
+    /// copied from Gmail's settings or a web page comes: exactly what importing that HTML as a
+    /// signature makes of it (see SignatureCandidate.signature), its tables as the HTML lays
+    /// them out and its pictures at the size the HTML gives them, with the HTML itself to be sent
+    /// for it. Nil when the pasteboard holds no HTML, or HTML that is not a signature to send as
+    /// it is, such as Word's, which is then pasted as any other rich text is.
+    @MainActor
+    public static func pasted(from pasteboard: NSPasteboard,
+                              attributes: [NSAttributedString.Key: Any]) -> (text: NSAttributedString, html: String)? {
+        guard let data = pasteboard.data(forType: .html) else { return nil }
+        return fromPastedHTML(String(decoding: data, as: UTF8.self), attributes: attributes)
+    }
+
+    /// The same for the HTML itself.
+    @MainActor
+    public static func fromPastedHTML(_ html: String, attributes: [NSAttributedString.Key: Any]) -> (text: NSAttributedString, html: String)? {
+        guard let source = SignatureSource.sendable(html),
+              let text = text(fromHTML: source, pictures: [:], attributes: attributes), text.length > 0 else { return nil }
+        return (text, source)
     }
 
     /// What a message gets: the "-- " line other mail apps know a signature by, the signature,
@@ -244,6 +299,14 @@ public struct SignatureBook: Codable, Hashable, Sendable {
         signatures[i].setText(text, plainIn: base)
     }
 
+    /// The signature editor's text for a signature, which keeps the HTML it was imported or
+    /// pasted with while it still reads as that HTML did (see Signature.setEditedText).
+    public mutating func setEditedText(_ text: NSAttributedString, of id: UUID, plainIn base: [NSAttributedString.Key: Any] = [:],
+                                       pasted: SignatureSource? = nil) {
+        guard let i = signatures.firstIndex(where: { $0.id == id }) else { return }
+        signatures[i].setEditedText(text, plainIn: base, pasted: pasted)
+    }
+
     /// Carries over the one plain signature each account kept before signatures had names. An
     /// account's signature was put into every new message, reply and forward from it, so the
     /// signature made from it becomes both its defaults; an account without one gets None and
@@ -302,7 +365,7 @@ public struct SignatureBook: Codable, Hashable, Sendable {
                                                 plainIn base: [NSAttributedString.Key: Any] = [:]) -> Bool {
         guard carriedOverHTML.contains(where: { $0.id == id && $0.html == html }),
               let i = signatures.firstIndex(where: { $0.id == id }) else { return false }
-        signatures[i].setText(text, plainIn: base)
+        signatures[i].setText(text, html: SignatureSource.sendable(html), plainIn: base)
         // A signature of words alone keeps them as plain text, which is no longer the source.
         if signatures[i].rich == nil && signatures[i].plain == html { return false }
         return true

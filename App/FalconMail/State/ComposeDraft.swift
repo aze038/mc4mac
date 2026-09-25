@@ -29,6 +29,10 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     /// A new message's body as its signature left it, so that changing the From account before
     /// the body is touched swaps the signature for the new account's.
     var autoSignature: AutoSignature?
+    /// The Gmail conversation a reply or forward of a Google account on the Gmail API goes in, so
+    /// Gmail keeps it with the message it answers. Absent from drafts kept by earlier builds,
+    /// which read past it.
+    var gmailThreadID: GmailThreadID?
 
     struct AutoSignature: Codable, Hashable, Sendable {
         var lead: String
@@ -105,6 +109,7 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         d.subject = message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: \(message.subject)"
         d.inReplyTo = message.messageID
         d.references = message.references + [message.messageID].filter { !$0.isEmpty }
+        d.gmailThreadID = message.gmailThreadID
         d.openQuoting(message, parsed: parsed, signature: signature)
         return d
     }
@@ -113,6 +118,7 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     static func forward(_ message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         d.subject = message.subject.lowercased().hasPrefix("fwd:") ? message.subject : "Fwd: \(message.subject)"
+        d.gmailThreadID = message.gmailThreadID
         d.openQuoting(message, parsed: parsed, signature: signature)
         d.attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
         return d
@@ -284,6 +290,8 @@ struct ComposeDraftSidecar: Codable, Sendable {
     /// with again. Absent from what an earlier build wrote, whose message then opens as text.
     var bodyRTF: Data?
     var bodyRTFD: Data?
+    /// The Gmail conversation, so Undo Send reopens a reply still in it.
+    var gmailThreadID: GmailThreadID?
 
     init(_ draft: ComposeDraft) {
         id = draft.id
@@ -300,6 +308,7 @@ struct ComposeDraftSidecar: Codable, Sendable {
         historyHTML = draft.historyHTML
         bodyRTF = draft.bodyRTF
         bodyRTFD = draft.bodyRTFD
+        gmailThreadID = draft.gmailThreadID
     }
 
     func draft(attachments: [OutgoingAttachment]) -> ComposeDraft {
@@ -317,6 +326,7 @@ struct ComposeDraftSidecar: Codable, Sendable {
         d.historyHTML = historyHTML
         d.bodyRTF = bodyRTF
         d.bodyRTFD = bodyRTFD
+        d.gmailThreadID = gmailThreadID
         return d
     }
 }

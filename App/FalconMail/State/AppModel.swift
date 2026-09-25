@@ -107,6 +107,17 @@ struct PendingUndo: Identifiable {
     var records: [MailActionRecord]
     var summary: String
     var verbTitle: String
+    /// Changes the Gmail engine holds for their undo window, which Undo drops unsent.
+    var receipts: [ActionReceipt] = []
+}
+
+/// What a fetch of a message's text for a reader came to.
+enum ReaderBody: Sendable {
+    case parsed(MIMEMessage)
+    /// Its account is not running, or the fetch was called off.
+    case unavailable
+    /// The sentence saying why, and the folder names it holds.
+    case failed(String, [String])
 }
 
 struct MessageThread: Identifiable, Hashable {
@@ -159,6 +170,8 @@ final class AppModel {
     /// SwiftUI reads it on each body evaluation.
     var rowCache: [ListRow] = []
     var rowIndex: [String: ListRow] = [:]
+    /// The message table, which shows the list of every account on the Gmail API (see EngineList).
+    let engineList = EngineList()
     var accountsNeedingSignIn = Set<UUID>()
     @ObservationIgnored var lastMailSelection: SidebarSelection?
     var isSearching = false
@@ -263,7 +276,7 @@ final class AppModel {
         accounts.compactMap { account in
             guard account.isEnabled, let text = accountStatus.problems[account.id] else { return nil }
             switch accountStatus.health[account.id] {
-            case .imapPaused, .blocked: return (account, text)
+            case .imapPaused, .apiPaused, .blocked: return (account, text)
             default: return nil
             }
         }
@@ -300,7 +313,7 @@ final class AppModel {
         }
     }
 
-    private var filtersStorage: Set<MessageFilter> = []
+    var filtersStorage: Set<MessageFilter> = []
     var filters: Set<MessageFilter> {
         get { filtersStorage }
         set {
@@ -427,10 +440,18 @@ final class AppModel {
     private var advancePolicy: AdvanceAfterAction { AdvanceAfterAction(rawValue: advanceAfterActionStorage) ?? .next }
 
     @ObservationIgnored private var restoredState: SessionState?
+    /// The session the last quit saved, whose entries for accounts now on the Gmail API are
+    /// written back untouched for an earlier FalconMail (§12.2).
+    @ObservationIgnored var previousSession: SessionState?
+    /// Whether the windows of the last session have been restored, after which drafts left over
+    /// from it are saved.
+    var sessionWindowsRestored: Bool { restoredState == nil }
     @ObservationIgnored private var knownSentIDs = Set<UUID>()
-    @ObservationIgnored private var soundGate = MailSoundGate(isEnabled: SoundLibrary.isEnabled)
+    @ObservationIgnored var soundGate = MailSoundGate(isEnabled: SoundLibrary.isEnabled)
     @ObservationIgnored private var bodyCache: [String: MIMEMessage] = [:]
-    @ObservationIgnored private var listeners: [Task<Void, Never>] = []
+    /// The texts readers are waiting for, each fetched once however many readers want it.
+    @ObservationIgnored private let readerFetches = SharedFetches<String, ReaderBody>()
+    @ObservationIgnored var listeners: [Task<Void, Never>] = []
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
     @ObservationIgnored private var sessionSaveTask: Task<Void, Never>?
@@ -471,6 +492,40 @@ final class AppModel {
     /// the drafts that are not left over.
     @ObservationIgnored var composeWindowDrafts: Set<UUID> = []
 
+    // The Gmail engine (see AppModel+Engines).
+    /// Google accounts switched to the Gmail API, whether or not their engine runs yet: nothing
+    /// for them may go by IMAP or SMTP, or read their old IMAP store.
+    var gmailEngineAccounts: Set<UUID> = []
+    /// The running Gmail engines, by account, each with its list, actions, drafts and sender.
+    var engineAssemblies: [UUID: GmailAccountAssembly] = [:]
+    /// Why a Google account is not on the Gmail API yet although its switch is on, or why the
+    /// switch could not be turned off, by account, for Settings → Accounts.
+    var engineSwitchNotices: [UUID: String] = [:]
+    /// The stored rows of accounts on IMAP, as the table reads them.
+    @ObservationIgnored let storeList: StoreListSource
+    /// All Inboxes over accounts on both engines, made again when the engines change.
+    @ObservationIgnored var mergedList: (engines: Set<UUID>, source: MergedListSource)?
+    /// The search the Gmail engines run, while its results are shown.
+    var engineSearch: EngineSearchRun?
+    /// Drafts saved on this Mac that Gmail has not got yet, by account, which Drafts shows as
+    /// provisional rows and counts.
+    var engineProvisionalDrafts: [UUID: [GmailProvisionalDraft]] = [:]
+    /// The message a notification asked to show, for the list to select once it has its row.
+    var pendingReveal: RowKey?
+    /// What each running engine's folders and drafts are followed by.
+    @ObservationIgnored var engineWatches: [UUID: EngineWatch] = [:]
+    /// The last details known of Gmail rows shown in windows and tabs, kept while Gmail cannot be
+    /// reached so a window stays open with what it had.
+    @ObservationIgnored var engineSummaries: [String: MessageSummary] = [:]
+    /// Accounts whose categories are being given Gmail's ids now.
+    @ObservationIgnored var categoriesRekeying: Set<UUID> = []
+    /// When each draft was last saved to Gmail by itself while being written.
+    @ObservationIgnored var engineAutosavedAt: [UUID: Date] = [:]
+    /// Sleep and screen-lock observers, which set how often the Gmail engines check.
+    @ObservationIgnored var activityObservers: [NSObjectProtocol] = []
+    /// Follows "Show All Gmail Labels", which each Google account's engine is told of.
+    @ObservationIgnored var labelsShownObserver: NSObjectProtocol?
+
     private func applyOfflineSettings() {
         Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) }
     }
@@ -486,6 +541,7 @@ final class AppModel {
             guard !Task.isCancelled, let self, let d = self.draftsStorage[id] else { return }
             self.unsentDrafts.keep(d)
             self.pendingDraftSaves[id] = nil
+            self.autosaveEngineDraft(d)
         }
     }
 
@@ -499,13 +555,19 @@ final class AppModel {
         let rules = RuleStore(layout: layout)
         let mutes = MuteStore(layout: layout)
         self.store = store
+        self.storeList = StoreListSource(store: store)
         self.tokens = tokens
         self.rules = rules
         self.mutes = mutes
+        // Google accounts signed in with Google run on the Gmail API, and the read-only part of the
+        // probe runs once for each when its engine first starts.
         let coordinator = SyncCoordinator(store: store, tokens: tokens, rules: rules, mutes: mutes, indexer: indexer,
-                                          pendingActions: PendingActionStore(layout: layout))
+                                          pendingActions: PendingActionStore(layout: layout), probe: SyncCoordinator.readOnlyProbe)
         self.coordinator = coordinator
-        self.outbox = Outbox(layout: layout, sender: SMTPSender(store: store, tokens: tokens, coordinator: coordinator), undoWindow: 10)
+        // Mail of a Google account on the Gmail API goes by Gmail's own send, never by SMTP.
+        let smtp = SMTPSender(store: store, tokens: tokens, coordinator: coordinator)
+        self.outbox = Outbox(layout: layout, sender: RoutingSender(smtp: smtp, route: { await coordinator.sendRoute(for: $0) }),
+                             undoWindow: 10)
         self.contacts = ContactStore(layout: layout)
         self.archives = ArchiveRecordStore(layout: layout)
         self.session = SessionStore(layout: layout)
@@ -529,7 +591,12 @@ final class AppModel {
         SoundLibrary.carryOverEarlierChoices()
         play(soundGate.launched())
         do { try await store.load() } catch { showAlert(for: error) }
+        // Google accounts on the Gmail API, paused or not, are held to it before anything can
+        // send or show their IMAP store's rows.
+        await coordinator.prime()
+        applyRoster(await coordinator.roster)
         restoredState = session.load()
+        previousSession = restoredState
         unsentDrafts.isOpen = { [weak self] id in self?.draftsStorage[id] != nil }
         unsentDrafts.deleteCopy = { [weak self] row in try await self?.deleteStoredCopy(row) }
         for d in unsentDrafts.leftovers() { drafts[d.id] = d }
@@ -551,6 +618,9 @@ final class AppModel {
         contactList = await contacts.all()
         await notifications.requestPermission()
         listen()
+        listenToEngines()
+        followOwnerActivity()
+        await followLabelsShown()
         watchForWake()
         await coordinator.startAll()
         // Copies in Drafts of messages discarded just before the last quit, which it could not delete.
@@ -559,7 +629,14 @@ final class AppModel {
         if let s = restoredState {
             let ids = Set(s.selectedMessageIDs)
             selectedMessageIDs = ids.filter { rowIndex[$0] != nil }
-            await restoreTabs(s.openTabs, minimized: s.minimizedTabs, active: s.activeTab)
+            // The row selected in the table at the last quit is selected again once its account's
+            // engine shows it.
+            if selectedMessageIDs.isEmpty, let first = s.gmailSelectedMessageIDs?.first {
+                pendingReveal = RowKey(string: ListRow.childMessageID(first) ?? first)
+                engineList.revealPending()
+            }
+            await restoreTabs(s.openTabs + (s.gmailTabs ?? []), minimized: s.minimizedTabs + (s.gmailMinimizedTabs ?? []),
+                              active: s.gmailActiveTab ?? s.activeTab)
         }
         Task { await syncContacts() }
         noteUnreadableFiles()
@@ -598,7 +675,15 @@ final class AppModel {
         let state = restoredState
         restoredState = nil
         saveLeftoverDrafts()
-        return WindowTrayBook.restoring(messageWindows: state?.openMessageWindows ?? [], inTray: state?.trayMessageWindows)
+        // Windows of accounts now on the Gmail API that an earlier build left are its own, and
+        // are carried forward rather than opened; the Gmail engine's windows open by their key.
+        let engines = gmailEngineAccounts
+        let earlier = (state?.openMessageWindows ?? []).filter { SessionCarryForward.carried([$0], engineAccounts: engines).isEmpty }
+        let gmail = state?.gmailWindows ?? []
+        var restored = WindowTrayBook.restoring(messageWindows: earlier, inTray: state?.trayMessageWindows)
+        restored.open += gmail.filter { !$0.inTray }.map(\.rowKey)
+        restored.tray += gmail.filter(\.inTray).map(\.rowKey)
+        return restored
     }
 
     /// Puts the messages that were in the tray at the last quit back into it, each under its
@@ -619,11 +704,46 @@ final class AppModel {
             return true
         }
         let windows = WindowTray.shared.book.messageWindows
-        return SessionState(selection: selection, selectedMessageIDs: selectedMessageIDs.filter(stored), searchText: searchText,
-                            openMessageWindows: windows.all.filter(stored), trayMessageWindows: windows.inTray.filter(stored),
-                            openDraftIDs: Array(drafts.keys),
-                            openTabs: tabs.filter(storedTab), minimizedTabs: minimizedTabs.filter(storedTab),
-                            activeTab: activeTab.flatMap { storedTab($0) ? $0 : nil })
+        // Rows of Google accounts on the Gmail API go into fields of their own; what the last
+        // session had there for such an account, which this build does not show, is carried
+        // forward untouched for an earlier FalconMail.
+        let engines = gmailEngineAccounts
+        let previous = previousSession
+        func earlier(_ ids: [String], _ old: [String]?) -> [String] {
+            SessionCarryForward.earlierList(ids.filter(stored), previous: old ?? [], engineAccounts: engines)
+        }
+        func isGmail(_ tab: WorkspaceTab) -> Bool {
+            if case .message(let id) = tab { return RowKey(string: id)?.isGmail == true }
+            return false
+        }
+        func carriedTabs(_ old: [WorkspaceTab]?) -> [WorkspaceTab] {
+            (old ?? []).filter { tab in
+                if case .message(let id) = tab { return !SessionCarryForward.carried([id], engineAccounts: engines).isEmpty }
+                return false
+            }
+        }
+        let gmailWindows = SessionCarryForward.split(windows.all).gmail.map { key in
+            GmailWindowEntry(rowKey: key, contextLabel: nil, inTray: windows.inTray.contains(key),
+                             title: messageWindowRows[key]?.subject ?? tabTitles[WorkspaceTab.message(key).id])
+        }
+        let openTabs = tabs.filter { storedTab($0) && !isGmail($0) } + carriedTabs(previous?.openTabs)
+        let minimized = minimizedTabs.filter { storedTab($0) && !isGmail($0) } + carriedTabs(previous?.minimizedTabs)
+        var state = SessionState(selection: selection, selectedMessageIDs: earlier(Array(selectedMessageIDs), previous?.selectedMessageIDs),
+                                 searchText: searchText,
+                                 openMessageWindows: earlier(windows.all, previous?.openMessageWindows),
+                                 trayMessageWindows: earlier(windows.inTray, previous?.trayMessageWindows),
+                                 openDraftIDs: Array(drafts.keys),
+                                 openTabs: openTabs.uniqued(), minimizedTabs: minimized.uniqued(),
+                                 activeTab: activeTab.flatMap { storedTab($0) && !isGmail($0) ? $0 : nil })
+        state.gmailWindows = gmailWindows.isEmpty ? nil : gmailWindows
+        let selectedGmail = SessionCarryForward.split(Array(selectedMessageIDs)).gmail
+        state.gmailSelectedMessageIDs = selectedGmail.isEmpty ? nil : selectedGmail
+        let gmailTabs = tabs.filter(isGmail)
+        let gmailMinimized = minimizedTabs.filter(isGmail)
+        state.gmailTabs = gmailTabs.isEmpty ? nil : gmailTabs
+        state.gmailMinimizedTabs = gmailMinimized.isEmpty ? nil : gmailMinimized
+        state.gmailActiveTab = activeTab.flatMap { isGmail($0) ? $0 : nil }
+        return state
     }
 
     func saveSession() {
@@ -677,6 +797,8 @@ final class AppModel {
                 switch change {
                 case .accountsChanged: await self.refreshAccounts()
                 case .foldersChanged(let accountID):
+                    // A Google account on the Gmail API shows its engine's folders, never its IMAP store's.
+                    guard !self.usesGmailEngine(accountID) else { break }
                     self.folders[accountID] = await self.store.folders(for: accountID)
                     self.refreshDockBadge()
                 case .messagesChanged(let folderID):
@@ -703,6 +825,9 @@ final class AppModel {
                     DiagnosticsService.shared.noteSyncPass()
                     self.syncingAccounts.remove(id)
                     self.statusText = "Up to date"
+                    // "All folders are up to date." waits for every folder of every account on the
+                    // Gmail API, whatever the list shows.
+                    if self.usesGmailEngine(id) { self.engineList.checkEveryFolderListed() }
                     self.noteUnreadableFiles()
                     await self.refreshBandwidth()
                 case .checked: break
@@ -746,7 +871,7 @@ final class AppModel {
         let coordinator = coordinator
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
                                                                          queue: .main) { _ in
-            Task { await coordinator.reconnectAll(reason: "the Mac woke") }
+            Task { await coordinator.macWoke() }
         }
     }
 
@@ -754,12 +879,13 @@ final class AppModel {
 
     /// The engine announces only mail dated within the last day and not from the account itself.
     private func announce(_ list: [MessageSummary], accountID: UUID, folderID: UUID) {
-        guard !migrationInProgress, let account = accounts.first(where: { $0.id == accountID }), let folder = folder(folderID) else { return }
+        guard !migrationInProgress, let account = accounts.first(where: { $0.id == accountID }),
+              let folder = folder(folderID) ?? engineInbox(accountID: accountID, folderID: folderID) else { return }
         guard notifications.announce(list, account: account, folder: folder, policy: notificationPolicy) else { return }
         play(soundGate.newMailArrived())
     }
 
-    private func play(_ sound: MailSoundEvent?) {
+    func play(_ sound: MailSoundEvent?) {
         if let sound { SoundLibrary.play(sound) }
     }
 
@@ -797,6 +923,10 @@ final class AppModel {
 
     private func applyFromNotification(_ action: MailNotificationAction, messageID: String) {
         guard !messageID.isEmpty else { return }
+        if usesGmailEngine(messageID: messageID) {
+            applyFromEngineNotification(action, messageID: messageID)
+            return
+        }
         Task {
             guard let message = try? await store.message(id: messageID) else {
                 showActionError("That message is no longer here")
@@ -815,6 +945,10 @@ final class AppModel {
     func reveal(messageID: String) {
         showMainWindow()
         guard !messageID.isEmpty else { return }
+        if usesGmailEngine(messageID: messageID) {
+            revealEngineMessage(messageID)
+            return
+        }
         Task {
             guard let message = try? await store.message(id: messageID) else {
                 statusText = "That message is no longer here"
@@ -830,13 +964,13 @@ final class AppModel {
         }
     }
 
-    private func showMainWindow() {
+    func showMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
         guard !WindowTray.shared.orderMailboxWindowFront() else { return }
         openMainWindow?()
     }
 
-    private func alreadyShowing(_ folderID: UUID) -> Bool {
+    func alreadyShowing(_ folderID: UUID) -> Bool {
         switch selection {
         case .unified: return folder(folderID)?.role == .inbox
         case .folder(let id): return id == folderID
@@ -861,7 +995,9 @@ final class AppModel {
         signatures.adopt(accounts)
         importCarriedOverSignatures()
         var map: [UUID: [FolderInfo]] = [:]
-        for a in accounts { map[a.id] = await store.folders(for: a.id) }
+        for a in accounts {
+            map[a.id] = usesGmailEngine(a.id) ? (folders[a.id] ?? []) : await store.folders(for: a.id)
+        }
         folders = map
         refreshDockBadge()
     }
@@ -881,7 +1017,7 @@ final class AppModel {
     /// Maintained whenever folders change, so reading it from a view body costs nothing.
     var unifiedUnreadCount: Int { unifiedUnread }
 
-    private func refreshDockBadge() {
+    func refreshDockBadge() {
         guard dockBadgeStorage else {
             NSApp.dockTile.badgeLabel = nil
             return
@@ -908,6 +1044,8 @@ final class AppModel {
     }
 
     func reloadMessages() async {
+        // The table shows it: nothing is read from the stored rows.
+        if await reloadEngineList() { return }
         do {
             if submittedSearchQuery != nil {
                 // Sync reloads come often; asking Gmail again for each would spend the quota.
@@ -982,6 +1120,8 @@ final class AppModel {
     }
 
     func rebuildThreads() {
+        // The table's rows are its own; the threads are then its selected rows' (see EngineList).
+        guard !engineList.isShown else { return }
         let visible = visibleMessages
         let grouped: [MessageThread]
         if groupByThread {
@@ -995,11 +1135,16 @@ final class AppModel {
                              names: { [weak self] in self?.accountName($0) ?? "Account" },
                              folders: { [weak self] in self?.folder($0)?.name ?? "Folder" })
         rebuildRows()
-        let valid = selectedMessageIDs.filter { rowIndex[$0] != nil }
-        if valid != selectedMessageIDs { selectedMessageIDs = valid }
+        // A conversation's row takes its newest message's id, so a reply arriving renames it,
+        // and folding a conversation takes away its message lines: the selection moves to the
+        // row now showing what was selected rather than being dropped, and the reading pane
+        // keeps showing it. Only what is no longer listed at all is let go.
+        let kept = ReadingSelection.carried(selectedMessageIDs, rows: Set(rowIndex.keys),
+                                            conversations: threads.map { $0.messages.map(\.id) })
+        if kept != selectedMessageIDs { selectedMessageIDs = kept }
     }
 
-    func runSearch() async {
+    func runSearch(fetchRows: Bool = true) async {
         serverSearchDebounce?.cancel()
         serverSearchDebounce = nil
         searchDebounceTask?.cancel()
@@ -1013,6 +1158,11 @@ final class AppModel {
             await reloadMessages()
             return
         }
+        // Return after the pause has already asked the Gmail engines for ids fetches the rows' text.
+        if submittedSearchQuery == q, engineSearch?.query == q, serverSearch == nil {
+            if fetchRows { fetchEngineSearchRows() }
+            return
+        }
         // Return after the pause has already asked Gmail would only ask again, at twice the units.
         if submittedSearchQuery == q, let run = serverSearch {
             let scopes = searchScopes()
@@ -1024,7 +1174,7 @@ final class AppModel {
             rebuildThreads()
         }
         submittedSearchQuery = q
-        await startSearch(q)
+        await startSearch(q, fetchRows: fetchRows)
     }
 
     /// Typing filters what is loaded at once; a pause of 600 ms with three or more characters
@@ -1050,7 +1200,16 @@ final class AppModel {
             _ = try? await Task.sleep(nanoseconds: 600_000_000)
             guard !Task.isCancelled, let self, self.searchTextStorage.trimmed == needle else { return }
             self.serverSearchDebounce = nil
-            await self.runSearch()
+            // The Gmail engines are asked for the matching ids only while the owner may still be
+            // typing (5 units), and for the rows' text after a second and a half more.
+            await self.runSearch(fetchRows: false)
+            guard let run = self.engineSearch, run.query == needle else { return }
+            self.serverSearchDebounce = Task { [weak self] in
+                _ = try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled, let self, self.searchTextStorage.trimmed == needle, self.engineSearch?.id == run.id else { return }
+                self.serverSearchDebounce = nil
+                self.fetchEngineSearchRows()
+            }
         }
     }
 
@@ -1067,7 +1226,7 @@ final class AppModel {
         }
     }
 
-    private func resetSearch() {
+    func resetSearch() {
         searchDebounceTask?.cancel()
         searchDebounceTask = nil
         serverSearchDebounce?.cancel()
@@ -1240,6 +1399,10 @@ final class AppModel {
                 if forwarding { return await parsedBodyForForwarding(message) ?? text }
                 return await serverBodyWithInlineImages(message) ?? text
             }
+            if usesGmailEngine(message.accountID), let text = try await engineBody(for: message, purpose: .replyOrForward) {
+                if forwarding { return await parsedBodyForForwarding(message) ?? text }
+                return text
+            }
             if let parsed = try await downloadedBody(for: message) { return parsed }
             Log.warning("Reply", "The original could not be downloaded to quote it: its account is not running",
                         account: account(for: message))
@@ -1301,7 +1464,7 @@ final class AppModel {
     }
 
     func folder(for target: MoveTarget) -> FolderInfo? {
-        (folders[target.accountID] ?? []).first { $0.path == target.folderPath && $0.isSelectable }
+        MoveTargets.folder(for: target, in: folders[target.accountID] ?? [])
     }
 
     var lastMoveTarget: FolderInfo? {
@@ -1361,7 +1524,7 @@ final class AppModel {
 
     private var moveScope: [FolderInfo] {
         let accountIDs = Set(paletteMessages.map(\.accountID))
-        return accounts.flatMap { folders[$0.id] ?? [] }.filter { $0.isSelectable && accountIDs.contains($0.accountID) }
+        return accounts.flatMap { folders[$0.id] ?? [] }.filter { MoveTargets.offers($0) && accountIDs.contains($0.accountID) }
     }
 
     func paletteTargets(matching query: String) -> [FolderInfo] {
@@ -1466,6 +1629,9 @@ final class AppModel {
     /// its account is not running; throws when the download fails.
     private func downloadedBody(for message: MessageSummary) async throws -> MIMEMessage? {
         if let cached = bodyCache[message.id] { return cached }
+        // A Google account on the Gmail API opens through its engine: from the Mac for the newest
+        // 1,000, from Gmail into memory for any other.
+        if usesGmailEngine(message.accountID) { return try await engineBody(for: message, purpose: .window) }
         guard let syncer = await coordinator.syncer(for: message.accountID) else { return nil }
         let parsed = try await syncer.parsedMessage(for: message)
         bodyCache[message.id] = parsed
@@ -1473,21 +1639,108 @@ final class AppModel {
         return parsed
     }
 
+    /// How long a reader waits for a message's text before showing its first words with a
+    /// line saying it is still coming, and how much silence from the server a fetch for a
+    /// reader sits through before the connection is given up and opened afresh.
+    static let readerBodyDeadline: TimeInterval = 12
+    static let readerReplyPatience: TimeInterval = 20
+    /// How many times a reader waits out the deadline before it stops and offers Try Again.
+    static let readerBodyRounds = 4
+
+    /// A message's text for the reading pane, a message window or tab, or a card of the
+    /// conversation stack. Never waits on the server for ever: after `readerBodyDeadline` the
+    /// reader is told through `slow`, shows the message's first words and waits again, joining
+    /// the same fetch, which gives up a connection that has fallen silent and so is tried again
+    /// on a fresh one. Two readers of one message, as the pane and the window a double-click
+    /// opened, share one fetch rather than queueing a second behind it, and a reader that moves
+    /// on stops waiting at once. `problem` is the sentence the reader shows in place of the text.
+    func readerBody(for message: MessageSummary, slow: (String) -> Void) async -> (parsed: MIMEMessage?, problem: String?) {
+        if let cached = bodyCache[message.id] { return (cached, nil) }
+        // A Google account on the Gmail API opens through its engine, never over IMAP; the
+        // engine's own opener waits and gives up on its own, and a failure is shown in the pane.
+        if usesGmailEngine(message.accountID) {
+            do {
+                return (try await engineBody(for: message, purpose: .window), nil)
+            } catch is CancellationError {
+                return (nil, nil)
+            } catch {
+                if Task.isCancelled { return (nil, nil) }
+                Log.warning("reader", "a message's text could not be opened through the Gmail API for the reader: \(error.localizedDescription)")
+                return (nil, error.localizedDescription)
+            }
+        }
+        let coordinator = coordinator
+        let patience = AppModel.readerReplyPatience
+        for round in 1...AppModel.readerBodyRounds {
+            let outcome = await readerFetches.value(for: message.id, within: AppModel.readerBodyDeadline) {
+                guard let syncer = await coordinator.syncer(for: message.accountID) else { return .unavailable }
+                do {
+                    return .parsed(try await syncer.parsedMessage(for: message, replyWithin: patience))
+                } catch is CancellationError {
+                    return .unavailable
+                } catch {
+                    return .failed(error.localizedDescription, Log.names(heldBy: error))
+                }
+            }
+            switch outcome {
+            case .finished(.parsed(let parsed)):
+                bodyCache[message.id] = parsed
+                if bodyCache.count > 200 { bodyCache.removeAll() }
+                return (parsed, nil)
+            case .finished(.unavailable), .cancelled:
+                return (nil, nil)
+            case .finished(.failed(let sentence, let names)):
+                Log.warning("reader", "a message's text could not be fetched for the reader: \(sentence)", names: names)
+                return (nil, sentence)
+            case .timedOut:
+                Log.warning("reader", "a message's text took longer than \(Int(AppModel.readerBodyDeadline)) s to fetch (round \(round) of \(AppModel.readerBodyRounds)); its first words are shown meanwhile",
+                            details: ["inFlight": String(readerFetches.inFlight)])
+                if Task.isCancelled { return (nil, nil) }
+                // Still nothing after a second wait: the connection the text comes over is closed
+                // when it has gone quiet, so that the fetch starts again on a fresh one.
+                if round >= 2, let syncer = await coordinator.syncer(for: message.accountID) {
+                    _ = await syncer.dropOpConnection(ifQuietFor: AppModel.readerReplyPatience)
+                }
+                if round < AppModel.readerBodyRounds { slow("This message is taking longer than usual to download. FalconMail is still trying.") }
+            }
+        }
+        return (nil, "This message could not be downloaded just now.")
+    }
+
     func rawBody(for message: MessageSummary) async -> Data? {
         guard !message.isServerOnly else { return nil }
+        if usesGmailEngine(message.accountID) { return await engineRawMessage(message) }
         guard let syncer = await coordinator.syncer(for: message.accountID) else { return nil }
         return try? await syncer.body(for: message)
     }
 
-    private func perform(_ messages: [MessageSummary], announcing: Bool = true,
+    /// Carries out a change on messages, each account's through its own engine: `engine`, the
+    /// change as the Gmail engine takes it, for a Google account on the Gmail API, and `op` over
+    /// IMAP for any other. An account with neither running says so, and its rows come back,
+    /// rather than the change being skipped in silence (§7.7).
+    private func perform(_ messages: [MessageSummary], announcing: Bool = true, engine verb: MailActionRequest.Verb? = nil,
                          _ op: @escaping (AccountSyncer, [MessageSummary]) async throws -> [MailActionRecord]) {
         let messages = MessageActions.actionable(messages)
         guard !messages.isEmpty else { return }
         Task {
             var records: [MailActionRecord] = []
+            var receipts: [ActionReceipt] = []
             var failure: (any Error)?
             for (accountID, group) in Dictionary(grouping: messages, by: { $0.accountID }) {
-                guard let syncer = await coordinator.syncer(for: accountID) else { continue }
+                if usesGmailEngine(accountID) {
+                    guard let verb else { continue }
+                    do {
+                        receipts.append(contentsOf: try await performOnEngine(verb, group, accountID: accountID))
+                    } catch {
+                        Log.info("action", "\(self.accountName(accountID)): \(error.localizedDescription)")
+                        failure = error
+                    }
+                    continue
+                }
+                guard let syncer = await coordinator.syncer(for: accountID) else {
+                    failure = GmailEngineUnavailable(account: accountName(accountID), doing: "this")
+                    continue
+                }
                 do {
                     records.append(contentsOf: try await op(syncer, group))
                 } catch {
@@ -1500,13 +1753,13 @@ final class AppModel {
                 showActionError(failure.localizedDescription, names: Log.names(heldBy: failure))
                 await reloadMessages()
             }
-            offerUndo(records)
+            offerUndo(records, receipts: receipts)
         }
     }
 
     /// Shows `message` under the toolbar for a while. `names` are the folder names in it, which
     /// diagnostics take out.
-    private func showActionError(_ message: String, names: [String] = []) {
+    func showActionError(_ message: String, names: [String] = []) {
         Log.error("Alert", message, names: names)
         actionErrorTask?.cancel()
         actionErrorTask = nil
@@ -1531,12 +1784,19 @@ final class AppModel {
         actionErrorNeedsDismissal = false
     }
 
-    private func offerUndo(_ records: [MailActionRecord]) {
-        guard let first = records.first else { return }
+    func offerUndo(_ records: [MailActionRecord], receipts: [ActionReceipt] = []) {
+        let undoable = receipts.filter(\.isUndoable)
+        guard !records.isEmpty || !undoable.isEmpty else { return }
         undoExpiryTask?.cancel()
         undoExpiryTask = nil
         guard undoActionSeconds > 0 else { pendingUndo = nil; return }
-        let undo = PendingUndo(records: records, summary: MailActionRecord.summary(for: records), verbTitle: first.verbTitle)
+        let undo: PendingUndo
+        if let first = records.first {
+            undo = PendingUndo(records: records, summary: MailActionRecord.summary(for: records), verbTitle: first.verbTitle, receipts: undoable)
+        } else {
+            undo = PendingUndo(records: [], summary: EngineActionText.summary(undoable, folderName: { [weak self] in self?.folder($0)?.name }),
+                               verbTitle: EngineActionText.verbTitle(undoable[0].verb), receipts: undoable)
+        }
         pendingUndo = undo
         let nanoseconds = UInt64(undoActionSeconds) * 1_000_000_000
         undoExpiryTask = Task { [weak self] in
@@ -1560,6 +1820,9 @@ final class AppModel {
                 guard let syncer = await coordinator.syncer(for: record.accountID) else { continue }
                 if await syncer.undo(record.id) { restored += record.messages.count }
             }
+            for receipt in undo.receipts where await coordinator.undo(receipt.id, accountID: receipt.accountID) {
+                restored += receipt.messageCount
+            }
             statusText = restored > 0 ? "Restored \(restored) \(MailActionRecord.noun(restored))" : "Too late to undo"
         }
     }
@@ -1572,7 +1835,9 @@ final class AppModel {
     }
 
     func markRead(_ list: [MessageSummary], _ read: Bool) {
-        perform(actionable(list).filter { $0.isRead != read }) { try await $0.setFlag(.seen, on: $1, enabled: read) }
+        perform(actionable(list).filter { $0.isRead != read }, engine: read ? .markRead : .markUnread) {
+            try await $0.setFlag(.seen, on: $1, enabled: read)
+        }
     }
 
     static let readOnlyNotice = "Messages found only on the server can be read and replied to, not changed."
@@ -1610,6 +1875,14 @@ final class AppModel {
     }
 
     private func markAllRead(in list: [FolderInfo], named name: String) {
+        let onEngine = list.filter { usesGmailEngine($0.accountID) }
+        for folder in onEngine {
+            performOnEngineView(.markRead, in: ListView(scope: .folder(folder.id), filters: [.unread], conversations: false),
+                                accountID: folder.accountID)
+        }
+        let list = list.filter { !usesGmailEngine($0.accountID) }
+        if !onEngine.isEmpty { statusText = "Marked every message as read in \(name)" }
+        guard !list.isEmpty else { return }
         Task {
             var unread: [MessageSummary] = []
             for f in list {
@@ -1626,10 +1899,10 @@ final class AppModel {
     }
 
     private func markReadSilently(_ list: [MessageSummary]) {
-        perform(list.filter { !$0.isRead }, announcing: false) { try await $0.setFlag(.seen, on: $1, enabled: true, silent: true) }
+        perform(list.filter { !$0.isRead }, announcing: false, engine: .markRead) { try await $0.setFlag(.seen, on: $1, enabled: true, silent: true) }
     }
 
-    private func cancelPendingRead() {
+    func cancelPendingRead() {
         readTask?.cancel()
         readTask = nil
         pendingReadID = nil
@@ -1674,7 +1947,7 @@ final class AppModel {
     }
 
     func setFlagged(_ list: [MessageSummary], _ flagged: Bool) {
-        perform(actionable(list)) { try await $0.setFlag(.flagged, on: $1, enabled: flagged) }
+        perform(actionable(list), engine: flagged ? .flag : .unflag) { try await $0.setFlag(.flagged, on: $1, enabled: flagged) }
     }
 
     private func rowVanishes(_ row: ListRow, removing ids: Set<String>) -> Bool {
@@ -1694,7 +1967,7 @@ final class AppModel {
         return advancePolicy == .next ? (forward ?? backward) : (backward ?? forward)
     }
 
-    private func removeFromList(_ list: [MessageSummary]) {
+    func removeFromList(_ list: [MessageSummary]) {
         let ids = Set(list.map(\.id))
         let current = rowCache
         let touchesSelection = !selectedMessageIDs.isEmpty
@@ -1710,14 +1983,14 @@ final class AppModel {
         let list = actionable(list)
         guard !list.isEmpty else { return }
         removeFromList(list)
-        perform(list) { try await $0.archive($1) }
+        perform(list, engine: .archive) { try await $0.archive($1) }
     }
 
     func delete(_ list: [MessageSummary]) {
         let list = actionable(list)
         guard !list.isEmpty else { return }
         removeFromList(list)
-        perform(list) { try await $0.delete($1) }
+        perform(list, engine: .delete) { try await $0.delete($1) }
     }
 
     @discardableResult
@@ -1730,7 +2003,7 @@ final class AppModel {
         guard !targets.isEmpty else { return false }
         moveTargets.record(folder: folder)
         removeFromList(targets)
-        perform(targets) { try await $0.move($1, to: folder) }
+        perform(targets, engine: EngineActionText.moveVerb(to: folder)) { try await $0.move($1, to: folder) }
         return true
     }
 
@@ -1769,7 +2042,7 @@ final class AppModel {
         let destinations = found
         guard !moving.isEmpty else { return }
         removeFromList(moving)
-        perform(moving) { syncer, group in
+        perform(moving, engine: role == .junk ? .junk : .notJunk) { syncer, group in
             guard let first = group.first, let destination = destinations[first.accountID] else { return [] }
             return try await syncer.move(group, to: destination)
         }
@@ -1785,8 +2058,12 @@ final class AppModel {
     func isMuted(_ thread: MessageThread) -> Bool { mutedRecord(for: thread) != nil }
 
     func mute(_ threads: [MessageThread]) {
-        let editable = threads.filter { MessageActions.allowsChanges($0.messages) }
-        if editable.isEmpty, !threads.isEmpty { statusText = AppModel.readOnlyNotice }
+        let onEngine = threads.filter { usesGmailEngine($0.latest.accountID) }
+        if !onEngine.isEmpty { muteOnEngine(onEngine, mute: true) }
+        let onIMAP = threads.filter { !usesGmailEngine($0.latest.accountID) }
+        guard !onIMAP.isEmpty else { return }
+        let editable = onIMAP.filter { MessageActions.allowsChanges($0.messages) }
+        if editable.isEmpty, !onIMAP.isEmpty { statusText = AppModel.readOnlyNotice }
         let threads = editable
         let records = threads.compactMap { muteRecord(for: $0) }
         guard !records.isEmpty else { return }
@@ -1808,6 +2085,10 @@ final class AppModel {
     }
 
     func toggleMute(_ thread: MessageThread) {
+        if usesGmailEngine(thread.latest.accountID), mutedRecord(for: thread) != nil {
+            muteOnEngine([thread], mute: false)
+            return
+        }
         if let record = mutedRecord(for: thread) { unmute(record) } else { mute([thread]) }
     }
 
@@ -1845,6 +2126,15 @@ final class AppModel {
 
     func createFolder(named name: String, in account: AccountInfo) {
         Task {
+            if usesGmailEngine(account.id) {
+                do {
+                    // labels.create; the sidebar takes the new folder from the engine.
+                    _ = try await coordinator.createFolder(named: name, in: account)
+                } catch {
+                    showAlert(for: error)
+                }
+                return
+            }
             guard let syncer = await coordinator.syncer(for: account.id) else {
                 showAlert("\(account.email) is not connected yet.")
                 return
@@ -1859,6 +2149,12 @@ final class AppModel {
     }
 
     func purgeEverything(in folder: FolderInfo) {
+        if usesGmailEngine(folder.accountID) {
+            // Every message the folder holds on Gmail, after the owner confirmed it, described by
+            // the view rather than by the rows loaded.
+            performOnEngineView(.deleteForever, in: ListView(scope: .folder(folder.id), conversations: false), accountID: folder.accountID)
+            return
+        }
         let doomed = messages.filter { $0.folderID == folder.id }
         guard !doomed.isEmpty else { return }
         removeFromList(doomed)
@@ -1880,7 +2176,12 @@ final class AppModel {
         }
     }
 
-    var canShowMore: Bool { messages.count < storedInSelection }
+    /// Every message of a Google account on the Gmail API is in its list already, so Load older is
+    /// never offered for one.
+    var canShowMore: Bool {
+        if case .folder(let id) = selection, let folder = folder(id), usesGmailEngine(folder.accountID) { return false }
+        return messages.count < storedInSelection
+    }
 
     func loadOlder() {
         if canShowMore {
@@ -1888,7 +2189,7 @@ final class AppModel {
             Task { await reloadMessages() }
             return
         }
-        guard case .folder(let id) = selection, let folder = folder(id) else { return }
+        guard case .folder(let id) = selection, let folder = folder(id), !usesGmailEngine(folder.accountID) else { return }
         Task {
             guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }
             statusText = "Loading older messages in \(folder.name)"
@@ -2004,6 +2305,13 @@ final class AppModel {
                 statusText = "Draft saved to \(folder(accountID: account.id, role: .drafts)?.name ?? "Drafts")"
             case is DraftsUnavailable:
                 drafts[id] = draft
+            case let deferred as GmailDraftDeferred:
+                // Kept on this Mac and shown in Drafts; it goes to Gmail by itself, and its copy
+                // here goes once Gmail has it.
+                drafts[id] = draft
+                statusText = deferred.sentence
+            case is GmailDraftDiscarded:
+                break
             case let error?:
                 drafts[id] = draft
                 showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
@@ -2015,6 +2323,10 @@ final class AppModel {
     /// soon as the new one is there, before the save counts as done, so that the message is
     /// replaced in Drafts rather than added beside itself, even by a quit just after.
     private func uploadDraft(_ draft: ComposeDraft, account: AccountInfo) async throws {
+        if usesGmailEngine(account.id) {
+            try await saveEngineDraft(draft, account: account, reason: .close)
+            return
+        }
         guard let folder = folder(accountID: account.id, role: .drafts), let syncer = await coordinator.syncer(for: account.id) else {
             throw DraftsUnavailable()
         }
@@ -2029,6 +2341,8 @@ final class AppModel {
     /// Drafts was renumbered the UID may name another draft, which is left alone, as is the copy
     /// of a draft kept by an earlier build that did not record its row.
     func purgeStoredDraft(_ draft: ComposeDraft) async {
+        // A Gmail draft reopened is updated in place, never saved beside itself.
+        guard !usesGmailEngine(draft.accountID) else { return }
         guard let opened = UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID) else { return }
         do {
             try await deleteStoredCopy(opened)
@@ -2041,6 +2355,10 @@ final class AppModel {
     /// returns once the account has taken the delete in hand, which it carries out even across a
     /// quit. A copy already gone, or of an account since removed, needs nothing more.
     func deleteStoredCopy(_ row: MessageSummary) async throws {
+        if usesGmailEngine(row.accountID) {
+            try await deleteEngineDraftCopy(row)
+            return
+        }
         guard accounts.contains(where: { $0.id == row.accountID }), let stored = await store.currentRow(of: row) else { return }
         guard let syncer = await coordinator.syncer(for: row.accountID) else { throw DraftsUnavailable() }
         removeFromList([stored])
@@ -2085,7 +2403,11 @@ final class AppModel {
         Task {
             do {
                 await outbox.setUndoWindow(TimeInterval(undoSendSeconds))
-                let item = try await outbox.enqueue(accountID: account.id, from: account.email, message: message, sendAt: draft.scheduledAt)
+                // A Google account on the Gmail API sends in the replied conversation, and its
+                // Gmail draft goes once Gmail confirms the send.
+                let link = await engineDraftLink(for: draft, account: account)
+                let item = try await outbox.enqueue(accountID: account.id, from: account.email, message: message, sendAt: draft.scheduledAt,
+                                                    gmailThreadID: link.thread, gmailDraftID: link.draftID)
                 await writeSidecar(draft, for: item.id)
                 await purgeStoredDraft(draft)
                 try? await contacts.recordUse(accountID: account.id, addresses: message.to + message.cc + message.bcc)
@@ -2102,7 +2424,14 @@ final class AppModel {
     /// or a draft has, and the Bcc recipients written down when FalconMail sent it, which Gmail's
     /// copy in Sent Mail does not name.
     func bcc(of message: MessageSummary, parsed: MIMEMessage?) -> [EmailAddress] {
-        SentBccStore.shown(header: parsed?.headers.first("Bcc"), recorded: outbox.sentBcc.bcc(forMessageID: message.messageID))
+        recipientLines(of: message, parsed: parsed).bcc
+    }
+
+    /// The To, Cc and Bcc lines of the reading pane, a message's window and its conversation,
+    /// for stored messages and Google messages on the Gmail API alike (see ReaderRecipients).
+    func recipientLines(of message: MessageSummary, parsed: MIMEMessage?) -> ReaderRecipients {
+        let sentBcc = outbox.sentBcc
+        return ReaderRecipients(message, parsed: parsed, recorded: { sentBcc.bcc(forMessageID: $0) })
     }
 
     var sendingSoonItems: [OutboxItem] {
@@ -2184,6 +2513,9 @@ final class AppModel {
         }, loginHint: loginHint)
         var account = accounts.first { $0.email.caseInsensitiveCompare(result.email) == .orderedSame }
             ?? AccountInfo.google(email: result.email, displayName: result.name)
+        // An account set up with an app password becomes a Google account, which the Gmail API
+        // serves; its IMAP store stays as it was.
+        account.provider = "google"
         account.authMethod = "oauth"
         accountsNeedingSignIn.remove(account.id)
         try await tokens.save(result.token, for: account.id)
@@ -2274,9 +2606,8 @@ final class AppModel {
     func runRulesNow() {
         Task {
             statusText = "Applying rules to inboxes"
-            for a in accounts {
-                guard let syncer = await coordinator.syncer(for: a.id) else { continue }
-                do { try await syncer.runRulesOnInbox() } catch { showAlert(for: error) }
+            for a in accounts where a.isEnabled {
+                do { try await coordinator.runRulesOnInbox(a) } catch { showAlert(for: error) }
             }
             statusText = "Rules applied"
         }
@@ -2291,9 +2622,9 @@ final class AppModel {
     /// after every message.
     func importFiles(_ urls: [URL], into folder: FolderInfo) {
         Task {
-            guard let syncer = await coordinator.syncer(for: folder.accountID) else { return }
-            // Each failure has reached diagnostics once already, from the engine or the import.
-            let outcome = await FileImport.run(urls, into: folder, syncer: syncer)
+            // Each failure has reached diagnostics once already, from the engine or the import. A
+            // Google account on the Gmail API imports with messages.import.
+            let outcome = await coordinator.importFiles(urls, into: folder)
             for failure in outcome.failures { showAlert(for: failure) }
             statusText = "Imported \(outcome.imported) messages into \(folder.name)"
         }
@@ -2333,12 +2664,17 @@ final class AppModel {
     }
 }
 
+extension Array where Element: Hashable {
+    /// The elements in their order, each once.
+    func uniqued() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
+    }
+}
+
 extension Outbox {
     func setUndoWindow(_ seconds: TimeInterval) {
         undoWindow = seconds
     }
 }
 
-/// The account's Drafts folder cannot be reached for now, as while it is being set up or its
-/// syncing is off: the message stays on this Mac, to be saved later, and nothing is said.
-private struct DraftsUnavailable: Error {}

@@ -128,17 +128,22 @@ struct AttachmentStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(Array(visible.enumerated()), id: \.element.id) { index, a in
+                    // Clicks, the menu and dragging go through AppKit (see AttachmentDragHandle),
+                    // so that dragging the chip drags the file and never the window.
                     AttachmentChip(attachment: a, selected: index == selectedIndex)
-                        .onTapGesture(count: 2) { select(index); open(a) }
-                        .onTapGesture { select(index) }
-                        .onDrag { AttachmentTempFiles.itemProvider(filename: a.filename, data: a.data) }
-                        .contextMenu {
-                            Button("Quick Look") { select(index); toggleQuickLook() }
-                            Button("Open") { open(a) }
-                            Button("Save As…") { saveAs(a) }
-                            Button("Save to Google Drive…") { driveTarget = a }
-                                .disabled(driveAccount == nil)
-                            Button("Copy") { copyToPasteboard(a) }
+                        .overlay {
+                            AttachmentDragHandle(
+                                filename: a.filename,
+                                content: .file({ url(for: a) }),
+                                onClick: { select(index) },
+                                onDoubleClick: { select(index); open(a) },
+                                menu: [
+                                    .init(title: "Quick Look") { select(index); toggleQuickLook() },
+                                    .init(title: "Open") { open(a) },
+                                    .init(title: "Save As…") { saveAs(a) },
+                                    .init(title: "Save to Google Drive…", enabled: driveAccount != nil) { driveTarget = a },
+                                    .init(title: "Copy") { copyToPasteboard(a) },
+                                ])
                         }
                 }
             }

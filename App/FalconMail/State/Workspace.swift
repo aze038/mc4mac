@@ -96,7 +96,9 @@ extension AppModel {
     func closeUnsent(_ id: UUID) {
         guard let draft = drafts[id] else { return }
         switch draft.closing {
-        case .closeQuietly: drafts[id] = nil
+        case .closeQuietly:
+            closeEngineDraftQuietly(draft)
+            drafts[id] = nil
         case .saveToDrafts: saveDraftToServer(id)
         }
     }
@@ -113,7 +115,13 @@ extension AppModel {
         let now = Date()
         // Only the message discarded last can be brought back, so Undo is over for the one before.
         if let earlier = discarded.held { unsentDrafts.undoEnded(earlier.draft.id) }
-        unsentDrafts.discard(id, copy: UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID), at: now)
+        if usesGmailEngine(draft.accountID) {
+            // Gmail's copy goes once Undo is over, and the Gmail engine keeps the marker for it.
+            unsentDrafts.discard(id, copy: nil, at: now)
+            discardEngineDraft(draft)
+        } else {
+            unsentDrafts.discard(id, copy: UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID), at: now)
+        }
         drafts[id] = nil
         let held = discarded.discard(draft, now: now)
         discardExpiry?.cancel()
@@ -140,6 +148,7 @@ extension AppModel {
             return
         }
         unsentDrafts.undoDiscard(draft)
+        undoEngineDiscard(draft)
         // Pictures from the web still empty boxes, as when it was discarded before they came, are
         // fetched again when they always load.
         openCompose(draft, origin: .undoneDiscard, fetchingPictures: loadRemoteImages)
@@ -181,6 +190,9 @@ extension AppModel {
 
     /// Whether the Message menu's commands that change mail have nothing they may change.
     var menuCannotChange: Bool {
+        // Above 1,000 rows selected in the table nothing is handed on as a part of the selection:
+        // the commands act on the whole view, or say to select fewer.
+        if case .selection = menuTarget, menuActsOnWholeTable { return false }
         let list = menuMessages
         return list.isEmpty || list.contains { $0.isServerOnly }
     }
@@ -196,7 +208,7 @@ extension AppModel {
 
     func menuReply(all: Bool) {
         switch menuTarget {
-        case .selection: replyToSelection(all: all)
+        case .selection: afterSelectionRead { [weak self] in self?.replyToSelection(all: all) }
         case .messageWindow(let id):
             guard let message = messageWindowRows[id] else { return }
             reply(to: message, all: all) { [weak self] in self?.closeOriginalAfterReplying(id) }
@@ -206,7 +218,7 @@ extension AppModel {
 
     func menuForward() {
         switch menuTarget {
-        case .selection: forwardSelection()
+        case .selection: afterSelectionRead { [weak self] in self?.forwardSelection() }
         case .messageWindow(let id):
             guard let message = messageWindowRows[id] else { return }
             forward(message) { [weak self] in self?.closeOriginalAfterReplying(id) }
@@ -230,7 +242,7 @@ extension AppModel {
     }
 
     func menuMoveAgain() {
-        guard case .messageWindow = menuTarget else { return moveToLastTarget() }
+        guard case .messageWindow = menuTarget else { return afterSelectionRead { [weak self] in self?.moveToLastTarget() } }
         guard let target = lastMoveTarget, let message = menuMessages.first else { return }
         guard message.accountID == target.accountID else { return menuMove() }
         menuMoves { move($0, to: target) }
@@ -276,7 +288,7 @@ extension AppModel {
             switch t {
             case .compose: continue
             case .message(let id):
-                if let m = try? await store.message(id: id) {
+                if let m = await message(id: id) {
                     tabTitles[t.id] = m.subject.isEmpty ? "(no subject)" : m.subject
                     kept.append(t)
                 }

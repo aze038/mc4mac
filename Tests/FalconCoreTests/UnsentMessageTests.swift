@@ -262,12 +262,19 @@ final class UnsentMessageTests: XCTestCase {
             folder.save(message)
         }
         message.text = "Plan v2"
-        let second = unsent.save(message) { folder.save($0) }
+        // The second save is held too, so what stays on this Mac is looked at before it can end,
+        // whichever task runs first once the first save is answered.
+        let secondAnswer = Answer()
+        let second = unsent.save(message) { message in
+            await secondAnswer.wait()
+            folder.save(message)
+        }
         await Task.yield()
         XCTAssertEqual(folder.saves, 0, "the newer save waits for the one under way")
         await answer.give()
         _ = await first.value
         XCTAssertEqual(filesOnThisMac(directory).count, 1, "the newer content stays on this Mac until it is saved")
+        await secondAnswer.give()
         _ = await second.value
         XCTAssertEqual(folder.copies["saved-2"], "Plan v2", "the newest content is saved last")
         XCTAssertEqual(filesOnThisMac(directory), [])

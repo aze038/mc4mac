@@ -81,12 +81,14 @@ final class GmailAPITests: XCTestCase {
     /// 50; `messages.send` 100; `messages.import` and `messages.insert` 25; `drafts.create`,
     /// `drafts.update`, `drafts.delete` and `drafts.list` 10, 15, 10 and 5; `batchDelete` 50.
     /// `users.getProfile`, `labels.list` and `settings.sendAs.list` are not in the design's list;
-    /// Google charges 1 for each.
+    /// Google charges 1 for each. `labels.delete` and `messages.untrash` cost 5, and
+    /// `messages.trash` 20 (§7.1).
     private static let googlePrices: [String: Int] = [
         "users.getProfile": 1, "labels.list": 1, "settings.sendAs.list": 1, "labels.get": 1, "labels.create": 5,
+        "labels.delete": 5,
         "history.list": 2, "messages.list": 5, "messages.get": 20, "threads.get": 40, "messages.attachments.get": 20,
         "messages.modify": 5, "messages.batchModify": 50, "messages.batchDelete": 50, "messages.send": 100,
-        "messages.import": 25, "messages.insert": 25,
+        "messages.trash": 20, "messages.untrash": 5, "messages.import": 25, "messages.insert": 25,
         "drafts.create": 10, "drafts.update": 15, "drafts.delete": 10, "drafts.list": 5,
     ]
 
@@ -95,10 +97,27 @@ final class GmailAPITests: XCTestCase {
         switch method {
         case .profile: return "users.getProfile"
         case .labelsList: return "labels.list"
+        case .labelsGet: return "labels.get"
+        case .labelsCreate: return "labels.create"
+        case .labelsDelete: return "labels.delete"
+        case .sendAsList: return "settings.sendAs.list"
         case .messagesList: return "messages.list"
         case .messagesGet: return "messages.get"
         case .attachmentsGet: return "messages.attachments.get"
-        case .sendAsList: return "settings.sendAs.list"
+        case .threadsGet: return "threads.get"
+        case .historyList: return "history.list"
+        case .messagesModify: return "messages.modify"
+        case .messagesBatchModify: return "messages.batchModify"
+        case .messagesBatchDelete: return "messages.batchDelete"
+        case .messagesTrash: return "messages.trash"
+        case .messagesUntrash: return "messages.untrash"
+        case .messagesSend: return "messages.send"
+        case .messagesImport: return "messages.import"
+        case .messagesInsert: return "messages.insert"
+        case .draftsCreate: return "drafts.create"
+        case .draftsUpdate: return "drafts.update"
+        case .draftsDelete: return "drafts.delete"
+        case .draftsList: return "drafts.list"
         }
     }
 

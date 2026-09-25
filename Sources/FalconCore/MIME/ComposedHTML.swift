@@ -17,13 +17,23 @@ public enum ComposedHTML {
         /// writes it; no picture's bytes are in it.
         public var plain: String
         public var pictures: [InlinePicture]
+        /// Signatures' own HTML still to be put in, by the word standing for each.
+        var placed: [String: String] = [:]
+
+        init(html: String, plain: String, pictures: [InlinePicture], placed: [String: String] = [:]) {
+            self.html = html
+            self.plain = plain
+            self.pictures = pictures
+            self.placed = placed
+        }
     }
 
     /// The same, from a body as a draft keeps it (see ComposedBody.stored).
     public static func content(rtf: Data?, rtfd: Data? = nil, plain: String, historyPlain: String, historyHTML: String,
-                               date: Date = Date(), font: ComposeFont = .outlook) -> Content {
+                               date: Date = Date(), font: ComposeFont = .outlook,
+                               signatures: [SignatureSource] = SignatureSources.all) -> Content {
         content(rich: ComposedBody.text(rtf: rtf, rtfd: rtfd), plain: plain, historyPlain: historyPlain, historyHTML: historyHTML,
-                date: date, font: font)
+                date: date, font: font, signatures: signatures)
     }
 
     /// The HTML part of a message from the composer: its rich text when it has any, else its
@@ -34,9 +44,38 @@ public enum ComposedHTML {
     /// Outlook sends it: once, as an inline part named image001.png and on, the HTML showing it
     /// by `cid:` at the size it is shown in the composer. `date` is when the message is put
     /// together, which each picture's Content-ID carries.
+    ///
+    /// A signature of `signatures` that the user's text still holds as it was put in goes out as
+    /// its own HTML, exactly as its owner made it, inside a div of its own where its text was,
+    /// only each picture's src made the cid: of the picture sent for it (see SignatureSource).
+    /// Nothing else here, neither the writer nor CompactHTML nor any recolouring, touches it.
     public static func content(rich: NSAttributedString?, plain: String, historyPlain: String, historyHTML: String,
-                               date: Date = Date(), font: ComposeFont = .outlook) -> Content {
-        var pictures = InlinePictures.Collector(date: date)
+                               date: Date = Date(), font: ComposeFont = .outlook,
+                               signatures: [SignatureSource] = SignatureSources.all) -> Content {
+        var content = assembled(rich: rich, plain: plain, historyPlain: historyPlain, historyHTML: historyHTML, date: date, font: font,
+                                signatures: signatures)
+        for (word, html) in content.placed {
+            content.html = placing(html, for: word, in: content.html)
+        }
+        content.placed = [:]
+        return content
+    }
+
+    /// `html` with the paragraph that holds only `word` replaced by `signature` in a div of its
+    /// own, as Gmail places a signature, or, where the writer put the word elsewhere, the word.
+    static func placing(_ signature: String, for word: String, in html: String) -> String {
+        let pattern = "<p\\b[^>]*>\\s*(?:<(?:span|font|b|i|u|strong|em)\\b[^>]*>\\s*)*\(word)\\s*(?:</(?:span|font|b|i|u|strong|em)>\\s*)*</p>"
+        let block = "<div>\(signature)</div>"
+        if let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+           let match = expression.firstMatch(in: html, range: NSRange(location: 0, length: (html as NSString).length)) {
+            return (html as NSString).replacingCharacters(in: match.range, with: block)
+        }
+        return html.replacingOccurrences(of: word, with: block)
+    }
+
+    private static func assembled(rich: NSAttributedString?, plain: String, historyPlain: String, historyHTML: String,
+                                  date: Date, font: ComposeFont, signatures: [SignatureSource]) -> Content {
+        var pictures = InlinePictures.Collector(date: date, signatures: signatures)
         let plainOwn = historyHTML.isEmpty ? nil
             : ComposedBody.historyStart(in: plain, history: historyPlain).map { (plain as NSString).substring(to: $0) }
         // The plain text part sets the heading off with Outlook's line of underscores, as the
@@ -55,16 +94,17 @@ public enum ComposedHTML {
                     pictures = collected
                     let history = InlinePictures.sendingDataURIs(in: historyHTML, into: &pictures)
                     return Content(html: document(own: CompactHTML.compact(own.html, font: font), history: history, font: font),
-                                   plain: plainText(plainPart, marks: own.marks), pictures: pictures.pictures)
+                                   plain: plainText(plainPart, marks: own.marks), pictures: pictures.pictures, placed: pictures.placed)
                 }
             }
             if !historyHTML.isEmpty, let edited = editedReply(rich, historyPlain: historyPlain, font: font, pictures: pictures) {
-                return Content(html: edited.html, plain: plainText(plainPart, marks: edited.marks), pictures: edited.pictures.pictures)
+                return Content(html: edited.html, plain: plainText(plainPart, marks: edited.marks), pictures: edited.pictures.pictures,
+                               placed: edited.pictures.placed)
             }
             var collected = pictures
             if let whole = html(from: rich, pictures: &collected) {
                 return Content(html: document(own: CompactHTML.compact(whole.html, font: font), history: "", font: font),
-                               plain: plainText(plainPart, marks: whole.marks), pictures: collected.pictures)
+                               plain: plainText(plainPart, marks: whole.marks), pictures: collected.pictures, placed: collected.placed)
             }
         }
         if let plainOwn {
@@ -175,6 +215,47 @@ public enum ComposedHTML {
     /// no text holds, which keeps the picture's place and formatting, a link on it included, and
     /// that word is then replaced by the picture's tag.
     static func html(from text: NSAttributedString, pictures: inout InlinePictures.Collector) -> (html: String, marks: [String])? {
+        for found in SignatureSources.found(pictures.signatures, in: text) {
+            var collected = pictures
+            if let sent = SignatureSource.sending(found.source.html, shown: text.attributedSubstring(from: found.range), into: &collected) {
+                let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                let word = "FalconMailSignature\(nonce)E"
+                let marked = NSMutableAttributedString(attributedString: text)
+                marked.replaceCharacters(in: found.range, with: standIn(word, for: found.range, in: text))
+                collected.placed[word] = sent.html
+                // The rest of the text is written as always, a signature it holds a second time
+                // included.
+                if let rest = html(from: marked, pictures: &collected) {
+                    pictures = collected
+                    let before = InlinePictures.attachmentLocations(in: text).filter { $0.0 < found.range.location }.count
+                    let marks = Array(rest.marks.prefix(before)) + sent.marks + Array(rest.marks.dropFirst(before))
+                    return (rest.html, marks)
+                }
+            }
+        }
+        return writtenHTML(from: text, pictures: &pictures)
+    }
+
+    /// The paragraph that stands for a signature in the text given to the writer: `word` alone,
+    /// in the formatting the signature starts with less its links, pictures and own tables, and
+    /// ending as the signature's text ends.
+    private static func standIn(_ word: String, for range: NSRange, in text: NSAttributedString) -> NSAttributedString {
+        var attributes = text.attributes(at: range.location, effectiveRange: nil)
+        attributes[.link] = nil
+        attributes[.attachment] = nil
+        let outer = range.location > 0
+            ? (text.attribute(.paragraphStyle, at: range.location - 1, effectiveRange: nil) as? NSParagraphStyle)?.textBlocks ?? [] : []
+        if let style = (attributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle {
+            var kept: [NSTextBlock] = []
+            for (mine, theirs) in zip(style.textBlocks, outer) where mine === theirs { kept.append(mine) }
+            style.textBlocks = kept
+            attributes[.paragraphStyle] = style
+        }
+        let ends = (text.string as NSString).substring(with: range).hasSuffix("\n")
+        return NSAttributedString(string: word + (ends ? "\n" : ""), attributes: attributes)
+    }
+
+    private static func writtenHTML(from text: NSAttributedString, pictures: inout InlinePictures.Collector) -> (html: String, marks: [String])? {
         let located = InlinePictures.attachmentLocations(in: text)
         guard !located.isEmpty else { return html(from: text).map { ($0, []) } }
         let marked = NSMutableAttributedString(attributedString: text)

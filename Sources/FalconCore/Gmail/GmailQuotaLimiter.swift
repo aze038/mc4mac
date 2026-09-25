@@ -1,21 +1,60 @@
 import Foundation
 
-/// The Gmail API calls FalconMail makes, with the quota units Google charges for each.
+/// The Gmail API calls FalconMail makes, with the quota units each costs. The prices are Google's
+/// for projects created from 1 May 2026, which pay four times the old price for reading a
+/// message, a thread or an attachment.
 public enum GmailMethod: String, Sendable, CaseIterable, Hashable {
-    case profile, labelsList, messagesList, messagesGet, attachmentsGet, sendAsList
+    case profile, labelsList, labelsGet, labelsCreate, labelsDelete, sendAsList
+    case messagesList, messagesGet, attachmentsGet, threadsGet, historyList
+    case messagesModify, messagesBatchModify, messagesBatchDelete, messagesTrash, messagesUntrash
+    case messagesSend, messagesImport, messagesInsert
+    case draftsCreate, draftsUpdate, draftsDelete, draftsList
 
     public var units: Int {
         switch self {
-        case .profile, .labelsList, .sendAsList: return 1
-        case .messagesList: return 5
-        // An attachment costs as much as the message itself: Google raised it from 5 to 20.
-        case .messagesGet, .attachmentsGet: return 20
+        case .profile, .labelsList, .labelsGet, .sendAsList: return 1
+        case .historyList: return 2
+        case .labelsCreate, .labelsDelete, .messagesList, .messagesModify, .messagesUntrash, .draftsList: return 5
+        case .draftsCreate, .draftsDelete: return 10
+        case .draftsUpdate: return 15
+        case .messagesGet, .attachmentsGet, .messagesTrash: return 20
+        case .messagesImport, .messagesInsert: return 25
+        case .threadsGet: return 40
+        case .messagesBatchModify, .messagesBatchDelete: return 50
+        case .messagesSend: return 100
         }
     }
 }
 
-/// Keeps one account's Gmail API use within a rolling minute's budget. Google allows 6,000 units
-/// a minute per user; FalconMail stays at half that so a busy moment never nears suspension.
+extension GmailMethod {
+    /// Which way a call's bytes mostly go, which decides the pauses and byte budgets it answers to.
+    public enum Direction: Sendable, Hashable {
+        /// Reads, which Google's download allowance counts.
+        case download
+        /// Whole messages uploaded, which Google's upload allowance counts.
+        case upload
+        /// Label changes and deletes: a few bytes each way.
+        case change
+    }
+
+    public var direction: Direction {
+        switch self {
+        case .messagesSend, .messagesImport, .messagesInsert, .draftsCreate, .draftsUpdate:
+            return .upload
+        case .labelsCreate, .labelsDelete, .messagesModify, .messagesBatchModify, .messagesBatchDelete,
+             .messagesTrash, .messagesUntrash, .draftsDelete:
+            return .change
+        case .profile, .labelsList, .labelsGet, .sendAsList, .messagesList, .messagesGet, .attachmentsGet,
+             .threadsGet, .historyList, .draftsList:
+            return .download
+        }
+    }
+}
+
+/// Keeps one account's Gmail API use within a rolling minute's budget, for v1.10.0's search and
+/// opening of messages found only on Gmail. The Gmail engine books through `GmailBudget` instead.
+/// Google allows 6,000 units a minute per user; FalconMail stays at half that so a busy moment
+/// never nears suspension.
 /// A rate refusal halves the budget, which then recovers by a tenth of the full budget a minute,
 /// and Retry-After holds every call back until it has passed. A used-up daily quota or a
 /// disabled API refuses every call at once, without asking Google, until it can have changed.
@@ -35,9 +74,7 @@ public actor GmailQuotaLimiter {
 
     public init(unitsPerMinute: Int = GmailQuotaLimiter.defaultUnitsPerMinute,
                 now: @escaping @Sendable () -> Date = { Date() },
-                sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
-                    try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                }) {
+                sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
         self.unitsPerMinute = unitsPerMinute
         self.now = now
         self.sleep = sleep

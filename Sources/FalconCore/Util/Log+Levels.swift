@@ -142,6 +142,7 @@ extension AccountHealth {
         case .online: return "online"
         case .offline: return "offline"
         case .imapPaused: return "imapPaused"
+        case .apiPaused: return "apiPaused"
         case .needsSignIn: return "needsSignIn"
         case .blocked: return "blocked"
         }

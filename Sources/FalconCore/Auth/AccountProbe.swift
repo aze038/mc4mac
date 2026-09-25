@@ -53,8 +53,27 @@ public struct AccountProbeFailure: Error, LocalizedError, Sendable {
 }
 
 public enum AccountProbe {
-    public static func test(_ s: CustomServerSettings) async throws {
-        let imap = IMAPClient(host: s.imapHost, port: s.imapPort)
+    /// What a new account set up on Google's own IMAP or SMTP servers is told. Google accounts are
+    /// signed in with Google and use the Gmail API, never IMAP or SMTP, so none is checked there.
+    public static let useGoogleSignIn = "Gmail and Google Workspace accounts are added with Sign in with Google, which uses the Gmail API "
+        + "rather than IMAP. Choose Google instead."
+
+    /// Whether the settings name Google's own IMAP or SMTP servers.
+    public static func namesGoogleServers(_ s: CustomServerSettings) -> Bool {
+        TransportGuard.isGoogleHost(s.imapHost) || TransportGuard.isGoogleHost(s.smtpHost)
+    }
+
+    /// Signs in to the servers once to see that the settings work. A new account set up on
+    /// Google's servers is refused before anything is sent: it is added with Sign in with Google
+    /// instead. `existingAccount` is for a password renewed on an account added that way before
+    /// this build, which stays on IMAP until the owner signs in with Google.
+    public static func test(_ s: CustomServerSettings, existingAccount: Bool = false) async throws {
+        if namesGoogleServers(s), !existingAccount {
+            Log.info("probe", "\(s.imapHost): not checked: a Google account is added with Sign in with Google")
+            throw AccountProbeFailure(failure: MailServiceError(kind: .local, email: s.username, isGoogle: true, detail: useGoogleSignIn),
+                                      message: useGoogleSignIn, logMessage: useGoogleSignIn)
+        }
+        let imap = IMAPClient(host: s.imapHost, port: s.imapPort, user: s.username)
         do {
             try await imap.connect()
             try await imap.login(user: s.username, password: s.password)
@@ -62,7 +81,7 @@ public enum AccountProbe {
         } catch {
             throw failure(error, settings: s, "Incoming mail (IMAP \(s.imapHost):\(s.imapPort))")
         }
-        let smtp = SMTPClient(host: s.smtpHost, port: s.smtpPort)
+        let smtp = SMTPClient(host: s.smtpHost, port: s.smtpPort, user: s.username)
         do {
             try await smtp.connect()
             try await smtp.authenticatePlain(user: s.username, password: s.password)

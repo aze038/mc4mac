@@ -32,21 +32,26 @@ public struct SMTPServerError: Error, LocalizedError, Sendable, Equatable {
 public actor SMTPClient {
     public let host: String
     public let port: UInt16
+    /// The user name it will sign in as, which `TransportGuard` is asked about before it connects.
+    public let user: String?
     /// Always TLS to a mail server; plain TCP only for the tests' server on loopback.
     private let tls: Bool
     private var connection: StreamConnection?
 
-    public init(host: String, port: UInt16 = 465) {
-        self.init(host: host, port: port, tls: true)
+    public init(host: String, port: UInt16 = 465, user: String? = nil) {
+        self.init(host: host, port: port, user: user, tls: true)
     }
 
-    init(host: String, port: UInt16, tls: Bool) {
+    init(host: String, port: UInt16, user: String? = nil, tls: Bool) {
         self.host = host
         self.port = port
+        self.user = user
         self.tls = tls
     }
 
     public func connect() async throws {
+        // A Google account on the Gmail API never sends by SMTP (§8.1, §12.5).
+        try TransportGuard.shared.check(.smtp, host: host, user: user)
         let c = StreamConnection(host: host, port: port, tls: tls)
         try await c.connect()
         connection = c

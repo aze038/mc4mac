@@ -1010,3 +1010,60 @@ struct TrustList: View {
         }
     }
 }
+
+/// Settings → Accounts: whether a Google account uses the Gmail API, which is on for every
+/// account signed in with Google. Turning it off returns the account to IMAP and SMTP, as
+/// FalconMail 1.10 used them; changes still waiting for Gmail are sent first, and while they
+/// cannot be the switch stays on and says why.
+struct GmailEngineSection: View {
+    @Environment(AppModel.self) private var model
+    let account: AccountInfo
+    @State private var busy = false
+    /// "Show All Gmail Labels", as the sidebar's account menu sets it too.
+    @AppStorage private var allLabels: Bool
+
+    init(account: AccountInfo) {
+        self.account = account
+        _allLabels = AppStorage(wrappedValue: false, GmailLabelsShown.key(account.id))
+    }
+
+    var body: some View {
+        if GmailEngineSwitch.isEligible(account) {
+            Section("Gmail") {
+                Toggle("Use the Gmail API (recommended)", isOn: Binding(get: { model.gmailEngineChoice(for: account) }, set: { on in
+                    busy = true
+                    Task {
+                        await model.setGmailEngine(on, for: account)
+                        busy = false
+                    }
+                }))
+                .disabled(busy)
+                Text(model.gmailEngineChoice(for: account)
+                     ? "FalconMail reaches this account through the Gmail API only, never IMAP or SMTP, so Gmail has no reason to slow it down or pause it. Only the newest 1,000 messages are kept on this Mac; every message is in the list."
+                     : "This account uses IMAP and SMTP, as FalconMail 1.10 did. Gmail may slow down or pause IMAP after a lot of mail is downloaded.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let notice = model.engineSwitchNotices[account.id] {
+                    Text(notice).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                if model.gmailEngineChoice(for: account) {
+                    Toggle("Show All Gmail Labels", isOn: Binding(get: { allLabels }, set: { GmailLabelsShown.set($0, for: account.id) }))
+                    Text("Labels Gmail hides from its own list are shown as folders too. No message changes.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        } else if GmailEngineSwitch.usesGoogleIMAP(account) {
+            Section("Gmail") {
+                Text(GmailEngineSwitch.googleIMAPNotice(account))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button("Sign in with Google") {
+                    busy = true
+                    Task {
+                        do { try await model.addGoogleAccount(loginHint: account.email) } catch { model.showAlert(for: error) }
+                        busy = false
+                    }
+                }
+                .disabled(busy)
+            }
+        }
+    }
+}
