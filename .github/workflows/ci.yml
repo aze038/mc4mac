@@ -4,7 +4,17 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # A push only builds: the app and the tests are compiled, nothing is run, so a mistake shows in
+  # a couple of minutes. The tests run when asked for, once a piece of work is finished:
+  #   gh workflow run CI -r <branch> -f tests=google   (everything but the IMAP-only suites)
+  #   gh workflow run CI -r <branch> -f tests=all
   workflow_dispatch:
+    inputs:
+      tests:
+        description: "Tests to run: none, google (skips the IMAP-only suites) or all"
+        default: google
+        type: choice
+        options: [none, google, all]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -36,12 +46,25 @@ jobs:
         # Adds the Google URL scheme beside the mailto one project.yml declares, never in its place.
         run: scripts/embed-google-client.sh App/FalconMail/Info.plist
 
-      - name: FalconCore tests
+      - name: Compile FalconCore and its tests
+        if: github.event_name != 'workflow_dispatch' || inputs.tests == 'none'
         run: |
           set -o pipefail
-          swift test 2>&1 | tee swift-test.log
+          swift build --build-tests 2>&1 | tee swift-test.log | grep -E "error:|warning: unre|Compiling|Build complete" || true
+          grep -q "Build complete" swift-test.log
+
+      - name: FalconCore tests
+        if: github.event_name == 'workflow_dispatch' && inputs.tests != 'none'
+        env:
+          # IMAP stays for later; while the work is on Google accounts its own suites are left out.
+          IMAP_ONLY: 'FalconCoreTests\.(CatchUpTests|FlagRescanTests|IMAPTests|FakeIMAPServerTests|ConnectionTests|OpConnectionTests|FolderListTests|TrafficTests)/'
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.tests }}" = "all" ]; then swift test 2>&1 | tee swift-test.log
+          else swift test --skip "$IMAP_ONLY" 2>&1 | tee swift-test.log; fi
 
       - name: Diagnostics backend and tool tests
+        if: github.event_name == 'workflow_dispatch' && inputs.tests != 'none'
         run: |
           set -o pipefail
           command -v node >/dev/null || brew install node
