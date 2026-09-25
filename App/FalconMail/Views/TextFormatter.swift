@@ -302,6 +302,8 @@ final class TextFormatter {
 
     func insertSignature(_ signature: Signature) {
         guard let editor, !signature.isBlank else { return }
+        // Its own HTML is what is sent while the message still holds it unedited.
+        SignatureSources.register(signature.source)
         ComposedBody.insertSignature(signature.block, into: editor, before: history)
     }
 

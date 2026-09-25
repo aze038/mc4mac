@@ -54,10 +54,13 @@ public struct SignatureCandidate: Identifiable, Sendable, Equatable {
     /// AppKit reads HTML through WebKit, which must be on the main thread.
     @MainActor
     public func signature(remote: [String: Data] = [:], attributes: [NSAttributedString.Key: Any]) -> Signature? {
-        guard let text = Signature.text(fromHTML: html, parts: pictures, pictures: remote, attributes: attributes),
+        // HTML that can be sent as it is, as Gmail's is, is read as the fragment that is sent,
+        // exactly as the same HTML pasted into the signature editor is.
+        let source = SignatureSource.sendable(html)
+        guard let text = Signature.text(fromHTML: source ?? html, parts: pictures, pictures: remote, attributes: attributes),
               text.length > 0 else { return nil }
         var signature = Signature(name: name)
-        signature.setText(text, plainIn: attributes)
+        signature.setText(text, html: source, plainIn: attributes)
         return signature.isBlank ? nil : signature
     }
 
@@ -176,6 +179,7 @@ extension SignatureBook {
                       let index = signatures.firstIndex(where: { $0.id == existing.id }) {
                 signatures[index].plain = incoming.plain
                 signatures[index].rich = incoming.rich
+                signatures[index].html = incoming.html
                 placed = existing.id
                 if !outcome.replaced.contains(placed) { outcome.replaced.append(placed) }
                 if !outcome.imported.contains(placed) { outcome.imported.append(placed) }

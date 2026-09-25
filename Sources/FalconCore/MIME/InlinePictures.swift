@@ -161,9 +161,15 @@ public enum InlinePictures {
         let stamp: String
         private(set) var pictures: [InlinePicture] = []
         private var byContents: [Data: Int] = [:]
+        /// The signatures whose own HTML is sent in place of their text wherever the text is
+        /// found unedited (see SignatureSource).
+        var signatures: [SignatureSource] = []
+        /// That HTML, by the word that stands for it in what the writer made until it is put in.
+        var placed: [String: String] = [:]
 
-        init(date: Date) {
+        init(date: Date, signatures: [SignatureSource] = []) {
             stamp = InlinePictures.stamp(for: date)
+            self.signatures = signatures
         }
 
         mutating func add(_ data: Data, _ format: Format) -> InlinePicture {

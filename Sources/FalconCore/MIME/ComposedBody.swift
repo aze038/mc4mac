@@ -136,6 +136,7 @@ public enum ComposedBody {
     public static func opening(lead: String, signature: Signature?, tail: String,
                                attributes: [NSAttributedString.Key: Any]) -> (plain: String, rich: NSAttributedString?) {
         guard let signature, !signature.isBlank else { return (lead + tail, nil) }
+        SignatureSources.register(signature.source)
         guard signature.rich != nil else { return (lead + signature.block.string + tail, nil) }
         let text = NSMutableAttributedString(string: lead)
         text.append(signature.block)
@@ -151,7 +152,10 @@ public enum ComposedBody {
     public static func opening(lead: String, signature: Signature?, quote: NSAttributedString,
                                attributes: [NSAttributedString.Key: Any]) -> (plain: String, rich: NSAttributedString) {
         let text = NSMutableAttributedString(string: lead)
-        if let signature, !signature.isBlank { text.append(signature.block) }
+        if let signature, !signature.isBlank {
+            SignatureSources.register(signature.source)
+            text.append(signature.block)
+        }
         text.append(quote)
         let rich = filling(text, with: attributes)
         return (rich.string, rich)
