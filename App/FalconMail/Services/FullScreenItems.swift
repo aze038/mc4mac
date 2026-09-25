@@ -18,6 +18,7 @@ final class FullScreenItems {
     private var deck = FullScreenDeck()
     private var taken: [PopupKey: Taken] = [:]
     private var hostObservers: [NSObjectProtocol] = []
+    private var keyMonitor: Any?
 
     /// What a window taken in was, to be given back when full screen ends.
     private struct Taken {
@@ -51,6 +52,44 @@ final class FullScreenItems {
                                                                     queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.stopFollowingHost() }
         })
+        // Command-` goes round the mailbox window and the windows over it, whether or not macOS
+        // counts a child window among those it goes round.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, FullScreenItems.isCycleKey(event) else { return event }
+            let backwards = event.modifierFlags.contains(.shift)
+            return MainActor.assumeIsolated { self.cycle(backwards: backwards) } ? nil : event
+        }
+    }
+
+    /// Command-`, or Command-Shift-`, and nothing else held.
+    private static func isCycleKey(_ event: NSEvent) -> Bool {
+        let held = event.modifierFlags.intersection([.command, .option, .control])
+        guard held == .command else { return false }
+        return event.keyCode == 50 || ["`", "~"].contains(event.charactersIgnoringModifiers ?? "")
+    }
+
+    /// Brings the next window round to the front. False when the window in front is neither the
+    /// mailbox window nor one over it, or when nothing is over it, so that macOS goes round as
+    /// it always does.
+    private func cycle(backwards: Bool) -> Bool {
+        guard let host, let front = NSApp.keyWindow else { return false }
+        let current: FullScreenDeck.Stop
+        if front === host {
+            current = .mailbox
+        } else if let key = taken.first(where: { $0.value.window.window === front })?.key, deck.showing.contains(key) {
+            current = .window(key)
+        } else {
+            return false
+        }
+        let window: NSWindow?
+        switch deck.next(after: current, backwards: backwards) {
+        case nil: return false
+        case .mailbox?: window = host
+        case .window(let key)?: window = taken[key]?.window.window
+        }
+        guard let window else { return false }
+        window.makeKeyAndOrderFront(nil)
+        return true
     }
 
     private func stopFollowingHost() {
@@ -132,6 +171,8 @@ final class FullScreenItems {
             window.setFrame(frame, display: window.isVisible, animate: false)
         }
         stopFollowingHost()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
         taken = [:]
         deck = FullScreenDeck()
         self.host = nil

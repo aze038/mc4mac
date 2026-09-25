@@ -104,6 +104,22 @@ public struct FullScreenDeck: Equatable, Sendable {
         recency.removeAll { $0 == key }
     }
 
+    /// A window Command-` goes round: the mailbox window, or one over it.
+    public enum Stop: Equatable, Sendable {
+        case mailbox
+        case window(PopupKey)
+    }
+
+    /// The window Command-` brings to the front after `current`: the mailbox window, then those
+    /// showing left to right, and round again; backwards with Shift. Nil when nothing but the
+    /// mailbox window shows, so that it is left to macOS.
+    public func next(after current: Stop, backwards: Bool) -> Stop? {
+        guard !showing.isEmpty else { return nil }
+        let ring = [Stop.mailbox] + showing.map(Stop.window)
+        let i = ring.firstIndex(of: current) ?? 0
+        return ring[(i + (backwards ? ring.count - 1 : 1)) % ring.count]
+    }
+
     /// Sends to their tabs, least recently in front first, the windows beyond `capacity`, as when
     /// the screen narrows. The one in front stays whatever the capacity.
     @discardableResult

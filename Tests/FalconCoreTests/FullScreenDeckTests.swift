@@ -135,6 +135,40 @@ final class FullScreenDeckTests: XCTestCase {
         XCTAssertEqual(deck.fit(capacity: 0), [], "the one in front always stays")
     }
 
+    // MARK: Command-`
+
+    func testCommandBacktickGoesFromTheMailboxWindowThroughThoseShowingLeftToRightAndRound() {
+        var deck = FullScreenDeck()
+        deck.show(a, capacity: 2)
+        deck.show(draft, capacity: 2)
+        XCTAssertEqual(deck.next(after: .mailbox, backwards: false), .window(a))
+        XCTAssertEqual(deck.next(after: .window(a), backwards: false), .window(draft))
+        XCTAssertEqual(deck.next(after: .window(draft), backwards: false), .mailbox)
+    }
+
+    func testWithShiftItGoesTheOtherWay() {
+        var deck = FullScreenDeck()
+        deck.show(a, capacity: 2)
+        deck.show(draft, capacity: 2)
+        XCTAssertEqual(deck.next(after: .mailbox, backwards: true), .window(draft))
+        XCTAssertEqual(deck.next(after: .window(draft), backwards: true), .window(a))
+        XCTAssertEqual(deck.next(after: .window(a), backwards: true), .mailbox)
+    }
+
+    func testWithNothingShowingCommandBacktickIsLeftToMacOS() {
+        XCTAssertNil(FullScreenDeck().next(after: .mailbox, backwards: false))
+        var deck = FullScreenDeck()
+        deck.show(a, capacity: 2)
+        deck.hide(a)
+        XCTAssertNil(deck.next(after: .mailbox, backwards: true))
+    }
+
+    func testFromAWindowNotShowingItGoesOnFromTheMailboxWindow() {
+        var deck = FullScreenDeck()
+        deck.show(a, capacity: 2)
+        XCTAssertEqual(deck.next(after: .window(b), backwards: false), .window(a))
+    }
+
     // MARK: Minimising and bringing back, with the tray
 
     /// The tray and the windows showing, kept together as the window tray keeps them.
