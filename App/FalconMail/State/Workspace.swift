@@ -64,6 +64,26 @@ extension AppModel {
         if let t = activeTab { closeTabAsked(t) }
     }
 
+    /// Whether Command-W has something to close: the message or compose window in front, or the
+    /// tab showing in the mailbox window in front.
+    var canCloseFront: Bool {
+        switch frontWindow {
+        case .popup: return true
+        case .mailbox: return activeTab != nil
+        case .other: return false
+        }
+    }
+
+    /// Command-W. A window in front that is not FalconMail's own, as Settings is, closes the way
+    /// every window does, through the File menu.
+    func closeFront() {
+        switch frontWindow {
+        case .popup(let key): WindowTray.shared.performClose(key)
+        case .mailbox: closeActiveTab()
+        case .other: break
+        }
+    }
+
     /// Closes `tab` as the user asked to: a message not yet sent closes as Outlook closes one,
     /// with its alert over the mailbox window when there is something to lose.
     func closeTabAsked(_ tab: WorkspaceTab) {

@@ -52,6 +52,7 @@ struct MainWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .falconExport)) { _ in exportSelected() }
         .onChange(of: model.selectedMessageIDs) { _, _ in model.saveSession() }
         .onChange(of: model.openMessageWindows) { _, _ in model.saveSession() }
+        .onReceive(WindowTray.shared.$book.removeDuplicates()) { _ in model.saveSession() }
         .onChange(of: model.drafts.count) { _, _ in model.saveSession() }
     }
 

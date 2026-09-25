@@ -29,7 +29,9 @@ struct FalconMailApp: App {
                 .environmentObject(model.updates)
                 .task {
                     await model.bootstrap()
-                    for id in model.windowsToRestore { openWindow(value: id) }
+                    let restored = model.messageWindowsToRestore
+                    for id in restored.open { openWindow(value: id) }
+                    await model.shelveMessageWindows(restored.tray)
                     #if DEBUG
                     if ComposeRibbonDemo.isRequested { openWindow(value: ComposeRibbonDemo.draft(in: model)) }
                     #endif
@@ -37,6 +39,13 @@ struct FalconMailApp: App {
                 .onAppear {
                     model.openMainWindow = { openWindow(id: FalconMailApp.mailboxWindowID) }
                     model.openComposeWindow = { openWindow(value: $0) }
+                    WindowTray.shared.openWindow = { key in
+                        switch key {
+                        case .message(let id): openWindow(value: id)
+                        case .compose(let id): openWindow(value: id)
+                        }
+                    }
+                    WindowTray.shared.frontChanged = { model.frontWindow = $0 }
                     appDelegate.model = model
                     SettingsWindows.shared.model = model
                     SettingsWindows.shared.updates = model.updates
@@ -141,8 +150,13 @@ struct FalconMailApp: App {
     @ViewBuilder private var windowCommands: some View {
         Button("Open") { openSelectedInTab() }.keyboardShortcut("o", modifiers: .command)
         Button("Open in Separate Window") { openSelectedInWindow() }.keyboardShortcut("o", modifiers: [.command, .shift])
-        Button("Close Tab") { model.closeActiveTab() }.keyboardShortcut("w", modifiers: .command).disabled(model.activeTab == nil)
-        if let tab = model.activeTab {
+        // Command-W and Command-M act on the window in front: a message or compose window of its
+        // own closes, or goes into the tray through Minimize in the Window menu, and only in the
+        // mailbox window do they close or minimise the tab showing there.
+        Button(model.frontWindow.popup == nil ? "Close Tab" : "Close Window") { model.closeFront() }
+            .keyboardShortcut("w", modifiers: .command)
+            .disabled(!model.canCloseFront)
+        if model.frontWindow == .mailbox, let tab = model.activeTab {
             Button("Minimize Tab") { model.minimizeTab(tab) }.keyboardShortcut("m", modifiers: .command)
         }
     }

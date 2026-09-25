@@ -194,6 +194,8 @@ final class AppModel {
     @ObservationIgnored private var contactAddressCache = Set<String>()
     @ObservationIgnored private var myAddressCache = Set<String>()
     var openMessageWindows = Set<String>()
+    /// Which window is in front, for the commands that act on it.
+    var frontWindow = FrontWindow.mailbox
     var tabs: [WorkspaceTab] = []
     var minimizedTabs: [WorkspaceTab] = []
     var activeTab: WorkspaceTab?
@@ -551,11 +553,23 @@ final class AppModel {
         showAlert(error.localizedDescription, names: Log.names(heldBy: error))
     }
 
-    var windowsToRestore: [String] {
+    /// The message windows the last session left open, read once at launch: those to open again
+    /// and those to put back into the tray. Drafts that no window holds go to Drafts now.
+    var messageWindowsToRestore: (open: [String], tray: [String]) {
         let state = restoredState
         restoredState = nil
         saveLeftoverDrafts()
-        return state?.openMessageWindows ?? []
+        return WindowTrayBook.restoring(messageWindows: state?.openMessageWindows ?? [], inTray: state?.trayMessageWindows)
+    }
+
+    /// Puts the messages that were in the tray at the last quit back into it, each under its
+    /// subject, without opening their windows until they are taken out. One no longer stored is
+    /// left out.
+    func shelveMessageWindows(_ ids: [String]) async {
+        for id in ids {
+            guard let message = await message(id: id) else { continue }
+            WindowTray.shared.shelve(.message(id), title: message.subject.isEmpty ? "(no subject)" : message.subject)
+        }
     }
 
     func currentSessionState() -> SessionState {
@@ -565,8 +579,10 @@ final class AppModel {
             if case .message(let id) = tab { return stored(id) }
             return true
         }
+        let windows = WindowTray.shared.book.messageWindows
         return SessionState(selection: selection, selectedMessageIDs: selectedMessageIDs.filter(stored), searchText: searchText,
-                            openMessageWindows: openMessageWindows.filter(stored), openDraftIDs: Array(drafts.keys),
+                            openMessageWindows: windows.all.filter(stored), trayMessageWindows: windows.inTray.filter(stored),
+                            openDraftIDs: Array(drafts.keys),
                             openTabs: tabs.filter(storedTab), minimizedTabs: minimizedTabs.filter(storedTab),
                             activeTab: activeTab.flatMap { storedTab($0) ? $0 : nil })
     }

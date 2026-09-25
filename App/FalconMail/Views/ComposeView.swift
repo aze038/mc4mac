@@ -32,7 +32,7 @@ struct ComposeView: View {
             if draft != nil { form } else { ProgressView() }
         }
         .frame(minWidth: 600, minHeight: embedded ? 0 : 480)
-        .background(embedded ? nil : PopupWindowAccessor())
+        .background(embedded ? nil : PopupWindowAccessor(key: .compose(draftID)))
         .background {
             if !embedded {
                 CloseGuardInstaller { window in model.mayCloseUnsent(draftID, over: window) { window.close() } }

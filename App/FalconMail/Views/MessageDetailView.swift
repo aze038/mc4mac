@@ -391,7 +391,7 @@ struct MessageWindowView: View {
             }
         }
         .frame(minWidth: 560, minHeight: 480)
-        .background(PopupWindowAccessor())
+        .background(PopupWindowAccessor(key: .message(messageID)))
         .task { message = await model.message(id: messageID) }
         .onAppear { model.openMessageWindows.insert(messageID) }
         .onDisappear { model.openMessageWindows.remove(messageID) }

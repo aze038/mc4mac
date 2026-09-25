@@ -5,7 +5,11 @@ struct SessionState: Codable {
     var selection: SidebarSelection?
     var selectedMessageIDs: [String] = []
     var searchText = ""
+    /// Every message window open at the last quit, whether on screen or in the tray, so that an
+    /// earlier build, which reads only this, opens them all.
     var openMessageWindows: [String] = []
+    /// Those of them that were in the tray. Absent from sessions saved by earlier builds.
+    var trayMessageWindows: [String]?
     var openDraftIDs: [UUID] = []
     var openTabs: [WorkspaceTab] = []
     var minimizedTabs: [WorkspaceTab] = []
