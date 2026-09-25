@@ -10,6 +10,7 @@ struct SidebarView: View {
     @State private var smartExpanded = false
     @State private var localExpanded = false
     @AppStorage(Pref.hideLocalFolders) private var hideLocalFolders = false
+    @AppStorage("collapsedSidebarGroups") private var collapsedGroupsRaw = ""
 
     private var pendingOutbox: Int {
         model.outboxItems.filter { $0.status == .queued || $0.status == .failed }.count
@@ -74,15 +75,18 @@ struct SidebarView: View {
     @ViewBuilder private func accountRows(_ account: AccountInfo) -> some View {
         let folders = model.folders[account.id] ?? []
         let expanded = model.isAccountExpanded(account.id)
+        let onEngine = model.usesGmailEngine(account.id)
         let hiddenUnread = folders.filter { $0.role == .inbox }.reduce(0) { $0 + $1.unreadCount }
         SidebarTopRow(title: account.email,
                       expanded: Binding(get: { model.isAccountExpanded(account.id) }, set: { model.setAccountExpanded(account.id, $0) })) {
             if !account.isEnabled {
                 Image(systemName: "pause.circle").foregroundStyle(OLColor.textDim).help("Paused in Settings → Accounts")
-            } else if model.online[account.id] == false {
-                Image(systemName: SidebarView.statusSymbol(model.accountStatus.health[account.id]))
+            } else if let notice = SidebarView.statusNotice(model.accountStatus.health[account.id], online: model.online[account.id],
+                                                            problem: model.accountStatus.problems[account.id], email: account.email) {
+                Image(systemName: notice.symbol)
                     .foregroundStyle(Color.orange)
-                    .help(model.accountStatus.problems[account.id] ?? "Not connected")
+                    .help(notice.text)
+                    .accessibilityLabel(notice.text)
             }
             if !expanded, hiddenUnread > 0 {
                 Text("\(hiddenUnread)").font(.system(size: OL.sidebarCountFont)).foregroundStyle(OLColor.unread)
@@ -91,26 +95,98 @@ struct SidebarView: View {
         .contextMenu {
             Button("New Folder…") { model.createFolderPrompt(for: account) }
             Button("Sync This Account") { model.syncNow() }
+            if onEngine {
+                Divider()
+                Toggle("Show All Gmail Labels", isOn: Binding(get: { GmailLabelsShown.all(for: account.id) },
+                                                              set: { GmailLabelsShown.set($0, for: account.id) }))
+            }
         }
         if expanded {
             // Outlook shows a container such as [Gmail] as a folder with its children under it,
             // even when the container itself holds no mail.
-            let ordered = SidebarView.treeOrder(folders)
-            ForEach(ordered) { folder in
-                SidebarFolderRow(level: 1 + folder.depth, title: folder.name, symbol: SidebarView.icon(for: folder),
-                                 tint: folder.role == .inbox ? OLColor.inbox : OLColor.icon,
-                                 count: folder.unreadCount, selected: model.selection == .folder(folder.id),
-                                 disclosure: SidebarView.hasChildren(folder, in: folders) ? .open : .none) {
-                    if folder.isSelectable { model.select(.folder(folder.id)) }
-                }
-                    .contextMenu {
-                        Button("Mark All as Read") { model.markAllRead(in: folder) }
-                            .disabled(folder.unreadCount == 0)
-                        if folder.role == .trash || folder.role == .junk {
-                            Button("Delete All", role: .destructive) { model.purgeEverything(in: folder) }
-                        }
-                    }
+            let nodes = onEngine ? OutlookFolderTree.gmail(folders, accountID: account.id) : SidebarView.treeNodes(folders)
+            ForEach(SidebarView.shown(nodes, collapsed: collapsedGroups)) { node in
+                folderRow(node, onEngine: onEngine)
             }
+        }
+    }
+
+    @ViewBuilder private func folderRow(_ node: SidebarFolderNode, onEngine: Bool) -> some View {
+        let folder = node.folder
+        let isOpen = !collapsedGroups.contains(folder.id.uuidString)
+        SidebarFolderRow(level: 1 + node.depth, title: folder.name, symbol: SidebarView.icon(for: folder),
+                         tint: folder.role == .inbox ? OLColor.inbox : OLColor.icon,
+                         count: SidebarView.count(of: folder), selected: model.selection == .folder(folder.id),
+                         disclosure: node.hasChildren ? (isOpen ? .open : .closed) : .none) {
+            if folder.isSelectable {
+                model.select(.folder(folder.id))
+            } else if node.hasChildren {
+                toggleGroup(folder.id)
+            }
+        } onDisclosure: {
+            toggleGroup(folder.id)
+        }
+        .contextMenu {
+            if !node.isGroup {
+                Button("Mark All as Read") { model.markAllRead(in: folder) }
+                    .disabled(folder.role == .drafts || folder.unreadCount == 0)
+                if folder.role == .trash || folder.role == .junk {
+                    Button("Delete All", role: .destructive) { deleteAll(in: folder, onEngine: onEngine) }
+                        .disabled(deletableCount(in: folder, onEngine: onEngine) == 0)
+                }
+            }
+        }
+    }
+
+    /// Everything in Deleted Items or Junk Email goes for good, so the owner is asked first, with
+    /// how many messages go: on the Gmail API the folder's whole count, otherwise the ones loaded.
+    private func deleteAll(in folder: FolderInfo, onEngine: Bool) {
+        let count = deletableCount(in: folder, onEngine: onEngine)
+        guard count > 0, model.confirmDeleteForever(count, in: folder) else { return }
+        model.purgeEverything(in: folder)
+    }
+
+    private func deletableCount(in folder: FolderInfo, onEngine: Bool) -> Int {
+        onEngine ? folder.totalCount : model.messages.filter { $0.folderID == folder.id }.count
+    }
+
+    /// Groups such as [Gmail] the owner closed, kept between launches.
+    private var collapsedGroups: Set<String> {
+        Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private func toggleGroup(_ id: UUID) {
+        var set = collapsedGroups
+        if set.contains(id.uuidString) { set.remove(id.uuidString) } else { set.insert(id.uuidString) }
+        collapsedGroupsRaw = set.sorted().joined(separator: ",")
+    }
+
+    /// The count at a folder's right: Drafts shows how many drafts it holds, as Outlook does;
+    /// every other folder its unread mail.
+    static func count(of folder: FolderInfo) -> Int {
+        folder.role == .drafts && folder.gmailLabelID != nil ? max(folder.unreadCount, folder.totalCount) : folder.unreadCount
+    }
+
+    /// The rows under open groups only: a closed group hides everything below it.
+    static func shown(_ nodes: [SidebarFolderNode], collapsed: Set<String>) -> [SidebarFolderNode] {
+        var out: [SidebarFolderNode] = []
+        var hiddenBelow: Int?
+        for node in nodes {
+            if let depth = hiddenBelow {
+                if node.depth > depth { continue }
+                hiddenBelow = nil
+            }
+            out.append(node)
+            if node.hasChildren, collapsed.contains(node.folder.id.uuidString) { hiddenBelow = node.depth }
+        }
+        return out
+    }
+
+    /// An IMAP account's folders in the order they have always been shown.
+    static func treeNodes(_ folders: [FolderInfo]) -> [SidebarFolderNode] {
+        treeOrder(folders).map { folder in
+            SidebarFolderNode(folder: folder, depth: folder.depth, hasChildren: hasChildren(folder, in: folders),
+                              isGroup: !folder.isSelectable)
         }
     }
 
@@ -142,10 +218,27 @@ struct SidebarView: View {
     /// Beside an account that is not syncing: why, at a glance, with the sentence as its tip.
     static func statusSymbol(_ health: AccountHealth?) -> String {
         switch health {
-        case .imapPaused: return "hourglass"
+        case .imapPaused, .apiPaused: return "hourglass"
         case .needsSignIn, .blocked: return "exclamationmark.triangle"
         default: return "wifi.slash"
         }
+    }
+
+    /// The mark beside an account, and its tip: an hourglass while its server asked FalconMail to
+    /// wait, with when it may go on, a warning while it waits for the owner, and otherwise that it
+    /// is offline. Nil while it syncs.
+    static func statusNotice(_ health: AccountHealth?, online: Bool?, problem: String?, email: String) -> (symbol: String, text: String)? {
+        let text: String
+        switch health {
+        case .apiPaused(let until)?:
+            text = problem ?? "Gmail asked FalconMail to wait until \(until.formatted(date: .omitted, time: .shortened)) before loading more of \(email)'s messages. The mail on this Mac is still here."
+        case .imapPaused?, .needsSignIn?, .blocked?, .offline?:
+            text = problem ?? "Not connected"
+        case .connecting?, .online?, nil:
+            guard online == false else { return nil }
+            text = problem ?? "Not connected"
+        }
+        return (statusSymbol(health), text)
     }
 
     static func icon(for folder: FolderInfo) -> String {
@@ -211,6 +304,22 @@ struct SidebarFolderRow: View {
     let selected: Bool
     var disclosure: SidebarDisclosure = .none
     let action: () -> Void
+    /// The chevron's own click: opens or closes the folder's children.
+    var onDisclosure: (() -> Void)?
+
+    init(level: Int, title: String, symbol: String, tint: Color = OLColor.icon, textColor: Color = OLColor.text, count: Int,
+         selected: Bool, disclosure: SidebarDisclosure = .none, action: @escaping () -> Void, onDisclosure: (() -> Void)? = nil) {
+        self.level = level
+        self.title = title
+        self.symbol = symbol
+        self.tint = tint
+        self.textColor = textColor
+        self.count = count
+        self.selected = selected
+        self.disclosure = disclosure
+        self.action = action
+        self.onDisclosure = onDisclosure
+    }
 
     private var indent: CGFloat { CGFloat(max(level, 1) - 1) * OL.sidebarIndent }
 
@@ -221,6 +330,10 @@ struct SidebarFolderRow: View {
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(OLColor.icon)
                     .frame(width: 10, height: 10)
+                    .contentShape(Rectangle().inset(by: -5))
+                    .onTapGesture { (onDisclosure ?? action)() }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel(disclosure == .open ? "Collapse \(title)" : "Expand \(title)")
                     .padding(.leading, OL.sidebarLevelChevronX + indent)
                     .padding(.trailing, OL.sidebarLevelIconX - OL.sidebarLevelChevronX - 10)
             } else {

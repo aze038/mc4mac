@@ -66,6 +66,14 @@ final class EngineViewsTests: XCTestCase {
                           "another account's group is another row")
     }
 
+    func testAContainerFromTheAccountsIMAPFoldersIsNeverShownBesideTheGroup() {
+        var folders = engineFolders()
+        folders.append(FolderInfo(accountID: account, path: "[Gmail]", name: "[Gmail]", delimiter: "/", role: .other,
+                                  attributes: ["\\Noselect"], isSelectable: false))
+        let names = OutlookFolderTree.gmail(folders, accountID: account).map(\.folder.name)
+        XCTAssertEqual(names.filter { $0 == "[Gmail]" }.count, 1)
+    }
+
     func testAnAccountWithOnlyAnInboxHasNoEmptyGroup() {
         let inbox = FolderInfo(accountID: account, path: "INBOX", name: "Inbox", delimiter: "/", role: .inbox, attributes: [],
                                isSelectable: true)

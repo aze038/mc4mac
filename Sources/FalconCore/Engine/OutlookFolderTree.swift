@@ -34,7 +34,9 @@ public enum OutlookFolderTree {
     public static func gmail(_ folders: [FolderInfo], accountID: UUID) -> [SidebarFolderNode] {
         let inbox = folders.filter { $0.role == .inbox }
         let own = folders.filter { isGmailOwn($0) }
-        let labels = folders.filter { $0.role == .other }
+        // A container kept from the account's IMAP folders, such as [Gmail] itself, is made again
+        // here as a group, never shown twice.
+        let labels = folders.filter { $0.role == .other && $0.isSelectable }
         var nodes: [SidebarFolderNode] = inbox.map { SidebarFolderNode(folder: $0, depth: 0, hasChildren: false) }
 
         if !own.isEmpty {
