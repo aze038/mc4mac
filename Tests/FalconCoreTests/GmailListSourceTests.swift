@@ -17,7 +17,7 @@ final class GmailListSourceTests: XCTestCase {
 
         func source(budget: RowFetchBudget = TokenBucketEstimate(), index: ListIndex = ListIndex()) -> GmailListSource {
             GmailListSource(accountID: accountID, email: transport.email, store: store, transport: transport,
-                            archiveFolderID: archive, index: index, budget: budget)
+                            archiveFolderID: archive, index: index, budget: budget, sleep: GmailWait.sleepQuietly)
         }
     }
 
@@ -308,7 +308,7 @@ final class GmailListSourceTests: XCTestCase {
         final class Clock: @unchecked Sendable { var now: TimeInterval = 1_000 }
         let clock = Clock()
         let source = GmailListSource(accountID: box.accountID, email: box.transport.email, store: box.store, transport: box.transport,
-                                     archiveFolderID: box.archive, uptime: { clock.now })
+                                     archiveFolderID: box.archive, uptime: { clock.now }, sleep: GmailWait.sleepQuietly)
         box.transport.failAlways(.messagesList, with: GoogleAPIError(kind: .offline))
         let view = ListView(scope: .folder(box.folder(.inbox)), conversations: false, dateGroups: true)
         _ = await source.snapshot(of: view)

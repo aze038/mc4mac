@@ -114,7 +114,7 @@ public actor GmailListSource: ListSourceExtras {
                 budget: RowFetchBudget = TokenBucketEstimate(),
                 uptime: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                 now: @escaping @Sendable () -> Date = { Date() },
-                sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64(max(0, $0) * 1e9)) }) {
+                sleep: @escaping @Sendable (TimeInterval) async -> Void) {
         self.accountID = accountID
         self.email = email
         self.store = store

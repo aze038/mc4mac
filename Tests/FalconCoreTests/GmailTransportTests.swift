@@ -401,7 +401,7 @@ final class GmailHTTPTransportTests: XCTestCase {
         XCTAssertEqual(clock.slept - slept, 1 + 2 + 4 + 8, accuracy: 0.01)
 
         // Past 64 seconds the backoff stops growing.
-        let budget = GmailBudget(accountID: UUID(), jitter: { 0.5 })
+        let budget = GmailBudget(accountID: UUID(), sleep: GmailWait.sleep, jitter: { 0.5 })
         XCTAssertEqual(budget.backoff(0), 1.5)
         XCTAssertEqual(budget.backoff(3), 8.5)
         XCTAssertEqual(budget.backoff(10), 64)

@@ -115,13 +115,10 @@ extension SyncCoordinator {
                     labels.updateValue(label, forKey: folder.path)
                 }
             }
-            // The waits are given here rather than left to the initialiser's defaults: a debug
-            // build of Swift 6.2 miscompiles an async closure given as a default argument, and
-            // calling it brings the app down.
+            // The waits are given explicitly: a debug build of Swift 6.2 miscompiles an async
+            // closure given as a default argument, and calling it brings the app down.
             return GmailArchiveSource(transport: assembly.transport, folders: labels, allowance: { _ in false }, perMinute: 60,
-                                      now: { Date() }, sleep: { seconds in
-                                          try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                                      })
+                                      now: { Date() }, sleep: GmailWait.sleep)
         }
         guard let syncer = syncer(for: account.id) else { throw GmailEngineUnavailable(email: account.email, what: "the archive") }
         return syncer.archiveSource()

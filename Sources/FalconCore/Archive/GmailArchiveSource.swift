@@ -31,11 +31,9 @@ public struct GmailArchiveSource: ArchiveMailSource {
     static let removalPage = 1_000
 
     public init(transport: any GmailTransport, folders: [String: GmailLabelID?],
-                allowance: @escaping @Sendable (_ bytes: Int) async throws -> Bool = { _ in false }, perMinute: Int = 60,
+                allowance: @escaping @Sendable (_ bytes: Int) async throws -> Bool, perMinute: Int = 60,
                 now: @escaping @Sendable () -> Date = { Date() },
-                sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
-                    try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                }) {
+                sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
         self.transport = transport
         self.folders = folders
         self.allowance = allowance

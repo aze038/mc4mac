@@ -15,7 +15,7 @@ final class GmailEngineSearchTests: XCTestCase {
             .place(ref, order: UInt32(120 - i) * 16, labels: [.inbox], attributes: [])
         }))
         let source = GmailListSource(accountID: transport.accountID, email: transport.email, store: store, transport: transport,
-                                     archiveFolderID: UUID())
+                                     archiveFolderID: UUID(), sleep: GmailWait.sleepQuietly)
         return (transport, store, source)
     }
 
