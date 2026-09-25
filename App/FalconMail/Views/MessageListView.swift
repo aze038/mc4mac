@@ -44,6 +44,7 @@ struct MessageListView: View {
             }
             searchNoticeBar
             if model.engineList.isShown {
+                waitingDraftsBar
                 tableList
             } else {
                 rowList
@@ -97,6 +98,31 @@ struct MessageListView: View {
                     ContentUnavailableView(emptyTitle, systemImage: model.filters.isEmpty ? "tray" : "line.3.horizontal.decrease.circle")
                 }
             }
+    }
+
+    /// Drafts of a Google account on the Gmail API saved on this Mac while Gmail could not take
+    /// them: each is named above the table, with Open, until Gmail has it and it is a row.
+    @ViewBuilder private var waitingDraftsBar: some View {
+        let waiting = model.waitingDraftsShown
+        if !waiting.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(waiting, id: \.localID) { draft in
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock")
+                        Text(draft.subject.isEmpty ? "(no subject)" : draft.subject).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 4)
+                        Button("Open") { model.reopenWaitingDraft(draft.localID) }
+                            .buttonStyle(QuietLinkStyle())
+                    }
+                }
+                Text("Saved on this Mac. It goes to Gmail by itself when it can.")
+                    .foregroundStyle(OLColor.textDim)
+            }
+            .font(.system(size: OL.statusFont))
+            .foregroundStyle(OLColor.textMuted)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+        }
     }
 
     /// A row's quick action acts on that row, whatever is selected, as on the stored list.

@@ -16,7 +16,9 @@ import FalconCore
 ///   wait;
 /// - `engine-status-*.png`: the status bar with the folder's real Items and "All folders are up
 ///   to date.", while the mailbox is being listed, and while Gmail asks FalconMail to wait;
-/// - `engine-window-*.png`: the mailbox window with all three.
+/// - `engine-window-*.png`: the mailbox window with all three;
+/// - `engine-drafts-waiting-*.png` and `engine-sidebar-drafts-waiting-*.png`: Drafts with a draft
+///   saved on this Mac while Gmail could not take it, named above the table and counted.
 @MainActor
 enum EngineSnapshot {
     private static let appearances: [(String, NSAppearance.Name)] = [("dark", .darkAqua), ("light", .aqua)]
@@ -94,6 +96,26 @@ enum EngineSnapshot {
             let window = MainWindow().themedRoot().environment(model).environmentObject(model.updates)
             capture(host(window, size: NSSize(width: 1440, height: 900), appearance: appearance), appearance: appearance,
                     to: "\(directory)/engine-window-\(name).png")
+        }
+        // Drafts, with a draft saved on this Mac while Gmail could not take it: named above the
+        // table, and counted in the sidebar.
+        if let drafts = folders.first(where: { $0.role == .drafts }) {
+            model.selection = .folder(drafts.id)
+            model.engineProvisionalDrafts = [account.id: [GmailProvisionalDraft(localID: UUID(), subject: "Quote for the Hamburg lane",
+                                                                              to: ["tom@example.com"], savedAt: Date())]]
+            let draftsView = ListView(scope: .folder(drafts.id))
+            let draftsSource = MadeUpEngineSource(snapshot: mail.drafts(draftsView), footers: [])
+            guard wait({ await list.snapshotShow(draftsView, from: draftsSource, model: model, everyFolderListed: true) }) else { return }
+            list.controller.content.insert(mail.draftContents)
+            for (name, appearance) in appearances {
+                let listView = MessageListView().environment(model).environmentObject(model.updates).themedRoot()
+                capture(host(listView, size: NSSize(width: OL.listWidth, height: 360), appearance: appearance), appearance: appearance,
+                        to: "\(directory)/engine-drafts-waiting-\(name).png")
+                let sidebar = SidebarView().environment(model).environmentObject(model.updates).themedRoot()
+                capture(host(sidebar, size: NSSize(width: OL.sidebarWidth, height: 520), appearance: appearance), appearance: appearance,
+                        to: "\(directory)/engine-sidebar-drafts-waiting-\(name).png")
+            }
+            model.engineProvisionalDrafts = [:]
         }
         list.controller.stop()
     }
@@ -205,6 +227,24 @@ private struct MadeUpGoogleAccount {
             record(13, .message, bits: [.unread], unread: 1)
         ]
         return ListSnapshot(view: ListView(scope: .folder(inboxID)), rows: rows, complete: true, itemCount: 54_218, sources: [accountID])
+    }
+
+    /// Drafts: the two Gmail has.
+    func drafts(_ view: ListView) -> ListSnapshot {
+        let rows: ContiguousArray<DisplayRecord> = [record(40, .message), record(41, .message, bits: [.hasAttachment, .attachmentKnown])]
+        return ListSnapshot(view: view, rows: rows, complete: true, itemCount: 2, sources: [accountID])
+    }
+
+    var draftContents: [RowKey: MessageRowContent] {
+        let alex = EmailAddress(name: "Alex Example", address: "alex@example.com")
+        let today = Calendar.current.startOfDay(for: now)
+        return [
+            key(40): MessageRowContent(key: key(40), from: alex, to: [EmailAddress(name: "Maya Lindqvist", address: "maya@example.com")],
+                                       subject: "Slot for Tuesday", preview: "Tuesday at 10 suits us", date: today.addingTimeInterval(10 * 3_600)),
+            key(41): MessageRowContent(key: key(41), from: alex, to: [EmailAddress(name: "Port Authority", address: "port@example.org")],
+                                       subject: "Berth 4 papers", preview: "The signed papers are attached",
+                                       date: today.addingTimeInterval(-26 * 3_600), hasAttachments: true)
+        ]
     }
 
     var contents: [RowKey: MessageRowContent] {

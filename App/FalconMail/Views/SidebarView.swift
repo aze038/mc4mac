@@ -116,7 +116,8 @@ struct SidebarView: View {
         let isOpen = !collapsedGroups.contains(folder.id.uuidString)
         SidebarFolderRow(level: 1 + node.depth, title: folder.name, symbol: SidebarView.icon(for: folder),
                          tint: folder.role == .inbox ? OLColor.inbox : OLColor.icon,
-                         count: SidebarView.count(of: folder), selected: model.selection == .folder(folder.id),
+                         count: SidebarView.count(of: folder) + waitingDrafts(in: folder, onEngine: onEngine),
+                         selected: model.selection == .folder(folder.id),
                          disclosure: node.hasChildren ? (isOpen ? .open : .closed) : .none) {
             if folder.isSelectable {
                 model.select(.folder(folder.id))
@@ -136,6 +137,12 @@ struct SidebarView: View {
                 }
             }
         }
+    }
+
+    /// Drafts counts the drafts saved on this Mac that Gmail has not got yet too.
+    private func waitingDrafts(in folder: FolderInfo, onEngine: Bool) -> Int {
+        guard onEngine, folder.role == .drafts else { return 0 }
+        return model.engineProvisionalDrafts[folder.accountID]?.count ?? 0
     }
 
     /// Everything in Deleted Items or Junk Email goes for good, so the owner is asked first, with

@@ -262,7 +262,11 @@ extension AppModel {
             }
         }
         let draftTask = Task { [weak self] in
-            for await event in await drafts.events() {
+            let events = await drafts.events()
+            // Drafts left waiting for Gmail by the last session are shown from the start.
+            let waiting = await drafts.provisionalDrafts()
+            self?.engineDraftEvent(.provisional(waiting), accountID: accountID)
+            for await event in events {
                 self?.engineDraftEvent(event, accountID: accountID)
             }
         }
@@ -291,6 +295,31 @@ extension AppModel {
                                attributes: [], isSelectable: true)
         inbox.gmailLabelID = .inbox
         return inbox
+    }
+
+    /// The drafts saved on this Mac that Gmail has not got yet, for the Drafts folder shown.
+    var waitingDraftsShown: [GmailProvisionalDraft] {
+        guard case .folder(let id)? = selection, let folder = folder(id), folder.role == .drafts,
+              usesGmailEngine(folder.accountID) else { return [] }
+        return engineProvisionalDrafts[folder.accountID] ?? []
+    }
+
+    /// Opens again, to be written, a draft that waits on this Mac for Gmail; a later save replaces
+    /// the one waiting.
+    func reopenWaitingDraft(_ localID: UUID) {
+        guard drafts[localID] != nil else {
+            statusText = "This draft is on its way to Gmail. It opens from Drafts once it is there."
+            return
+        }
+        if composeWindowDrafts.contains(localID) || tabs.contains(.compose(localID)) {
+            if tabs.contains(.compose(localID)) { activeTab = .compose(localID) } else { openComposeWindow?(localID) }
+            return
+        }
+        if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
+            open(localID)
+        } else {
+            openTab(.compose(localID))
+        }
     }
 
     private func engineDraftEvent(_ event: GmailDraftEvent, accountID: UUID) {
