@@ -101,20 +101,27 @@ extension AppModel {
     /// Runs a command on the selection. Above 1,000 rows selected in the table, nothing is handed
     /// on as a part of the selection: the command acts on the whole view where it can, and
     /// otherwise the status line says to select fewer. It never acts on the first thousand and
-    /// quietly leaves the rest.
-    func onSelection(_ command: ListCommand, _ body: () -> Void) {
+    /// quietly leaves the rest. Up to 1,000, it waits for the rows the table shows selected to be
+    /// read into the app's selection, so it never acts on the rows selected before.
+    func onSelection(_ command: ListCommand, _ body: @escaping @MainActor () -> Void) {
         guard engineList.isShown, engineList.selectionCount > ActionTargets.largestItemList else {
-            body()
+            afterSelectionRead(body)
             return
         }
         switch engineList.targets(for: command) {
         case .refused(let sentence):
             statusText = sentence
         case .items:
-            body()
+            afterSelectionRead(body)
         case .wholeView(let except):
             actOnWholeView(command, except: except)
         }
+    }
+
+    /// Runs `body`, which acts on the app's selection, once the rows the table shows selected have
+    /// been read into it: at once for the stored list, and while nothing is being read.
+    func afterSelectionRead(_ body: @escaping @MainActor () -> Void) {
+        engineList.whenRead(body)
     }
 
     /// Whether more than 1,000 rows are selected in the table, which no command is handed as a
@@ -125,7 +132,7 @@ extension AppModel {
 
     /// A Message menu command: on the message in the message window in front, or on the list's
     /// selection as the ribbon's commands act on it, the whole view above 1,000 rows of the table.
-    func onMenuTarget(_ command: ListCommand, _ body: () -> Void) {
+    func onMenuTarget(_ command: ListCommand, _ body: @escaping @MainActor () -> Void) {
         guard case .selection = menuTarget else { return body() }
         onSelection(command, body)
     }

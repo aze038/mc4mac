@@ -208,7 +208,7 @@ extension AppModel {
 
     func menuReply(all: Bool) {
         switch menuTarget {
-        case .selection: replyToSelection(all: all)
+        case .selection: afterSelectionRead { [weak self] in self?.replyToSelection(all: all) }
         case .messageWindow(let id):
             guard let message = messageWindowRows[id] else { return }
             reply(to: message, all: all) { [weak self] in self?.closeOriginalAfterReplying(id) }
@@ -218,7 +218,7 @@ extension AppModel {
 
     func menuForward() {
         switch menuTarget {
-        case .selection: forwardSelection()
+        case .selection: afterSelectionRead { [weak self] in self?.forwardSelection() }
         case .messageWindow(let id):
             guard let message = messageWindowRows[id] else { return }
             forward(message) { [weak self] in self?.closeOriginalAfterReplying(id) }
@@ -242,7 +242,7 @@ extension AppModel {
     }
 
     func menuMoveAgain() {
-        guard case .messageWindow = menuTarget else { return moveToLastTarget() }
+        guard case .messageWindow = menuTarget else { return afterSelectionRead { [weak self] in self?.moveToLastTarget() } }
         guard let target = lastMoveTarget, let message = menuMessages.first else { return }
         guard message.accountID == target.accountID else { return menuMove() }
         menuMoves { move($0, to: target) }

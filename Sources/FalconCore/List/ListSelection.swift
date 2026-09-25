@@ -51,9 +51,8 @@ public struct ListSelection: Hashable, Sendable {
         switch form {
         case .rows: return indexes(in: snapshot).count
         case .allExcept(let except):
-            let headers = snapshot.rows.lazy.filter { $0.displayKind == .header }.count
             let excepted = except.filter { snapshot.rows.indices.contains($0) && snapshot.rows[$0].displayKind != .header }.count
-            return snapshot.rows.count - headers - excepted
+            return snapshot.messageRowCount - excepted
         }
     }
 

@@ -32,13 +32,14 @@ final class EngineList {
     var selectionCount: Int { controller.selectionCount }
     /// Every folder the sidebar shows for the accounts on the Gmail API has been listed in full.
     private(set) var everyFolderListed = true
-    /// The selection is being read, from Gmail if need be, for the reading pane.
-    private(set) var isReading = false
+    /// The selection is being read, from Gmail if need be, for the reading pane. Commands on the
+    /// selection wait for it (`whenRead`), so they act on the rows the table shows selected.
+    var isReading: Bool { reads.isReading }
+    let reads = ListSelectionReads()
 
     @ObservationIgnored private weak var model: AppModel?
     @ObservationIgnored private var shownView: ListView?
     @ObservationIgnored private var shownSource: ObjectIdentifier?
-    @ObservationIgnored private var resolving: Task<Void, Never>?
     /// What was last handed to the app, so a change the app makes itself can be told apart.
     @ObservationIgnored private(set) var handedIDs: Set<String> = []
     /// Runs when the app emptied its selection while rows stayed selected in the table: unless the
@@ -51,6 +52,11 @@ final class EngineList {
     /// The view each message window was opened from, by the window's message id, which its
     /// commands' folder rules are read from.
     @ObservationIgnored private var windowViews: [String: ListView] = [:]
+    /// How often the message waiting to be revealed was looked for, and not found, in the same
+    /// view listed in full.
+    @ObservationIgnored private var revealMisses: (key: RowKey?, view: ListView?, count: Int) = (nil, nil, 0)
+    /// Tries in one view listed in full before a message waiting to be revealed is given up.
+    static let revealTries = 3
 
     init() {
         controller.onApplied = { [weak self] change, before in self?.applied(change, selectedBefore: before) }
@@ -94,10 +100,26 @@ final class EngineList {
     /// Selects the row of the message a notification's click asked to show, or the one selected
     /// at the last quit, once the table shows it. False while there is none, or its row is not in
     /// the list shown yet, when it is tried again as the list changes.
+    ///
+    /// A message a view listed in full still does not show after three tries is given up, as one
+    /// deleted on another device overnight: nothing keeps looking for it on every change of the
+    /// list.
     @discardableResult
     func revealPending() -> Bool {
-        guard isShown, let model, let key = model.pendingReveal, controller.view != nil, let row = row(of: key) else { return false }
+        guard isShown, let model, let key = model.pendingReveal, controller.view != nil else { return false }
+        guard let row = row(of: key) else {
+            if controller.snapshot.complete, let view = controller.view {
+                let misses = revealMisses.key == key && revealMisses.view == view ? revealMisses.count + 1 : 1
+                revealMisses = (key, view, misses)
+                if misses >= EngineList.revealTries {
+                    model.pendingReveal = nil
+                    revealMisses = (nil, nil, 0)
+                }
+            }
+            return false
+        }
         model.pendingReveal = nil
+        revealMisses = (nil, nil, 0)
         emptiedWait?.cancel()
         controller.select(rows: [row])
         readSelection(byOwner: false)
@@ -115,7 +137,7 @@ final class EngineList {
         waitingFor = nil
         shownView = nil
         shownSource = nil
-        resolving?.cancel()
+        reads.stop()
         emptiedWait?.cancel()
         controller.stop()
         handedIDs = []
@@ -159,9 +181,16 @@ final class EngineList {
 
     /// Reads the table's selection into the app's. A conversation's row the owner selects alone
     /// opens out, as Settings → Reading asks.
+    ///
+    /// The reading pane switches to the rows now selected at once, showing what their rows say
+    /// (`reads.placeholder`) until their messages are read, and never waits for the read of an
+    /// earlier selection; a read that ends after a newer one began is thrown away. Commands on the
+    /// selection wait for the read (see `whenRead`), so they act on the rows shown selected.
     private func readSelection(byOwner: Bool) {
-        resolving?.cancel()
-        guard let model, let view = controller.view else { return }
+        guard let model, let view = controller.view else {
+            if reads.isReading { reads.handOverAtOnce(reads.shownTargets) }
+            return
+        }
         let snapshot = controller.snapshot
         let selection = controller.selection
         guard let rows = snapshot.selectedRows(selection), !rows.isEmpty else {
@@ -174,12 +203,14 @@ final class EngineList {
             Task { await controller.toggleExpanded(row: row) }
         }
         let content = controller.content
+        let targets = rows.map(\.target)
+        // The pane leaves the rows it showed at once: a read-after-delay of theirs is not due.
+        if targets != reads.shownTargets { model.cancelPendingRead() }
         // One row is read in full for the reading pane, from Gmail if need be. Several rows are
         // read from what the Mac knows, the index and the rows' text, never fetched: selecting a
         // thousand rows to delete them must not cost a thousand calls.
         let fetching = rows.count == 1
-        if !isReading { isReading = true }
-        resolving = Task { [weak self] in
+        reads.start(targets, placeholder: ListReadingPlaceholder.of(targets, content: content)) { [weak self] generation in
             var threads: [MessageThread] = []
             var ids: [String] = []
             for row in rows {
@@ -189,24 +220,54 @@ final class EngineList {
                     ids.append(id)
                 }
             }
-            guard !Task.isCancelled, let self, self.controller.selection == selection else { return }
-            self.handOver(threads, ids: ids)
+            guard let self, self.reads.isCurrent(generation) else { return }
+            if self.controller.selection != selection {
+                // The rows moved meanwhile, as when mail arrived above them: still the same
+                // messages, handed over as read. Other messages are read again, so that nothing
+                // waiting on the read is left acting on these.
+                let now = self.controller.snapshot.selectedRows(self.controller.selection)
+                guard SelectedListRow.standForTheSameMessages(now, rows) else {
+                    self.readSelection(byOwner: false)
+                    return
+                }
+            }
+            self.handOver(threads, ids: ids, generation: generation)
         }
     }
 
-    private func handOver(_ threads: [MessageThread], ids: [String]) {
-        if isReading { isReading = false }
+    /// Hands the messages read over to the app, and the reading pane shows them. A read overtaken
+    /// by a newer one (`generation` no longer current) hands nothing over.
+    private func handOver(_ threads: [MessageThread], ids: [String], generation: Int? = nil) {
+        if let generation {
+            guard reads.isCurrent(generation) else { return }
+        }
         handedIDs = Set(ids)
         model?.adoptTableSelection(threads, ids: ids)
+        // After the app holds them, so the commands that waited act on these messages.
+        if let generation {
+            reads.handOver(generation)
+        } else {
+            reads.handOverAtOnce([])
+        }
     }
 
-    /// Waits for the selection being read, for a command chosen from the menu of rows just
-    /// right-clicked.
+    /// Try Again in the reading pane, after the rows selected could not be read in time.
+    func retryRead() {
+        readSelection(byOwner: false)
+    }
+
+    /// What the reading pane shows while the rows just selected are read; nil once they are.
+    var readingPlaceholder: ListReadingPlaceholder? { isShown ? reads.placeholder : nil }
+
+    /// Runs a command on the selection once the rows the table shows selected have been read
+    /// into the app's selection: at once when they have, and otherwise once the read is handed
+    /// over, so that Delete pressed just after moving to the next row deletes that row, never the
+    /// one selected before. After the read ran past its deadline the command is not run, and the
+    /// status line says why.
     func whenRead(_ body: @escaping @MainActor () -> Void) {
-        let pending = resolving
-        Task {
-            await pending?.value
-            body()
+        guard isShown else { return body() }
+        if !reads.whenRead(body) {
+            model?.statusText = ListStatusText.selectionStillReading
         }
     }
 
@@ -228,17 +289,20 @@ final class EngineList {
             return
         }
         let snapshot = controller.snapshot
-        var rows = IndexSet()
+        // A message line's tag asks for the line, any other id for its own row; each is found in
+        // one pass over the rows for all of them.
+        var lines: [RowKey] = []
+        var own: [RowKey] = []
         for id in ids {
-            let keyString = ListRow.childMessageID(id) ?? id
-            guard let key = RowKey(string: keyString) else { continue }
-            let wantsLine = ListRow.childMessageID(id) != nil
-            if let row = snapshot.rows.indices.first(where: { i in
-                snapshot.rowKey(at: i) == key && (snapshot.rows[i].displayKind == .child) == wantsLine
-            }) ?? snapshot.rows.indices.first(where: { snapshot.rowKey(at: $0) == key }) {
-                rows.insert(row)
+            if let child = ListRow.childMessageID(id) {
+                if let key = RowKey(string: child) { lines.append(key) }
+            } else if let key = RowKey(string: id) {
+                own.append(key)
             }
         }
+        var rows = IndexSet()
+        for row in snapshot.rowIndexes(of: lines, line: true).values { rows.insert(row) }
+        for row in snapshot.rowIndexes(of: own, line: false).values { rows.insert(row) }
         guard !rows.isEmpty else { return }
         controller.select(rows: rows)
         readSelection(byOwner: false)
@@ -370,14 +434,14 @@ final class EngineList {
     }
 
     /// The row showing `key`: the selected ones are looked at first, as the row acted on usually
-    /// is one of them.
+    /// is one of them, then every row in one pass over their numbers.
     func row(of key: RowKey) -> Int? {
         let snapshot = controller.snapshot
-        let selected = controller.selection.indexes(in: snapshot)
-        if selected.count <= ActionTargets.largestItemList, let row = selected.first(where: { snapshot.rowKey(at: $0) == key }) {
+        if case .rows(let chosen) = controller.selection.form, chosen.count <= ActionTargets.largestItemList,
+           let row = chosen.first(where: { snapshot.rowKey(at: $0) == key }) {
             return row
         }
-        return snapshot.rows.indices.first { snapshot.rowKey(at: $0) == key }
+        return snapshot.row(of: key)
     }
 
     /// A row's own messages for its quick actions and its swipe, whatever is selected.
@@ -428,22 +492,16 @@ final class EngineList {
         var keys: [RowKey] = []
         var index: GmailIndexSnapshot?
         if case .gmail(let account, let id) = key, let engine = model.engine(for: account) {
-            let snapshot = await engine.index()
-            index = snapshot
-            if let record = snapshot.record(for: id) {
-                var label: GmailLabelID?
-                var known = true
-                switch view.scope {
-                case .folder(let folderID):
-                    label = await engine.labels().first { $0.folderID == folderID }?.id
-                case .allInboxes:
-                    label = .inbox
-                case .search:
-                    known = false
-                }
-                if known {
-                    keys = snapshot.conversationMembers(thread: record.threadID, label: label).map { .gmail(account: account, id: $0) }
-                }
+            index = await engine.index()
+            // Worked out by the engine, off the main thread, from its conversations' own slots.
+            let folderID: UUID??
+            switch view.scope {
+            case .folder(let folder): folderID = .some(folder)
+            case .allInboxes: folderID = .some(nil)
+            case .search: folderID = nil
+            }
+            if let folderID, let members = await engine.conversationMembers(of: id, folderID: folderID) {
+                keys = members.map { .gmail(account: account, id: $0) }
             }
         } else if let members = content.peek(key)?.conversation?.members, !members.isEmpty {
             keys = members.map(\.key).reversed()

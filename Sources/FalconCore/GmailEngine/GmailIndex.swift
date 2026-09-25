@@ -35,6 +35,9 @@ final class GmailIndex {
     private(set) var chains: [GmailListingChain: GmailChainProgress] = [:]
     private(set) var liveCount = 0
     private var labelForBit = [GmailLabelID?](repeating: nil, count: GmailLabelID.slotCount)
+    /// Shared by the snapshots taken until the next change that could move a message between
+    /// conversations or in the order, so the grouping is built once per such change at most.
+    private var threadOrder = GmailThreadOrder()
 
     static let fixedLabelSlots: [GmailLabelID: Int] =
         Dictionary(uniqueKeysWithValues: GmailLabelID.fixedSlots.enumerated().map { ($0.element, $0.offset) })
@@ -52,7 +55,8 @@ final class GmailIndex {
     // MARK: - Reading
 
     func snapshot() -> GmailIndexSnapshot {
-        GmailIndexSnapshot(records: records, byOrder: byOrder, slotByID: slotByID, labelSlots: labelSlots, overflow: overflow)
+        GmailIndexSnapshot(records: records, byOrder: byOrder, slotByID: slotByID, labelSlots: labelSlots, overflow: overflow,
+                           threadOrder: threadOrder)
     }
 
     func slot(of id: GmailMessageID) -> Int32? { slotByID[id.raw] }
@@ -120,6 +124,12 @@ final class GmailIndex {
 
     func apply(_ change: GmailChange) {
         switch change {
+        case .place, .tombstone:
+            threadOrder = GmailThreadOrder()
+        case .relabel, .attributes, .awaitingPlacement, .resyncBegan, .resyncEnded:
+            break
+        }
+        switch change {
         case .place(let ref, let order, let labels, let attributes):
             pending[ref.id.raw] = nil
             place(ref, order: order, labels: labels, attributes: attributes)
@@ -163,6 +173,7 @@ final class GmailIndex {
     /// One page of a listing: places what All Mail lists, sets the bits a label's listing gives,
     /// and learns attributes from a search. It never removes anything.
     func apply(_ page: GmailListingPage) {
+        if page.firstOrder != nil { threadOrder = GmailThreadOrder() }
         reserveRoom(for: page)
         let mask = bits(page.labels)
         let listedLabels = page.labels.filter { overflow[$0] != nil }
