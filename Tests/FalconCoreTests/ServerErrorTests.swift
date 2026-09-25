@@ -260,7 +260,9 @@ final class ServerErrorTests: XCTestCase {
 
     func testOneOffFailuresPromiseNothingTheEngineDoesNotDo() {
         let later = Date().addingTimeInterval(1800)
-        let laterText = DateFormatter.localizedString(from: later, dateStyle: .none, timeStyle: .short)
+        // Half an hour on can be tomorrow, when the sentence gives the day as well.
+        let laterText = DateFormatter.localizedString(from: later, dateStyle: Calendar.current.isDateInToday(later) ? .none : .medium,
+                                                    timeStyle: .short)
         func said(_ kind: MailServiceError.Kind, retryAfter: Date? = nil) -> String {
             MailServiceError(kind: kind, email: "owner@example.com", isGoogle: true, retryAfter: retryAfter, isOneOff: true).sentence
         }
@@ -313,7 +315,9 @@ final class ServerErrorTests: XCTestCase {
     /// value to the sentence the owner reads.
     func testEveryRefusalBecomesItsSentence() {
         let resume = Date().addingTimeInterval(1800)
-        let resumeText = DateFormatter.localizedString(from: resume, dateStyle: .none, timeStyle: .short)
+        // Half an hour on can be tomorrow, when the sentence gives the day as well.
+        let resumeText = DateFormatter.localizedString(from: resume, dateStyle: Calendar.current.isDateInToday(resume) ? .none : .medium,
+                                                    timeStyle: .short)
         func said(_ e: Error, google: Bool = true, retryAfter: Date? = nil) -> String {
             var failure = MailServiceError.classify(e, email: "owner@example.com", isGoogle: google)
             if let retryAfter { failure.retryAfter = retryAfter }
