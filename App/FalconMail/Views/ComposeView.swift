@@ -44,15 +44,9 @@ struct ComposeView: View {
                 model.closeUnsent(draftID)
             }
         }
-        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-            Task {
-                for url in await AttachmentTempFiles.fileURLs(from: providers) {
-                    if let a = AttachmentTempFiles.attachment(from: url) { draft?.attachments.append(a) }
-                }
-                commitDraft()
-            }
-            return true
-        }
+        // Files dropped anywhere attach, never go in as text: behind the whole window here, over
+        // the header fields, and in the body itself (see ComposeFileDropTarget).
+        .background { ComposeFileDropTarget(targeted: $dropTargeted) { addDropped($0) } }
         .overlay {
             if dropTargeted {
                 RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor, lineWidth: 3)
@@ -110,6 +104,10 @@ struct ComposeView: View {
                 Divider()
             }
             RichTextEditor(body: binding(\.richBody)) { view in
+                if let body = view as? ComposeTextView {
+                    body.onDropAttachments = { addDropped($0) }
+                    body.onFileDragOver = { over in if dropTargeted != over { dropTargeted = over } }
+                }
                 Task { @MainActor in
                     formatter.attach(view)
                     view.isContinuousSpellCheckingEnabled = Preferences.bool(Pref.checkSpelling, default: true)
@@ -271,6 +269,13 @@ struct ComposeView: View {
         .padding(.top, OL.composeBandTop)
         .padding(.bottom, OL.composeBandBottom - (OL.composeRowPitch - OL.composeField))
         .background(OLColor.sidebar)
+        .overlay { ComposeFileDropTarget(targeted: $dropTargeted) { addDropped($0) } }
+    }
+
+    private func addDropped(_ attachments: [OutgoingAttachment]) {
+        guard !attachments.isEmpty, draft != nil else { return }
+        draft?.attachments.append(contentsOf: attachments)
+        commitDraft()
     }
 
     private var bookButton: some View {

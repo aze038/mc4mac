@@ -22,15 +22,23 @@ struct ServerAttachmentStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(stubs) { stub in
+                    // Dragged as a promise, downloaded when it is dropped: onto a compose window it
+                    // attaches, onto Finder it makes the file; the window never moves.
                     chip(stub)
-                        .onTapGesture(count: 2) { open(stub) }
-                        .contextMenu {
-                            Button("Open") { open(stub) }
-                            Button("Save As…") { saveAs(stub) }
-                            Button("Save to Google Drive…") { saveToDrive(stub) }
-                            Button("Copy") { copy(stub) }
+                        .overlay {
+                            AttachmentDragHandle(
+                                filename: stub.filename,
+                                content: .promise(filename: stub.filename, mimeType: stub.mimeType,
+                                                  fetch: download(stub)),
+                                help: "Downloads from Gmail when opened or saved",
+                                onDoubleClick: { open(stub) },
+                                menu: [
+                                    .init(title: "Open") { open(stub) },
+                                    .init(title: "Save As…") { saveAs(stub) },
+                                    .init(title: "Save to Google Drive…") { saveToDrive(stub) },
+                                    .init(title: "Copy") { copy(stub) },
+                                ])
                         }
-                        .help("Downloads from Gmail when opened or saved")
                 }
             }
             .padding(.vertical, 2)
@@ -68,6 +76,12 @@ struct ServerAttachmentStrip: View {
             fetching.remove(stub.id)
             if let data { use(data) }
         }
+    }
+
+    /// For a drag's promise, which may ask from any thread: hands over the bytes, or nil.
+    private func download(_ stub: GmailAttachmentStub) -> (@escaping (Data?) -> Void) -> Void {
+        let model = self.model, message = self.message
+        return { done in Task { @MainActor in done(await model.serverAttachmentData(message, stub)) } }
     }
 
     private func open(_ stub: GmailAttachmentStub) {
