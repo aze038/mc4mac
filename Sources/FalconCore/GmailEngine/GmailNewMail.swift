@@ -112,10 +112,14 @@ public struct GmailFloodDetector: Sendable, Equatable {
 }
 
 /// Mail that arrived now, as rules and mutes need it (§7.6). The body a rule may look at comes from
-/// the `format=full` fetch the arrival already made, so it costs nothing more.
+/// the `format=full` fetch the arrival already made, so it costs nothing more. The engine makes one
+/// for each message that arrived now, and the actions make them from a full answer or a copy kept
+/// on the Mac, for Run Rules Now.
 public struct GmailArrival: Sendable, Hashable {
+    public var ref: GmailRef
     public var summary: MessageSummary
     public var labels: Set<GmailLabelID>
+    /// When Gmail received it.
     public var internalDate: Date
     public var textPlain: String?
     /// Announced as new mail: the Inbox, the last day, not the owner's, not muted.
@@ -123,8 +127,9 @@ public struct GmailArrival: Sendable, Hashable {
     /// Within the two days rules act on.
     public var runsRules: Bool
 
-    public init(summary: MessageSummary, labels: Set<GmailLabelID>, internalDate: Date, textPlain: String?,
+    public init(ref: GmailRef, summary: MessageSummary, labels: Set<GmailLabelID>, internalDate: Date, textPlain: String?,
                 isAnnounced: Bool, runsRules: Bool) {
+        self.ref = ref
         self.summary = summary
         self.labels = labels
         self.internalDate = internalDate
@@ -133,9 +138,57 @@ public struct GmailArrival: Sendable, Hashable {
         self.runsRules = runsRules
     }
 
-    public var ref: GmailRef? {
-        guard let id = summary.gmailID, let thread = summary.gmailThreadID else { return nil }
-        return GmailRef(id: id, threadID: thread)
+    /// An arrival described by its headers alone. The rules and mutes still decide for themselves
+    /// which mail they act on, so it is marked as mail they may act on.
+    public init(ref: GmailRef, labels: Set<GmailLabelID>, internalDate: Date, from: EmailAddress, to: [EmailAddress] = [],
+                cc: [EmailAddress] = [], subject: String, messageID: String = "", inReplyTo: String = "",
+                references: [String] = [], hasAttachments: Bool = false, bodyText: String = "") {
+        var summary = MessageSummary(accountID: UUID(), folderID: UUID(), uid: 0, messageID: messageID, inReplyTo: inReplyTo,
+                                     references: references, subject: subject, from: from, to: to, cc: cc, date: internalDate,
+                                     flags: [], size: 0, hasAttachments: hasAttachments, threadKey: ref.threadID.threadKey)
+        summary.gmailID = ref.id
+        summary.gmailThreadID = ref.threadID
+        summary.internalDate = internalDate
+        self.init(ref: ref, summary: summary, labels: labels, internalDate: internalDate, textPlain: bodyText,
+                  isAnnounced: labels.contains(.inbox), runsRules: true)
+    }
+
+    public var from: EmailAddress {
+        get { summary.from }
+        set { summary.from = newValue }
+    }
+    public var to: [EmailAddress] {
+        get { summary.to }
+        set { summary.to = newValue }
+    }
+    public var cc: [EmailAddress] {
+        get { summary.cc }
+        set { summary.cc = newValue }
+    }
+    public var subject: String {
+        get { summary.subject }
+        set { summary.subject = newValue }
+    }
+    public var messageID: String {
+        get { summary.messageID }
+        set { summary.messageID = newValue }
+    }
+    public var inReplyTo: String {
+        get { summary.inReplyTo }
+        set { summary.inReplyTo = newValue }
+    }
+    public var references: [String] {
+        get { summary.references }
+        set { summary.references = newValue }
+    }
+    public var hasAttachments: Bool {
+        get { summary.hasAttachments }
+        set { summary.hasAttachments = newValue }
+    }
+    /// The text a body condition is checked against.
+    public var bodyText: String {
+        get { textPlain ?? "" }
+        set { textPlain = newValue }
     }
 }
 

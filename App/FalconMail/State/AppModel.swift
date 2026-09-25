@@ -1151,7 +1151,7 @@ final class AppModel {
     }
 
     func folder(for target: MoveTarget) -> FolderInfo? {
-        (folders[target.accountID] ?? []).first { $0.path == target.folderPath && $0.isSelectable }
+        MoveTargets.folder(for: target, in: folders[target.accountID] ?? [])
     }
 
     var lastMoveTarget: FolderInfo? {
@@ -1189,7 +1189,7 @@ final class AppModel {
 
     private var moveScope: [FolderInfo] {
         let accountIDs = Set(selectedMessages.map(\.accountID))
-        return accounts.flatMap { folders[$0.id] ?? [] }.filter { $0.isSelectable && accountIDs.contains($0.accountID) }
+        return accounts.flatMap { folders[$0.id] ?? [] }.filter { MoveTargets.offers($0) && accountIDs.contains($0.accountID) }
     }
 
     func paletteTargets(matching query: String) -> [FolderInfo] {

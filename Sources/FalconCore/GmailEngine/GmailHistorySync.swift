@@ -565,12 +565,13 @@ extension GmailAccountEngine {
         let own = ownAddresses()
         var arrivals: [GmailArrival] = []
         for message in messages {
-            guard let summary = GmailMessageBuilder.summary(message, accountID: accountID, folderID: inbox),
+            guard let ref = message.ref, let summary = GmailMessageBuilder.summary(message, accountID: accountID, folderID: inbox),
                   let date = message.receivedDate else { continue }
             let muted = await isMuted(summary)
-            let text = GmailMessageContent.textStage(message).message.textPlain
+            // HTML-only mail gives its text too, so a body condition matches it as on any account.
+            let text = GmailMessageContent.textStage(message).message.bestText
             arrivals.append(GmailArrival(
-                summary: summary, labels: message.labels, internalDate: date, textPlain: text,
+                ref: ref, summary: summary, labels: message.labels, internalDate: date, textPlain: text,
                 isAnnounced: GmailArrivalRule.announces(labels: message.labels, internalDate: date, from: summary.from.address,
                                                         gmailNow: gmailNow, ownAddresses: own, muted: muted),
                 runsRules: GmailArrivalRule.runsRules(labels: message.labels, internalDate: date, from: summary.from.address,
@@ -578,7 +579,7 @@ extension GmailAccountEngine {
         }
         if let actions = parts.actions {
             let quiet = await actions.arrived(arrivals, engine: self)
-            for i in arrivals.indices where arrivals[i].summary.gmailID.map(quiet.contains) == true { arrivals[i].isAnnounced = false }
+            for i in arrivals.indices where quiet.contains(arrivals[i].ref.id) { arrivals[i].isAnnounced = false }
         }
         report.arrivals += arrivals
         let announced = arrivals.filter(\.isAnnounced).map(\.summary)
