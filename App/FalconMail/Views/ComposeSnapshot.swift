@@ -117,6 +117,8 @@ enum ComposeSnapshot {
         model.expandedThreadIDs = []
         model.selectedMessageIDs = []
         model.rebuildRows()
+    }
+
     /// A made-up message whose subject is far too long for the reading header's one line. Its
     /// account is none the model knows, so the reader finds no text for it and fetches none.
     private static var longSubject: MessageSummary {
