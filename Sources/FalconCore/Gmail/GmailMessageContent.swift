@@ -179,28 +179,55 @@ extension GmailAPIClient {
 }
 
 /// Opens of one account's messages found only on the server. An open books its 20 units the
-/// moment it is sent, and moving through results with the arrow keys passes over rows nobody
-/// reads, so an open is sent only once the reader has stayed on the message for `settle`
-/// seconds. Opens of one message at the same time, from the reading pane, a tab and Reply,
-/// share one fetch.
+/// moment it is sent. Moving through the list with the arrow keys passes over rows nobody reads,
+/// so an open for the reading pane, whose selection moved, is sent only once the reader has
+/// stayed on the message for `settle` seconds, and a later move gives it up. An open the reader
+/// asked for, a message window or tab, Return, Command-O, Reply or Forward, is sent at once.
+/// Opens of one message at the same time, from the reading pane, a window and Reply, share one
+/// fetch.
 public actor GmailOpener {
-    private let client: GmailAPIClient
-    private let settle: TimeInterval
-    private var running: [String: Task<GmailOpenedMessage, Error>] = [:]
-
-    public init(client: GmailAPIClient, settle: TimeInterval = 0.3) {
-        self.client = client
-        self.settle = settle
+    /// Why a message is being opened, which decides whether its open waits.
+    public enum Trigger: Sendable, Equatable {
+        /// The reading pane's selection moved onto it, by a click or the arrow keys.
+        case selectionMoved
+        /// The reader asked for it: a message window or tab, Return, Command-O, Reply or Forward.
+        case asked
     }
 
-    public func openText(id: String) async throws -> GmailOpenedMessage {
-        if running[id] == nil {
-            try await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000))
+    private let client: GmailAPIClient
+    private let settle: TimeInterval
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
+    private var running: [String: Task<GmailOpenedMessage, Error>] = [:]
+    /// Counts the reading pane's moves, so that an open still waiting learns it was passed over.
+    private var moves = 0
+    /// The message opened last, for a pane's open that waited while Reply or a window opened it.
+    private var lastOpened: GmailOpenedMessage?
+
+    public init(client: GmailAPIClient, settle: TimeInterval = 0.3,
+                sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+                    try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                }) {
+        self.client = client
+        self.settle = settle
+        self.sleep = sleep
+    }
+
+    public func openText(id: String, trigger: Trigger) async throws -> GmailOpenedMessage {
+        if trigger == .selectionMoved, running[id] == nil {
+            moves &+= 1
+            let move = moves
+            try await sleep(settle)
+            try Task.checkCancellation()
+            // The selection has moved on: this row was only passed over.
+            guard move == moves else { throw CancellationError() }
+            if let lastOpened, lastOpened.gmailID == id, running[id] == nil { return lastOpened }
         }
         let client = self.client
         let open = running[id] ?? Task { try await client.openText(id: id) }
         running[id] = open
         defer { running[id] = nil }
-        return try await open.value
+        let opened = try await open.value
+        lastOpened = opened
+        return opened
     }
 }

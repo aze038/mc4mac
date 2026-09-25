@@ -286,10 +286,13 @@ struct MessageReaderView: View {
     }
 
     /// Gmail's refusal shows as a line in the pane instead of an alert, so moving through results
-    /// while Gmail is busy never stacks up alerts.
+    /// while Gmail is busy never stacks up alerts. Only the reading pane, whose selection the
+    /// arrow keys move, waits to see whether the reader stays; a window, a tab and Try Again
+    /// open at once.
     private func openFromServer() async -> MIMEMessage? {
+        let trigger: GmailOpener.Trigger = context == .pane && attempt == 0 ? .selectionMoved : .asked
         do {
-            let body = try await model.openServerMessage(message)
+            let body = try await model.openServerMessage(message, trigger: trigger)
             serverProblem = nil
             return body
         } catch let error as GoogleAPIError {

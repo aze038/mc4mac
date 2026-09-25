@@ -233,10 +233,10 @@ extension AppModel {
     // MARK: - Opening messages found only on the server
 
     /// The text of a message found only on the server, for Reply and Forward, which the reader
-    /// asked for, so a refusal is told as an alert.
+    /// asked for, so it is fetched at once and a refusal is told as an alert.
     func serverBody(for message: MessageSummary) async -> MIMEMessage? {
         do {
-            return try await openServerMessage(message)
+            return try await openServerMessage(message, trigger: .asked)
         } catch is CancellationError {
             return nil
         } catch {
@@ -246,15 +246,17 @@ extension AppModel {
     }
 
     /// Opens a message found only on the server into memory: its text now, its attachments only
-    /// when opened, saved or forwarded. A refusal is thrown as `GoogleAPIError` for the caller to
-    /// show where it belongs.
-    func openServerMessage(_ message: MessageSummary) async throws -> MIMEMessage {
+    /// when opened, saved or forwarded. The reading pane opens it as its selection moves, which
+    /// waits a moment in case the arrow keys are only passing over it; everything else the reader
+    /// asked for opens at once. A refusal is thrown as `GoogleAPIError` for the caller to show
+    /// where it belongs.
+    func openServerMessage(_ message: MessageSummary, trigger: GmailOpener.Trigger) async throws -> MIMEMessage {
         if let opened = openedServerMessages[message.id] { return opened.message }
         guard let reference = GmailServerRow.reference(from: message.id) else {
             throw GoogleAPIError(kind: .other, detail: "not a row found on the server")
         }
         guard let opener = gmailOpener(for: reference.accountID) else { throw GoogleAPIError(kind: .offline) }
-        let opened = try await opener.openText(id: reference.gmailID)
+        let opened = try await opener.openText(id: reference.gmailID, trigger: trigger)
         // Inline pictures fetched meanwhile by another caller are kept.
         if openedServerMessages[message.id] == nil { remember(opened, for: message.id) }
         return openedServerMessages[message.id]?.message ?? opened.message

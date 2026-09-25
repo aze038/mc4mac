@@ -581,7 +581,7 @@ final class GmailSearchTests: XCTestCase {
         let opener = GmailOpener(client: client, settle: 0.3)
 
         for message in messages {
-            let open = Task { try await opener.openText(id: message.id) }
+            let open = Task { try await opener.openText(id: message.id, trigger: .selectionMoved) }
             try await Task.sleep(nanoseconds: 2_000_000)
             open.cancel()
             _ = try? await open.value
@@ -590,8 +590,8 @@ final class GmailSearchTests: XCTestCase {
         let spent = await client.limiter.spent
         XCTAssertTrue(spent.isEmpty, "and costs nothing")
 
-        async let pane = opener.openText(id: messages[7].id)
-        async let reply = opener.openText(id: messages[7].id)
+        async let pane = opener.openText(id: messages[7].id, trigger: .selectionMoved)
+        async let reply = opener.openText(id: messages[7].id, trigger: .asked)
         let (a, b) = try await (pane, reply)
         XCTAssertEqual(a.message.subject, "Result 7")
         XCTAssertEqual(b.message.subject, "Result 7")
