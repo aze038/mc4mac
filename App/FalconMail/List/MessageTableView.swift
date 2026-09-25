@@ -23,6 +23,8 @@ struct MessageTableView: NSViewRepresentable {
     /// The menu for the rows a right-click acts on.
     var menu: (ListSelection) -> NSMenu? = { _ in nil }
     var onSelectionChange: (ListSelection) -> Void = { _ in }
+    /// The buttons a trackpad swipe on a row shows, from either edge.
+    var rowActions: (Int, NSTableView.RowActionEdge) -> [NSTableViewRowAction] = { _, _ in [] }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -141,6 +143,13 @@ struct MessageTableView: NSViewRepresentable {
                     // A child row's text is its conversation's, which may be what arrived.
                     if record?.displayKind == .child || controller.key(at: row).map(keys.contains) == true { configure(row: row) }
                 }
+            case .selection:
+                applying = true
+                let rows = controller.selection.indexes(in: controller.snapshot)
+                table.selectRowIndexes(rows, byExtendingSelection: false)
+                if let first = rows.first { table.scrollRowToVisible(first) }
+                applying = false
+                refreshVisible()
             }
         }
 
@@ -167,6 +176,10 @@ struct MessageTableView: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
+
+        func tableView(_ tableView: NSTableView, rowActionsForRow row: Int, edge: NSTableView.RowActionEdge) -> [NSTableViewRowAction] {
+            parent.rowActions(row, edge)
+        }
 
         func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
             let id = NSUserInterfaceItemIdentifier("MessageTableRow")

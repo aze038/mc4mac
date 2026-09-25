@@ -161,6 +161,8 @@ final class AppModel {
     /// SwiftUI reads it on each body evaluation.
     var rowCache: [ListRow] = []
     var rowIndex: [String: ListRow] = [:]
+    /// The message table, which shows the list of every account on the Gmail API (see EngineList).
+    let engineList = EngineList()
     var accountsNeedingSignIn = Set<UUID>()
     @ObservationIgnored var lastMailSelection: SidebarSelection?
     var isSearching = false
@@ -1015,6 +1017,8 @@ final class AppModel {
     }
 
     func reloadMessages() async {
+        // The table shows it: nothing is read from the stored rows.
+        if await reloadEngineList() { return }
         do {
             if submittedSearchQuery != nil {
                 // Sync reloads come often; asking Gmail again for each would spend the quota.
@@ -1089,6 +1093,8 @@ final class AppModel {
     }
 
     func rebuildThreads() {
+        // The table's rows are its own; the threads are then its selected rows' (see EngineList).
+        guard !engineList.isShown else { return }
         let visible = visibleMessages
         let grouped: [MessageThread]
         if groupByThread {

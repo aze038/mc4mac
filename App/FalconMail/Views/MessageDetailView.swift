@@ -352,6 +352,9 @@ struct MessageWindowView: View {
     /// Whether the conversation's messages have been read, until when the window waits for them
     /// rather than showing its newest message alone for a moment.
     @State private var conversationRead: Bool
+    /// Why a Google message on the Gmail API cannot be read yet, offline or while Gmail asks
+    /// FalconMail to wait; the window stays open and fills in by itself.
+    @State private var waitingSentence: String?
 
     /// `message` and `conversation` are given only by the debug snapshots, which have no store to
     /// read them from.
@@ -385,6 +388,13 @@ struct MessageWindowView: View {
                     }
                 }
                 .navigationTitle(message.subject.isEmpty ? "(no subject)" : message.subject)
+            } else if let waitingSentence {
+                ContentUnavailableView {
+                    Label("This message isn't on this Mac", systemImage: "icloud.slash")
+                } description: {
+                    Text(waitingSentence)
+                }
+                .background(OLColor.reading)
             } else {
                 ProgressView()
             }
@@ -408,6 +418,10 @@ struct MessageWindowView: View {
     }
 
     private func load() async {
+        if model.usesGmailEngine(messageID: messageID) {
+            await loadFromEngine()
+            return
+        }
         if let current = await model.message(id: messageID) {
             message = current
             if model.openMessageWindows.contains(messageID) { model.messageWindowRows[messageID] = current }
@@ -418,6 +432,34 @@ struct MessageWindowView: View {
             dismiss()
         }
         conversationRead = true
+    }
+
+    /// A Google message on the Gmail API, opened by its Gmail id. The window closes only when
+    /// Gmail says the message is gone; offline, or while Gmail asks FalconMail to wait, it stays
+    /// open with what it has, and tries again every quarter of a minute until it can read it.
+    private func loadFromEngine() async {
+        while !Task.isCancelled {
+            switch await model.windowMessage(messageID) {
+            case .available(let current):
+                waitingSentence = nil
+                message = current
+                if model.openMessageWindows.contains(messageID) { model.messageWindowRows[messageID] = current }
+                if let ids = model.conversationWindows[messageID] { conversationIDs = ids }
+                if conversationIDs.count > 1 { conversation = await model.windowConversation(conversationIDs, newest: current) }
+                conversationRead = true
+                return
+            case .gone:
+                if RowKey(string: messageID)?.isGmail == true {
+                    model.statusText = "This message was moved or deleted on another device."
+                }
+                dismiss()
+                return
+            case .unavailable:
+                conversationRead = true
+                if message == nil { waitingSentence = model.windowWaitingSentence(messageID) }
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+            }
+        }
     }
 
     /// Settings → Composing: "Close the original message window after replying or forwarding",
