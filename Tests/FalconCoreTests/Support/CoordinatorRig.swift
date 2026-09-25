@@ -118,8 +118,9 @@ final class CoordinatorRig: @unchecked Sendable {
 
     private func noteSettings(_ settings: GmailEngineSettings, for id: UUID) { lock.withLock { settingsGiven[id] = settings } }
 
-    /// Starts the coordinator and the Outbox as the app does at launch.
-    func launch(undoWindow: TimeInterval = 5) async throws {
+    /// Starts the coordinator and the Outbox as the app does at launch. `beforeStart` is told the
+    /// coordinator before any engine starts, as the app tells it the owner's settings.
+    func launch(undoWindow: TimeInterval = 5, beforeStart: ((SyncCoordinator) async -> Void)? = nil) async throws {
         try await store.load()
         let layout = layout
         let mutes = mutes
@@ -154,6 +155,7 @@ final class CoordinatorRig: @unchecked Sendable {
                         undoWindow: 0, confirmAfter: [0.05, 0.15], retryDelay: { _ in 0 })
         let events = events
         listener = Task { for await event in coordinator.events { events.record(event) } }
+        await beforeStart?(coordinator)
         await coordinator.startAll()
     }
 

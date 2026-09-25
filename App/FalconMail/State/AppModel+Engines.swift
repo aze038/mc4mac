@@ -195,6 +195,22 @@ extension AppModel {
         })
     }
 
+    /// "Show All Gmail Labels" for each Google account: its engine starts with it, and is told
+    /// at once when the owner changes it in the sidebar's menu or in Settings.
+    func followLabelsShown() async {
+        for account in await store.allAccounts() where GmailLabelsShown.all(for: account.id) {
+            await coordinator.setShowsAllLabels(true, accountID: account.id)
+        }
+        guard labelsShownObserver == nil else { return }
+        let coordinator = coordinator
+        labelsShownObserver = NotificationCenter.default.addObserver(forName: .falconGmailLabelsShownChanged, object: nil,
+                                                                     queue: .main) { note in
+            guard let accountID = note.object as? UUID else { return }
+            let shown = GmailLabelsShown.all(for: accountID)
+            Task { await coordinator.setShowsAllLabels(shown, accountID: accountID) }
+        }
+    }
+
     func applyRoster(_ roster: GmailEngineRoster) {
         let left = gmailEngineAccounts.subtracting(roster.gmailAccounts)
         let runningBefore = Set(engineAssemblies.keys)

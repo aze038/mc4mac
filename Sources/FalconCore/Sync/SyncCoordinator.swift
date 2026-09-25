@@ -70,6 +70,8 @@ public actor SyncCoordinator {
     private var probes: [UUID: Task<Void, Never>] = [:]
     private var turns: [UUID: Task<Void, Never>] = [:]
     private var spotlightFeeds: [UUID: Task<Void, Never>] = [:]
+    /// Accounts whose "Show All Gmail Labels" is on.
+    private var labelsShownAll: Set<UUID> = []
     private var rosterListeners: [UUID: AsyncStream<GmailEngineRoster>.Continuation] = [:]
     private var heartbeat: Task<Void, Never>?
     private var meterSaves: Task<Void, Never>?
@@ -242,6 +244,13 @@ public actor SyncCoordinator {
         for s in syncers.values { await s.setBodyPrefetch(count, maxBytes: maxOfflineBodyBytes) }
     }
 
+    /// "Show All Gmail Labels" for a Google account, from Settings → Accounts or the sidebar: its
+    /// engine is started with it, and the engine running now reads its labels again at once.
+    public func setShowsAllLabels(_ shown: Bool, accountID: UUID) async {
+        if shown { labelsShownAll.insert(accountID) } else { labelsShownAll.remove(accountID) }
+        await engines[accountID]?.engine.setShowsAllLabels(shown)
+    }
+
     public func setUndoWindow(_ seconds: TimeInterval) async {
         undoWindow = max(0, seconds)
         for s in syncers.values { await s.setUndoWindow(undoWindow) }
@@ -313,6 +322,7 @@ public actor SyncCoordinator {
         let record = migration.load()
         var settings = GmailEngineSettings()
         if let findings = record.probe { settings = findings.adapted(settings) }
+        settings.showsAllLabels = labelsShownAll.contains(account.id)
         let continuation = eventContinuation
         let setup = GmailEngineSetup(folderHints: await store.folders(for: account.id), listIndex: listIndex, settings: settings,
                                      undoWindow: undoWindow, events: { continuation.yield($0) })

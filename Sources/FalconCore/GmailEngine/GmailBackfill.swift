@@ -89,6 +89,18 @@ public enum GmailLabelMapping {
         }
     }
 
+    /// "Show All Gmail Labels" turned off: the user labels Gmail hides from its own list are
+    /// hidden again. Their messages stay as they are; only the folders go from the sidebar.
+    public static func hidingGmailHidden(_ entries: [GmailLabelEntry]) -> [GmailLabelEntry] {
+        entries.map { entry in
+            var entry = entry
+            if entry.kind == .user, !GmailLabelTable.isShownByDefault(labelListVisibility: entry.labelListVisibility) {
+                entry.isShown = false
+            }
+            return entry
+        }
+    }
+
     /// The sidebar's folders: Inbox, then the [Gmail] group in Outlook's order and names, then the
     /// shown user labels by name, nested by `/`. Counts come from the index for a label listed in
     /// full, and from Gmail's own count while it is being listed. Drafts counts its drafts, as
@@ -520,7 +532,7 @@ extension GmailAccountEngine {
         guard let start = profile.historyID else { throw GoogleAPIError(kind: .other, detail: "profile without a history id") }
         let labels = try await transport.labels(work: .interactive)
         labelEntries = try await store.saveLabelTable(GmailLabelMapping.entries(from: labels, previous: labelEntries, hints: folderHints,
-                                                                               accountID: accountID, showsAll: settings.showsAllLabels))
+                                                                               accountID: accountID, showsAll: labelsShownAll))
         // The counts, and the Inbox's first page, side by side.
         let transport = self.transport
         let pageSize = min(100, settings.pageSize)
@@ -1088,12 +1100,18 @@ extension GmailAccountEngine {
         do {
             let labels = try await transport.labels(work: .background(.index))
             let previous = labelEntries
-            let entries = GmailLabelMapping.entries(from: labels, previous: previous, hints: folderHints, accountID: accountID,
-                                                    showsAll: settings.showsAllLabels)
-            guard entries != previous else { return }
+            var entries = GmailLabelMapping.entries(from: labels, previous: previous, hints: folderHints, accountID: accountID,
+                                                    showsAll: labelsShownAll)
+            if hidesGmailHiddenLabels { entries = GmailLabelMapping.hidingGmailHidden(entries) }
+            guard entries != previous else {
+                hidesGmailHiddenLabels = false
+                return
+            }
             labelEntries = try await store.saveLabelTable(entries)
-            let before = Set(previous.map(\.id))
-            let added = labelEntries.filter { $0.kind == .user && $0.isShown && !before.contains($0.id) }.map { GmailListingChain.label($0.id) }
+            hidesGmailHiddenLabels = false
+            // A label shown now that was not, new or shown by "Show All Gmail Labels", is listed.
+            let shownBefore = Set(previous.filter(\.isShown).map(\.id))
+            let added = labelEntries.filter { $0.kind == .user && $0.isShown && !shownBefore.contains($0.id) }.map { GmailListingChain.label($0.id) }
             if !added.isEmpty {
                 let result = try await relist(labels: added, allMail: false, replaceBits: false, confirmRemovals: false,
                                               work: .background(.index))

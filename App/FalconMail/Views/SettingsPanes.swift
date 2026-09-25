@@ -1016,6 +1016,13 @@ struct GmailEngineSection: View {
     @Environment(AppModel.self) private var model
     let account: AccountInfo
     @State private var busy = false
+    /// "Show All Gmail Labels", as the sidebar's account menu sets it too.
+    @AppStorage private var allLabels: Bool
+
+    init(account: AccountInfo) {
+        self.account = account
+        _allLabels = AppStorage(wrappedValue: false, GmailLabelsShown.key(account.id))
+    }
 
     var body: some View {
         if GmailEngineSwitch.isEligible(account) {
@@ -1034,6 +1041,11 @@ struct GmailEngineSection: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if let notice = model.engineSwitchNotices[account.id] {
                     Text(notice).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                }
+                if model.gmailEngineChoice(for: account) {
+                    Toggle("Show All Gmail Labels", isOn: Binding(get: { allLabels }, set: { GmailLabelsShown.set($0, for: account.id) }))
+                    Text("Labels Gmail hides from its own list are shown as folders too. No message changes.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
         } else if GmailEngineSwitch.usesGoogleIMAP(account) {

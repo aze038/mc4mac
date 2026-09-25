@@ -512,6 +512,8 @@ final class AppModel {
     @ObservationIgnored var engineAutosavedAt: [UUID: Date] = [:]
     /// Sleep and screen-lock observers, which set how often the Gmail engines check.
     @ObservationIgnored var activityObservers: [NSObjectProtocol] = []
+    /// Follows "Show All Gmail Labels", which each Google account's engine is told of.
+    @ObservationIgnored var labelsShownObserver: NSObjectProtocol?
 
     private func applyOfflineSettings() {
         Task { await coordinator.setBodyPrefetch(offlineBodies, maxBytes: maxOfflineMB * 1024 * 1024) }
@@ -603,6 +605,7 @@ final class AppModel {
         listen()
         listenToEngines()
         followOwnerActivity()
+        await followLabelsShown()
         watchForWake()
         await coordinator.startAll()
         // Copies in Drafts of messages discarded just before the last quit, which it could not delete.

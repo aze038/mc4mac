@@ -294,6 +294,11 @@ public actor GmailAccountEngine: MailAccountEngine {
     var labelCountsAsked: [GmailLabelID: Date] = [:]
     var labelsToRefresh: Set<GmailLabelID> = []
     var labelsListWanted = false
+    /// Settings ▸ Accounts' and the sidebar's "Show All Gmail Labels", as the owner last set it.
+    var labelsShownAll: Bool
+    /// Set when the owner turned "Show All Gmail Labels" off: the labels Gmail hides from its own
+    /// list are hidden again at the next reading of the labels.
+    var hidesGmailHiddenLabels = false
     /// Where each listing chain has got, as the store keeps it.
     var chainProgress: [GmailListingChain: GmailChainProgress] = [:]
     var backfillRetryAt: Date?
@@ -350,6 +355,7 @@ public actor GmailAccountEngine: MailAccountEngine {
         importPlacer = GmailStorePlacer(store: store, now: { clock.now() })
         schedule = GmailPollSchedule(settings: settings.schedule, now: clock.now())
         healthTracker = GmailHealthTracker(email: account.email)
+        labelsShownAll = settings.showsAllLabels
     }
 
     // MARK: - MailAccountEngine: the list and the parts
@@ -571,6 +577,24 @@ public actor GmailAccountEngine: MailAccountEngine {
     /// The view the owner has open, whose folder is listed first while the index is built.
     public func noteSelectedFolder(_ label: GmailLabelID?) {
         selectedLabel = .some(label)
+    }
+
+    /// "Show All Gmail Labels" turned on or off. The labels are read again at once, or once the
+    /// first listing has ended: turned on, every label becomes a folder and those not listed yet
+    /// are listed; turned off, the labels Gmail hides from its own list are hidden again. No
+    /// message changes either way.
+    public func setShowsAllLabels(_ shown: Bool) {
+        guard shown != labelsShownAll else { return }
+        labelsShownAll = shown
+        hidesGmailHiddenLabels = !shown
+        if relistTask == nil, state.backfill?.phase == .complete {
+            relistTask = Task {
+                await self.refreshLabelList()
+                self.relistEnded()
+            }
+        } else {
+            labelsListWanted = true
+        }
     }
 
     // MARK: - Time
