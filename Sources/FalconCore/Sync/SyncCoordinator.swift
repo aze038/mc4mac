@@ -143,7 +143,28 @@ public actor SyncCoordinator {
         }
     }
 
+    /// Every Google account whose record says it is on the Gmail API is held to it before any
+    /// engine starts, whether or not it is kept in sync: IMAP and SMTP are refused for it, its
+    /// IMAP store is sealed, and the Outbox sends its mail through Gmail or keeps it. The app
+    /// asks this as soon as the account list is read; `startAll` asks it again first.
+    public func prime() async {
+        for account in await store.allAccounts() { await holdOnGmail(account) }
+    }
+
+    /// Holds a Google account to the Gmail API when its record says it is on it, as a paused
+    /// account or one not yet started at launch would otherwise not be.
+    private func holdOnGmail(_ account: AccountInfo) async {
+        guard GmailEngineSwitch.isEligible(account), !gmailAccounts.contains(account.id),
+              GmailMigrationFile(files: GmailFiles(layout: store.layout, accountID: account.id)).load().isOnGmail else { return }
+        gmailAccounts.insert(account.id)
+        guardian.blockMailServers(for: account)
+        await store.seal(account.id)
+        Log.info("gmail", "\(account.email): on the Gmail API; IMAP and SMTP are refused for it")
+        publish()
+    }
+
     public func startAll() async {
+        await prime()
         for account in await store.allAccounts() where account.isEnabled {
             await start(account: account)
         }
@@ -292,7 +313,11 @@ public actor SyncCoordinator {
     }
 
     private func startNow(_ account: AccountInfo) async {
-        guard account.isEnabled else { await stopNow(account.id); return }
+        guard account.isEnabled else {
+            await stopNow(account.id)
+            await holdOnGmail(account)
+            return
+        }
         await stopRunning(account.id)
         if GmailEngineSwitch.isOn(account, in: switches) {
             if await moveToGmail(account) {
@@ -422,7 +447,7 @@ public actor SyncCoordinator {
         let migration = GmailMigrationFile(files: files)
         var record = migration.load()
         guard record.isOnGmail || gmailAccounts.contains(account.id) else {
-            unblock(account.id)
+            await unblock(account.id)
             return true
         }
         let waiting = PendingGmailOpsFile(files: files).load().ops.contains { !$0.isCommitted }
@@ -438,15 +463,17 @@ public actor SyncCoordinator {
         record.spotlightCleared = nil
         migration.save(record)
         Log.info("gmail", "\(account.email): back on IMAP; the Gmail engine's files are kept for the next time")
-        unblock(account.id)
+        await unblock(account.id)
         return true
     }
 
-    private func unblock(_ accountID: UUID) {
+    /// The IMAP store is unsealed before the IMAP engine that follows starts, since at a launch
+    /// the account was sealed before its switch was looked at.
+    private func unblock(_ accountID: UUID) async {
         gmailAccounts.remove(accountID)
         guardian.allowMailServers(for: accountID)
         notices[accountID] = nil
-        Task { await store.unseal(accountID) }
+        await store.unseal(accountID)
         publish()
     }
 
@@ -556,9 +583,16 @@ public actor SyncCoordinator {
 
     /// How the Outbox sends for the account: by Gmail's own send for an account on the Gmail API,
     /// never by SMTP, even while its engine is not running; by SMTP for every other.
-    public func sendRoute(for accountID: UUID) -> SendRoute {
+    /// An account whose record says it is on the Gmail API is never sent for by SMTP, even
+    /// before it has been held to it at launch.
+    public func sendRoute(for accountID: UUID) async -> SendRoute {
         if let assembly = engines[accountID] { return .gmail(assembly.sender) }
-        return gmailAccounts.contains(accountID) ? .gmailUnavailable : .smtp
+        if gmailAccounts.contains(accountID) { return .gmailUnavailable }
+        if let account = await store.account(accountID), GmailEngineSwitch.isEligible(account),
+           GmailMigrationFile(files: GmailFiles(layout: store.layout, accountID: accountID)).load().isOnGmail {
+            return .gmailUnavailable
+        }
+        return .smtp
     }
 
     public var roster: GmailEngineRoster {
@@ -637,6 +671,11 @@ public struct SMTPSender: MessageSender {
 
     public func send(accountID: UUID, from: String, recipients: [String], message: Data) async throws {
         guard let account = await store.account(accountID) else { throw FalconError.storage("account missing") }
+        // A Google account on the Gmail API never sends by SMTP; its mail waits in the Outbox.
+        if GmailEngineSwitch.isEligible(account),
+           GmailMigrationFile(files: GmailFiles(layout: store.layout, accountID: account.id)).load().isOnGmail {
+            throw RoutingSender.notReady
+        }
         try await deliver(account, from, recipients, message)
         guard let syncer = await syncer(account.id) else { return }
         if account.provider == "google" {
