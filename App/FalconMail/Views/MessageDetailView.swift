@@ -357,6 +357,9 @@ struct MessageWindowView: View {
     /// The conversation the window was opened for, all its messages; empty for a single message.
     @State private var conversation: [MessageSummary]
     @State private var conversationIDs: [String]
+    /// Whether the conversation's messages have been read, until when the window waits for them
+    /// rather than showing its newest message alone for a moment.
+    @State private var conversationRead: Bool
 
     /// `message` and `conversation` are given only by the debug snapshots, which have no store to
     /// read them from.
@@ -365,6 +368,7 @@ struct MessageWindowView: View {
         _message = State(initialValue: message)
         _conversation = State(initialValue: conversation)
         _conversationIDs = State(initialValue: conversation.map(\.id))
+        _conversationRead = State(initialValue: !conversation.isEmpty)
     }
 
     var body: some View {
@@ -376,6 +380,8 @@ struct MessageWindowView: View {
                     Rectangle().fill(OLColor.chromeLine).frame(height: 1)
                     if conversation.count > 1 {
                         ConversationStackView(messages: conversation, context: .window, afterReplying: { closeAfterReplying() })
+                    } else if !conversationRead, (model.conversationWindows[messageID]?.count ?? 0) > 1 {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         MessageReaderView(message: message, context: .window)
                     }
@@ -419,6 +425,7 @@ struct MessageWindowView: View {
             // A window brought back for a message that is no longer stored has nothing to show.
             dismiss()
         }
+        conversationRead = true
     }
 
     /// Settings → Composing: "Close the original message window after replying or forwarding",
