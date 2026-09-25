@@ -141,6 +141,13 @@ struct MessageTableView: NSViewRepresentable {
                     // A child row's text is its conversation's, which may be what arrived.
                     if record?.displayKind == .child || controller.key(at: row).map(keys.contains) == true { configure(row: row) }
                 }
+            case .selection:
+                applying = true
+                let rows = controller.selection.indexes(in: controller.snapshot)
+                table.selectRowIndexes(rows, byExtendingSelection: false)
+                if let first = rows.first { table.scrollRowToVisible(first) }
+                applying = false
+                refreshVisible()
             }
         }
 

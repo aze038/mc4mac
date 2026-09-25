@@ -14,6 +14,9 @@ public enum ListControllerChange {
     case diff(ListDiff)
     /// Text arrived for these rows; the table redraws those on screen.
     case content(Set<RowKey>)
+    /// The app chose the selected rows, as when the selected ones left the list and the next is
+    /// selected in their place; the table selects `selection` and shows it.
+    case selection
 }
 
 @MainActor
@@ -38,6 +41,9 @@ public final class ListController {
     @ObservationIgnored public private(set) var selection = ListSelection.none
     /// Called with each change, for the table.
     @ObservationIgnored public var onChange: ((ListControllerChange) -> Void)?
+    /// Called after each change the table was given, with what was selected before it, for the
+    /// app: selected rows whose state changed, or that left the list, are read again.
+    @ObservationIgnored public var onApplied: ((ListControllerChange, _ selectionBefore: ListSelection) -> Void)?
 
     @ObservationIgnored private var source: (any ListSource)?
     @ObservationIgnored private var sourceTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
@@ -64,7 +70,8 @@ public final class ListController {
         for task in viewTasks { task.cancel() }
         viewTasks = []
         settleTask?.cancel()
-        if self.view?.scope != view.scope { expanded = [] }
+        let sameScope = self.view?.scope == view.scope
+        if !sameScope { expanded = [] }
         self.view = view
         self.source = source
         listen(to: source)
@@ -72,9 +79,13 @@ public final class ListController {
         let footerStream = (source as? any ListSourceExtras)?.footers(of: view)
         let snapshot = await source.snapshot(of: view)
         guard current == generation else { return }
-        replace(with: snapshot)
-        selection = .none
-        selectionCount = 0
+        // The same folder sorted or filtered another way keeps what was selected, found again by
+        // its message; another folder starts with nothing selected. Decided before the table
+        // reloads, which selects what the controller holds.
+        let before = selection
+        selection = sameScope ? ListController.carried(selection, from: self.snapshot, to: snapshot) : .none
+        selectionCount = selection.count(in: snapshot)
+        replace(with: snapshot, selectionBefore: before)
         footers = []
         viewTasks.append(Task { [weak self] in
             for await diff in diffs {
@@ -113,11 +124,12 @@ public final class ListController {
         settleTask?.cancel()
     }
 
-    private func replace(with snapshot: ListSnapshot) {
+    private func replace(with snapshot: ListSnapshot, selectionBefore: ListSelection) {
         self.snapshot = snapshot
         publishCounts()
         planner.reset(rowCount: snapshot.rows.count)
         onChange?(.reload)
+        onApplied?(.reload, selectionBefore)
     }
 
     private func publishCounts() {
@@ -134,6 +146,7 @@ public final class ListController {
             && old - diff.removed.count + diff.inserted.count == diff.snapshot.rows.count
             && (diff.inserted.last.map { $0 < diff.snapshot.rows.count } ?? true)
         let before = snapshot
+        let selectedBefore = selection
         snapshot = diff.snapshot
         publishCounts()
         planner.reset(rowCount: snapshot.rows.count)
@@ -142,11 +155,13 @@ public final class ListController {
             selection = ListController.carried(selection, from: before, to: snapshot)
             selectionCount = selection.count(in: snapshot)
             onChange?(.reload)
+            onApplied?(.reload, selectedBefore)
             return
         }
         selection = ListController.shifted(selection, removed: diff.removed, inserted: diff.inserted)
         selectionCount = selection.count(in: snapshot)
         onChange?(.diff(diff))
+        onApplied?(.diff(diff), selectedBefore)
         // Rows that moved or arrived on screen may need their text.
         if !visible.isEmpty { request(visible, priority: .visible) }
     }
@@ -190,6 +205,7 @@ public final class ListController {
     private func arrived(_ rows: [RowKey: MessageRowContent]) {
         content.insert(rows)
         onChange?(.content(Set(rows.keys)))
+        onApplied?(.content(Set(rows.keys)), selection)
     }
 
     // MARK: - What the table reads
@@ -309,6 +325,16 @@ public final class ListController {
         await extras.setExpanded(expanded, in: view)
     }
 
+    /// Closes every opened conversation of the view.
+    public func collapseAll() async {
+        guard !expanded.isEmpty, let view, let extras = source as? any ListSourceExtras else { return }
+        expanded = []
+        await extras.setExpanded([], in: view)
+    }
+
+    /// Whether any conversation of the view is open.
+    public var hasExpanded: Bool { !expanded.isEmpty }
+
     // MARK: - Selection
 
     /// What the table has selected, as its selected rows.
@@ -320,6 +346,15 @@ public final class ListController {
 
     public func selectAll() {
         setSelection(.all())
+    }
+
+    /// Selects `rows` as the app chooses, such as the next message once the selected one was
+    /// deleted, and has the table show it. Header rows are never selected.
+    public func select(rows: IndexSet) {
+        let before = selection
+        setSelection(ListSelection(rows: rows.filteredIndexSet { record(at: $0).map { $0.displayKind != .header } ?? false }))
+        onChange?(.selection)
+        onApplied?(.selection, before)
     }
 
     /// What a command acts on: the rows named one by one up to 1,000, the whole view above that
