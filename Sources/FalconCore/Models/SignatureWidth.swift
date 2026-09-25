@@ -63,7 +63,30 @@ public enum SignatureWidth {
         }
         let bounds = line.boundingRect(with: NSSize(width: 100_000, height: CGFloat.greatestFiniteMagnitude),
                                        options: [.usesLineFragmentOrigin, .usesFontLeading])
-        return bounds.width + padding * 2
+        // Measuring outside a window may give a picture no room, so each is counted at its own
+        // size, beside the words' own width.
+        var pictures: CGFloat = 0
+        var words = NSMutableAttributedString(attributedString: line)
+        line.enumerateAttribute(.attachment, in: NSRange(location: 0, length: line.length), options: .reverse) { value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            pictures += pictureWidth(attachment)
+            words.deleteCharacters(in: range)
+        }
+        guard pictures > 0 else { return bounds.width + padding * 2 }
+        words = words.length > 0 ? words : NSMutableAttributedString()
+        let wordsWidth = words.boundingRect(with: NSSize(width: 100_000, height: CGFloat.greatestFiniteMagnitude),
+                                            options: [.usesLineFragmentOrigin, .usesFontLeading]).width
+        return max(bounds.width, wordsWidth + pictures) + padding * 2
+    }
+
+    /// A picture's width as it is shown: the size it was given, else its image's own.
+    private static func pictureWidth(_ attachment: NSTextAttachment) -> CGFloat {
+        if attachment.bounds.width > 0 { return attachment.bounds.width }
+        if let image = attachment.image, image.size.width > 0 { return image.size.width }
+        if let data = attachment.fileWrapper?.regularFileContents ?? attachment.contents, let image = NSImage(data: data) {
+            return image.size.width
+        }
+        return 0
     }
 
     /// A table's width: the width in points the HTML gave it, else its columns'.
