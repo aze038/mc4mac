@@ -15,10 +15,20 @@ on:
         default: google
         type: choice
         options: [none, google, all]
+      filter:
+        description: "Only the test suites matching this (e.g. Gmail or GmailBackfillTests); empty runs them all"
+        default: ""
+        type: string
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# Builds are kept between runs outside the checkout, which the checkout wipes, so a push compiles
+# only what it changed instead of everything from scratch.
+env:
+  SPM_CACHE: ${{ github.workspace }}/../../ci-cache/mc4mac/swiftpm
+  XCODE_CACHE: ${{ github.workspace }}/../../ci-cache/mc4mac/DerivedData
 
 jobs:
   build:
@@ -50,7 +60,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.tests == 'none'
         run: |
           set -o pipefail
-          swift build --build-tests 2>&1 | tee swift-test.log | grep -E "error:|warning: unre|Compiling|Build complete" || true
+          swift build --build-tests --scratch-path "$SPM_CACHE" 2>&1 | tee swift-test.log | grep -E "error:|warning: unre|Compiling|Build complete" || true
           grep -q "Build complete" swift-test.log
 
       - name: FalconCore tests
@@ -60,8 +70,10 @@ jobs:
           IMAP_ONLY: 'FalconCoreTests\.(CatchUpTests|FlagRescanTests|IMAPTests|FakeIMAPServerTests|ConnectionTests|OpConnectionTests|FolderListTests|TrafficTests)/'
         run: |
           set -o pipefail
-          if [ "${{ inputs.tests }}" = "all" ]; then swift test 2>&1 | tee swift-test.log
-          else swift test --skip "$IMAP_ONLY" 2>&1 | tee swift-test.log; fi
+          args=(--scratch-path "$SPM_CACHE" --parallel)
+          [ -n "${{ inputs.filter }}" ] && args+=(--filter "${{ inputs.filter }}")
+          [ "${{ inputs.tests }}" = "all" ] || args+=(--skip "$IMAP_ONLY")
+          swift test "${args[@]}" 2>&1 | tee swift-test.log
 
       - name: Diagnostics backend and tool tests
         if: github.event_name == 'workflow_dispatch' && inputs.tests != 'none'
@@ -80,7 +92,7 @@ jobs:
             -scheme FalconMail \
             -configuration Debug \
             -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath build \
+            -derivedDataPath "$XCODE_CACHE" \
             CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee xcodebuild.log | grep -E "error:|warning: unre|\*\* BUILD|Compiling|Linking" || true
           grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
