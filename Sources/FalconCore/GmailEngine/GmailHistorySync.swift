@@ -163,7 +163,10 @@ extension GmailAccountEngine {
                         resyncWanted = true
                     }
                 } else {
+                    // Nothing to check from until the first listing has saved its cursor.
                     report.skipped = true
+                    schedule.checkEnded(at: now())
+                    return report
                 }
             }
             if resyncBegan != nil || resyncWanted {
@@ -186,6 +189,7 @@ extension GmailAccountEngine {
     }
 
     private func checkSucceeded(reason: PokeReason, startedAt: Date, report: GmailCheckReport) {
+        figures.checks += 1
         let outcome = healthTracker.succeeded()
         if let health = outcome.health { setHealth(health) }
         schedule.pause(until: nil)
@@ -203,6 +207,7 @@ extension GmailAccountEngine {
 
     private func checkFailed(_ error: GoogleAPIError, report: inout GmailCheckReport) {
         report.failure = error
+        figures.failedChecks += 1
         let current = now()
         let pause = currentPause
         let verdict = healthTracker.failed(error, pause: pause, now: current)
@@ -304,6 +309,10 @@ extension GmailAccountEngine {
         publishIndexChange(ids: touched)
         await announce(placement.top, gmailNow: startedAt, report: &report)
         refreshCounts(of: changedLabels)
+        if !placement.deep.isEmpty, state.dateGroupsWanted == true {
+            let placed = Set(placement.deep.map(\.raw))
+            Task { await self.refreshAnchors(near: placed) }
+        }
     }
 
     /// Records what a placement decided in the engine's own memory, once it is journaled.
@@ -653,6 +662,7 @@ extension GmailAccountEngine {
             try await store.commit(GmailJournalBatch(changes: result.changes + [.resyncEnded(target)], cursor: target))
             cursor = target
             resyncBegan = nil
+            figures.resyncs += 1
             let units = await transport.usage().totalUnits - before
             Log.info("gmail", "resync reason=history404 removed=\(result.removed) added=\(result.added) units=\(units)")
             Log.warning("gmail", "\(account.email): listed the mailbox again after the history expired: \(result.removed) removed, \(result.added) added",
@@ -689,6 +699,11 @@ extension GmailAccountEngine {
         for chunk in labels.chunked(25) {
             guard let answers = try? await transport.batch(chunk.map { .label($0) }, work: work) else { continue }
             for label in chunk {
+                if case .failure(let error)? = answers[.label(label)], error.kind == .notFound {
+                    // The label went on another device: the labels are read again.
+                    labelsListWanted = true
+                    continue
+                }
                 guard case .success(let answer)? = answers[.label(label)], let found = answer.label else { continue }
                 let counts = GmailLabelCounts(messagesTotal: found.messagesTotal ?? 0, messagesUnread: found.messagesUnread ?? 0,
                                               threadsTotal: found.threadsTotal, threadsUnread: found.threadsUnread, asOf: now())

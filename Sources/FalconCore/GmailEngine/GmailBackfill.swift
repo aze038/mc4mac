@@ -558,6 +558,13 @@ extension GmailAccountEngine {
         saveState(force: true)
         wakeLoop()
         await firstScreen(try await inboxPage.refs)
+        // The addresses the owner sends as are his own, so his mail from them is never announced.
+        if let addresses = try? await transport.sendAs(work: .background(.index)) {
+            state.sendAs = addresses.map { $0.sendAsEmail.lowercased() }
+            state.sendAsAt = now()
+            sendAsAddresses = Set(state.sendAs ?? [])
+            saveState(force: true)
+        }
     }
 
     /// Step 2: the text of the rows the Inbox shows first, in one batch: a conversation with more
@@ -915,8 +922,25 @@ extension GmailAccountEngine {
         for thread in threads {
             let ids = members[thread.raw] ?? []
             // A summary that already names every message of the conversation, such as the one the
-            // first screen kept, is still right.
-            if let summary = kept[thread], Set(summary.members.map(\.id)) == Set(ids) { continue }
+            // first screen kept, is still right; one that lacks only messages kept on the Mac, such
+            // as a reply that just arrived, takes them from their kept rows.
+            if let summary = kept[thread] {
+                let known = Set(summary.members.map(\.id))
+                if known == Set(ids) { continue }
+                let missing = ids.filter { !known.contains($0) }
+                let found = await store.cachedMessages(missing)
+                if found.count == missing.count {
+                    let present = Set(ids)
+                    let members = (summary.members.filter { present.contains($0.id) }
+                                   + found.values.map { GmailThreadMember(id: $0.id, from: $0.from, date: $0.date) })
+                        .sorted { ($0.date, $0.id) < ($1.date, $1.id) }
+                    if let newest = members.last {
+                        summaries.append(GmailThreadSummary(threadID: thread, senders: GmailMessageBuilder.senders(members.map(\.from)),
+                                                            messageCount: members.count, newestDate: newest.date, members: members))
+                        continue
+                    }
+                }
+            }
             let cached = await store.cachedMessages(ids)
             if !ids.isEmpty, cached.count == ids.count {
                 if let summary = GmailMessageBuilder.threadSummary(thread, cached: Array(cached.values)) { summaries.append(summary) }
@@ -939,6 +963,7 @@ extension GmailAccountEngine {
     // MARK: - Another app importing (§4.3 step 5)
 
     func floodBegan(at date: Date, count: Int) async {
+        figures.floods += 1
         await transport.setFloodMode(true)
         state.floodBegan = date
         saveState(force: true)
@@ -958,11 +983,15 @@ extension GmailAccountEngine {
             }
             let counts = await askCounts(comparable, work: .background(.index))
             let changed = comparable.filter { counts[$0]?.messagesTotal != before[$0]?.messagesTotal }.map { GmailListingChain.label($0) }
+            let waiting = provisional
             let result = try await relist(labels: changed, allMail: true, replaceBits: false, confirmRemovals: false, work: .background(.index))
             if !result.changes.isEmpty { try await store.commit(GmailJournalBatch(changes: result.changes, cursor: cursor)) }
+            figures.relistings += 1
             publishIndexChange(ids: [], everything: true)
+            await refreshAnchors(near: waiting.subtracting(provisional))
             if final {
                 await settleLeftovers()
+                if let began = state.floodBegan { figures.floodSeconds += now().timeIntervalSince(began) }
                 await transport.setFloodMode(false)
                 state.floodBegan = nil
                 saveState(force: true)

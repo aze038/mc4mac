@@ -182,6 +182,19 @@ public struct GmailKeptRecord: Codable, Hashable, Sendable {
     }
 }
 
+/// What the engine did, for the daily health report (§10.3). Units and bytes come from the
+/// transport's own usage.
+public struct GmailEngineFigures: Sendable, Equatable {
+    public var checks = 0
+    public var failedChecks = 0
+    public var resyncs = 0
+    public var floods = 0
+    public var floodSeconds: TimeInterval = 0
+    public var relistings = 0
+
+    public init() {}
+}
+
 /// What the engine keeps in `state.json`. Never the history cursor, which lives only in the
 /// journal, flushed with the changes it covers.
 struct GmailEngineState: Codable, Equatable {
@@ -274,6 +287,8 @@ public actor GmailAccountEngine: MailAccountEngine {
     var selectedLabel: GmailLabelID??
     var undoWindow: TimeInterval = 10
     public private(set) var checksCompleted = 0
+    /// What the daily health report counts (§10.3).
+    public internal(set) var figures = GmailEngineFigures()
 
     // Work in progress.
     private var loopTask: Task<Void, Never>?
@@ -468,8 +483,9 @@ public actor GmailAccountEngine: MailAccountEngine {
             await maintenance(at: current)
             guard running, !Task.isCancelled else { break }
             guard cursor != nil || resyncBegan != nil else {
-                // The first listing sets the cursor, and wakes the loop when it has.
-                await sleep(until: .distantFuture)
+                // The first listing sets the cursor and wakes the loop; until then the loop only
+                // looks after that listing, and starts it again if it stopped.
+                await sleep(until: nextMaintenance(after: current))
                 continue
             }
             guard let due = schedule.nextCheck(after: current) else {
