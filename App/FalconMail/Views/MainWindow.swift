@@ -122,13 +122,21 @@ struct MainWindow: View {
                 } else if let thread = model.currentThread {
                     MessageReaderView(message: thread.latest, conversation: model.currentConversation)
                         .id(thread.latest.id)
-                } else if model.selectedMessageIDs.count > 1 {
-                    ContentUnavailableView("\(model.selectedMessageIDs.count) conversations selected", systemImage: "envelope.badge")
+                } else if selectedCount > 1 {
+                    ContentUnavailableView("\(ListStatusText.number(selectedCount)) conversations selected", systemImage: "envelope.badge")
+                } else if model.engineList.isShown, model.engineList.selectionCount == 1 {
+                    // Being read from Gmail; the message shows in a moment.
+                    Color.clear
                 } else {
                     ContentUnavailableView("No message selected", systemImage: "envelope.open")
                 }
             }
         }
+    }
+
+    /// How many rows are selected: in the table, however many, above 1,000 too.
+    private var selectedCount: Int {
+        model.engineList.isShown ? model.engineList.selectionCount : model.selectedMessageIDs.count
     }
 
     private func startImport() {
@@ -155,16 +163,46 @@ struct StatusBar: View {
     /// While the mailbox window fills the screen the bar is Outlook's taller grey one, with a tab
     /// in the middle for each message or compose window minimised.
     var fillsScreen = false
-    /// The engine's list, once the window shows one: Items is then every message of the view, not
-    /// the rows loaded, and "up to date" waits until every folder shown has been listed in full.
-    @Environment(ListController.self) private var list: ListController?
+    /// The table, while it shows the list: Items is then every message of the view, not the rows
+    /// loaded, and "up to date" waits until every folder shown has been listed in full.
+    private var list: ListController? { model.engineList.isShown ? model.engineList.controller : nil }
 
     /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail. Nothing is claimed
     /// to be up to date while an account cannot sync; what stops it is shown on its own.
     private var stateText: String? {
         guard model.statusText == "Up to date" || model.statusText == "Ready" else { return model.statusText }
         if let list { return list.stateText(everyAccountReachable: model.everyAccountReachable) }
-        return model.everyAccountReachable ? "All folders are up to date." : nil
+        if !model.gmailEngineAccounts.isEmpty, !model.engineList.everyFolderListed { return nil }
+        return model.everyAccountReachable ? ListStatusText.upToDate : nil
+    }
+
+    /// While a Google account on the Gmail API lists its mailbox, how far it has got, in the words
+    /// its engine gave: "Syncing {email}: 12,000 of 55,000 messages".
+    private var listingProgress: String? {
+        let text = model.statusText
+        guard text.hasPrefix("Syncing ") else { return nil }
+        let listing = model.accounts.contains { account in
+            model.syncingAccounts.contains(account.id) && model.usesGmailEngine(account.id) && text.hasPrefix("Syncing \(account.email):")
+        }
+        return listing ? text : nil
+    }
+
+    /// Accounts whose server asked FalconMail to wait, or that are stopped until the owner acts, with
+    /// the sentence to show: Gmail's pause of a Google account on the Gmail API among them. A pause
+    /// is not a failure, so it plays no sound and leaves the account connected.
+    private var pausedNotices: [(account: AccountInfo, text: String)] {
+        model.accounts.compactMap { account in
+            guard account.isEnabled else { return nil }
+            let problem = model.accountStatus.problems[account.id]
+            switch model.accountStatus.health[account.id] {
+            case .imapPaused?, .blocked?:
+                return problem.map { (account, $0) }
+            case .apiPaused?:
+                return (account, problem ?? "Waiting a moment before loading more of \(account.email)'s messages.")
+            default:
+                return nil
+            }
+        }
     }
 
     @ViewBuilder private var itemsLabel: some View {
@@ -175,8 +213,14 @@ struct StatusBar: View {
         }
     }
 
+    /// An account Gmail asked to wait a while is still connected: its mail on the Mac is there,
+    /// and it goes on by itself.
     private var connectedText: String? {
-        let online = model.accounts.filter { $0.isEnabled && model.online[$0.id] != false }.map(\.email)
+        let online = model.accounts.filter { account in
+            guard account.isEnabled else { return false }
+            if let health = model.accountStatus.health[account.id] { return health.staysConnected }
+            return model.online[account.id] != false
+        }.map(\.email)
         return online.isEmpty ? nil : "Connected to: " + online.joined(separator: ", ")
     }
 
@@ -240,7 +284,7 @@ struct StatusBar: View {
     }
 
     @ViewBuilder private var state: some View {
-        if let summary = list?.syncProgress?.text ?? model.syncingSummary {
+        if let summary = listingProgress ?? list?.syncProgress?.text ?? model.syncingSummary {
             ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
             Text(summary).font(.system(size: OL.statusFont)).foregroundStyle(OLColor.text).lineLimit(1)
         } else if let stateText {
@@ -265,7 +309,7 @@ struct StatusBar: View {
             Button("\(account.email) is offline · Retry") { model.syncNow() }
                 .buttonStyle(.link).font(.caption).foregroundStyle(Color.orange)
         }
-        ForEach(model.pausedAccountNotices, id: \.account.id) { notice in
+        ForEach(pausedNotices, id: \.account.id) { notice in
             Text(notice.text)
                 .font(.caption).foregroundStyle(Color.orange).lineLimit(1).truncationMode(.middle)
                 .help(notice.text)

@@ -68,7 +68,11 @@ struct HomeRibbon: View {
     @Environment(AppModel.self) private var model
 
     /// Actions need a selection with nothing in it that was found only on the server.
-    private var canChange: Bool { !model.selectedMessageIDs.isEmpty && !model.selectionIsReadOnly }
+    private var canChange: Bool { model.hasSelection && !model.selectionIsReadOnly }
+
+    /// A command that changes mail, where the folder shown allows it: on a Google account on the
+    /// Gmail API, by Gmail's rules, so Archive is not offered in Sent or Drafts, nor Move in Drafts.
+    private func can(_ verb: MailActionRequest.Verb) -> Bool { canChange && model.allowsCommand(verb) }
 
     var body: some View {
         let thread = model.currentThread
@@ -88,8 +92,12 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Delete", symbol: "trash", enabled: canChange) { model.delete(model.selectedMessages) }
-            RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: canChange) { model.archive(model.selectedMessages) }
+            RibbonTile(title: "Delete", symbol: "trash", enabled: can(.delete)) {
+                model.onSelection(.delete) { model.delete(model.selectedMessages) }
+            }
+            RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: can(.archive)) {
+                model.onSelection(.archive) { model.archive(model.selectedMessages) }
+            }
             RibbonSeparator()
 
             RibbonTile(title: "Reply", symbol: "arrowshape.turn.up.left", tint: OLColor.replyPurple, enabled: hasSingle) { model.replyToSelection(all: false) }
@@ -100,19 +108,25 @@ struct HomeRibbon: View {
                     model.showModule(.calendar)
                     NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
                 }
-                RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: hasSingle && !model.selectionIsReadOnly) { model.forwardAsAttachment(model.selectedMessages) }
+                RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: hasSingle && !model.selectionIsReadOnly) {
+                    model.onSelection(.forwardAsAttachment) { model.forwardAsAttachment(model.selectedMessages) }
+                }
             }
             RibbonSeparator()
 
             RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
             RibbonSeparator()
 
-            RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: canChange, action: { model.openMovePalette() }) {
+            RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: can(.move(to: UUID())),
+                            action: { model.onSelection(.move) { model.openMovePalette() } }) {
                 MoveMenuItems()
             }
-            RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed, enabled: canChange, action: { model.toggleJunkOnSelection() }) {
-                Button(model.selectionIsAllInJunk ? "Not Junk" : "Move to Junk") { model.toggleJunkOnSelection() }
-                Button("Mute Conversation") { model.muteSelection() }
+            RibbonSplitTile(title: "Junk", symbol: "person.crop.circle.badge.xmark", tint: OLColor.junkRed,
+                            enabled: can(model.selectionIsAllInJunk ? .notJunk : .junk),
+                            action: { model.onSelection(.junk) { model.toggleJunkOnSelection() } }) {
+                Button(model.selectionIsAllInJunk ? "Not Junk" : "Move to Junk") { model.onSelection(.junk) { model.toggleJunkOnSelection() } }
+                Button("Mute Conversation") { model.onSelection(.mute) { model.muteSelection() } }
+                    .disabled(!model.allowsCommand(.mute))
             }
             RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
                 Button("Run Rules Now") { model.runRulesNow() }
@@ -120,12 +134,14 @@ struct HomeRibbon: View {
             }
             RibbonSeparator()
 
-            RibbonTile(title: "Read/Unread", symbol: ReadMarking.readUnreadMarksRead(model.selectedMessages) ? "envelope.open" : "envelope", enabled: canChange) { model.toggleReadOnSelection() }
+            RibbonTile(title: "Read/Unread", symbol: ReadMarking.readUnreadMarksRead(model.selectedMessages) ? "envelope.open" : "envelope",
+                       enabled: can(.markRead)) { model.onSelection(.markRead) { model.toggleReadOnSelection() } }
             RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
                 CategoryMenuItems()
             }
-            RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: canChange, action: { model.toggleFlagOnSelection() }) {
-                Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.toggleFlagOnSelection() }
+            RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: can(.flag),
+                            action: { model.onSelection(.flag) { model.toggleFlagOnSelection() } }) {
+                Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.onSelection(.flag) { model.toggleFlagOnSelection() } }
                 Button("Mark All as Read") { model.markAllReadInSelection() }
             }
             RibbonSeparator()
@@ -224,7 +240,7 @@ struct ToolsRibbon: View {
             RibbonTile(title: "Import", symbol: "square.and.arrow.down.on.square", tint: .blue) {
                 NotificationCenter.default.post(name: .falconImport, object: nil)
             }
-            RibbonTile(title: "Export", symbol: "square.and.arrow.up.on.square", tint: .blue, enabled: !model.selectedMessageIDs.isEmpty) {
+            RibbonTile(title: "Export", symbol: "square.and.arrow.up.on.square", tint: .blue, enabled: model.hasSelection) {
                 NotificationCenter.default.post(name: .falconExport, object: nil)
             }
             RibbonSeparator()
@@ -264,7 +280,11 @@ struct MoveMenuItems: View {
 
     var body: some View {
         ForEach(recent) { folder in
-            Button(folder.path) { model.move(model.selectedMessages, to: folder) }
+            // A Google account's folders by the name the sidebar gives them, such as Sent, never
+            // Gmail's own path, such as [Gmail]/Sent Mail.
+            Button(model.isGmailEngineFolder(folder) ? folder.name : folder.path) {
+                model.onSelection(.move) { model.move(model.selectedMessages, to: folder) }
+            }
         }
         if !recent.isEmpty { Divider() }
         Button("Move to Folder…") { model.openMovePalette() }
@@ -310,8 +330,15 @@ struct FilterMenuItems: View {
             Button("Clear Filters") { model.clearFilters() }.disabled(model.filters.isEmpty)
             Divider()
             Toggle("Group by Conversation", isOn: $model.groupByThread)
-            Button("Expand All Conversations") { model.expandAll() }.disabled(!model.hasExpandableThreads)
-            Button("Collapse All Conversations") { model.collapseAll() }.disabled(!model.canCollapseSomething)
+            if model.engineList.isShown {
+                // A folder of 200,000 messages is never opened out all at once; each conversation
+                // opens by its chevron or the right arrow.
+                Button("Collapse All Conversations") { Task { await model.engineList.controller.collapseAll() } }
+                    .disabled(!model.engineList.controller.hasExpanded)
+            } else {
+                Button("Expand All Conversations") { model.expandAll() }.disabled(!model.hasExpandableThreads)
+                Button("Collapse All Conversations") { model.collapseAll() }.disabled(!model.canCollapseSomething)
+            }
         }
     }
 
