@@ -62,6 +62,14 @@ public struct GmailSender: MessageSender {
 
     public func prepare(_ item: OutboxItem, message: Data) async -> OutboxItem {
         var item = item
+        if item.attemptID != nil, item.gmailSentID == nil, case .sent(let id) = await confirm(item) {
+            // An earlier attempt failed in a way taken to mean it never reached Gmail, or the
+            // owner is sending a held message again. A connection dropped during an upload can
+            // look like the first, and Gmail can take a message in minutes after it was held, so
+            // the earlier attempt is looked for before anything is sent again.
+            item.gmailSentID = id ?? item.gmailSentID
+            return item
+        }
         item.attemptID = UUID()
         if item.messageID?.isEmpty ?? true {
             item.messageID = AddressParser.messageIDs(MIMEParser.parseHeaders(message).first("Message-ID")).first
@@ -77,6 +85,8 @@ public struct GmailSender: MessageSender {
     }
 
     public func send(_ item: OutboxItem, message: Data) async throws -> OutboxItem {
+        // Found in Gmail's records while the attempt was readied: it went already.
+        if item.gmailSentID != nil { return item }
         let upload = try GmailSender.upload(message, for: item)
         let answer: GmailMessage
         do {

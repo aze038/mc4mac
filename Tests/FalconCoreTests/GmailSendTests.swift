@@ -167,6 +167,39 @@ final class GmailSendTests: XCTestCase {
         XCTAssertEqual(attempts, 1)
     }
 
+    func testASendWhoseConnectionDroppedAfterGmailTookItIsFoundBeforeItWouldGoAgain() async throws {
+        let r = rig()
+        // A transport that took a dropped connection mid-upload for being offline.
+        r.transport.failAfterAccepting(.messagesSend, with: GoogleAPIError(kind: .offline, detail: "URLError -1005"))
+        _ = try await r.outbox.enqueue(accountID: r.mailbox.accountID, from: owner, message: Self.message(), sendAt: Date())
+        await assertEventually { await self.item(r.outbox)?.status == .sent }
+        XCTAssertEqual(sentMessages(r.mailbox).count, 1, "found in the history, not sent a second time")
+        XCTAssertEqual(r.mailbox.attempts[.messagesSend], 1)
+        let sentID = await item(r.outbox)?.gmailSentID
+        XCTAssertEqual(sentID, sentMessages(r.mailbox).first?.ref.id)
+    }
+
+    func testSendingAHeldMessageAgainLooksForItFirst() async throws {
+        let r = rig(confirmAfter: [0.05, 0.1])
+        // Held: Gmail's records showed nothing within both looks...
+        r.transport.failAfterAccepting(.messagesSend, with: GoogleAPIError(kind: .temporary, detail: "URLError -1001"))
+        r.transport.hold(.historyList)
+        _ = try await r.outbox.enqueue(accountID: r.mailbox.accountID, from: owner, message: Self.message(), sendAt: Date())
+        r.transport.refuse(.historyList, with: GoogleAPIError(kind: .offline, detail: "URLError -1009"))
+        r.transport.release(.historyList)
+        await assertEventually { await self.item(r.outbox)?.isHeld == true }
+        XCTAssertEqual(sentMessages(r.mailbox).count, 1, "though Gmail had taken it")
+
+        // ...and when the owner sends it again, the look finds it and nothing more goes.
+        r.transport.refuse(.historyList, with: nil)
+        let latest = await item(r.outbox)
+        let held = try XCTUnwrap(latest)
+        try await r.outbox.retry(held.id)
+        await assertEventually { await self.item(r.outbox)?.status == .sent }
+        XCTAssertEqual(sentMessages(r.mailbox).count, 1)
+        XCTAssertEqual(r.mailbox.attempts[.messagesSend], 1)
+    }
+
     // MARK: - Unclear outcomes
 
     func testATimeoutAfterGmailTookTheMessageIsFoundInTheHistoryAndMarkedSent() async throws {
