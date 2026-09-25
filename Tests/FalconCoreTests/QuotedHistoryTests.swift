@@ -96,6 +96,68 @@ final class QuotedHistoryTests: XCTestCase {
         XCTAssertNil(QuotedHistory.split(html: thunderbird, repeating: earlier))
     }
 
+    func testAnswersWrittenBetweenTheQuotedPartsOfAGmailQuoteAreNeverHidden() {
+        // Gmail splits its quote where an answer is typed into it; the answer stays in its quote.
+        let html = """
+            <div dir="ltr">Answers inline.</div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">On Thu, \
+            24 Sept 2026 at 16:02, Sam Taylor &lt;sam@example.com&gt; wrote:<br></div><blockquote class="gmail_quote">\
+            Hello Alex, the pallets for Tuesday are counted and the paperwork</blockquote><div>Twelve pallets, all \
+            wrapped.</div><blockquote class="gmail_quote">is on its way to the depot. Regards, Sam</blockquote></div>
+            """
+        XCTAssertNil(QuotedHistory.split(html: html, repeating: earlier))
+        // A forward is not in a blockquote, and what it forwards is shown.
+        let forward = """
+            <div dir="ltr">For the depot.</div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">---------- \
+            Forwarded message ---------<br>From: Sam Taylor<br></div><br><br><div dir="ltr">\(earlierText)</div></div>
+            """
+        XCTAssertNil(QuotedHistory.split(html: forward, repeating: earlier))
+    }
+
+    func testAGmailQuoteWhoseWriterIsNamedAsOlderGmailDidIsStillHidden() throws {
+        let html = """
+            <div>Thanks Sam.</div><div class="gmail_quote">On Thu, Sep 24, 2026 at 4:02 PM, Sam Taylor \
+            &lt;sam@example.com&gt; wrote:<br><blockquote class="gmail_quote"><div class="gmail_quote">Deeper</div>\
+            \(earlierText)</blockquote></div>
+            """
+        let split = try XCTUnwrap(QuotedHistory.split(html: html, repeating: earlier))
+        XCTAssertEqual(HTMLText.plainText(from: split.own), "Thanks Sam.")
+    }
+
+    func testAnAnswerUnderAThunderbirdQuotesLineNamingItsWriterIsNeverHidden() {
+        let html = """
+            <p>Agreed.</p><div class="moz-cite-prefix">On 24/09/2026 16:02, Sam Taylor wrote:<br></div>\
+            <p>Before I answer: the depot moved.</p><blockquote type="cite">\(earlierText)</blockquote>
+            """
+        XCTAssertNil(QuotedHistory.split(html: html, repeating: earlier))
+    }
+
+    func testTheEarlierMessagesAreReadOnlyAsFarAsTheFirstTheQuoteRepeats() throws {
+        let html = "<div>Thanks.</div><div class=\"gmail_quote\"><blockquote class=\"gmail_quote\">\(earlierText)</blockquote></div>"
+        var read = 0
+        let texts = [earlier[0], "Never to be reached, being after the one quoted."].lazy.map { text -> String in
+            read += 1
+            return text
+        }
+        XCTAssertNotNil(QuotedHistory.split(html: html, repeating: texts))
+        XCTAssertEqual(read, 1)
+    }
+
+    func testTheNewestOfFiftyRepliesEachQuotingAllBeforeItIsTrimmedQuickly() throws {
+        var html = "<div>\(earlierText)</div>"
+        var openings: [String] = [earlier[0]]
+        for index in 2...50 {
+            let own = "Update \(index): the carrier confirmed slot \(index) and the crew for shift \(index) is booked."
+            html = "<div dir=\"ltr\">\(own)</div><br><div class=\"gmail_quote\"><div class=\"gmail_attr\">On Thu, Sam wrote:<br>"
+                + "</div><blockquote class=\"gmail_quote\">\(html)</blockquote></div>"
+            openings.insert(own, at: 0)
+        }
+        let started = Date()
+        let split = try XCTUnwrap(QuotedHistory.split(html: html, repeating: openings.dropFirst()))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
+        XCTAssertEqual(HTMLText.plainText(from: split.own),
+                       "Update 50: the carrier confirmed slot 50 and the crew for shift 50 is booked.")
+    }
+
     func testAQuoteOfSomethingNotInTheConversationIsShown() {
         let html = """
             <div>Please see what the carrier said.</div><div class="gmail_quote"><blockquote class="gmail_quote">\

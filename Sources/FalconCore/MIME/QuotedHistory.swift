@@ -7,7 +7,8 @@ import Foundation
 /// - it starts where a mail program starts one: Gmail's, Apple Mail's, Thunderbird's, Yahoo's or
 ///   Outlook's quote, FalconMail's own, an "Original Message" line, or lines beginning with ">";
 /// - it runs to the end of the message, so no answer written under or between quoted lines is
-///   ever hidden;
+///   ever hidden, nor one written between the quoted parts of a Gmail quote or under a
+///   Thunderbird quote's line naming its writer;
 /// - it holds the opening words of an earlier message of the conversation;
 /// - the message says something of its own above it.
 ///
@@ -28,8 +29,9 @@ public enum QuotedHistory {
 
     /// `message` with its quoted history taken out of the text the reader shows (its HTML when it
     /// has any, else its plain text), or nil when it has none FalconMail is sure of. `earlier` is
-    /// what is known of the text of each earlier message of the conversation.
-    public static func trimmed(_ message: MIMEMessage, repeating earlier: [String]) -> MIMEMessage? {
+    /// what is known of the text of each earlier message of the conversation; it is read only as
+    /// far as the first that the quote repeats, so a lazy sequence spares working out the rest.
+    public static func trimmed(_ message: MIMEMessage, repeating earlier: some Sequence<String>) -> MIMEMessage? {
         if let html = message.textHTML, !html.trimmed.isEmpty {
             guard let split = split(html: html, repeating: earlier) else { return nil }
             var copy = message
@@ -44,7 +46,7 @@ public enum QuotedHistory {
 
     // MARK: - HTML
 
-    public static func split(html: String, repeating earlier: [String]) -> Split? {
+    public static func split(html: String, repeating earlier: some Sequence<String>) -> Split? {
         guard let start = quoteStart(inHTML: html) else { return nil }
         let own = withoutTrailingBlankLines(String(html[..<start]))
         let quoted = String(html[start...])
@@ -55,6 +57,9 @@ public enum QuotedHistory {
     private enum Shape {
         /// The quote is this element, which must be the last thing in the message.
         case element(String)
+        /// Gmail's quote: a div holding the line naming the writer and the quote in blockquotes.
+        /// Anything else in it is an answer written between the quoted parts, never hidden.
+        case gmail
         /// A line naming the writer, followed by the quote in a blockquote that must be the last
         /// thing in the message.
         case attributionThenBlockquote
@@ -64,7 +69,7 @@ public enum QuotedHistory {
 
     private static let classValue = "\\bclass\\s*=\\s*[\"']?[^\"'>]*\\b"
     private static let markerPatterns: [(String, Shape)] = [
-        ("<div\\b[^>]*" + classValue + "gmail_quote\\b", .element("div")),
+        ("<div\\b[^>]*" + classValue + "gmail_quote\\b", .gmail),
         ("<blockquote\\b[^>]*" + classValue + "gmail_quote\\b", .element("blockquote")),
         ("<div\\b[^>]*" + classValue + "yahoo_quoted\\b", .element("div")),
         ("<blockquote\\b[^>]*\\btype\\s*=\\s*[\"']?cite\\b", .element("blockquote")),
@@ -97,9 +102,24 @@ public enum QuotedHistory {
         case .element(let tag):
             guard endsTheMessage(elementNamed: tag, at: range.lowerBound, in: html) else { return nil }
             return backingOverAttribution(range.lowerBound, in: html)
+        case .gmail:
+            guard let end = end(ofElementNamed: "div", at: range.lowerBound, in: html),
+                  HTMLText.plainText(from: String(html[end...])).isEmpty else { return nil }
+            // What is left of the quote without its quoted parts and Gmail's line naming the
+            // writer must be nothing, or that line as older Gmail wrote it, unmarked.
+            let quote = String(html[range.lowerBound..<end])
+            let rest = removing("div", opening: "<div\\b[^>]*" + classValue + "gmail_attr\\b",
+                                from: removing("blockquote", opening: "<blockquote\\b", from: dropFirstTag(quote)))
+            let words = HTMLText.plainText(from: rest)
+            guard words.isEmpty || isAttribution(words) else { return nil }
+            return backingOverAttribution(range.lowerBound, in: html)
         case .attributionThenBlockquote:
             guard let blockquote = html.range(of: "<blockquote", options: .caseInsensitive, range: range.upperBound..<html.endIndex),
                   endsTheMessage(elementNamed: "blockquote", at: blockquote.lowerBound, in: html) else { return nil }
+            // Nothing but the line naming the writer may stand between it and the quote.
+            let between = removing("div", opening: "<div\\b[^>]*" + classValue + "moz-cite-prefix\\b",
+                                   from: String(html[range.lowerBound..<blockquote.lowerBound]))
+            guard HTMLText.plainText(from: between).isEmpty else { return nil }
             return range.lowerBound
         case .toEnd:
             return backingOverRule(range.lowerBound, in: html)
@@ -122,15 +142,53 @@ public enum QuotedHistory {
     /// Whether the element named `tag` opening at `start` is followed by no words of its own:
     /// anything written after a quote is an answer under it, never to be hidden.
     private static func endsTheMessage(elementNamed tag: String, at start: String.Index, in html: String) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: "<(/?)\(tag)\\b[^>]*>", options: [.caseInsensitive]) else { return false }
+        guard let end = end(ofElementNamed: tag, at: start, in: html) else { return false }
+        return HTMLText.plainText(from: String(html[end...])).isEmpty
+    }
+
+    /// Just after the end of the element named `tag` that opens at `start`, or the end of the
+    /// message when it is never closed, since everything after it is then inside it.
+    private static func end(ofElementNamed tag: String, at start: String.Index, in html: String) -> String.Index? {
+        guard let regex = try? NSRegularExpression(pattern: "<(/?)\(tag)\\b[^>]*>", options: [.caseInsensitive]) else { return nil }
         var depth = 0
         for match in regex.matches(in: html, range: NSRange(start..., in: html)) {
             depth += match.range(at: 1).length > 0 ? -1 : 1
             guard depth == 0, let end = Range(match.range, in: html)?.upperBound else { continue }
-            return HTMLText.plainText(from: String(html[end...])).isEmpty
+            return end
         }
-        // Never closed: everything after it is inside it.
-        return true
+        return html.endIndex
+    }
+
+    /// `html` without its first tag, the one the element it is opens with.
+    private static func dropFirstTag(_ html: String) -> String {
+        guard let close = html.firstIndex(of: ">") else { return "" }
+        return String(html[html.index(after: close)...])
+    }
+
+    /// `html` without every element named `tag` whose opening tag matches `opening`, and all
+    /// that each holds.
+    static func removing(_ tag: String, opening: String, from html: String) -> String {
+        guard let tags = try? NSRegularExpression(pattern: "<(/?)\(tag)\\b[^>]*>", options: [.caseInsensitive]),
+              let wanted = try? NSRegularExpression(pattern: "^" + opening, options: [.caseInsensitive]) else { return html }
+        var kept = ""
+        var from = html.startIndex
+        var depth = 0
+        for match in tags.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
+            guard let range = Range(match.range, in: html) else { continue }
+            let closing = match.range(at: 1).length > 0
+            if depth == 0 {
+                let tagText = String(html[range])
+                guard !closing, wanted.firstMatch(in: tagText, range: NSRange(tagText.startIndex..., in: tagText)) != nil else { continue }
+                kept += html[from..<range.lowerBound]
+                depth = 1
+            } else {
+                depth += closing ? -1 : 1
+                if depth == 0 { from = range.upperBound }
+            }
+        }
+        // An element never closed takes the rest with it.
+        if depth == 0 { kept += html[from...] }
+        return kept
     }
 
     /// The line naming the writer, such as "On 24 Sep 2026, at 16:02, Sam wrote:", goes with the
@@ -158,7 +216,7 @@ public enum QuotedHistory {
 
     // MARK: - Plain text
 
-    public static func split(plain: String, repeating earlier: [String]) -> Split? {
+    public static func split(plain: String, repeating earlier: some Sequence<String>) -> Split? {
         let lines = plain.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         guard let cut = quoteStart(inLines: lines) else { return nil }
         let own = lines[..<cut].joined(separator: "\n").replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
@@ -221,7 +279,7 @@ public enum QuotedHistory {
     }
 
     /// Whether `quoted` holds the opening words of one of the earlier messages.
-    static func repeats(_ quoted: String, _ earlier: [String]) -> Bool {
+    static func repeats(_ quoted: String, _ earlier: some Sequence<String>) -> Bool {
         let haystack = " " + words(quoted).joined(separator: " ") + " "
         for text in earlier {
             let opening = words(text).prefix(openingWords)
