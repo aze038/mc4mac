@@ -36,6 +36,26 @@ public enum MessageOpening {
     }
 }
 
+/// What the Message menu's commands, and their shortcuts, act on. They follow the window in
+/// front, as Outlook's do: in a message window, its message alone, whatever the mailbox window
+/// has selected; while a message is being written, nothing, so that Command-Delete deletes text
+/// there rather than mail; otherwise the mailbox window's selection.
+public enum MenuTarget: Equatable, Sendable {
+    case selection
+    case messageWindow(String)
+    case nothing
+
+    /// `front` is the message or compose window in front, nil for any other; `writingInMailbox`
+    /// says the mailbox window in front shows a message being written in a tab.
+    public static func of(front: PopupKey?, writingInMailbox: Bool) -> MenuTarget {
+        switch front {
+        case .message(let id)?: return .messageWindow(id)
+        case .compose?: return .nothing
+        case nil: return writingInMailbox ? .nothing : .selection
+        }
+    }
+}
+
 /// The message and compose windows that are open, each either on screen or minimised into the
 /// tray along the foot of the mailbox window, where FalconMail keeps them instead of the Dock.
 public struct WindowTrayBook: Equatable, Sendable {

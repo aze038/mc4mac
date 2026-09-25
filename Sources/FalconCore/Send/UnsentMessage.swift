@@ -66,6 +66,28 @@ public enum UnsentMessage {
         guard let row, row.id == recordedID else { return nil }
         return row
     }
+
+    /// Saving a closed message to the server's Drafts folder without ever leaving it nowhere. The
+    /// caller has already written its copy on this Mac; that copy goes (`uploaded`) only once the
+    /// server has the message, so that a quit or a crash while it uploads leaves it for the next
+    /// launch to save again, and a failed upload hands it back (`failed`) to be kept. A second copy
+    /// in Drafts, after a crash just as the upload finished, is the worst that can happen.
+    public static func uploadToDrafts(upload: () async throws -> Void, uploaded: () async -> Void,
+                                    failed: (Error) -> Void) async {
+        do {
+            try await upload()
+        } catch {
+            return failed(error)
+        }
+        await uploaded()
+    }
+
+    /// The message already open to be written from the row `rowID` in Drafts, among `open` as
+    /// (draft, the row it was reopened from). Opening that row again brings it forward rather
+    /// than a second copy, since each copy closed would add its own to Drafts.
+    public static func alreadyOpen(row rowID: String, among open: [(draft: UUID, row: String?)]) -> UUID? {
+        open.first { $0.row == rowID }?.draft
+    }
 }
 
 /// The message discarded last, held in memory so that Undo can bring it back into a compose

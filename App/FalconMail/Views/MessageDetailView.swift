@@ -414,9 +414,13 @@ struct MessageWindowView: View {
         // Read again whenever stored messages change, so Read/Unread and Follow Up show, and
         // toggle, what the message is now.
         .task(id: model.openMessagesRevision) { await load() }
-        .onAppear { model.openMessageWindows.insert(messageID) }
+        .onAppear {
+            model.openMessageWindows.insert(messageID)
+            if let message { model.messageWindowRows[messageID] = message }
+        }
         .onDisappear {
             model.openMessageWindows.remove(messageID)
+            model.messageWindowRows[messageID] = nil
             if model.movePaletteWindow == messageID { model.closeMovePalette() }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -425,6 +429,7 @@ struct MessageWindowView: View {
     private func load() async {
         if let current = await model.message(id: messageID) {
             message = current
+            if model.openMessageWindows.contains(messageID) { model.messageWindowRows[messageID] = current }
         } else if message == nil {
             // A window brought back for a message that is no longer stored has nothing to show.
             dismiss()

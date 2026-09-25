@@ -146,6 +146,98 @@ extension AppModel {
         if let id = frontDraftID { discardCompose(id) }
     }
 
+    // MARK: The Message menu, on the window in front
+
+    var menuTarget: MenuTarget {
+        let writing: Bool
+        if frontWindow == .mailbox, case .compose? = activeTab { writing = true } else { writing = false }
+        return MenuTarget.of(front: frontWindow.popup, writingInMailbox: writing)
+    }
+
+    /// What the Message menu's commands act on: the message in the message window in front, none
+    /// while a message is being written, else the selection.
+    var menuMessages: [MessageSummary] {
+        switch menuTarget {
+        case .selection: return selectedMessages
+        case .messageWindow(let id): return messageWindowRows[id].map { [$0] } ?? []
+        case .nothing: return []
+        }
+    }
+
+    /// Whether the Message menu's commands that change mail have nothing they may change.
+    var menuCannotChange: Bool {
+        let list = menuMessages
+        return list.isEmpty || list.contains { $0.isServerOnly }
+    }
+
+    /// Archive, Delete, Move to Junk, Not Junk and Move Again from the Message menu. In a message
+    /// window its message goes, and the window closes as its ribbon's actions close it.
+    func menuMoves(_ action: ([MessageSummary]) -> Void) {
+        let list = menuMessages
+        guard !list.isEmpty else { return }
+        action(list)
+        if case .messageWindow(let id) = menuTarget { WindowTray.shared.close(.message(id)) }
+    }
+
+    func menuReply(all: Bool) {
+        switch menuTarget {
+        case .selection: replyToSelection(all: all)
+        case .messageWindow(let id):
+            guard let message = messageWindowRows[id] else { return }
+            reply(to: message, all: all) { [weak self] in self?.closeOriginalAfterReplying(id) }
+        case .nothing: break
+        }
+    }
+
+    func menuForward() {
+        switch menuTarget {
+        case .selection: forwardSelection()
+        case .messageWindow(let id):
+            guard let message = messageWindowRows[id] else { return }
+            forward(message) { [weak self] in self?.closeOriginalAfterReplying(id) }
+        case .nothing: break
+        }
+    }
+
+    /// Settings → Composing: "Close the original message window after replying or forwarding".
+    private func closeOriginalAfterReplying(_ id: String) {
+        guard Preferences.bool(Pref.closeOriginalAfterReply, default: true) else { return }
+        WindowTray.shared.close(.message(id))
+    }
+
+    func menuMove() {
+        switch menuTarget {
+        case .selection: openMovePalette()
+        case .messageWindow(let id):
+            if let message = messageWindowRows[id] { openMovePalette(for: message) }
+        case .nothing: break
+        }
+    }
+
+    func menuMoveAgain() {
+        guard case .messageWindow = menuTarget else { return moveToLastTarget() }
+        guard let target = lastMoveTarget, let message = menuMessages.first else { return }
+        guard message.accountID == target.accountID else { return menuMove() }
+        menuMoves { move($0, to: target) }
+    }
+
+    func menuToggleFlag() {
+        let list = menuMessages
+        guard let first = list.first else { return }
+        setFlagged(list, !first.isFlagged)
+    }
+
+    func menuMute() {
+        switch menuTarget {
+        case .selection: muteSelection()
+        case .messageWindow(let id):
+            guard let message = messageWindowRows[id] else { return }
+            mute([residentThread(containing: message) ?? MessageThread(messages: [message])])
+            WindowTray.shared.close(.message(id))
+        case .nothing: break
+        }
+    }
+
     func title(for tab: WorkspaceTab) -> String {
         switch tab {
         case .message(let id):

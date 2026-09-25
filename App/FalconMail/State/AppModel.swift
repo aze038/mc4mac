@@ -194,6 +194,9 @@ final class AppModel {
     @ObservationIgnored private var contactAddressCache = Set<String>()
     @ObservationIgnored private var myAddressCache = Set<String>()
     var openMessageWindows = Set<String>()
+    /// The message each message window shows, as it last read it, for the Message menu's
+    /// commands while that window is in front.
+    var messageWindowRows: [String: MessageSummary] = [:]
     /// Which window is in front, for the commands that act on it.
     var frontWindow = FrontWindow.mailbox
     var tabs: [WorkspaceTab] = []
@@ -1140,19 +1143,32 @@ final class AppModel {
     }
 
     func replyToSelection(all: Bool) {
-        guard let thread = currentThread, let account = account(for: thread.latest) else { return }
-        Task {
-            let parsed = await parsedBody(for: thread.latest)
-            openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all,
-                               signature: signature(for: account, .replies)), origin: .reply)
-        }
+        guard let thread = currentThread else { return }
+        reply(to: thread.latest, all: all)
     }
 
     func forwardSelection() {
-        guard let thread = currentThread, let account = account(for: thread.latest) else { return }
+        guard let thread = currentThread else { return }
+        forward(thread.latest)
+    }
+
+    /// `then` runs once the reply is open, as a message window closes after it.
+    func reply(to message: MessageSummary, all: Bool, then: (() -> Void)? = nil) {
+        guard let account = account(for: message) else { return }
         Task {
-            let parsed = await parsedBodyForForwarding(thread.latest)
-            openCompose(.forward(thread.latest, parsed: parsed, account: account, signature: signature(for: account, .replies)), origin: .reply)
+            let parsed = await parsedBody(for: message)
+            openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
+                               signature: signature(for: account, .replies)), origin: .reply)
+            then?()
+        }
+    }
+
+    func forward(_ message: MessageSummary, then: (() -> Void)? = nil) {
+        guard let account = account(for: message) else { return }
+        Task {
+            let parsed = await parsedBodyForForwarding(message)
+            openCompose(.forward(message, parsed: parsed, account: account, signature: signature(for: account, .replies)), origin: .reply)
+            then?()
         }
     }
 
@@ -1499,7 +1515,7 @@ final class AppModel {
         pendingReadID = nil
     }
 
-    private func residentThread(containing message: MessageSummary) -> MessageThread? {
+    func residentThread(containing message: MessageSummary) -> MessageThread? {
         threads.first { $0.messages.contains { $0.id == message.id } }
     }
 
@@ -1785,6 +1801,17 @@ final class AppModel {
         if !WindowTray.shared.bringForward(.message(id)) { openWindow(id) }
     }
 
+    /// Brings forward the compose window or tab already holding draft `id`, or opens one for it.
+    func showCompose(_ id: UUID) {
+        if WindowTray.shared.bringForward(.compose(id)) { return }
+        if (tabs + minimizedTabs).contains(.compose(id)) { return openTab(.compose(id)) }
+        if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
+            open(id)
+        } else {
+            openTab(.compose(id))
+        }
+    }
+
     /// Coalesced, since a busy sync can change stored messages dozens of times a second.
     private func noteStoredMessagesChanged() {
         let showsOne = !openMessageWindows.isEmpty || (tabs + minimizedTabs).contains { if case .message = $0 { return true } else { return false } }
@@ -1798,6 +1825,9 @@ final class AppModel {
     }
 
     private func editStoredDraft(_ message: MessageSummary) {
+        // Opened twice, it would be two copies, each adding its own to Drafts as it closes.
+        let open = drafts.values.map { (draft: $0.id, row: $0.sourceMessage == nil ? nil : $0.sourceMessageID) }
+        if let id = UnsentMessage.alreadyOpen(row: message.id, among: open) { return showCompose(id) }
         Task {
             guard let parsed = await parsedBody(for: message) else {
                 showActionError("Could not open that draft.")
@@ -1814,20 +1844,28 @@ final class AppModel {
         guard let draft = drafts[id] else { return }
         drafts[id] = nil
         guard !draft.isBlank, let account = accounts.first(where: { $0.id == draft.accountID }) else { return }
+        // Written back at once, as taking it out of `drafts` deleted it: a quit just after closing
+        // it, or a crash, must not lose it while it uploads.
+        session.saveDraft(draft)
         Task {
             guard let folder = folder(accountID: account.id, role: .drafts), let syncer = await coordinator.syncer(for: account.id) else {
                 drafts[id] = draft
                 return
             }
-            do {
-                let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
-                try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
-                await purgeStoredDraft(draft)
-                statusText = "Draft saved to \(folder.name)"
-            } catch {
-                drafts[id] = draft
-                showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
-            }
+            await UnsentMessage.uploadToDrafts(
+                upload: {
+                    let raw = MIMEBuilder.build(try draft.outgoing(from: account, requireRecipients: false))
+                    try await syncer.append(raw: raw, to: folder, flags: [.draft, .seen], date: Date())
+                },
+                uploaded: {
+                    if drafts[id] == nil { session.removeDraft(id) }
+                    await purgeStoredDraft(draft)
+                    statusText = "Draft saved to \(folder.name)"
+                },
+                failed: { error in
+                    drafts[id] = draft
+                    showActionError("Could not save the draft: \(error.localizedDescription)", names: Log.names(heldBy: error))
+                })
         }
     }
 

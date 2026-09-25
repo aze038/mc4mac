@@ -121,4 +121,32 @@ final class UnsentMessageTests: XCTestCase {
         discarded.letGo(held.id)
         XCTAssertNil(discarded.undo(at: Date(timeIntervalSince1970: 1_790_000_001)))
     }
+
+    // MARK: Saving to Drafts
+
+    private struct Refused: Error {}
+
+    func testTheCopyOnThisMacGoesOnlyOnceTheServerHasTheMessage() async {
+        var steps: [String] = []
+        await UnsentMessage.uploadToDrafts(upload: { steps.append("upload") },
+                                           uploaded: { steps.append("remove local copy") },
+                                           failed: { _ in steps.append("keep") })
+        XCTAssertEqual(steps, ["upload", "remove local copy"])
+    }
+
+    func testAFailedUploadKeepsTheMessageOnThisMac() async {
+        var steps: [String] = []
+        await UnsentMessage.uploadToDrafts(upload: { throw Refused() },
+                                           uploaded: { steps.append("remove local copy") },
+                                           failed: { _ in steps.append("keep") })
+        XCTAssertEqual(steps, ["keep"])
+    }
+
+    func testOpeningADraftAlreadyBeingWrittenBringsThatOneForward() {
+        let open = UUID()
+        let other = UUID()
+        let among: [(draft: UUID, row: String?)] = [(other, nil), (open, "a|d|41")]
+        XCTAssertEqual(UnsentMessage.alreadyOpen(row: "a|d|41", among: among), open)
+        XCTAssertNil(UnsentMessage.alreadyOpen(row: "a|d|42", among: among))
+    }
 }

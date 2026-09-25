@@ -147,9 +147,14 @@ struct FalconMailApp: App {
     }
 
     @ViewBuilder private var replyCommands: some View {
-        Button("Reply") { model.replyToSelection(all: false) }.keyboardShortcut("r", modifiers: .command)
-        Button("Reply All") { model.replyToSelection(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
-        Button("Forward") { model.forwardSelection() }.keyboardShortcut("f", modifiers: [.command, .shift])
+        // Every command in this menu acts on the window in front: a message window's own message,
+        // nothing while a message is being written, else the selection.
+        Button("Reply") { model.menuReply(all: false) }.keyboardShortcut("r", modifiers: .command)
+            .disabled(model.menuTarget == .nothing)
+        Button("Reply All") { model.menuReply(all: true) }.keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(model.menuTarget == .nothing)
+        Button("Forward") { model.menuForward() }.keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(model.menuTarget == .nothing)
     }
 
     @ViewBuilder private var windowCommands: some View {
@@ -171,35 +176,36 @@ struct FalconMailApp: App {
     }
 
     @ViewBuilder private var fileCommands: some View {
-        Button("Archive") { model.archive(model.selectedMessages) }.keyboardShortcut("e", modifiers: .command)
-            .disabled(model.selectionIsReadOnly)
-        Button("Delete") { model.delete(model.selectedMessages) }.keyboardShortcut(.delete, modifiers: .command)
-            .disabled(model.selectionIsReadOnly)
-        Button("Move to Folder…") { model.openMovePalette() }
+        Button("Archive") { model.menuMoves { model.archive($0) } }.keyboardShortcut("e", modifiers: .command)
+            .disabled(model.menuCannotChange)
+        // Disabled while a message is being written, so that Command-Delete there deletes text.
+        Button("Delete") { model.menuMoves { model.delete($0) } }.keyboardShortcut(.delete, modifiers: .command)
+            .disabled(model.menuCannotChange)
+        Button("Move to Folder…") { model.menuMove() }
             .keyboardShortcut("m", modifiers: [.command, .shift])
-            .disabled(model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
-        Button(moveAgainTitle) { model.moveToLastTarget() }
+            .disabled(model.menuCannotChange)
+        Button(moveAgainTitle) { model.menuMoveAgain() }
             .keyboardShortcut("y", modifiers: [.command, .shift])
-            .disabled(model.lastMoveTarget == nil || model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
-        Button("Move to Junk") { model.moveToJunk(model.selectedMessages) }
-            .disabled(model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
-        Button("Not Junk") { model.markNotJunk(model.selectedMessages) }
-            .disabled(!model.selectionIsAllInJunk)
+            .disabled(model.lastMoveTarget == nil || model.menuCannotChange)
+        Button("Move to Junk") { model.menuMoves { model.moveToJunk($0) } }
+            .disabled(model.menuCannotChange)
+        Button("Not Junk") { model.menuMoves { model.markNotJunk($0) } }
+            .disabled(model.menuCannotChange || !model.isInJunk(model.menuMessages))
     }
 
     @ViewBuilder private var readStateCommands: some View {
-        Button("Mark as Read") { model.markRead(model.selectedMessages, true) }.keyboardShortcut("u", modifiers: [.command, .shift])
-            .disabled(model.selectionIsReadOnly)
-        Button("Mark as Unread") { model.markRead(model.selectedMessages, false) }.keyboardShortcut("u", modifiers: [.command, .option])
-            .disabled(model.selectionIsReadOnly)
+        Button("Mark as Read") { model.markRead(model.menuMessages, true) }.keyboardShortcut("u", modifiers: [.command, .shift])
+            .disabled(model.menuCannotChange)
+        Button("Mark as Unread") { model.markRead(model.menuMessages, false) }.keyboardShortcut("u", modifiers: [.command, .option])
+            .disabled(model.menuCannotChange)
         Button("Mark All as Read") { model.markAllReadInSelection() }
             .disabled(!model.canMarkAllRead)
             .help("Marks every unread message in the selected mailbox as read.")
-        Button(flagTitle) { model.toggleFlagOnSelection() }.keyboardShortcut("l", modifiers: [.command, .shift])
-            .disabled(model.selectionIsReadOnly)
-        Button("Mute Conversation") { model.muteSelection() }
+        Button(flagTitle) { model.menuToggleFlag() }.keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(model.menuCannotChange)
+        Button("Mute Conversation") { model.menuMute() }
             .keyboardShortcut("i", modifiers: [.command, .shift])
-            .disabled(model.selectedMessageIDs.isEmpty || model.selectionIsReadOnly)
+            .disabled(model.menuCannotChange)
             .help("Outlook calls this Ignore. New replies are marked read and archived as they arrive.")
     }
 
@@ -236,7 +242,7 @@ struct FalconMailApp: App {
     }
 
     private var flagTitle: String {
-        model.firstSelectedMessage?.isFlagged == true ? "Unflag" : "Flag"
+        model.menuMessages.first?.isFlagged == true ? "Unflag" : "Flag"
     }
 
     private var undoTitle: String {

@@ -31,4 +31,20 @@ final class MessageOpeningTests: XCTestCase {
     func testTheSettingKeepsTheKeyEarlierBuildsRead() {
         XCTAssertEqual(MessageOpening.preferenceKey, "openInWindowOnDoubleClick")
     }
+
+    // MARK: The Message menu
+
+    func testTheMessageMenuActsOnTheMessageInAMessageWindowNotTheSelection() {
+        XCTAssertEqual(MenuTarget.of(front: .message("m7"), writingInMailbox: false), .messageWindow("m7"))
+        XCTAssertEqual(MenuTarget.of(front: .message("m7"), writingInMailbox: true), .messageWindow("m7"))
+    }
+
+    func testTheMessageMenuActsOnNothingWhileAMessageIsBeingWritten() {
+        XCTAssertEqual(MenuTarget.of(front: .compose(UUID()), writingInMailbox: false), .nothing)
+        XCTAssertEqual(MenuTarget.of(front: nil, writingInMailbox: true), .nothing)
+    }
+
+    func testTheMessageMenuActsOnTheSelectionInTheMailboxWindow() {
+        XCTAssertEqual(MenuTarget.of(front: nil, writingInMailbox: false), .selection)
+    }
 }
