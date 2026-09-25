@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import FalconCore
 
 struct MessageListView: View {
@@ -6,10 +7,28 @@ struct MessageListView: View {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(Pref.focusedInbox) private var focusedInbox = false
     @AppStorage(Pref.showPreview) private var showPreview = true
-    @AppStorage(Pref.showSenderImage) private var showSenderImage = true
     @AppStorage(Pref.quickActions) private var quickActionsRaw = QuickAction.defaults
     @AppStorage(Pref.leftSwipe) private var leftSwipeRaw = SwipeAction.archive.rawValue
     @AppStorage(Pref.rightSwipe) private var rightSwipeRaw = SwipeAction.none.rawValue
+    @Environment(\.controlActiveState) private var activeState
+    @FocusState private var listFocused: Bool
+    /// The day the rows' dates are written against, moved on at midnight so that today's times
+    /// become Yesterday without waiting for new mail.
+    @State private var today = Date()
+
+    #if DEBUG
+    /// Set by the offscreen snapshots, whose window never has the keyboard.
+    static var snapshotListHasKeyboard: Bool?
+    #endif
+
+    /// Outlook's selection is blue while the list has the keyboard in the window in front, and
+    /// grey otherwise.
+    private var listHasKeyboard: Bool {
+        #if DEBUG
+        if let forced = MessageListView.snapshotListHasKeyboard { return forced }
+        #endif
+        return listFocused && activeState == .key
+    }
 
     private var quickActions: [QuickAction] {
         quickActionsRaw.split(separator: ",").compactMap { QuickAction(rawValue: String($0)) }
@@ -62,6 +81,10 @@ struct MessageListView: View {
         }
         .padding(.trailing, OL.listHeaderRightInset)
         .frame(height: OL.listHeader)
+        // Outlook's line under the header, a point thick, with the first row five points below.
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(OLColor.divider).frame(height: 1).padding(.bottom, OL.listTopInset)
+        }
         .help(model.storedInSelection > model.messages.count
               ? "Showing the newest \(model.messages.count) of \(model.storedInSelection) messages"
               : "\(model.threads.count) conversations")
@@ -179,8 +202,14 @@ struct MessageListView: View {
                     .listRowBackground(Color.clear)
             }
             .listStyle(.plain)
+            .environment(\.defaultMinListRowHeight, 1)
             .scrollContentBackground(.hidden)
             .background(OLColor.list)
+            .focused($listFocused)
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in
+                today = Date()
+            }
+            .background(ListTableTuner())
             .background(DoubleClickMonitor { if let t = model.currentThread { model.openMessage(t.latest) { openWindow(value: $0) } } })
             .onKeyPress(.return) {
                 guard let t = model.currentThread else { return .ignored }
@@ -217,18 +246,22 @@ struct MessageListView: View {
                 .padding(.bottom, 4)
                 .selectionDisabled()
         case .thread(let thread):
-            ConversationRow(thread: thread,
-                            density: model.listDensity,
-                            showPreview: showPreview,
-                            showSenderImage: showSenderImage,
-                            quickActions: quickActions)
+            ConversationRow(thread: thread, showPreview: showPreview, listHasKeyboard: listHasKeyboard,
+                            quickActions: quickActions, today: today)
                 .contextMenu { rowMenu(thread) }
                 .swipeActions(edge: .leading) { swipeButton(leftSwipeRaw, thread) }
                 .swipeActions(edge: .trailing) { swipeButton(rightSwipeRaw, thread) }
-        case .message(let message, _):
-            ChildMessageRow(message: message)
+        case .message(let message, let threadID):
+            ChildMessageRow(message: message, last: isLastChild(message, of: threadID), listHasKeyboard: listHasKeyboard,
+                            today: today)
                 .contextMenu { rowMenu(MessageThread(messages: [message])) }
         }
+    }
+
+    /// The conversation's oldest message, whose row closes it with a full line underneath.
+    private func isLastChild(_ message: MessageSummary, of threadID: String) -> Bool {
+        guard case .thread(let thread) = model.rowIndex[threadID] else { return false }
+        return thread.messages.last?.id == message.id
     }
 
     @ViewBuilder private func swipeButton(_ raw: String, _ thread: MessageThread) -> some View {
@@ -261,12 +294,11 @@ struct MessageListView: View {
             Rectangle().fill(OLColor.divider).frame(height: 1)
             HStack(spacing: 8) {
                 Button(model.canShowMore ? "Show more" : "Load older messages") { model.loadOlder() }
-                    .buttonStyle(.link)
-                    .font(.system(size: OL.statusFont))
+                    .buttonStyle(QuietLinkStyle())
                 if model.storedInSelection > model.messages.count {
                     Text("\(model.messages.count) of \(model.storedInSelection)")
                         .font(.system(size: OL.statusFont).monospacedDigit())
-                        .foregroundStyle(OLColor.textMuted)
+                        .foregroundStyle(OLColor.textDim)
                 }
             }
             .padding(6)
@@ -296,8 +328,7 @@ struct MessageListView: View {
             Rectangle().fill(OLColor.divider).frame(height: 1)
             HStack(spacing: 8) {
                 Button("Show more") { model.loadMoreSearchResults() }
-                    .buttonStyle(.link)
-                    .font(.system(size: OL.statusFont))
+                    .buttonStyle(QuietLinkStyle())
                     .disabled(model.isLoadingMoreResults)
                 if model.isLoadingMoreResults { ProgressView().controlSize(.small) }
             }
@@ -329,112 +360,109 @@ struct MessageListView: View {
     }
 }
 
+/// Outlook's list has no such button, so it stays out of the way: grey, not link blue, and
+/// underlined only under the pointer.
+private struct QuietLinkStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { QuietLabel(configuration: configuration) }
+
+    private struct QuietLabel: View {
+        let configuration: ButtonStyleConfiguration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: OL.statusFont))
+                .underline(hovering)
+                .foregroundStyle(OLColor.textMuted)
+                .opacity(configuration.isPressed ? 0.6 : 1)
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
+    }
+}
+
+/// A conversation's own row, or a lone message's: the drawn row, with the chevron's button over
+/// its left end and, while the pointer is on it, the quick actions over its icons.
 struct ConversationRow: View {
     @Environment(AppModel.self) private var model
     let thread: MessageThread
-    let density: ListDensity
     let showPreview: Bool
-    let showSenderImage: Bool
+    let listHasKeyboard: Bool
     let quickActions: [QuickAction]
-    @State private var hovering = false
+    let today: Date
+    @State private var pointerInside = false
 
-    private var unread: Bool { thread.unreadCount > 0 }
-    private var selected: Bool { model.selectedMessageIDs.contains(thread.id) }
+    #if DEBUG
+    /// The conversation the offscreen snapshots draw as if the pointer were on it.
+    static var snapshotHoveredID: String?
+    #endif
 
-    var body: some View {
-        let m = thread.latest
-        ZStack(alignment: .topLeading) {
-            if selected {
-                OLColor.listSelected
-            } else {
-                OLColor.list
-                Rectangle()
-                    .fill(OLColor.divider)
-                    .frame(height: 1)
-                    .padding(.horizontal, OL.listSeparatorX)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-            }
-            if unread {
-                Rectangle().fill(OLColor.unread).frame(width: 3).padding(.vertical, 4)
-            }
-            if thread.messages.count > 1 {
-                Button { model.toggleExpanded(thread) } label: {
-                    Image(systemName: model.isExpanded(thread) ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(OLColor.text)
-                        .frame(width: 12, height: 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, OL.listChevronX)
-                .padding(.top, OL.listNameTop + 3)
-                .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(m.from.displayName)
-                        .font(.system(size: OL.listNameFont, weight: unread ? .semibold : .regular))
-                        .foregroundStyle(OLColor.text)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if hovering {
-                        quickActionRow(for: thread)
-                    } else {
-                        HStack(spacing: 4) {
-                            ForEach(model.categories(for: m)) { category in
-                                Circle().fill(category.swatch).frame(width: 8, height: 8).help(category.name)
-                            }
-                            if m.hasAttachments {
-                                Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(OLColor.textMuted)
-                            }
-                            if m.isFlagged {
-                                Image(systemName: "flag.fill").font(.system(size: 12)).foregroundStyle(OLColor.flagRed)
-                            }
-                        }
-                        .padding(.trailing, OL.listIconRight - OL.listRightInset)
-                    }
-                }
-                .frame(height: OL.listLinePitch, alignment: .top)
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(m.subject.isEmpty ? "(no subject)" : m.subject)
-                        .font(.system(size: OL.listLineFont))
-                        .foregroundStyle(OLColor.text)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(MessageRow.dateText(m.date))
-                        .font(.system(size: OL.listLineFont))
-                        .foregroundStyle(OLColor.textMuted)
-                        .lineLimit(1)
-                        .fixedSize()
-                }
-                .padding(.top, 2)
-                .frame(height: OL.listLinePitch, alignment: .top)
-                if showPreview {
-                    Text(m.snippet.isEmpty ? " " : m.snippet)
-                        .font(.system(size: OL.listLineFont))
-                        .foregroundStyle(OLColor.textMuted)
-                        .lineLimit(1)
-                        .padding(.top, 2)
-                        .frame(height: OL.listLinePitch, alignment: .top)
-                }
-            }
-            .padding(.leading, OL.listTextX)
-            .padding(.trailing, OL.listRightInset)
-            .padding(.top, OL.listNameTop - 2)
-        }
-        .frame(height: showPreview ? OL.listRow : OL.listRow - OL.listLinePitch)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+    private var hovering: Bool {
+        #if DEBUG
+        if ConversationRow.snapshotHoveredID == thread.id { return true }
+        #endif
+        return pointerInside
     }
 
-    private func quickActionRow(for thread: MessageThread) -> some View {
-        HStack(spacing: 6) {
+    var body: some View {
+        let selected = model.selectedMessageIDs.contains(thread.id)
+        let categories = model.categories(for: thread.latest)
+        let row = MessageRowModel.conversation(
+            thread, expanded: model.isExpanded(thread), showsPreview: showPreview,
+            selection: selected ? (listHasKeyboard ? .focused : .unfocused) : .none,
+            categories: categories.isEmpty ? [] : categories.map { NSColor($0.swatch) },
+            actionsWidth: hovering ? Self.actionsWidth(quickActions.count) : 0, now: today)
+        ZStack(alignment: .topLeading) {
+            MessageRowCell(model: row).allowsHitTesting(false)
+            // Takes the row's clicks, menu and hover over the drawn row, which takes none.
+            Color.clear.contentShape(Rectangle())
+            if thread.messages.count > 1 {
+                Button { model.toggleExpanded(thread) } label: {
+                    Color.clear.frame(width: 26, height: 30).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(model.isExpanded(thread) ? "Collapse conversation" : "Expand conversation")
+            }
+            if hovering, !quickActions.isEmpty {
+                quickActionRow
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.trailing, OL.listIconRight)
+                    .padding(.top, OL.listBadgeTop - 1)
+            }
+        }
+        .frame(height: row.height)
+        .onHover { pointerInside = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Self.spoken(row))
+    }
+
+    /// What VoiceOver reads for a row that is drawn rather than made of text views.
+    static func spoken(_ row: MessageRowModel) -> String {
+        var parts = [row.sender]
+        if !row.subject.isEmpty { parts.append(row.subject) }
+        parts.append(row.date)
+        if row.isUnread { parts.append("unread") }
+        if row.hasAttachments { parts.append("has attachments") }
+        if row.isFlagged { parts.append("flagged") }
+        if let preview = row.preview, !preview.isEmpty { parts.append(preview) }
+        return parts.joined(separator: ", ")
+    }
+
+    private static let actionButton = CGSize(width: 18, height: 16)
+    private static let actionSpacing: CGFloat = 6
+
+    private static func actionsWidth(_ count: Int) -> CGFloat {
+        count == 0 ? 0 : CGFloat(count) * actionButton.width + CGFloat(count - 1) * actionSpacing
+    }
+
+    private var quickActionRow: some View {
+        HStack(spacing: Self.actionSpacing) {
             ForEach(quickActions) { action in
-                Button { run(action, on: thread) } label: {
-                    Image(systemName: symbol(action, thread))
+                Button { run(action) } label: {
+                    Image(systemName: symbol(action))
                         .font(.system(size: 12))
                         .foregroundStyle(OLColor.textMuted)
-                        .frame(width: 18, height: 16)
+                        .frame(width: Self.actionButton.width, height: Self.actionButton.height)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -442,10 +470,9 @@ struct ConversationRow: View {
             }
         }
         .disabled(!MessageActions.allowsChanges(thread.messages))
-        .padding(.trailing, OL.listIconRight - OL.listRightInset)
     }
 
-    private func symbol(_ action: QuickAction, _ thread: MessageThread) -> String {
+    private func symbol(_ action: QuickAction) -> String {
         switch action {
         case .markRead: return thread.latest.isRead ? "envelope.badge" : "envelope.open"
         case .flag: return thread.latest.isFlagged ? "flag.slash" : "flag"
@@ -453,7 +480,7 @@ struct ConversationRow: View {
         }
     }
 
-    private func run(_ action: QuickAction, on thread: MessageThread) {
+    private func run(_ action: QuickAction) {
         switch action {
         case .delete: model.delete(thread.messages)
         case .archive: model.archive(thread.messages)
@@ -465,68 +492,28 @@ struct ConversationRow: View {
     }
 }
 
-/// One message of an expanded conversation: the same three lines, set in from the left.
+/// One message of an expanded conversation, on one short line under it as in Outlook: who sent
+/// it and when, set in from the left.
 struct ChildMessageRow: View {
     @Environment(AppModel.self) private var model
     let message: MessageSummary
-
-    private var selected: Bool { model.selectedMessageIDs.contains(message.id) }
+    /// The conversation's oldest, the last of its rows.
+    let last: Bool
+    let listHasKeyboard: Bool
+    let today: Date
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            if selected {
-                OLColor.listSelected
-            } else {
-                OLColor.list
-                Rectangle()
-                    .fill(OLColor.divider)
-                    .frame(height: 1)
-                    .padding(.horizontal, OL.listSeparatorX)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-            }
-            if !message.isRead {
-                Rectangle().fill(OLColor.unread).frame(width: 3).padding(.vertical, 4)
-            }
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(message.from.displayName)
-                        .font(.system(size: OL.listNameFont, weight: message.isRead ? .regular : .semibold))
-                        .foregroundStyle(OLColor.text)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    HStack(spacing: 4) {
-                        if message.hasAttachments { Image(systemName: "paperclip").font(.system(size: 13)).foregroundStyle(OLColor.textMuted) }
-                        if message.isFlagged { Image(systemName: "flag.fill").font(.system(size: 12)).foregroundStyle(OLColor.flagRed) }
-                    }
-                    .padding(.trailing, OL.listIconRight - OL.listRightInset)
-                }
-                .frame(height: OL.listLinePitch, alignment: .top)
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(message.subject.isEmpty ? "(no subject)" : message.subject)
-                        .font(.system(size: OL.listLineFont))
-                        .foregroundStyle(OLColor.text)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(MessageRow.dateText(message.date))
-                        .font(.system(size: OL.listLineFont))
-                        .foregroundStyle(OLColor.textMuted)
-                        .fixedSize()
-                }
-                .padding(.top, 2)
-                .frame(height: OL.listLinePitch, alignment: .top)
-                Text(message.snippet.isEmpty ? " " : message.snippet)
-                    .font(.system(size: OL.listLineFont))
-                    .foregroundStyle(OLColor.textMuted)
-                    .lineLimit(1)
-                    .padding(.top, 2)
-                    .frame(height: OL.listLinePitch, alignment: .top)
-            }
-            .padding(.leading, OL.listTextX + 20)
-            .padding(.trailing, OL.listRightInset)
-            .padding(.top, OL.listNameTop - 2)
+        let selected = model.selectedMessageIDs.contains(ListRow.childTag(message.id))
+        let row = MessageRowModel.child(message, last: last,
+                                        selection: selected ? (listHasKeyboard ? .focused : .unfocused) : .none,
+                                        now: today)
+        ZStack {
+            MessageRowCell(model: row).allowsHitTesting(false)
+            Color.clear.contentShape(Rectangle())
         }
-        .frame(height: OL.listRow)
-        .contentShape(Rectangle())
+        .frame(height: row.height)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ConversationRow.spoken(row))
     }
 }
 
@@ -561,18 +548,5 @@ struct AvatarView: View {
             .fill(color.opacity(0.85))
             .frame(width: size, height: size)
             .overlay(Text(initials).font(.system(size: size * 0.4, weight: .semibold)).foregroundStyle(.white))
-    }
-}
-
-enum MessageRow {
-    static let timeFormatter: DateFormatter = { let f = DateFormatter(); f.timeStyle = .short; f.dateStyle = .none; return f }()
-    static let dayFormatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "EEE"; return f }()
-    static let dateFormatter: DateFormatter = { let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .none; return f }()
-
-    static func dateText(_ date: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(date) { return timeFormatter.string(from: date) }
-        if let week = cal.date(byAdding: .day, value: -6, to: Date()), date > week { return dayFormatter.string(from: date) }
-        return dateFormatter.string(from: date)
     }
 }

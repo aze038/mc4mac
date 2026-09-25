@@ -94,17 +94,54 @@ enum OL {
     static let listHeader: CGFloat = 43
     static let listHeaderFont: CGFloat = 13.5
     static let listHeaderRightInset: CGFloat = 10
-    static let listRow: CGFloat = 70
-    static let listTextX: CGFloat = 42.5
-    static let listNameFont: CGFloat = 15
     static let listLineFont: CGFloat = 13.5
-    static let listNameTop: CGFloat = 8
+    static let listSeparatorX: CGFloat = 16
+    static let listIconRight: CGFloat = 25
+
+    // MARK: message list rows
+    //
+    // Read off Outlook's list at its 340 point width, text sizes from the widths of whole words:
+    // Outlook draws its list with font smoothing, which thickens every stroke but leaves widths
+    // alone. x is from the list's left edge, y from the row's top, baselines as CoreText has them.
+
+    /// Between the line under the list's header and the first row, inside the header's height.
+    static let listTopInset: CGFloat = 5
+    /// Senders, subject and date, preview.
+    static let listRow: CGFloat = 70
+    /// Without the preview: an expanded conversation's own row, or every row with previews off.
+    static let listRowShort: CGFloat = 51
+    /// One message of an expanded conversation.
+    static let listChildRow: CGFloat = 28
+    static let listSenderFont: CGFloat = 14
+    static let listTextFont: CGFloat = 13
+    static let listTextX: CGFloat = 42
+    static let listBaseline: CGFloat = 21
     static let listLinePitch: CGFloat = 19
-    static let listRightInset: CGFloat = 26.5
-    static let listIconRight: CGFloat = 20
-    static let listIcon: CGFloat = 16
-    static let listSeparatorX: CGFloat = 14
-    static let listChevronX: CGFloat = 8
+    /// Where the date and the preview end.
+    static let listTextRight: CGFloat = 27
+    /// Where the senders end when nothing stands at the end of their line.
+    static let listSenderRight: CGFloat = 38
+    /// Between the senders cut short and the first icon after them.
+    static let listSenderGap: CGFloat = 16
+    /// Between a subject or a name cut short and the date after it.
+    static let listDateGap: CGFloat = 14
+    static let listChildTextX: CGFloat = 62
+    static let listChildBaseline: CGFloat = 19
+    /// Where a child's date ends, counted from the left: its dates stand in a column rather than
+    /// at the row's end.
+    static let listChildDateEnd: CGFloat = 220
+    static let listChildSeparatorX: CGFloat = 62
+    static let listDotX: CGFloat = 29
+    static let listDotY: CGFloat = 35.5
+    static let listDot: CGFloat = 9
+    static let listBadgeTop: CGFloat = 5
+    static let listBadgeHeight: CGFloat = 14
+    static let listBadgePadding: CGFloat = 7.25
+    static let listBadgeFont: CGFloat = 10.5
+    static let listClipTop: CGFloat = 5.25
+    /// The paperclip's right edge when no count stands after it.
+    static let listClipRight: CGFloat = 28
+    static let listIconGap: CGFloat = 8.5
 
     // MARK: reading pane
 
@@ -155,23 +192,27 @@ enum OL {
 /// Outlook's colours, dark ones measured, light ones the same surfaces in Outlook's light look.
 enum OLColor {
     static func dynamic(light: Int, dark: Int) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
+        Color(nsColor: dynamicNS(light: light, dark: dark))
+    }
+
+    static func dynamicNS(light: Int, dark: Int) -> NSColor {
+        NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             return NSColor(hex: isDark ? dark : light)
-        })
+        }
     }
 
     static let chrome = dynamic(light: 0xF6F6F6, dark: 0x1B1B1B)
     static let chromeLine = dynamic(light: 0xC4C4C4, dark: 0x000000)
     static let sidebar = dynamic(light: 0xE8E8E8, dark: 0x323232)
     static let sidebarSelected = dynamic(light: 0xD0D0D0, dark: 0x464647)
-    static let list = dynamic(light: 0xFFFFFF, dark: 0x1E1E1E)
-    static let listSelected = dynamic(light: 0xDCDCDC, dark: 0x454646)
+    static let list = Color(nsColor: OLListColor.background)
+    static let listSelected = Color(nsColor: OLListColor.selection)
     static let reading = dynamic(light: 0xFFFFFF, dark: 0x1E1E1E)
     static let notice = dynamic(light: 0xEFEFEF, dark: 0x323232)
     static let status = dynamic(light: 0xEDEDED, dark: 0x282828)
-    static let divider = dynamic(light: 0xC4C4C4, dark: 0x545454)
-    static let text = dynamic(light: 0x1E1E1E, dark: 0xE6E6E6)
+    static let divider = Color(nsColor: OLListColor.separator)
+    static let text = Color(nsColor: OLListColor.text)
     static let textMuted = dynamic(light: 0x5E5E5E, dark: 0xB4B4B4)
     static let textDim = dynamic(light: 0x7A7A7A, dark: 0x8E8E8E)
     static let title = dynamic(light: 0x3C3C3C, dark: 0xD7D7D7)
@@ -184,7 +225,7 @@ enum OLColor {
     static let field = dynamic(light: 0xFFFFFF, dark: 0x484848)
     static let fieldText = dynamic(light: 0x7A7A7A, dark: 0xA0A0A0)
     static let ribbonField = dynamic(light: 0xFFFFFF, dark: 0x222222)
-    static let unread = dynamic(light: 0x0F6CBD, dark: 0x629FF8)
+    static let unread = Color(nsColor: OLListColor.unread)
     static let inbox = dynamic(light: 0x1E7AD0, dark: 0x52A3E0)
     static let icon = dynamic(light: 0x4A4A4A, dark: 0xE1E1E1)
     static let buttonBorder = dynamic(light: 0xB0B0B0, dark: 0x707070)
@@ -201,9 +242,32 @@ enum OLColor {
     static let forwardBlue = dynamic(light: 0x2F6FBF, dark: 0x4A90D9)
     static let archiveGreen = dynamic(light: 0x2E8B4A, dark: 0x3DA35D)
     static let junkRed = dynamic(light: 0xC0392B, dark: 0xD9534F)
-    static let flagRed = dynamic(light: 0xC0392B, dark: 0xD64541)
+    static let flagRed = Color(nsColor: OLListColor.flag)
     static let categoryOrange = dynamic(light: 0xC77A1F, dark: 0xD68B2E)
     static let sendGreen = archiveGreen
+}
+
+/// The message list's colours as its rows draw them, with CoreText rather than SwiftUI; the
+/// window's other surfaces take theirs from here too. Measured in dark. Outlook's light list was
+/// not captured, so the light ones are the same surfaces in its light look.
+enum OLListColor {
+    static let background = OLColor.dynamicNS(light: 0xFFFFFF, dark: 0x1E1E1E)
+    static let text = OLColor.dynamicNS(light: 0x1E1E1E, dark: 0xE6E6E6)
+    /// Dates and previews.
+    static let secondary = OLColor.dynamicNS(light: 0x5F5F5F, dark: 0xB3B3B3)
+    /// A sender on a message's own line under its conversation, brighter than the rest.
+    static let childName = OLColor.dynamicNS(light: 0x000000, dark: 0xFFFFFF)
+    static let unread = OLColor.dynamicNS(light: 0x0F6CBD, dark: 0x629FF8)
+    static let separator = OLColor.dynamicNS(light: 0xC4C4C4, dark: 0x545454)
+    /// The selected row while the list does not have the keyboard, or its window is behind.
+    static let selection = OLColor.dynamicNS(light: 0xDCDCDC, dark: 0x454646)
+    /// The selected row while the list has the keyboard; its words are then in `unread`'s blue.
+    static let focusedSelection = OLColor.dynamicNS(light: 0xCCE3F8, dark: 0x102F79)
+    static let chevron = OLColor.dynamicNS(light: 0x404040, dark: 0xD2D2D2)
+    static let paperclip = OLColor.dynamicNS(light: 0x5C5C5C, dark: 0xC1C1C1)
+    static let badge = OLColor.dynamicNS(light: 0xC8C8C8, dark: 0xB3B3B3)
+    static let badgeText = NSColor.black
+    static let flag = OLColor.dynamicNS(light: 0xC0392B, dark: 0xD64541)
 }
 
 extension NSColor {
