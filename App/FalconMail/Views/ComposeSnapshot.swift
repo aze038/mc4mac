@@ -24,7 +24,8 @@ import FalconCore
 /// deleted, the message list with made-up conversations, and a made-up conversation of four
 /// messages stacked in the reading pane and in its own window, newest and unread open, the rest
 /// folded, then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone, and
-/// with `-FalconMailSnapshotOnly stack` the conversation alone.
+/// with `-FalconMailSnapshotOnly stack` the conversation alone; `-FalconMailSnapshotOnly stack50`
+/// times a conversation of fifty messages instead, writing how long it held up the main thread.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -42,6 +43,10 @@ enum ComposeSnapshot {
         let only = UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly")
         if only == "stack" {
             conversationStack(model, to: directory)
+            exit(0)
+        }
+        if only == "stack50" {
+            longConversation(model, to: directory)
             exit(0)
         }
         messageList(model, to: directory)
@@ -154,6 +159,50 @@ enum ComposeSnapshot {
                               size: NSSize(width: 917, height: 1006), appearance: appearance, style: style)
             captureWithMessages(window, appearance: appearance, to: "\(directory)/convstack-window-\(name).png")
         }
+    }
+
+    /// A made-up conversation of fifty messages, each quoting all before it as Gmail does, stacked
+    /// in the reading pane twice: read, so that only the newest is open, and unread, so that all
+    /// fifty are. How long the main thread is held up is written to convstack-50-timing.txt: the
+    /// first layout, and the longest the main thread went unanswered while every message loaded
+    /// and was measured. The unread stack is drawn to convstack-50-light.png.
+    @MainActor private static func longConversation(_ model: AppModel, to directory: String) {
+        let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
+                                  imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [account]
+        var report = ""
+        for unread in [false, true] {
+            let mail = LongConversationMail(accountID: account.id, unread: unread).messages
+            for (message, parsed) in mail { model.snapshotBody(parsed, for: message.id) }
+            let messages = mail.map(\.0)
+            let started = Date()
+            let pane = host(ConversationStackView(messages: messages).environment(model).environmentObject(model.updates).themedRoot(),
+                            size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 840), appearance: .aqua)
+            pane.layoutSubtreeIfNeeded()
+            let firstLayout = Date().timeIntervalSince(started)
+            // Every pass of the run loop is asked to last at most 5 ms; the longest one is the
+            // longest the main thread was held up by the stack's own work.
+            var longest: TimeInterval = 0
+            var allMeasuredAfter: TimeInterval?
+            let deadline = Date(timeIntervalSinceNow: 30)
+            while Date() < deadline {
+                let pass = Date()
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.005))
+                pane.layoutSubtreeIfNeeded()
+                longest = max(longest, Date().timeIntervalSince(pass))
+                let webs = views(of: ReaderWebView.self, in: pane).filter(\.fitsContent)
+                if allMeasuredAfter == nil, !webs.isEmpty, webs.allSatisfy(\.measured) {
+                    allMeasuredAfter = Date().timeIntervalSince(started)
+                }
+                if let after = allMeasuredAfter, Date().timeIntervalSince(started) > after + 3 { break }
+            }
+            let open = views(of: ReaderWebView.self, in: pane).filter(\.fitsContent).count
+            report += "\(unread ? "All 50 unread" : "All 50 read"): \(open) open message views; first layout "
+                + "\(Int(firstLayout * 1000)) ms; all measured after \(allMeasuredAfter.map { "\(Int($0 * 1000)) ms" } ?? "never"); "
+                + "longest main-thread pass \(Int(longest * 1000)) ms\n"
+            if unread { captureWithMessages(pane, appearance: .aqua, to: "\(directory)/convstack-50-light.png") }
+        }
+        try? report.write(toFile: "\(directory)/convstack-50-timing.txt", atomically: true, encoding: .utf8)
     }
 
     /// As `capture`, for a view holding messages, which WebKit draws in another process where
@@ -922,6 +971,53 @@ private struct StackSnapshotMail {
                                      to: to, cc: cc, date: date, flags: read ? [.seen] : [], size: raw.utf8.count,
                                      snippet: parsed.snippet, hasAttachments: false, hasBody: true, threadKey: "stack")
         return (summary, parsed)
+    }
+}
+
+/// Made-up mail for timing a long conversation: fifty messages among four invented people, each
+/// a paragraph of its own over Gmail's quote of the one before, which quotes the one before it.
+private struct LongConversationMail {
+    let accountID: UUID
+    let unread: Bool
+    private let folderID = UUID()
+    private let people = [
+        EmailAddress(name: "Alex Example", address: "alex@example.com"),
+        EmailAddress(name: "Maya Lindqvist", address: "maya@example.com"),
+        EmailAddress(name: "Tom Okafor", address: "tom@example.net"),
+        EmailAddress(name: "Priya Raman", address: "priya@example.org"),
+    ]
+
+    var messages: [(MessageSummary, MIMEMessage)] {
+        let start = Calendar.current.date(from: DateComponents(year: 2026, month: 8, day: 1, hour: 8)) ?? Date()
+        var previous: (html: String, from: EmailAddress, date: Date)?
+        var out: [(MessageSummary, MIMEMessage)] = []
+        for index in 1...50 {
+            let from = people[index % people.count]
+            let date = start.addingTimeInterval(Double(index) * 3_600 * 7)
+            let own = "<div dir=\"ltr\"><div>Update \(index) on the north depot rota: the carrier confirmed slot \(index % 9 + 1), "
+                + "the dock crew for shift \(index % 3 + 1) is booked, and the paperwork for load \(1_000 + index) went to "
+                + "customs this morning. Please check the attached times and say if anything clashes.</div><div><br></div>"
+                + "<div>\(from.name.split(separator: " ").first ?? "")</div></div>"
+            var html = own
+            if let previous {
+                html += "<br><div class=\"gmail_quote gmail_quote_container\"><div dir=\"ltr\" class=\"gmail_attr\">On "
+                    + previous.date.formatted(date: .abbreviated, time: .shortened) + ", \(previous.from.name) &lt;"
+                    + "\(previous.from.address)&gt; wrote:<br></div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px "
+                    + "0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\">\(previous.html)</blockquote></div>"
+            }
+            previous = (html, from, date)
+            let subject = index == 1 ? "North depot rota" : "Re: North depot rota"
+            let raw = "From: \(from.rfc5322)\r\nSubject: \(subject)\r\nMIME-Version: 1.0\r\n"
+                + "Content-Type: text/html; charset=utf-8\r\n\r\n" + html
+            let parsed = MIMEParser.parse(Data(raw.utf8))
+            let to = people.filter { $0 != from }
+            let summary = MessageSummary(accountID: accountID, folderID: folderID, uid: UInt32(index),
+                                         messageID: "<long-\(index)@example.com>", inReplyTo: "", references: [], subject: subject,
+                                         from: from, to: to, cc: [], date: date, flags: unread ? [] : [.seen], size: raw.utf8.count,
+                                         snippet: parsed.snippet, hasAttachments: false, hasBody: true, threadKey: "long")
+            out.append((summary, parsed))
+        }
+        return out.reversed()
     }
 }
 #endif

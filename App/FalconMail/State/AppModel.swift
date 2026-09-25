@@ -1406,12 +1406,12 @@ final class AppModel {
         }
     }
 
-    /// What is known of a message's text without fetching anything: its first words, and all
-    /// of it when it has been opened this session. The conversation stack looks for these in a
-    /// later message's quote.
-    func knownText(of message: MessageSummary) -> [String] {
-        guard let opened = bodyCache[message.id] ?? openedServerMessages[message.id]?.message else { return [message.snippet] }
-        return [message.snippet, opened.bestText]
+    /// A message's text when it has been opened this session, found without fetching anything.
+    /// The conversation stack looks for it, and for the message's first words, in a later
+    /// message's quote; its words are worked out away from the main thread, and only when the
+    /// first words were not found.
+    func openedBody(of message: MessageSummary) -> MIMEMessage? {
+        bodyCache[message.id] ?? openedServerMessages[message.id]?.message
     }
 
     #if DEBUG

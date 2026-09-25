@@ -34,15 +34,20 @@ struct ConversationStackView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 0) {
+                // Lazy, so that a long conversation with many messages open makes a message view
+                // only for those scrolled near, instead of fifty at once.
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(stack.messages.enumerated()), id: \.element.id) { index, message in
-                        if index > 0 {
-                            Rectangle().fill(OLColor.divider).frame(height: 1)
-                                .padding(.leading, OL.readingBodyX).padding(.trailing, OL.readingRightInset)
+                        VStack(alignment: .leading, spacing: 0) {
+                            if index > 0 {
+                                Rectangle().fill(OLColor.divider).frame(height: 1)
+                                    .padding(.leading, OL.readingBodyX).padding(.trailing, OL.readingRightInset)
+                            }
+                            ConversationCard(message: message, expanded: stack.isExpanded(message.id), isNewest: index == 0,
+                                             earlier: stack.older(than: message.id), context: context,
+                                             originalColours: originalColours,
+                                             toggle: { toggle(message) }, act: { perform($0, from: message.id) })
                         }
-                        ConversationCard(message: message, expanded: stack.isExpanded(message.id), isNewest: index == 0,
-                                         earlier: stack.older(than: message.id), context: context, originalColours: originalColours,
-                                         toggle: { toggle(message) }, act: { perform($0, from: message.id) })
                     }
                 }
                 .padding(.bottom, 24)
@@ -435,9 +440,13 @@ struct ConversationCard: View {
         let dark = colorScheme == .dark
         let original = originalColours
         let whole = showQuoted
-        let earlierTexts = earlier.flatMap { model.knownText(of: $0) }
+        // The first words of the messages below, then the whole of those opened this session:
+        // turning a message into words takes time, so it is done here only when needed.
+        let snippets = earlier.map(\.snippet)
+        let opened = earlier.compactMap { model.openedBody(of: $0) }
         let result = await Task.detached(priority: .userInitiated) {
-            let trimmed = QuotedHistory.trimmed(parsed, repeating: earlierTexts)
+            let texts = [AnySequence(snippets), AnySequence(opened.lazy.map(\.bestText))].joined()
+            let trimmed = QuotedHistory.trimmed(parsed, repeating: texts)
             let shown = whole ? parsed : trimmed ?? parsed
             return (MessageRenderer.html(for: shown, allowRemote: allow, dark: dark, forceOriginal: original, inStack: true),
                     MessageRenderer.hasRemoteImages(shown), trimmed != nil)
@@ -487,6 +496,7 @@ final class ReaderWebView: WKWebView {
         didSet {
             guard !fitsContent else { return }
             onHeight = nil
+            toldHeight = 0
             afterLoad.forEach { $0.cancel() }
             afterResize.forEach { $0.cancel() }
             afterLoad = []
@@ -511,17 +521,24 @@ final class ReaderWebView: WKWebView {
         +parseFloat(s.paddingBottom||0)+parseFloat(s.marginBottom||0));})()
         """
 
+    /// The height last told through `onHeight`.
+    private var toldHeight: CGFloat = 0
+
     func willLoad() {
         loaded = false
         measured = false
+        toldHeight = 0
     }
 
-    /// Measured at once, and again as pictures that take longer come in.
+    /// Measured at once, and again as pictures that take longer come in: a picture from the web
+    /// on a slow line can take many seconds, and until it is measured again the end of the
+    /// message would be cut off out of reach, since the message does not scroll on its own. A
+    /// measurement that finds the height unchanged costs nothing further.
     func didLoad() {
         guard fitsContent else { return }
         loaded = true
         afterLoad.forEach { $0.cancel() }
-        afterLoad = measure(after: [0, 0.3, 1, 2.5])
+        afterLoad = measure(after: [0, 0.3, 1, 2.5, 6, 15, 40])
     }
 
     override func layout() {
@@ -546,6 +563,10 @@ final class ReaderWebView: WKWebView {
         evaluateJavaScript(Self.heightScript) { [weak self] value, _ in
             guard let self, self.fitsContent, let height = (value as? NSNumber)?.doubleValue, height > 0 else { return }
             self.measured = true
+            // Told only of a new height, so that a long conversation is not laid out again for
+            // every measurement that finds what the last one did.
+            guard CGFloat(height) != self.toldHeight else { return }
+            self.toldHeight = CGFloat(height)
             self.onHeight?(CGFloat(height))
         }
     }
@@ -554,8 +575,16 @@ final class ReaderWebView: WKWebView {
         guard fitsContent, abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX), let scroll = enclosingScrollView else {
             return super.scrollWheel(with: event)
         }
+        // Scrolled over, it is measured again at most once a second, in case something in it
+        // grew after the last measurement.
+        if loaded, Date().timeIntervalSince(scrolledMeasure) > 1 {
+            scrolledMeasure = Date()
+            measureNow()
+        }
         scroll.scrollWheel(with: event)
     }
+
+    private var scrolledMeasure = Date.distantPast
 
     override func keyDown(with event: NSEvent) {
         guard fitsContent, let scroll = enclosingScrollView, let y = Self.scrolled(scroll, by: event) else {
