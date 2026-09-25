@@ -407,6 +407,37 @@ final class GmailActionTests: XCTestCase {
         XCTAssertEqual(after, [.unread, .starred], "read back from Gmail once sent")
     }
 
+    func testTheEchoOfWhatGmailHasAlreadyPassesWhileTheRestWaits() async throws {
+        var recording: RecordingTransport?
+        let clock = ActionClock()
+        let f = try await ActionsFixture(clock: clock, undoWindow: 0, transport: { gmail in
+            let wire = RecordingTransport(gmail, clock: clock)
+            wire.failingModifyCalls = [2]
+            recording = wire
+            return wire
+        })
+        fixtures.append(f)
+        XCTAssertNotNil(recording)
+        let first = try await f.add("First")
+        let second = try await f.add("Second")
+        try await f.perform(.archive, [first, second], in: "Inbox")
+        let halfway = await f.eventually { f.gmailLabels(first) == [.unread] }
+        XCTAssertTrue(halfway, "the first went; the second waits to retry")
+        // A check brings the echo of the first, and the phone flags it.
+        f.gmail.relabel(first.id, adding: [.inbox])
+        await f.host.sync()
+        let shown = await f.shown(first)
+        XCTAssertEqual(shown, [.inbox, .unread], "Gmail has the owner's change for it, so what came after shows")
+        let saved = PendingGmailOpsFile(url: f.pendingFile).load().ops
+        XCTAssertEqual(saved.first?.skippedRecords, [], "nothing held back for a message Gmail has confirmed")
+        clock.advance(120)
+        let flushed = await f.flush()
+        XCTAssertTrue(flushed)
+        XCTAssertEqual(f.gmailLabels(second), [.unread])
+        XCTAssertNil(f.gmail.calls[.messagesGet], "nothing had to be read back")
+        XCTAssertEqual(f.host.relistings, 0)
+    }
+
     // MARK: - Failures
 
     func testARateLimit403NeverPutsRowsBack() async throws {
@@ -741,6 +772,19 @@ final class GmailActionTests: XCTestCase {
         let minutes = (calls.last!.at.timeIntervalSince(calls.first!.at)) / 60
         XCTAssertGreaterThanOrEqual(minutes, 6, "10,000 units at 1,500 a minute, the first minute's share at once")
         XCTAssertLessThan(minutes, 8)
+    }
+
+    func testBulkWorkReportsItsProgress() async throws {
+        let f = try await fixture(clock: ActionClock(instant: true))
+        for i in 0..<25 { try await f.add("Mail \(i)") }
+        f.gmail.fail(.messagesBatchModify, with: GoogleAPIError(kind: .temporary, httpStatus: 503, reason: "backendError"))
+        let receipt = try await f.actions.perform(MailActionRequest(verb: .archive, targets: .wholeView(except: []), context: f.view("Inbox")))
+        let before = await f.actions.bulkProgress()
+        XCTAssertEqual(before.map(\.total), [25])
+        XCTAssertEqual(before.first?.id, receipt.id)
+        _ = await f.flush()
+        let after = await f.actions.bulkProgress()
+        XCTAssertTrue(after.isEmpty, "done")
     }
 
     func testBulkWorkDoesNotHoldUpTheOwner() async throws {

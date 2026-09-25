@@ -441,6 +441,14 @@ public struct GmailHeldLabels: Sendable {
     }
 }
 
+/// A change on a whole view on its way, such as Mark All as Read in a large folder.
+public struct GmailBulkProgress: Hashable, Sendable {
+    public var id: UUID
+    public var verb: String
+    public var done: Int
+    public var total: Int
+}
+
 // MARK: - The actions
 
 /// One Google account's changes: shown at once, held for the undo window, sent, retried until
@@ -615,13 +623,24 @@ public actor GmailActions {
         return out
     }
 
+    /// How far each change on a whole view has got, for the status bar's progress line.
+    public func bulkProgress() -> [GmailBulkProgress] {
+        ops.filter(\.isBulk).map { op in
+            let done = (runtime[op.id]?.confirmed.values.reduce(0) { $0 + $1.count }) ?? 0
+            return GmailBulkProgress(id: op.id, verb: op.verb, done: min(done, op.messageCount), total: op.messageCount)
+        }
+    }
+
     /// The labels each message's waiting changes are about. Listings and resyncs leave them alone.
+    /// A message Gmail has confirmed already is not held: Gmail's state is the owner's for it.
     public func heldLabels() -> GmailHeldLabels {
         if let heldCache { return heldCache }
         var groups: [GmailHeldLabels.Group] = []
         for op in ops where op.kind == .labels {
-            for delta in op.deltas where !delta.ids.isEmpty {
-                groups.append(GmailHeldLabels.Group(labels: delta.labels, ids: Set(delta.ids.map(\.raw))))
+            for (g, delta) in op.deltas.enumerated() where !delta.ids.isEmpty {
+                let confirmed = runtime[op.id]?.confirmed[g] ?? []
+                let waiting = confirmed.isEmpty ? Set(delta.ids.map(\.raw)) : Set(delta.ids.map(\.raw)).subtracting(confirmed)
+                if !waiting.isEmpty { groups.append(GmailHeldLabels.Group(labels: delta.labels, ids: waiting)) }
             }
         }
         let held = GmailHeldLabels(groups: groups)
@@ -660,20 +679,24 @@ public actor GmailActions {
     private func keep(_ change: GmailLabelChange, added: Bool, at history: HistoryID, held: GmailHeldLabels,
                       kept: inout Bool) -> GmailLabelChange? {
         let id = change.message.ref.id
-        let heldLabels = held.labels(for: id)
-        let touched = Set(change.labels).intersection(heldLabels)
+        let touched = Set(change.labels).intersection(held.labels(for: id))
         guard !touched.isEmpty else { return change }
+        var holding: Set<GmailLabelID> = []
         for i in ops.indices where ops[i].kind == .labels {
-            for delta in ops[i].deltas where delta.ids.contains(id) {
+            for (g, delta) in ops[i].deltas.enumerated() where delta.ids.contains(id) {
+                // Gmail has the owner's change for this message already: what comes now is its
+                // echo, or someone's later change, and either is Gmail's state to show.
+                if runtime[ops[i].id]?.confirmed[g]?.contains(id.raw) == true { continue }
                 let mine = touched.intersection(delta.labels)
                 guard !mine.isEmpty else { continue }
                 ops[i].skippedRecords.append(PendingGmailOp.KeptRecord(history: history, id: id, added: added ? mine : [],
                                                                         removed: added ? [] : mine))
+                holding.formUnion(mine)
                 kept = true
                 break
             }
         }
-        let passed = change.labels.filter { !touched.contains($0) }
+        let passed = change.labels.filter { !holding.contains($0) }
         return passed.isEmpty ? nil : GmailLabelChange(message: change.message, labels: passed)
     }
 
@@ -1264,6 +1287,7 @@ public actor GmailActions {
 
     private func markConfirmed(_ id: UUID, group: Int, _ ids: [GmailMessageID]) {
         runtime[id, default: Runtime()].confirmed[group, default: []].formUnion(ids.map(\.raw))
+        invalidateHeld()
     }
 
     private func sendLabels(_ id: UUID, lane: Lane) async -> Outcome {
@@ -1505,7 +1529,9 @@ public actor GmailActions {
             }
             markConfirmed(id, group: 0, chunk)
         }
-        Log.info("gmail", "deleted for good from \(label.value == "TRASH" ? "Deleted Items" : "Junk Email"): asked \(wanted.count), deleted \(deleted), left \(kept) that had moved meanwhile")
+        let folder = label == .trash ? "Deleted Items" : "Junk Email"
+        Log.info("gmail", "deleted for good from \(folder): asked \(wanted.count), deleted \(deleted), "
+                 + "left \(kept) that had moved meanwhile")
         return .sent
     }
 
@@ -1630,7 +1656,8 @@ public actor GmailActions {
                 // The rows go back to how they were before; the listing then puts them right.
                 for op in dropped { await unshow(op) }
                 Log.info("gmail", "dropped \(dropped.count) changes from the last run: the history since them has expired")
-                await host?.notice("Changes made before FalconMail last closed were not sent, because the mail may have changed since. FalconMail is listing the mailbox again.", names: [])
+                await host?.notice("Changes made before FalconMail last closed were not sent, because the mail may have changed "
+                                   + "since. FalconMail is listing the mailbox again.", names: [])
                 await host?.needsRelisting()
                 return .dropped
             } catch {

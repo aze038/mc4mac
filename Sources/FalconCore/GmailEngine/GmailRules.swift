@@ -146,8 +146,8 @@ public enum GmailRulePlanner {
             do {
                 return .success(try GmailActionRules.destination(for: folder))
             } catch {
-                return .failure(GmailActionError(.notAvailable, "A rule puts mail in “\(folder.name)”, which Gmail doesn't let apps do, so that part of the rule was skipped.",
-                                                 names: [folder.name]))
+                let sentence = "A rule puts mail in “\(folder.name)”, which Gmail doesn't let apps do, so that part of the rule was skipped."
+                return .failure(GmailActionError(.notAvailable, sentence, names: [folder.name]))
             }
         }
         if let folder = folders.first(where: { $0.path == path }), GmailActionFolder(folder: folder) != nil {
@@ -171,8 +171,8 @@ public enum GmailRulePlanner {
                GmailActionFolder(folder: folder) != nil {
                 return usable(folder)
             }
-            return .failure(GmailActionError(.unknownFolder, "A rule names the folder “\(path)”, which this Gmail account doesn't have, so that part of the rule was skipped.",
-                                             names: [path]))
+            let sentence = "A rule names the folder “\(path)”, which this Gmail account doesn't have, so that part of the rule was skipped."
+            return .failure(GmailActionError(.unknownFolder, sentence, names: [path]))
         }
     }
 }
@@ -196,14 +196,14 @@ extension GmailActions {
         let muted = await mutedArrivals(eligible)
         if !muted.isEmpty {
             outcome.muted = Set(muted.map(\.ref.id))
+            // Read mail loses only INBOX, unread mail UNREAD as well: one group for each.
             let rule = GmailLabelRule(remove: [.inbox, .unread])
-            var ids: [GmailMessageID] = []
-            for arrival in muted where rule.delta(for: arrival.labels) != nil { ids.append(arrival.ref.id) }
-            if !ids.isEmpty {
-                // Every muted arrival had INBOX, so each loses the same labels it has.
-                let groups = Dictionary(grouping: muted.filter { ids.contains($0.ref.id) }) { rule.delta(for: $0.labels)!.remove }
-                await performAutomatically("mute", deltas: groups.map { PendingGmailOp.Delta(add: [], remove: $0.key, ids: $0.value.map(\.ref.id)) })
+            var groups: [Set<GmailLabelID>: [GmailMessageID]] = [:]
+            for arrival in muted {
+                if let change = rule.delta(for: arrival.labels) { groups[change.remove, default: []].append(arrival.ref.id) }
             }
+            await performAutomatically("mute", deltas: groups.sorted { $0.key.count > $1.key.count }
+                .map { PendingGmailOp.Delta(add: [], remove: $0.key, ids: $0.value) })
             Log.info("gmail", "filed \(muted.count) new messages of muted conversations")
         }
         let rest = eligible.filter { !outcome.muted.contains($0.ref.id) }

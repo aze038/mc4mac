@@ -147,12 +147,14 @@ final class ActionsFixture: @unchecked Sendable {
     let rules: RuleStore
     let clock: ActionClock
     private(set) var actions: GmailActions
+    /// What the actions talk to: the in-memory Gmail, or something standing in front of it.
+    let wire: any GmailTransport
     var folders: [String: FolderInfo] = [:]
     var userLabels: [String: GmailLabelID] = [:]
 
     init(accountID: UUID = UUID(), clock: ActionClock = ActionClock(), undoWindow: TimeInterval = 60, userLabels: [String] = ["Clients", "Projects"],
          root existing: URL? = nil, gmail existingGmail: MemoryGmailTransport? = nil, store existingStore: MemoryGmailStore? = nil,
-         bulkUnitsPerMinute: Int = 1_500) async throws {
+         bulkUnitsPerMinute: Int = 1_500, transport: ((MemoryGmailTransport) -> any GmailTransport)? = nil) async throws {
         self.accountID = accountID
         self.clock = clock
         root = existing ?? FileManager.default.temporaryDirectory.appendingPathComponent("falcon-gmail-actions-\(UUID().uuidString)", isDirectory: true)
@@ -163,7 +165,8 @@ final class ActionsFixture: @unchecked Sendable {
         host = ActionsHost(store: store, gmail: gmail)
         mutes = MuteStore(layout: layout)
         rules = RuleStore(layout: layout)
-        actions = GmailActions(accountID: accountID, transport: gmail, store: store, mutes: mutes, rules: rules, host: host,
+        wire = transport?(gmail) ?? gmail
+        actions = GmailActions(accountID: accountID, transport: wire, store: store, mutes: mutes, rules: rules, host: host,
                                undoWindow: undoWindow, clock: clock.clock, bulkUnitsPerMinute: bulkUnitsPerMinute)
         host.actions = actions
         if existingGmail == nil {
@@ -179,7 +182,7 @@ final class ActionsFixture: @unchecked Sendable {
     /// Starts the account's actions again over the same files, Gmail and index, as a relaunch.
     func relaunch(clock newClock: ActionClock? = nil, undoWindow: TimeInterval = 60) async {
         await actions.stop()
-        actions = GmailActions(accountID: accountID, transport: gmail, store: store, mutes: mutes, rules: rules, host: host,
+        actions = GmailActions(accountID: accountID, transport: wire, store: store, mutes: mutes, rules: rules, host: host,
                                undoWindow: undoWindow, clock: (newClock ?? clock).clock)
         host.actions = actions
         await actions.start()
@@ -281,6 +284,9 @@ final class RecordingTransport: GmailTransport, @unchecked Sendable {
     private var _bulkCalls: [(at: Date, method: GmailMethod, ids: Int, work: WorkClass)] = []
     /// When set, `batchModify` only records, as for 200,000 messages the in-memory Gmail does not hold.
     let recordOnly: Bool
+    private var _modifyCalls = 0
+    /// The `modify` calls, counted from 1, that fail as a busy Gmail would.
+    var failingModifyCalls: Set<Int> = []
 
     init(_ inner: MemoryGmailTransport, clock: ActionClock, recordOnly: Bool = false) {
         self.inner = inner
@@ -314,7 +320,14 @@ final class RecordingTransport: GmailTransport, @unchecked Sendable {
         try await inner.attachment(attachmentID, of: message, work: work)
     }
     func modify(_ id: GmailMessageID, adding: Set<GmailLabelID>, removing: Set<GmailLabelID>, work: WorkClass) async throws -> GmailMessage {
-        lock.withLock { _bulkCalls.append((clock.now, .messagesModify, 1, work)) }
+        let call = lock.withLock { () -> Int in
+            _bulkCalls.append((clock.now, .messagesModify, 1, work))
+            _modifyCalls += 1
+            return _modifyCalls
+        }
+        if failingModifyCalls.contains(call) {
+            throw GoogleAPIError(kind: .temporary, httpStatus: 503, reason: "backendError")
+        }
         return try await inner.modify(id, adding: adding, removing: removing, work: work)
     }
     func batchModify(_ ids: [GmailMessageID], adding: Set<GmailLabelID>, removing: Set<GmailLabelID>, work: WorkClass) async throws {
