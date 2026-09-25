@@ -15,11 +15,24 @@ CLIENT_ID = '123-abc.apps.googleusercontent.com'
 SCHEME = 'com.googleusercontent.apps.123-abc'
 
 
+def committed_info_plist():
+    """The Info.plist as committed. CI embeds the client into the working copy before these
+    tests run, so the file on disk may already carry the Google scheme."""
+    root = os.path.dirname(SCRIPTS)
+    shown = subprocess.run(['git', '-C', root, 'show', 'HEAD:App/FalconMail/Info.plist'],
+                           capture_output=True)
+    if shown.returncode == 0:
+        return shown.stdout
+    with open(INFO_PLIST, 'rb') as f:
+        return f.read()
+
+
 class EmbedGoogleClientTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix='embed-google-client-')
         self.plist = os.path.join(self.folder, 'Info.plist')
-        shutil.copyfile(INFO_PLIST, self.plist)
+        with open(self.plist, 'wb') as f:
+            f.write(committed_info_plist())
 
     def tearDown(self):
         shutil.rmtree(self.folder, ignore_errors=True)
