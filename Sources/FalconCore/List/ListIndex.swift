@@ -492,6 +492,7 @@ struct ListBuilder {
 
     private let wantsFacts: Bool
     private let wantsDateGroups: Bool
+    private let merging: Bool
 
     /// `merging` when rows of more than one account will be added, which are then placed among
     /// each other by date.
@@ -502,6 +503,7 @@ struct ListBuilder {
         wantsFacts = view.sort.key.isTextual || view.filters.contains(.mentionsMe) || merging
             || view.dateGroups && view.sort.key == .date
         wantsDateGroups = merging || view.dateGroups && view.sort.key == .date
+        self.merging = merging
     }
 
     // MARK: Adding an account
@@ -558,7 +560,10 @@ struct ListBuilder {
         }
 
         var rows = Rows()
-        if wantsFacts {
+        // Date groups of one account are placed exactly by its anchors; its rows' own dates are
+        // wanted only when it has none yet.
+        let factsWanted = wantsFacts && (merging || view.sort.key.isTextual || view.filters.contains(.mentionsMe) || dating.isEmpty)
+        if factsWanted {
             rows.facts = records.map { facts[$0.key] }
             rows.dates = rows.facts.map { $0?.date }
         }
@@ -703,7 +708,7 @@ struct ListBuilder {
             if ascending { known.reverse() }
             if !unknown.isEmpty { listedByDateBefore = known.compactMap { rows.date($0) }.min() }
             var index: [String: Int] = [:]
-            var numbered: [Int: UInt16] = [:]
+            var numbered = [UInt16](repeating: 0, count: rows.records.count)
             func number(_ title: String) -> UInt16 {
                 if let known = index[title] { return UInt16(truncatingIfNeeded: known) }
                 titles.append(title)
@@ -711,12 +716,14 @@ struct ListBuilder {
                 return UInt16(truncatingIfNeeded: titles.count - 1)
             }
             for i in known { numbered[i] = number(view.dateGroups ? groupTitle(keys[i]) : "") }
-            for i in unknown { numbered[i] = number(ListStatusText.olderByDate) }
-            textWanted = unknown.prefix(200).compactMap { key(of: rows.records[$0]) }
-            rows = rows.permuted(known + unknown)
-            for i in rows.records.indices {
-                rows.records[i].group = numbered[(known + unknown)[i]] ?? 0
+            if !unknown.isEmpty {
+                let older = number(ListStatusText.olderByDate)
+                for i in unknown { numbered[i] = older }
             }
+            textWanted = unknown.prefix(200).compactMap { key(of: rows.records[$0]) }
+            let order = known + unknown
+            rows = rows.permuted(order)
+            for (i, from) in order.enumerated() { rows.records[i].group = numbered[from] }
         default:
             let ranking = ranks(rows, order: order, names: names)
             titles = ranking.titles

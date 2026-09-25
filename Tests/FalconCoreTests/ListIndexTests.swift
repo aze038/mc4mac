@@ -77,6 +77,28 @@ final class ListIndexTests: XCTestCase {
         XCTAssertLessThan(rows.count, 196_000)
     }
 
+    func testSortingTwoHundredThousandBySenderOrFlagStaysQuick() async {
+        let index = ListFixtures.index(ListFixtures.large())
+        let account = ListFixtures.account(index)
+        var facts: [UInt64: ListRowFacts] = [:]
+        for i in stride(from: 0, to: 200_000, by: 40) {
+            facts[ListFixtures.id(i).raw] = ListRowFacts(date: Date(timeIntervalSince1970: Double(1_000_000 - i)), from: "Sender \(i % 300)",
+                                                        to: "", subject: "")
+        }
+        let list = ListIndex()
+        await list.setAccount(account)
+        await list.addFacts(facts, account: account.accountID)
+        for key in [ListSortKey.from, .flag, .size] {
+            let view = ListView(scope: .folder(account.archiveFolderID!), sort: ListSortSpec(key: key, ascending: false),
+                                conversations: false, dateGroups: true)
+            let start = DispatchTime.now().uptimeNanoseconds
+            let build = await list.build(view)
+            let took = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+            XCTAssertEqual(build.snapshot.rows.filter { $0.displayKind != .header }.count, 196_000, "\(key)")
+            XCTAssertLessThan(took, 1_000 * Self.slack, "sorting 200,000 by \(key) took \(took) ms")
+        }
+    }
+
     // MARK: - Folders
 
     func testAFolderIsEveryMessageWithItsLabelLessJunkDeletedAndChats() async {
