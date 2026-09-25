@@ -139,7 +139,10 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
 
     /// A draft from a message kept on the server, or in the Outbox by an earlier build: its
     /// formatting and pictures come back from its HTML, each picture from the part the HTML
-    /// shows it from; a message without HTML, or HTML that cannot be read, opens as its text.
+    /// shows it from, at the size it was sent at; each it shows from the web, such as the logo
+    /// in a quoted Gmail signature, is an empty box that is sent from its address again, as a
+    /// reply's quote holds it. A message without HTML, or HTML that cannot be read, opens as its
+    /// text.
     @MainActor
     static func from(parsed: MIMEMessage, accountID: UUID) -> ComposeDraft {
         var d = ComposeDraft(accountID: accountID)
@@ -149,7 +152,8 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         d.subject = parsed.subject
         d.body = parsed.bestText
         if let html = parsed.textHTML, !html.trimmed.isEmpty,
-           let rich = InlinePictures.text(fromHTML: html, parts: parsed.attachments, attributes: RichText.bodyAttributes) {
+           let rich = InlinePictures.text(fromHTML: html, parts: parsed.attachments, attributes: RichText.bodyAttributes,
+                                          remote: [:], fitting: false) {
             d.richBody = RichText.body(of: rich)
         }
         d.attachments = ComposeDraft.outgoingAttachments(of: parsed)

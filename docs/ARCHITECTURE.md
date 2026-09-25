@@ -238,7 +238,10 @@ Drafts keep their pictures as flat RTFD in `bodyRTFD`, beside the RTF in `bodyRT
 earlier builds read, which then open the draft with its text and formatting. A body without
 pictures is kept exactly as before. A draft opened again from Drafts, or a send called back
 from the Outbox, comes back with its pictures: from the RTFD the Outbox keeps beside the
-message, else from the message's HTML and its parts (`InlinePictures.text(fromHTML:)`).
+message, else from the message's HTML and its parts (`InlinePictures.text(fromHTML:)`), each
+at the size it was sent at. A picture that HTML shows from the web, such as the logo in a quoted
+Gmail signature, comes back as the empty box described below and is sent from its address
+again; with Load remote images in messages on, the compose window fetches it.
 
 A draft's RTFD keeps no size of its own for a picture, only the one its file declares. A
 picture shown smaller or larger than its pixels, as Outlook shows a logo made for Retina, has

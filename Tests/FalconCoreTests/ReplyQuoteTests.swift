@@ -279,6 +279,34 @@ final class ReplyQuoteTests: XCTestCase {
         XCTAssertFalse(html.contains("data:image"))
     }
 
+    /// A reply saved to the server's Drafts and opened again, as ComposeDraft.from opens it,
+    /// still shows the original's picture from the web as its box, which goes out from its
+    /// address as before; a picture of the writer's own keeps the size it was sent at.
+    @MainActor
+    func testADraftReopenedFromTheServerKeepsTheQuotesPictureFromTheWeb() throws {
+        let wide = try png(1600, 100, colour: .systemTeal)
+        let opened = try reply(to: gmailOriginal())
+        let text = NSMutableAttributedString(attributedString: opened.rich)
+        text.insert(NSAttributedString(attachment: try XCTUnwrap(InlinePictures.attachment(for: wide, named: "wide.png"))), at: 0)
+        let saved = sent(text, historyPlain: opened.historyPlain, historyHTML: opened.historyHTML)
+        let escaped = remoteLogo.replacingOccurrences(of: "&", with: "&amp;")
+        XCTAssertTrue(saved.textHTML?.contains(escaped) ?? false)
+
+        let reopened = try XCTUnwrap(InlinePictures.text(fromHTML: try XCTUnwrap(saved.textHTML), parts: saved.attachments,
+                                                         attributes: body, remote: [:], fitting: false))
+        XCTAssertEqual(RemotePictures.addresses(in: reopened), [remoteLogo], "the logo from the web is still a box")
+        assertNoStandIns(reopened.string)
+        let pictures = attachments(in: reopened)
+        XCTAssertEqual(pictures.count, 2, "the tracking pixel stays out")
+        XCTAssertEqual(shown(pictures.first), NSSize(width: 1600, height: 100), "the writer's own picture is not scaled down")
+
+        let again = sent(reopened, historyPlain: "", historyHTML: "")
+        let html = try XCTUnwrap(again.textHTML)
+        XCTAssertTrue(html.contains("<img width=\"96\" height=\"30\" style=\"width:96px;height:30px\" src=\"\(escaped)\">"), html)
+        XCTAssertTrue(html.contains("width=\"1600\" height=\"100\""), html)
+        XCTAssertEqual(Array(inlineParts(of: again).values), [wide], "the box itself is never sent")
+    }
+
     func testEditingInsideAQuoteWithAPictureFromTheWebSendsItFromItsAddress() throws {
         let opened = try reply(to: gmailOriginal())
         let edited = NSMutableAttributedString(attributedString: opened.rich)

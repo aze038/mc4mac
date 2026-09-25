@@ -1756,7 +1756,8 @@ final class AppModel {
             var draft = ComposeDraft.from(parsed: parsed, accountID: message.accountID)
             draft.sourceMessageID = message.id
             draft.sourceMessage = message
-            openCompose(draft)
+            // Its pictures from the web are fetched as a reply's are when they always load.
+            openCompose(draft, fetchingPictures: loadRemoteImages)
         }
     }
 

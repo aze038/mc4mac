@@ -385,16 +385,19 @@ public enum InlinePictures {
     /// be read.
     ///
     /// A picture the message would fetch from the web is left out, unless `remote` is given, as
-    /// for a quoted original or a signature: it is then the picture `remote` holds for its
-    /// address, else an empty box of the size the HTML gives it that remembers the address (see
-    /// RemotePictures), and a picture too wide for the composer is scaled down to fit. A hidden
-    /// picture or a tracking pixel is always left out. Nothing is fetched from the web while
-    /// the HTML is read.
+    /// for a quoted original, a signature or a draft opened again: it is then the picture
+    /// `remote` holds for its address, else an empty box of the size the HTML gives it that
+    /// remembers the address (see RemotePictures). With `fitting`, which is the default when
+    /// `remote` is given, a picture too wide for the composer is scaled down to fit; a draft
+    /// opened again keeps the size it was sent at. A hidden picture or a tracking pixel is
+    /// always left out. Nothing is fetched from the web while the HTML is read.
     ///
     /// AppKit reads HTML through WebKit, which must be on the main thread.
     @MainActor
     public static func text(fromHTML html: String, parts: [MIMEAttachment],
-                            attributes: [NSAttributedString.Key: Any], remote: [String: Data]? = nil) -> NSAttributedString? {
+                            attributes: [NSAttributedString.Key: Any], remote: [String: Data]? = nil,
+                            fitting: Bool? = nil) -> NSAttributedString? {
+        let fitting = fitting ?? (remote != nil)
         var byID: [String: MIMEAttachment] = [:]
         for part in parts {
             guard let id = part.contentID?.lowercased(), byID[id] == nil else { continue }
@@ -429,7 +432,7 @@ public enum InlinePictures {
             }
             if let data, let made = self.attachment(for: data, named: name) {
                 let natural = NSImage(data: made.fileWrapper?.regularFileContents ?? Data())?.size ?? .zero
-                if let size = shownSize(width: given.width, height: given.height, natural: natural, fitting: remote != nil) {
+                if let size = shownSize(width: given.width, height: given.height, natural: natural, fitting: fitting) {
                     show(made, at: size)
                 }
                 attachment = made
