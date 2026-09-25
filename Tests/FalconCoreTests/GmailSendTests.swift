@@ -35,7 +35,7 @@ final class GmailSendTests: XCTestCase {
         let transport = transport ?? ScriptedGmailTransport(mailbox)
         let store = GmailTestPlacer.store(accountID: mailbox.accountID, root: root)
         let sender = GmailSender(accountID: mailbox.accountID, email: owner, transport: transport,
-                                 placer: placer ?? GmailTestPlacer.engine(transport: transport, store: store), deleteDraft: deleteDraft, cursor: { mailbox.historyID })
+                                 placer: placer ?? GmailTestPlacer.engine(transport: transport, store: store), deleteDraft: deleteDraft, cursor: { mailbox.historyID }, wentOut: {})
         let layout = layout ?? FileLayout(root: root)
         let outbox = Outbox(layout: layout, sender: sender, undoWindow: 0, confirmAfter: confirmAfter, retryDelay: { _ in 0 })
         return Rig(mailbox: mailbox, transport: transport, store: store, sender: sender, outbox: outbox, layout: layout)
@@ -120,7 +120,8 @@ final class GmailSendTests: XCTestCase {
         let mailbox = FakeGmail(email: owner)
         mailbox.replacesMessageIDOnSend = true
         let store = GmailTestPlacer.store(accountID: mailbox.accountID, root: root)
-        let sender = GmailSender(accountID: mailbox.accountID, email: owner, transport: mailbox, placer: GmailTestPlacer.engine(transport: mailbox, store: store))
+        let sender = GmailSender(accountID: mailbox.accountID, email: owner, transport: mailbox, placer: GmailTestPlacer.engine(transport: mailbox, store: store),
+                                 cursor: { nil }, wentOut: {})
         let raw = MIMEBuilder.build(Self.message())
         var item = OutboxItem(accountID: mailbox.accountID, subject: "Rates", recipients: ["ana@example.com"], sender: owner,
                               sendAt: Date(), undoWindow: 0)
@@ -372,6 +373,18 @@ final class GmailSendTests: XCTestCase {
         XCTAssertEqual(heldError, "Gmail's daily sending limit for owner@example.com was reached. The message stays in the Outbox.")
     }
 
+    func testGmailTurnedOffForFalconMailWaitsWithAPlainSentence() async throws {
+        let r = rig()
+        r.mailbox.fail(.messagesSend, with: GoogleAPIError(kind: .apiDisabled, httpStatus: 403, reason: "accessNotConfigured"))
+        _ = try await r.outbox.enqueue(accountID: r.mailbox.accountID, from: owner, message: Self.message(), sendAt: Date())
+        await assertEventually { await self.item(r.outbox)?.error != nil }
+        let latest = await item(r.outbox)
+        let waiting = try XCTUnwrap(latest)
+        XCTAssertEqual(waiting.status, .queued)
+        XCTAssertEqual(waiting.error, "Google has turned off FalconMail's access to Gmail for now. FalconMail will try again later. The message stays in the Outbox.")
+        XCTAssertTrue(sentMessages(r.mailbox).isEmpty)
+    }
+
     func testAnUploadRefusalWaitsWithItsOwnSentence() async throws {
         let r = rig()
         r.mailbox.fail(.messagesSend, with: GoogleAPIError(kind: .uploadLimit, httpStatus: 429, retryAfter: 7_200))
@@ -456,7 +469,7 @@ final class GmailSendTests: XCTestCase {
 
     func testSwitchedGoogleAccountsSendThroughGmailAndOthersBySMTP() async throws {
         let mailbox = FakeGmail(email: owner)
-        let gmail = GmailSender(accountID: mailbox.accountID, email: owner, transport: mailbox)
+        let gmail = GmailSender(accountID: mailbox.accountID, email: owner, transport: mailbox, cursor: { nil }, wentOut: {})
         let smtp = CountingSender()
         let other = UUID()
         let routing = RoutingSender(smtp: smtp) { id in id == mailbox.accountID ? .gmail(gmail) : .smtp }

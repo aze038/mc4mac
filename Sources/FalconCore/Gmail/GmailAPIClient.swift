@@ -100,7 +100,7 @@ public struct GmailAPIClient: Sendable {
     private let transport: GmailHTTPTransport?
     private let work: WorkClass
 
-    public init(api: GoogleAPI, limiter: GmailQuotaLimiter = GmailQuotaLimiter(),
+    public init(api: GoogleAPI, limiter: GmailQuotaLimiter,
                 base: URL = GmailAPIClient.defaultBase, maxWait: TimeInterval = 8) {
         self.accountID = api.accountID
         self.api = api
@@ -116,7 +116,7 @@ public struct GmailAPIClient: Sendable {
     public init(transport: GmailHTTPTransport, work: WorkClass = .interactive) {
         accountID = transport.accountID
         api = transport.api
-        limiter = GmailQuotaLimiter()
+        limiter = GmailQuotaLimiter(sleep: GmailWait.sleep)
         base = transport.endpoints.base
         maxWait = transport.options.maxWait
         self.transport = transport

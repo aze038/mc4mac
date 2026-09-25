@@ -578,7 +578,7 @@ final class GmailSearchTests: XCTestCase {
         let mailbox = FakeGmailMailbox()
         let messages = (0..<40).map { mailbox.add(subject: "Result \($0)") }
         let client = GmailTestKit.client(mailbox)
-        let opener = GmailOpener(client: client, settle: 0.3)
+        let opener = GmailOpener(client: client, settle: 0.3, sleep: GmailWait.sleep)
 
         for message in messages {
             let open = Task { try await opener.openText(id: message.id, trigger: .selectionMoved) }

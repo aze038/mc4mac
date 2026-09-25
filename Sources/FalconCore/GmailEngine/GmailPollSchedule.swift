@@ -218,7 +218,7 @@ struct GmailHealthTracker: Sendable {
         case .gmailNotEnabled:
             return "Gmail isn't turned on for \(email)."
         default:
-            return "Gmail API is off for this build's Google project."
+            return "Google has turned off FalconMail's access to Gmail for now. FalconMail will try again later."
         }
     }
 

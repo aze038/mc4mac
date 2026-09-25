@@ -41,8 +41,8 @@ public struct GmailSender: MessageSender {
     ///     G1's probe finds. Until that is known, one metadata call reads Gmail's, so that the
     ///     copy kept in Sent carries it and later replies thread.
     public init(accountID: UUID, email: String, transport: any GmailTransport, placer: (any GmailUploadPlacing)? = nil,
-                deleteDraft: (@Sendable (String) async throws -> Void)? = nil, cursor: @escaping @Sendable () async -> HistoryID? = { nil },
-                wentOut: @escaping @Sendable () async -> Void = {}, keepsOwnMessageID: Bool = false) {
+                deleteDraft: (@Sendable (String) async throws -> Void)? = nil, cursor: @escaping @Sendable () async -> HistoryID?,
+                wentOut: @escaping @Sendable () async -> Void, keepsOwnMessageID: Bool = false) {
         self.accountID = accountID
         self.email = email
         self.transport = transport
@@ -298,7 +298,7 @@ public struct GmailSender: MessageSender {
                                cause: refusal)
         case .apiDisabled:
             return SendFailure(next: .wait(until: wait(600)),
-                               sentence: "Gmail API is off for this build's Google project. The message stays in the Outbox.", cause: refusal)
+                               sentence: "Google has turned off FalconMail's access to Gmail for now. FalconMail will try again later. The message stays in the Outbox.", cause: refusal)
         case .tooLarge:
             return SendFailure(next: .fail, sentence: GmailSender.tooLargeSentence, cause: refusal)
         case .needsSignIn:

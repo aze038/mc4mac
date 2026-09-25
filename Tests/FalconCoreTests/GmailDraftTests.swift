@@ -396,7 +396,7 @@ final class GmailDraftTests: XCTestCase {
         let handed = await r.drafts.handOver(draft.localID)
         let drafts = r.drafts
         let sender = GmailSender(accountID: r.mailbox.accountID, email: owner, transport: r.transport,
-                                 deleteDraft: { try await drafts.sent($0) }, cursor: { r.mailbox.historyID })
+                                 deleteDraft: { try await drafts.sent($0) }, cursor: { r.mailbox.historyID }, wentOut: {})
         let outbox = Outbox(layout: FileLayout(root: root), sender: sender, undoWindow: 0, confirmAfter: [0.05], retryDelay: { _ in 0 })
         _ = try await outbox.enqueue(accountID: r.mailbox.accountID, from: owner, message: message("Ready to go"), sendAt: Date(),
                                      gmailDraftID: handed?.gmailDraftID)
@@ -414,7 +414,8 @@ final class GmailDraftTests: XCTestCase {
         let saved = try await r.drafts.save(raw("Sent before the delete"), as: draft)
         r.transport.refuse(.draftsDelete, with: GoogleAPIError(kind: .offline, detail: "URLError -1009"))
         let layout = FileLayout(root: root)
-        let first = Outbox(layout: layout, sender: GmailSender(accountID: r.mailbox.accountID, email: owner, transport: r.transport),
+        let first = Outbox(layout: layout, sender: GmailSender(accountID: r.mailbox.accountID, email: owner, transport: r.transport,
+                                                                        cursor: { nil }, wentOut: {}),
                            undoWindow: 0, confirmAfter: [0.05], retryDelay: { _ in 0 })
         let item = try await first.enqueue(accountID: r.mailbox.accountID, from: owner, message: message("Sent before the delete"),
                                            sendAt: Date(), gmailDraftID: saved.gmailDraftID)
@@ -424,7 +425,8 @@ final class GmailDraftTests: XCTestCase {
         XCTAssertEqual(r.mailbox.draftIDs.count, 1)
 
         r.transport.refuse(.draftsDelete, with: nil)
-        let relaunched = Outbox(layout: layout, sender: GmailSender(accountID: r.mailbox.accountID, email: owner, transport: r.transport),
+        let relaunched = Outbox(layout: layout, sender: GmailSender(accountID: r.mailbox.accountID, email: owner, transport: r.transport,
+                                                                        cursor: { nil }, wentOut: {}),
                                 undoWindow: 0)
         await assertEventually { await relaunched.snapshot().first?.gmailDraftID == nil }
         XCTAssertTrue(r.mailbox.draftIDs.isEmpty)

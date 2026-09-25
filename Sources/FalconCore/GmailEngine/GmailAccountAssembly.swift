@@ -268,7 +268,8 @@ public struct GmailAccountAssembly: Sendable {
         let budget = rowBudget ?? (transport as? GmailHTTPTransport).map { GmailBudgetEstimate(budget: $0.budget) } ?? TokenBucketEstimate()
         let list = GmailListSource(accountID: account.id, email: account.email, store: store, transport: transport,
                                    archiveFolderID: GmailLabelMapping.archiveFolderID(accountID: account.id, hints: folderHints),
-                                   index: listIndex, ownAddresses: account.ownAddresses, budget: budget, now: { clock.now() })
+                                   index: listIndex, ownAddresses: account.ownAddresses, budget: budget, now: { clock.now() },
+                                   sleep: GmailWait.sleepQuietly)
         let actions = GmailActions(accountID: account.id, transport: transport, store: store, mutes: mutes, rules: rules, host: engine,
                                    undoWindow: undoWindow, clock: actionClock)
         let drafts = GmailDrafts(accountID: account.id, email: account.email, transport: transport, placer: engine,
@@ -277,7 +278,8 @@ public struct GmailAccountAssembly: Sendable {
             ?? meter.map { TrafficMeterImportAllowance(meter: $0, accountID: account.id) }
             ?? RollingImportAllowance(file: store.files.importBytes, now: { clock.now() })
         let importer = GmailImporter(accountID: account.id, email: account.email, transport: transport, store: store, placer: engine,
-                                     allowance: allowance, jobFile: store.files.importJob, now: { clock.now() })
+                                     allowance: allowance, jobFile: store.files.importJob, now: { clock.now() },
+                                     sleep: GmailWait.sleep)
         let sender = GmailSender(accountID: account.id, email: account.email, transport: transport, placer: engine,
                                  deleteDraft: { draftID in try await drafts.sent(draftID) },
                                  cursor: { await engine.historyCursor() },

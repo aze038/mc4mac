@@ -37,7 +37,8 @@ extension AppModel {
     func gmailClient(for accountID: UUID) -> GmailAPIClient? {
         guard let account = accounts.first(where: { $0.id == accountID }), usesGmailAPI(account) else { return nil }
         if let client = gmailClients[accountID] { return client }
-        let client = GmailAPIClient(api: GoogleAPI(tokens: tokens, accountID: accountID))
+        let client = GmailAPIClient(api: GoogleAPI(tokens: tokens, accountID: accountID),
+                                    limiter: GmailQuotaLimiter(sleep: GmailWait.sleep))
         gmailClients[accountID] = client
         return client
     }
@@ -45,7 +46,7 @@ extension AppModel {
     func gmailOpener(for accountID: UUID) -> GmailOpener? {
         guard let client = gmailClient(for: accountID) else { return nil }
         if let opener = gmailOpeners[accountID] { return opener }
-        let opener = GmailOpener(client: client)
+        let opener = GmailOpener(client: client, sleep: GmailWait.sleep)
         gmailOpeners[accountID] = opener
         return opener
     }

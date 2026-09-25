@@ -43,7 +43,7 @@ final class GmailArchiveTests: XCTestCase {
         let both = mailbox.add(subject: "In the Inbox too", labels: [.inbox, clients], date: longAgo)
         let only = mailbox.add(subject: "Only in Clients", labels: [clients], date: longAgo)
         let recent = mailbox.add(subject: "Too recent", labels: [clients], date: Date())
-        let source = GmailArchiveSource(transport: mailbox, folders: ["Clients": clients])
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Clients": clients], allowance: { _ in false }, sleep: GmailWait.sleep)
         let outcome = try await ArchiveJob.run(request: request(["Clients"]), account: account, source: source, storage: storage()) { _ in }
 
         XCTAssertEqual(outcome.manifest.messageCount, 2)
@@ -63,7 +63,7 @@ final class GmailArchiveTests: XCTestCase {
     func testArchivingTheInboxTakesOnlyINBOXAndKeepsTheStar() async throws {
         let mailbox = FakeGmail(email: owner)
         let starred = mailbox.add(subject: "Starred", labels: [.inbox, .starred, .unread], date: longAgo)
-        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox])
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox], allowance: { _ in false }, sleep: GmailWait.sleep)
         _ = try await ArchiveJob.run(request: request(["Inbox"]), account: account, source: source, storage: storage()) { _ in }
         XCTAssertEqual(mailbox.message(starred.id)?.labels, [.starred, .unread])
         let archived = try await entries()
@@ -74,7 +74,7 @@ final class GmailArchiveTests: XCTestCase {
         let mailbox = FakeGmail(email: owner)
         let a = mailbox.add(subject: "Old one", labels: [.inbox], date: longAgo)
         let b = mailbox.add(subject: "Old two", labels: [], date: longAgo)
-        let source = GmailArchiveSource(transport: mailbox, folders: ["Archive": GmailLabelID?.none])
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Archive": GmailLabelID?.none], allowance: { _ in false }, sleep: GmailWait.sleep)
         let outcome = try await ArchiveJob.run(request: request(["Archive"]), account: account, source: source, storage: storage()) { _ in }
         XCTAssertEqual(outcome.manifest.messageCount, 2)
         XCTAssertTrue(mailbox.message(a.id)?.labels.contains(.trash) ?? false)
@@ -87,7 +87,7 @@ final class GmailArchiveTests: XCTestCase {
         let sent = mailbox.add(subject: "Sent long ago", labels: [.sent], date: longAgo)
         let junk = mailbox.add(subject: "Junk long ago", labels: [.spam], date: longAgo)
         let deleted = mailbox.add(subject: "Deleted long ago", labels: [.trash], date: longAgo)
-        let source = GmailArchiveSource(transport: mailbox, folders: ["Sent": .sent, "Junk Email": .spam, "Deleted Items": .trash])
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Sent": .sent, "Junk Email": .spam, "Deleted Items": .trash], allowance: { _ in false }, sleep: GmailWait.sleep)
         let outcome = try await ArchiveJob.run(request: request(["Sent", "Junk Email", "Deleted Items"]), account: account, source: source,
                                                storage: storage()) { _ in }
         XCTAssertEqual(outcome.manifest.messageCount, 3, "all three are archived")
@@ -101,7 +101,7 @@ final class GmailArchiveTests: XCTestCase {
     func testNothingIsRemovedUntilTheArchiveIsWritten() async throws {
         let mailbox = FakeGmail(email: owner)
         let kept = mailbox.add(subject: "Kept", labels: [.inbox], date: longAgo)
-        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox])
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox], allowance: { _ in false }, sleep: GmailWait.sleep)
         do {
             _ = try await ArchiveJob.run(request: request(["Inbox"]), account: account, source: source, storage: FailingManifestStorage(storage())) { _ in }
             XCTFail("the manifest could not be written")
@@ -116,7 +116,7 @@ final class GmailArchiveTests: XCTestCase {
         let gone = mailbox.add(subject: "Deleted meanwhile", labels: [.inbox], date: longAgo)
         let stays = mailbox.add(subject: "Archived", labels: [.inbox], date: longAgo)
         let gate = transport.hold(.messagesGet)
-        let source = GmailArchiveSource(transport: transport, folders: ["Inbox": .inbox])
+        let source = GmailArchiveSource(transport: transport, folders: ["Inbox": .inbox], allowance: { _ in false }, sleep: GmailWait.sleep)
         let storage = storage()
         let account = account
         let job = Task { try await ArchiveJob.run(request: self.request(["Inbox"]), account: account, source: source, storage: storage) { _ in } }
@@ -154,7 +154,7 @@ final class GmailArchiveTests: XCTestCase {
         mailbox.fail(nil, with: GoogleAPIError(kind: .offline, detail: "URLError -1009"))
         let sleeps = SleepLog()
         // The job's waits move the transport's clock too, so the pause Gmail asked for is over when it tries again.
-        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox], sleep: {
+        let source = GmailArchiveSource(transport: mailbox, folders: ["Inbox": .inbox], allowance: { _ in false }, sleep: {
             sleeps.append($0)
             mailbox.clock.advance($0)
         })
@@ -167,7 +167,7 @@ final class GmailArchiveTests: XCTestCase {
 
     func testAFolderWithNoGmailLabelIsRefusedBeforeAnythingIsWritten() async throws {
         let mailbox = FakeGmail(email: owner)
-        let source = GmailArchiveSource(transport: mailbox, folders: [:])
+        let source = GmailArchiveSource(transport: mailbox, folders: [:], allowance: { _ in false }, sleep: GmailWait.sleep)
         do {
             _ = try await ArchiveJob.run(request: request(["Nowhere"]), account: account, source: source, storage: storage()) { _ in }
             XCTFail("unknown folder")

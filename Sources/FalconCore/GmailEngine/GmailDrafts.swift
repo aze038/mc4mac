@@ -59,7 +59,7 @@ public actor GmailDrafts {
     ///   - autosaveInterval: automatic saves come at most this often per draft (open question 14).
     ///   - retryInterval: the first wait before a save Gmail could not take is tried again.
     public init(accountID: UUID, email: String, transport: any GmailTransport, placer: (any GmailUploadPlacing)? = nil,
-                file: URL, cursor: @escaping @Sendable () async -> HistoryID? = { nil },
+                file: URL, cursor: @escaping @Sendable () async -> HistoryID?,
                 now: @escaping @Sendable () -> Date = { Date() }, autosaveInterval: TimeInterval = 60,
                 retryInterval: TimeInterval = 30) {
         self.accountID = accountID
@@ -94,7 +94,7 @@ public actor GmailDrafts {
     }
 
     public init(files: GmailFiles, accountID: UUID, email: String, transport: any GmailTransport,
-                            placer: (any GmailUploadPlacing)? = nil, cursor: @escaping @Sendable () async -> HistoryID? = { nil }) {
+                            placer: (any GmailUploadPlacing)? = nil, cursor: @escaping @Sendable () async -> HistoryID?) {
         self.init(accountID: accountID, email: email, transport: transport, placer: placer, file: files.drafts, cursor: cursor)
     }
 

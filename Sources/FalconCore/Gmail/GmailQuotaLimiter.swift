@@ -74,9 +74,7 @@ public actor GmailQuotaLimiter {
 
     public init(unitsPerMinute: Int = GmailQuotaLimiter.defaultUnitsPerMinute,
                 now: @escaping @Sendable () -> Date = { Date() },
-                sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
-                    try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                }) {
+                sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
         self.unitsPerMinute = unitsPerMinute
         self.now = now
         self.sleep = sleep

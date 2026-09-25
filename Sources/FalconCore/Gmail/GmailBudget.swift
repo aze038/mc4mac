@@ -255,9 +255,7 @@ public actor GmailBudget {
     public init(accountID: UUID, policy: GmailBudgetPolicy = .standard, meter: TrafficMeter? = nil,
                 gate: GmailBackgroundGate? = .shared,
                 now: @escaping @Sendable () -> Date = { Date() },
-                sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
-                    try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                },
+                sleep: @escaping @Sendable (TimeInterval) async throws -> Void,
                 jitter: @escaping @Sendable () -> Double = { Double.random(in: 0..<1) }) {
         self.accountID = accountID
         self.policy = policy

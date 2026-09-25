@@ -40,9 +40,7 @@ public actor GmailImporter {
     public init(accountID: UUID, email: String, transport: any GmailTransport, store: any GmailStore,
                 placer: (any GmailUploadPlacing)? = nil, allowance: any GmailImportAllowance, jobFile: URL? = nil,
                 perMinute: Int = GmailImporter.messagesPerMinute, now: @escaping @Sendable () -> Date = { Date() },
-                sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
-                    try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                }) {
+                sleep: @escaping @Sendable (TimeInterval) async throws -> Void) {
         self.accountID = accountID
         self.email = email
         self.transport = transport
