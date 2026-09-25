@@ -266,6 +266,13 @@ public struct GmailMessageMatcher: Sendable {
         self.work = work
     }
 
+    /// A stored Message-ID as a header holds it, in angle brackets, which v1.10 keeps them in.
+    static func header(_ messageID: String) -> String? {
+        let trimmed = messageID.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.hasPrefix("<") ? trimmed : "<\(trimmed)>"
+    }
+
     public enum Match: Equatable, Sendable {
         case one(GmailMessageID)
         /// No usable Message-ID, or no message agrees.
@@ -279,7 +286,7 @@ public struct GmailMessageMatcher: Sendable {
     /// each candidate's headers (20 units each). Throws only when Gmail could not be asked, so
     /// the caller can try again later rather than record no match.
     public func match(_ stored: MessageSummary) async throws -> Match {
-        guard let usable = GmailAccountSearch.usableMessageID(stored.messageID.isEmpty ? nil : "<\(stored.messageID)>"),
+        guard let usable = GmailAccountSearch.usableMessageID(GmailMessageMatcher.header(stored.messageID)),
               let bare = GmailSender.bare(usable) else { return .none }
         let page = try await transport.list(GmailListQuery(query: "rfc822msgid:\(bare)", includeSpamTrash: true, maxResults: 5), work: work)
         var agreeing: [GmailMessageID] = []
@@ -417,5 +424,44 @@ public enum SessionCarryForward {
     public static func earlierList(_ current: [String], previous: [String], engineAccounts: Set<UUID>) -> [String] {
         var seen = Set<String>()
         return (split(current).earlier + carried(previous, engineAccounts: engineAccounts)).filter { seen.insert($0).inserted }
+    }
+}
+
+// MARK: - Drafts' links to Gmail
+
+/// The link between a message being written on this Mac and its Gmail draft (§8.4, §12.2): what
+/// Gmail's drafts already know of it, or else the Gmail draft it was reopened from, found by its
+/// Gmail id or, for a draft saved over IMAP before the switch, by its Message-ID. Later saves
+/// then update that draft rather than adding a second one beside it; when nothing is found the
+/// message is saved as a new draft.
+public enum GmailDraftLinking {
+    /// One Message-ID for every save of a draft, from its id on this Mac.
+    public static func stableMessageID(for localID: UUID, email: String) -> String {
+        let domain = email.split(separator: "@").last.map(String.init) ?? "falconmail.local"
+        return "<draft.\(localID.uuidString.lowercased())@\(domain)>"
+    }
+
+    public static func ref(localID: UUID, accountID: UUID, email: String, threadID: GmailThreadID?, reopenedFrom source: MessageSummary?,
+                           drafts: GmailDrafts) async -> DraftRef {
+        if var known = await drafts.link(localID) {
+            if known.threadID == nil { known.threadID = threadID }
+            return known
+        }
+        var ref = DraftRef(localID: localID, accountID: accountID, threadID: threadID ?? source?.gmailThreadID,
+                           stableMessageID: stableMessageID(for: localID, email: email))
+        guard let source, source.accountID == accountID else { return ref }
+        if let gmailID = source.gmailID ?? source.rowKey.gmailID {
+            if let draftID = try? await drafts.draftID(forMessage: gmailID) {
+                ref.gmailDraftID = draftID
+                ref.gmailMessageID = gmailID
+            }
+        } else if let usable = GmailAccountSearch.usableMessageID(GmailMessageMatcher.header(source.messageID)),
+                  let found = try? await drafts.draft(forMessageID: usable) {
+            ref.gmailDraftID = found.draftID
+            ref.gmailMessageID = found.message
+            // The draft keeps the Message-ID it had over IMAP.
+            ref.stableMessageID = usable.hasPrefix("<") ? usable : "<\(usable)>"
+        }
+        return ref
     }
 }

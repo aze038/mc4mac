@@ -106,11 +106,22 @@ extension SyncCoordinator {
     public func archiveSource(for account: AccountInfo) async throws -> any ArchiveMailSource {
         if usesGmail(account.id) {
             let assembly = try await running(account.id, "the archive")
+            let folders = await assembly.engine.folders()
             var labels: [String: GmailLabelID?] = [:]
-            for folder in await assembly.engine.folders() where folder.isSelectable {
-                labels[folder.path] = folder.role == .all ? .some(nil) : folder.gmailLabelID
+            for folder in folders where folder.isSelectable {
+                if folder.role == .all {
+                    labels.updateValue(nil, forKey: folder.path)
+                } else if let label = folder.gmailLabelID {
+                    labels.updateValue(label, forKey: folder.path)
+                }
             }
-            return GmailArchiveSource(transport: assembly.transport, folders: labels)
+            // The waits are given here rather than left to the initialiser's defaults: a debug
+            // build of Swift 6.2 miscompiles an async closure given as a default argument, and
+            // calling it brings the app down.
+            return GmailArchiveSource(transport: assembly.transport, folders: labels, allowance: { _ in false }, perMinute: 60,
+                                      now: { Date() }, sleep: { seconds in
+                                          try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                                      })
         }
         guard let syncer = syncer(for: account.id) else { throw GmailEngineUnavailable(email: account.email, what: "the archive") }
         return syncer.archiveSource()
@@ -122,9 +133,10 @@ extension SyncCoordinator {
     /// list in the account's Inbox. Nil for a message of any other account, which the stored rows
     /// answer, or when its account's engine is not running.
     public func notificationTarget(messageID: String) async -> GmailNotificationTarget? {
-        guard let key = RowKey(string: messageID), key.isGmail, let accountID = key.accountID,
-              let assembly = assembly(for: accountID),
-              let inbox = await assembly.engine.folders().first(where: { $0.role == .inbox }) else { return nil }
+        guard let key = RowKey(string: messageID), key.isGmail, let accountID = key.accountID else { return nil }
+        guard let assembly = assembly(for: accountID) else { return nil }
+        let folders = await assembly.engine.folders()
+        guard let inbox = folders.first(where: { $0.role == .inbox }) else { return nil }
         let view = ListView(scope: .folder(inbox.id), conversations: false)
         let availability = await assembly.list.summary(for: key, in: view)
         return GmailNotificationTarget(accountID: accountID, key: key, inbox: inbox, view: view, availability: availability)
@@ -167,7 +179,8 @@ extension SyncCoordinator {
 
     public func endSearch(_ id: UUID, accounts: Set<UUID>) async {
         for accountID in accounts {
-            await assembly(for: accountID)?.engine.endSearch(id)
+            guard let engine = assembly(for: accountID)?.engine else { continue }
+            await engine.endSearch(id)
         }
     }
 }

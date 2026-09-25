@@ -11,17 +11,27 @@ public actor SpotlightIndexer {
     private let index: CSSearchableIndex?
     /// What an indexer that keeps its entries in memory holds, by account, for tests.
     private var held: [UUID: Set<String>] = [:]
+    /// How often a Google account's entries are brought into line with the messages kept on the
+    /// Mac: at most every `followPause` after a change, and every `followEvery` besides.
+    private let followPause: TimeInterval
+    private let followEvery: TimeInterval
 
     public init() {
         index = CSSearchableIndex(name: "com.falconmail.messages")
+        followPause = 10
+        followEvery = 120
     }
 
-    private init(inMemory: Void) {
+    private init(pause: TimeInterval, every: TimeInterval) {
         index = nil
+        followPause = pause
+        followEvery = every
     }
 
     /// An indexer that keeps what it would give Spotlight in memory, and never reaches Spotlight.
-    public static func inMemory() -> SpotlightIndexer { SpotlightIndexer(inMemory: ()) }
+    public static func inMemory(pause: TimeInterval = 0.05, every: TimeInterval = 0.2) -> SpotlightIndexer {
+        SpotlightIndexer(pause: pause, every: every)
+    }
 
     /// The ids an in-memory indexer holds for an account.
     public func entries(for accountID: UUID) -> Set<String> { held[accountID] ?? [] }
@@ -93,10 +103,11 @@ extension SpotlightIndexer {
     /// Keeps Spotlight's entries for a Google account on the Gmail engine to the messages it
     /// keeps on the Mac, the newest 1,000 (§2.4): each is indexed as it is kept and removed when
     /// it leaves, and nothing else of the account is in Spotlight. It runs until `changes` ends,
-    /// as when the engine stops, looking again after each change to the index, at most every
-    /// `pause`, and every `every` besides, since the cache fills in the background.
-    public func follow(accountID: UUID, store: any GmailStore, changes: AsyncStream<GmailIndexChange>,
-                       pause: TimeInterval = 10, every: TimeInterval = 120) async {
+    /// as when the engine stops, looking again after each change to the index, at most every ten
+    /// seconds, and every two minutes besides, since the cache fills in the background.
+    public func follow(accountID: UUID, store: any GmailStore, changes: AsyncStream<GmailIndexChange>) async {
+        let pause = followPause
+        let every = followEvery
         await removeAccount(accountID)
         var indexed = Set<GmailMessageID>()
         indexed = await keep(accountID: accountID, store: store, indexed: indexed)

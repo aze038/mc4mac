@@ -189,10 +189,10 @@ final class GmailMigrationTests: XCTestCase {
         let account = rig.googleAccount()
         let gmail = rig.gmail(for: account)
         let rows = [
-            PreviousRelease.Row(uid: 1, messageID: "invoice-7@supplier.example", subject: "Invoice 7", date: Date(timeIntervalSince1970: 1_789_000_000)),
-            PreviousRelease.Row(uid: 2, messageID: "weekly@news.example", subject: "Weekly news", date: Date(timeIntervalSince1970: 1_789_100_000)),
+            PreviousRelease.Row(uid: 1, messageID: "<invoice-7@supplier.example>", subject: "Invoice 7", date: Date(timeIntervalSince1970: 1_789_000_000)),
+            PreviousRelease.Row(uid: 2, messageID: "<weekly@news.example>", subject: "Weekly news", date: Date(timeIntervalSince1970: 1_789_100_000)),
             PreviousRelease.Row(uid: 3, messageID: "", subject: "No id", date: Date(timeIntervalSince1970: 1_789_200_000)),
-            PreviousRelease.Row(uid: 4, messageID: "gone@nowhere.example", subject: "Gone", date: Date(timeIntervalSince1970: 1_789_300_000)),
+            PreviousRelease.Row(uid: 4, messageID: "<gone@nowhere.example>", subject: "Gone", date: Date(timeIntervalSince1970: 1_789_300_000)),
             PreviousRelease.Row(uid: 5, messageID: "x", subject: "Broken id", date: Date(timeIntervalSince1970: 1_789_400_000))
         ]
         let previous = try rig.writePreviousRelease(account, inbox: rows)
@@ -248,7 +248,7 @@ final class GmailMigrationTests: XCTestCase {
         XCTAssertEqual(reader.folders().map(\.id), previous.folders.map(\.id))
         let flagged = try XCTUnwrap(reader.message(id: previous.key(uid: 101)))
         XCTAssertTrue(flagged.isFlagged, "the journal's flag change is applied")
-        XCTAssertEqual(flagged.messageID, "invoice-7@supplier.example")
+        XCTAssertEqual(flagged.messageID, "<invoice-7@supplier.example>")
         XCTAssertNotNil(reader.message(id: previous.key(uid: 103)), "a row only the journal holds")
         XCTAssertNil(reader.message(id: "\(UUID().uuidString):\(previous.inbox.id.uuidString):101"), "another account's key")
         XCTAssertEqual(rig.imapStoreDigest(account), digest)

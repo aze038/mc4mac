@@ -115,8 +115,12 @@ public actor SyncCoordinator {
     public static func httpEngine(tokens: TokenStore, layout: FileLayout, mutes: MuteStore, rules: RuleStore,
                                   meter: TrafficMeter) -> GmailEngineMaker {
         { account, setup in
-            let transport = GmailHTTPTransport(api: GoogleAPI(tokens: tokens, accountID: account.id),
-                                               budget: GmailBudget(accountID: account.id, meter: meter))
+            // The budget's wait is given rather than left to its default: a debug build of Swift
+            // 6.2 miscompiles an async closure given as a default argument.
+            let budget = GmailBudget(accountID: account.id, meter: meter, sleep: { seconds in
+                try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            })
+            let transport = GmailHTTPTransport(api: GoogleAPI(tokens: tokens, accountID: account.id), budget: budget)
             let store = GmailFileStore(accountID: account.id, files: GmailFiles(layout: layout, accountID: account.id))
             return await GmailAccountAssembly(account: account, transport: transport, store: store, listIndex: setup.listIndex,
                                               mutes: mutes, rules: rules, settings: setup.settings, folderHints: setup.folderHints,

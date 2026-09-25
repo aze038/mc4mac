@@ -132,8 +132,8 @@ enum PreviousRelease {
         var date: Date
 
         static let samples = [
-            Row(uid: 101, messageID: "invoice-7@supplier.example", subject: "Invoice 7", date: Date(timeIntervalSince1970: 1_789_000_000)),
-            Row(uid: 102, messageID: "rates@carrier.example", subject: "Rates for October", date: Date(timeIntervalSince1970: 1_789_100_000)),
+            Row(uid: 101, messageID: "<invoice-7@supplier.example>", subject: "Invoice 7", date: Date(timeIntervalSince1970: 1_789_000_000)),
+            Row(uid: 102, messageID: "<rates@carrier.example>", subject: "Rates for October", date: Date(timeIntervalSince1970: 1_789_100_000)),
             Row(uid: 103, messageID: "", subject: "No Message-ID", date: Date(timeIntervalSince1970: 1_789_200_000))
         ]
     }
