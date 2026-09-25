@@ -16,7 +16,7 @@ final class GmailTransportTests: XCTestCase {
     /// 2026. A call priced too low lets FalconMail spend past its half of the user's budget.
     func testEveryCallIsPricedAsGoogleCharges() {
         let prices: [GmailMethod: Int] = [
-            .profile: 1, .labelsList: 1, .labelsGet: 1, .labelsCreate: 5, .sendAsList: 1,
+            .profile: 1, .labelsList: 1, .labelsGet: 1, .labelsCreate: 5, .labelsDelete: 5, .sendAsList: 1,
             .messagesList: 5, .messagesGet: 20, .attachmentsGet: 20, .threadsGet: 40, .historyList: 2,
             .messagesModify: 5, .messagesBatchModify: 50, .messagesBatchDelete: 50, .messagesTrash: 20, .messagesUntrash: 5,
             .messagesSend: 100, .messagesImport: 25, .messagesInsert: 25,
