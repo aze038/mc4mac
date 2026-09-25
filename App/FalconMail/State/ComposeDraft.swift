@@ -257,7 +257,10 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         }
 
         let heading = plain
-        let originalText = (parsed?.bestText ?? message.snippet).trimmed
+        // The original's words, never the codes and addresses its sender's plain text writes for
+        // its pictures (see QuotedText); the few words the list shows when it could not be
+        // downloaded.
+        let originalText = QuotedText.of(parsed, snippet: message.snippet).trimmed
         plain += (indent ? originalText.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n") : originalText) + "\n"
 
         let quoteStyle = indent ? "border-left:3px solid #b5b5b5;padding-left:10px;margin-left:2px" : ""

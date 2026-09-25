@@ -1199,23 +1199,54 @@ final class AppModel {
         forward(thread.latest)
     }
 
-    /// `then` runs once the reply is open, as a message window closes after it.
+    /// Reply and Reply All, from the ribbon, the menus, the keys and the reading pane alike.
+    /// The window opens once the original is downloaded (see originalForQuoting). `then` runs
+    /// once the reply is open, as a message window closes after it.
     func reply(to message: MessageSummary, all: Bool, then: (() -> Void)? = nil) {
         guard let account = account(for: message) else { return }
         Task {
-            let parsed = await parsedBody(for: message)
+            let parsed = await originalForQuoting(message, forwarding: false)
             openReply(to: message, parsed: parsed, account: account, all: all)
             then?()
         }
     }
 
+    /// Forward, as Reply opens.
     func forward(_ message: MessageSummary, then: (() -> Void)? = nil) {
         guard let account = account(for: message) else { return }
         Task {
-            let parsed = await parsedBodyForForwarding(message)
+            let parsed = await originalForQuoting(message, forwarding: true)
             openForward(message, parsed: parsed, account: account)
             then?()
         }
+    }
+
+    /// The original a reply or forward quotes, downloaded in full first when this Mac holds only
+    /// its headers, so that the quote is the original as rich text with its pictures, not the
+    /// few words the list shows. A message found only on the server comes with the pictures its
+    /// text shows and, for a forward, its attachments. When it cannot be downloaded the owner is
+    /// told so in one sentence and nil comes back: the quote is then those few words, without a
+    /// picture's code or address (see QuotedText).
+    func originalForQuoting(_ message: MessageSummary, forwarding: Bool) async -> MIMEMessage? {
+        do {
+            if message.isServerOnly {
+                let text = try await openServerMessage(message, trigger: .asked)
+                if forwarding { return await parsedBodyForForwarding(message) ?? text }
+                return await serverBodyWithInlineImages(message) ?? text
+            }
+            if let parsed = try await downloadedBody(for: message) { return parsed }
+            Log.warning("Reply", "The original could not be downloaded to quote it: its account is not running",
+                        account: account(for: message))
+        } catch is CancellationError {
+            return nil
+        } catch {
+            Log.warning("Reply", "The original could not be downloaded to quote it", error: error, account: account(for: message),
+                        names: Log.names(heldBy: error))
+        }
+        showAlert(forwarding
+                  ? "The original message could not be downloaded, so the forward does not include all of its text or its attachments."
+                  : "The original message could not be downloaded, so the reply does not quote all of it.")
+        return nil
     }
 
     /// Whether pictures from the web load for `message`: always, or because the owner loaded
@@ -1404,17 +1435,23 @@ final class AppModel {
 
     func parsedBody(for message: MessageSummary) async -> MIMEMessage? {
         if message.isServerOnly { return await serverBody(for: message) }
-        if let cached = bodyCache[message.id] { return cached }
-        guard let syncer = await coordinator.syncer(for: message.accountID) else { return nil }
         do {
-            let parsed = try await syncer.parsedMessage(for: message)
-            bodyCache[message.id] = parsed
-            if bodyCache.count > 200 { bodyCache.removeAll() }
-            return parsed
+            return try await downloadedBody(for: message)
         } catch {
             showAlert(for: error)
             return nil
         }
+    }
+
+    /// The whole of a message this Mac lists, from what it holds or downloaded now. Nil when
+    /// its account is not running; throws when the download fails.
+    private func downloadedBody(for message: MessageSummary) async throws -> MIMEMessage? {
+        if let cached = bodyCache[message.id] { return cached }
+        guard let syncer = await coordinator.syncer(for: message.accountID) else { return nil }
+        let parsed = try await syncer.parsedMessage(for: message)
+        bodyCache[message.id] = parsed
+        if bodyCache.count > 200 { bodyCache.removeAll() }
+        return parsed
     }
 
     func rawBody(for message: MessageSummary) async -> Data? {

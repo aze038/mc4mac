@@ -320,19 +320,11 @@ struct MessageReaderView: View {
     }
 
     private func reply(all: Bool) {
-        guard let account = model.account(for: message) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: message)
-            model.openReply(to: message, parsed: parsed, account: account, all: all)
-        }
+        model.reply(to: message, all: all)
     }
 
     private func forward() {
-        guard let account = model.account(for: message) else { return }
-        Task {
-            let parsed = await model.parsedBodyForForwarding(message)
-            model.openForward(message, parsed: parsed, account: account)
-        }
+        model.forward(message)
     }
 
     private func saveAsEML() {
@@ -537,22 +529,12 @@ struct MessageWindowRibbon: View {
     }
 
     private func reply(all: Bool) {
-        guard let account = model.account(for: message) else { return }
-        Task {
-            let parsed = await model.parsedBody(for: message)
-            model.openReply(to: message, parsed: parsed, account: account, all: all)
-            // Settings → Composing: "Close the original message window after replying or forwarding".
-            if closeAfterReply { close() }
-        }
+        // Settings → Composing: "Close the original message window after replying or forwarding".
+        model.reply(to: message, all: all) { if closeAfterReply { close() } }
     }
 
     private func forward() {
-        guard let account = model.account(for: message) else { return }
-        Task {
-            let parsed = await model.parsedBodyForForwarding(message)
-            model.openForward(message, parsed: parsed, account: account)
-            if closeAfterReply { close() }
-        }
+        model.forward(message) { if closeAfterReply { close() } }
     }
 }
 
