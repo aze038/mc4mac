@@ -94,7 +94,20 @@ final class ListControllerTests: XCTestCase {
         source.send(stale)
         await until { list.rowCount == 3 }
         guard case .reload? = changes.last else { return XCTFail("expected a reload") }
-        XCTAssertTrue(list.selection.isEmpty)
+        XCTAssertTrue(list.selection.isEmpty, "40 is not in the new view")
+    }
+
+    func testAChangeTooLargeToAnimateKeepsTheSelectedMessagesSelected() async {
+        let first = ListSnapshots.rows(Array(1...600), account: account)
+        let source = ScriptedListSource(first)
+        let list = controller()
+        await list.show(ListView(scope: .allInboxes), from: source)
+        list.setSelection(ListSelection(rows: [9, 99]))
+        // Six hundred new messages at the top: too many to animate.
+        let next = ListSnapshots.rows(Array(1_001...1_600) + Array(1...600), account: account)
+        source.send(ListDiffer.diff(from: first, to: next))
+        await until { list.rowCount == 1_200 }
+        XCTAssertEqual(list.selection, ListSelection(rows: [609, 699]), "rows 10 and 100 are still the ones selected")
     }
 
     func testMailArrivingAfterSelectAllIsNotPartOfIt() {

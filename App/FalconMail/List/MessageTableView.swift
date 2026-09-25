@@ -193,6 +193,7 @@ struct MessageTableView: NSViewRepresentable {
                 let made = MessageTableCell()
                 made.identifier = id
                 made.onAction = { [weak self] action, cell in self?.quickAction(action, from: cell) }
+                made.onToggle = { [weak self] cell in self?.toggle(row: cell.row) }
                 return made
             }()
             fill(cell, row: row, record: record)
@@ -222,7 +223,9 @@ struct MessageTableView: NSViewRepresentable {
                 actionsWidth: MessageTableCell.actionsWidth(actions.count), isLastChild: controller.isLastChild(row))
             // Nobody can act on a row he cannot read, so a grey row has no quick actions.
             cell.show(shown, actions: shown.isPlaceholder ? [] : actions, row: row,
-                      folder: record.displayKind == .child && !shown.isPlaceholder ? controller.childFolderName(at: row) : nil)
+                      folder: record.displayKind == .child && !shown.isPlaceholder ? controller.childFolderName(at: row) : nil,
+                      toggle: record.displayKind == .conversation
+                          ? (record.displayBits.contains(.expanded) ? "Collapse conversation" : "Expand conversation") : nil)
         }
 
         // MARK: Selection
@@ -546,6 +549,8 @@ final class MessageTableCell: NSTableCellView {
     private var shownActions: [QuickAction] = []
     private(set) var row = -1
     var onAction: ((QuickAction, MessageTableCell) -> Void)?
+    /// Opens or closes the row's conversation, for VoiceOver, since the chevron is drawn.
+    var onToggle: ((MessageTableCell) -> Void)?
 
     static let actionButton = CGSize(width: 18, height: 16)
     static let actionSpacing: CGFloat = 6
@@ -589,8 +594,18 @@ final class MessageTableCell: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func show(_ shown: RowModelAdapter.Row, actions wanted: [QuickAction], row: Int, folder name: String? = nil) {
+    func show(_ shown: RowModelAdapter.Row, actions wanted: [QuickAction], row: Int, folder name: String? = nil,
+              toggle: String? = nil) {
         self.row = row
+        if let toggle {
+            setAccessibilityCustomActions([NSAccessibilityCustomAction(name: toggle) { [weak self] in
+                guard let self else { return false }
+                self.onToggle?(self)
+                return true
+            }])
+        } else if accessibilityCustomActions()?.isEmpty == false {
+            setAccessibilityCustomActions([])
+        }
         rowView.model = shown.model
         folder.isHidden = name == nil
         if let name, folder.stringValue != name { folder.stringValue = name }

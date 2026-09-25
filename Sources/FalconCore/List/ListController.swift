@@ -133,12 +133,14 @@ public final class ListController {
         let fits = (diff.removed.last.map { $0 < old } ?? true)
             && old - diff.removed.count + diff.inserted.count == diff.snapshot.rows.count
             && (diff.inserted.last.map { $0 < diff.snapshot.rows.count } ?? true)
+        let before = snapshot
         snapshot = diff.snapshot
         publishCounts()
         planner.reset(rowCount: snapshot.rows.count)
         guard fits, !diff.reloadsTable else {
-            selection = .none
-            selectionCount = 0
+            // A change too large to animate keeps what was selected, found again by its message.
+            selection = ListController.carried(selection, from: before, to: snapshot)
+            selectionCount = selection.count(in: snapshot)
             onChange?(.reload)
             return
         }
@@ -147,6 +149,20 @@ public final class ListController {
         onChange?(.diff(diff))
         // Rows that moved or arrived on screen may need their text.
         if !visible.isEmpty { request(visible, priority: .visible) }
+    }
+
+    /// The same messages selected in a new snapshot of the view. Select All stays Select All; a
+    /// selection of more than 1,000 rows that is not is dropped rather than half kept.
+    static func carried(_ selection: ListSelection, from old: ListSnapshot, to new: ListSnapshot) -> ListSelection {
+        if case .allExcept(let except) = selection.form {
+            let keys = Set(except.compactMap { old.rowKey(at: $0) })
+            return .all(except: keys.isEmpty ? [] : IndexSet(new.rows.indices.filter { new.rowKey(at: $0).map(keys.contains) == true }))
+        }
+        guard let keys = selection.rowKeys(in: old), !keys.isEmpty else { return .none }
+        let wanted = Set(keys)
+        return ListSelection(rows: IndexSet(new.rows.indices.filter { i in
+            new.rows[i].displayKind != .header && new.rowKey(at: i).map(wanted.contains) == true
+        }))
     }
 
     static func shifted(_ selection: ListSelection, removed: IndexSet, inserted: IndexSet) -> ListSelection {
