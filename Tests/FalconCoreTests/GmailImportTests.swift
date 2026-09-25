@@ -237,6 +237,17 @@ final class GmailImportTests: XCTestCase {
         XCTAssertEqual(outcome.failures, [GmailImportFailure(index: 0, sentence: "Gmail refused a message. Details are in the log.")])
     }
 
+    func testAMessageWhosePlaceCannotBeFoundYetIsImportedAllTheSame() async throws {
+        let r = rig()
+        r.mailbox.fail(.messagesList, with: GoogleAPIError(kind: .offline, detail: "URLError -1009"))
+        let outcome = try await r.importer.run([imported(eml("Placed later", date: date("2022-05-01T10:00:00Z")))], into: .inbox)
+        XCTAssertEqual(outcome.imported, 1)
+        XCTAssertTrue(outcome.failures.isEmpty)
+        let id = try XCTUnwrap(outcome.ids.first)
+        let wasImported = await r.store.wasImported(id)
+        XCTAssertTrue(wasImported, "logged, so its echo is still never new mail")
+    }
+
     func testARateRefusalWaitsAndImportsOnce() async throws {
         let clock = TestClock(Date())
         let sleeps = SleepLog()

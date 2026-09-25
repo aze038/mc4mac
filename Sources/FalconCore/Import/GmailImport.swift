@@ -228,8 +228,13 @@ public actor GmailImporter {
         try await store.noteImported([id], at: now())
         outcome.imported += 1
         outcome.ids.append(id)
-        let neighbour = try await neighbour(before: date)
-        await placer?.placeImported(answer, labels: answer.labels.isEmpty ? labels : answer.labels, date: date, above: neighbour)
+        do {
+            let neighbour = try await neighbour(before: date)
+            await placer?.placeImported(answer, labels: answer.labels.isEmpty ? labels : answer.labels, date: date, above: neighbour)
+        } catch {
+            // Imported all the same; listing All Mail when the import ends places it.
+            Log.info("import", "\(email): could not find where an imported message goes yet: \(error.localizedDescription)")
+        }
         if let last = lastRelisting ?? outcome.startedAt, now().timeIntervalSince(last) >= GmailImporter.relistingInterval {
             lastRelisting = now()
             await placer?.importEnded()
