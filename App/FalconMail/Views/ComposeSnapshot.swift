@@ -21,15 +21,16 @@ import FalconCore
 /// the web off and on, in both appearances into PNGs at twice their size in that directory, with
 /// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
-/// deleted, the message list with made-up conversations, a made-up conversation of four
-/// messages stacked in the reading pane and in its own window, the newest open and the rest
-/// folded, the unread one with its blue dot, and the mailbox window filling a 1728 × 1117 point
-/// screen with a message window alone in the middle and two minimised to tabs in its status bar,
-/// then with a message window and a compose window side by side and one tab, and those tabs
-/// close up, then quits. With `-FalconMailSnapshotOnly list` it draws the message list alone,
-/// with `stack` the conversation alone, with `fullscreen` the mailbox window filling the screen
-/// alone, with `signature-import` only the Signatures pane offering an import, the import sheets
-/// for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
+/// deleted, the message list with made-up conversations, the message table not yet shown (see
+/// `MessageTableSnapshot`), a made-up conversation of four messages stacked in the reading pane
+/// and in its own window, the newest open and the rest folded, the unread one with its blue dot,
+/// and the mailbox window filling a 1728 × 1117 point screen with a message window alone in the
+/// middle and two minimised to tabs in its status bar, then with a message window and a compose
+/// window side by side and one tab, and those tabs close up, then quits. With
+/// `-FalconMailSnapshotOnly list` it draws the message list alone, with `table` the message table
+/// alone, with `stack` the conversation alone, with `fullscreen` the mailbox window filling the
+/// screen alone, with `signature-import` only the Signatures pane offering an import, the import
+/// sheets for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
 /// signatures, and `stack50` times a conversation of fifty messages instead, writing how long it
 /// held up the main thread.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
@@ -47,6 +48,10 @@ enum ComposeSnapshot {
         formatter.attach(ComposeTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200)))
         let model = AppModel()
         let only = UserDefaults.standard.string(forKey: "FalconMailSnapshotOnly")
+        if only == "table" {
+            MessageTableSnapshot.render(to: directory)
+            exit(0)
+        }
         if only == "stack" {
             conversationStack(model, to: directory)
             exit(0)
@@ -65,6 +70,7 @@ enum ComposeSnapshot {
         }
         messageList(model, to: directory)
         if only == "list" { exit(0) }
+        MessageTableSnapshot.render(to: directory)
         for (name, appearance) in appearances {
             render(ribbon(formatter), size: NSSize(width: OL.composeWindowWidth, height: 160), appearance: appearance,
                    to: "\(directory)/ribbon-\(name).png")

@@ -30,11 +30,14 @@ public struct TrafficLimits: Sendable, Equatable {
     public var background: Int
     public var download: Int
     public var upload: Int
+    /// The Gmail API's own budgets, which Google counts apart from IMAP.
+    public var api: APITrafficLimits
 
-    public init(background: Int, download: Int, upload: Int) {
+    public init(background: Int, download: Int, upload: Int, api: APITrafficLimits = .standard) {
         self.background = background
         self.download = download
         self.upload = upload
+        self.api = api
     }
 
     /// Google allows 2,500 MB of IMAP download and about 500 MB of upload per account a day,
@@ -51,13 +54,62 @@ public struct TrafficLimits: Sendable, Equatable {
     }
 }
 
-/// One hour of an account's traffic.
+/// What the Gmail API's bytes are measured against, per account over the last 24 hours. Google
+/// counts the API's bandwidth apart from IMAP's, and shares it among all of the user's API
+/// clients, olm2cloud's imports among them, which this Mac cannot see.
+public enum APITrafficBudget: Sendable, CaseIterable {
+    /// Downloads nobody is waiting for: filling the newest 1,000, the index and the archive job.
+    case background
+    /// Everything downloaded. Past it only change checks go on.
+    case download
+    /// Messages imported, which stop first so that sending always has room.
+    case imports
+    /// Everything uploaded: sends, drafts and imports.
+    case upload
+}
+
+public struct APITrafficLimits: Sendable, Equatable {
+    public var background: Int
+    public var download: Int
+    public var imports: Int
+    public var upload: Int
+
+    public init(background: Int, download: Int, imports: Int, upload: Int) {
+        self.background = background
+        self.download = download
+        self.imports = imports
+        self.upload = upload
+    }
+
+    /// Google's API allowance is about 2,500 MB down and 500 MB up a day by inference, shared by
+    /// all of the user's API clients: FalconMail keeps to 60% and 80% of them, and imports stop
+    /// 100 MB short of its own upload budget so sends and drafts keep room.
+    public static let standard = APITrafficLimits(background: 800 * 1024 * 1024, download: 1_500 * 1024 * 1024,
+                                                  imports: 300 * 1024 * 1024, upload: 400 * 1024 * 1024)
+
+    func limit(_ budget: APITrafficBudget) -> Int {
+        switch budget {
+        case .background: return background
+        case .download: return download
+        case .imports: return imports
+        case .upload: return upload
+        }
+    }
+}
+
+/// One hour of an account's traffic. The Gmail API's bytes are kept in fields of their own,
+/// written only when there are some, so an hour with none is written as the previous release
+/// writes it, and that release reads every hour and ignores what it does not know.
 struct TrafficHour: Codable, Equatable {
     /// Hours since 1970, UTC.
     var hour: Int
     var down: Int
     var up: Int
     var background: Int
+    var apiDown: Int?
+    var apiUp: Int?
+    var apiBackground: Int?
+    var apiImport: Int?
 
     func bytes(_ budget: TrafficBudget) -> Int {
         switch budget {
@@ -65,6 +117,20 @@ struct TrafficHour: Codable, Equatable {
         case .download: return down
         case .upload: return up
         }
+    }
+
+    func bytes(_ budget: APITrafficBudget) -> Int {
+        switch budget {
+        case .background: return apiBackground ?? 0
+        case .download: return apiDown ?? 0
+        case .imports: return apiImport ?? 0
+        case .upload: return apiUp ?? 0
+        }
+    }
+
+    /// Adds to a field that stays out of the file while it is nil.
+    static func adding(_ value: Int, to field: Int?) -> Int? {
+        value > 0 ? (field ?? 0) + value : field
     }
 }
 
@@ -186,6 +252,60 @@ public final class TrafficMeter: @unchecked Sendable {
             hours[account.uuidString] = list
             dirty = true
         }
+    }
+
+    /// Adds Gmail API bytes to the account's counts: `background` and `imported` are bytes
+    /// already counted in `down` and `up` that also count against those budgets.
+    public func recordAPI(down: Int = 0, up: Int = 0, background: Int = 0, imported: Int = 0, for account: UUID) {
+        guard down > 0 || up > 0 || background > 0 || imported > 0 else { return }
+        let current = TrafficMeter.hourIndex(now())
+        lock.withLock {
+            var list = kept(account.uuidString, currentHour: current)
+            let i: Int
+            if let found = list.firstIndex(where: { $0.hour == current }) {
+                i = found
+            } else {
+                list.append(TrafficHour(hour: current, down: 0, up: 0, background: 0))
+                list.sort { $0.hour < $1.hour }
+                i = list.firstIndex { $0.hour == current } ?? list.count - 1
+            }
+            list[i].apiDown = TrafficHour.adding(max(0, down), to: list[i].apiDown)
+            list[i].apiUp = TrafficHour.adding(max(0, up), to: list[i].apiUp)
+            list[i].apiBackground = TrafficHour.adding(max(0, background), to: list[i].apiBackground)
+            list[i].apiImport = TrafficHour.adding(max(0, imported), to: list[i].apiImport)
+            hours[account.uuidString] = list
+            dirty = true
+        }
+    }
+
+    /// What the account has moved through the Gmail API against `budget` over the last 24 hours.
+    public func usedAPI(_ budget: APITrafficBudget, by account: UUID) -> Int {
+        let current = TrafficMeter.hourIndex(now())
+        return lock.withLock { window(account.uuidString, currentHour: current).reduce(0) { $0 + $1.bytes(budget) } }
+    }
+
+    /// Whether `bytes` more fit inside the API budget. As for IMAP, something larger than the
+    /// whole budget still goes when nothing else has been used.
+    public func allowsAPI(_ budget: APITrafficBudget, adding bytes: Int = 0, for account: UUID) -> Bool {
+        let spent = usedAPI(budget, by: account)
+        return spent == 0 || spent + max(0, bytes) <= limits.api.limit(budget)
+    }
+
+    /// The first time `allowsAPI` holds again, as the oldest hours leave the window.
+    public func whenAllowsAPI(_ budget: APITrafficBudget, adding bytes: Int = 0, for account: UUID) -> Date {
+        let moment = now()
+        let current = TrafficMeter.hourIndex(moment)
+        let list = lock.withLock { window(account.uuidString, currentHour: current) }
+        var remaining = list.reduce(0) { $0 + $1.bytes(budget) }
+        let limit = limits.api.limit(budget)
+        guard remaining > 0, remaining + max(0, bytes) > limit else { return moment }
+        for entry in list {
+            remaining -= entry.bytes(budget)
+            if remaining == 0 || remaining + max(0, bytes) <= limit {
+                return Date(timeIntervalSince1970: TimeInterval(entry.hour + 24) * 3600)
+            }
+        }
+        return moment.addingTimeInterval(24 * 3600)
     }
 
     /// The account's hours of the last two days. Called under the lock.

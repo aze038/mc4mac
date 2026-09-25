@@ -40,6 +40,13 @@ Sources/FalconCore
   Contacts   GooglePeopleClient
   Calendar   GoogleCalendarClient (events, Google Meet links)
   Diagnostics DiagnosticsCenter  Redaction, on-disk queue, uploads (docs/DIAGNOSTICS.md)
+  Engine     EngineContracts   What every account's engine offers the list and the app
+  Gmail      GmailHTTPTransport  Every Gmail API call, within the account's GmailBudget
+  GmailEngine GmailAccountEngine  A Google account on the Gmail API, behind a switch that is off
+             GmailFileStore    Its index, journal and newest 1,000 under Accounts/<id>/Gmail/
+             GmailActions, GmailDrafts, GmailImporter, GmailSender
+             GmailAccountAssembly  One account's engine with every part installed
+  List       ListIndex, GmailListSource  Views of the index built off the main thread
 ```
 
 ## Data flow
@@ -159,7 +166,7 @@ What becomes an event:
   | `Open` | Opening a message, one moved or deleted included, or one found by a Gmail search | `Open.messageGone@AccountSyncer.swift:body` |
   | `Actions`, `Rules`, `Mute` | Moving, deleting, flagging, replaying an action from the last session, a rule, filing a muted conversation | `Actions.noMailbox@AccountSyncer.swift:commit` |
   | `Save`, `Import`, `Older`, `Folders`, `Archive` | Saving a draft or a copy, importing, Load older, creating a folder, archiving | `Archive.expungeRefused@ArchiveJob.swift:archive` |
-  | `SMTP`, `Outbox` | Sending, with `context.outcome` `retrying`, `held` or `failed`; a message held after FalconMail stopped mid-send; the Outbox not saved | `SMTP.sendingLimit@Outbox.swift:tick` |
+  | `SMTP`, `Send`, `Outbox` | Sending, by SMTP or, for a Google account switched to the Gmail engine, through Gmail's own send (`Send`), with `context.outcome` `retrying`, `waiting`, `confirming`, `held` or `failed`; a message held after FalconMail stopped mid-send, or whose unclear send Gmail's records did not confirm; the Outbox not saved | `SMTP.sendingLimit@Outbox.swift:tick` |
   | `Store` | A file set aside or unreadable, a save that failed, journal lines skipped | `Store.setAside@FileLayout.swift:load` |
   | `Search` | A Gmail search that fell back to this Mac or was paused | `Search.throttled@ServerSearch.swift:absorb` |
   | `SignIn`, `OAuth` | Setting up or checking an account, renewing a Google sign-in | `OAuth.notSignedIn@GoogleOAuth.swift:refreshed` |
@@ -285,6 +292,12 @@ from the web of HTML copied from a web page, fetched once; elsewhere they are le
 - Folder roles come from RFC 6154 special-use attributes.
 - Google Drive access uses the `drive.file` scope, which only sees files the
   app created and does not require Google's restricted-scope review.
+- The Gmail API engine opens no IMAP or SMTP connection for its account.
+  Its engine is the only writer of its store: the list, the actions, drafts,
+  sending and imports hand it Gmail's answers through the contracts in
+  `GmailAccountEngine.swift`, `GmailActions.swift` (`GmailActionsHost`) and
+  `GmailUploadPlacement.swift`, and `GmailAccountAssembly` puts them together.
+  The switch stays off for every account until the app routes to it.
 
 ## Why not SQLite, Core Data or SwiftData
 

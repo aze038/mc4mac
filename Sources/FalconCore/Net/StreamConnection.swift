@@ -40,9 +40,17 @@ public actor StreamConnection {
         queue = DispatchQueue(label: "falconmail.net.\(host)")
     }
 
+    private static let openedLock = NSLock()
+    private static var opened = 0
+
+    /// Connections to mail servers opened in this process, by IMAP and SMTP alike, which is how
+    /// a test shows that an account on the Gmail engine opened none (§12.5).
+    public static var connectionsOpened: Int { openedLock.withLock { opened } }
+
     /// Opens the connection, giving up after `deadline` seconds, when one is given, rather than
     /// waiting as long as the network does for a path that may never come.
     public func connect(deadline: TimeInterval? = nil) async throws {
+        StreamConnection.openedLock.withLock { StreamConnection.opened += 1 }
         let box = ResumeOnce()
         let connection = connection
         do {
