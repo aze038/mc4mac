@@ -1,8 +1,10 @@
 import Foundation
 
-/// A refusal from a Google API, classified from typed values only: the HTTP status, the API's
-/// reason code and status, the OAuth error code or the URL error. Display text never decides
-/// the kind, so rewording a message can never change what FalconMail does about it.
+/// A refusal from a Google API, classified from typed values: the HTTP status, the API's reason
+/// code and status, the OAuth error code or the URL error, and for the Gmail engine the call that
+/// was refused. Display text never decides whether FalconMail waits or gives up. The one reading
+/// of words is the engine's for a 429, where Google names a sending limit or too many requests at
+/// once only in its message: a reworded message leaves an ordinary rate-limit wait.
 public struct GoogleAPIError: Error, Sendable, Equatable {
     public enum Kind: String, Sendable, Equatable {
         /// 429, or 403 `rateLimitExceeded` / `userRateLimitExceeded`: slow down and retry.
@@ -41,20 +43,52 @@ public struct GoogleAPIError: Error, Sendable, Equatable {
         case other
     }
 
+    /// Whether Gmail can have acted on the request that was refused.
+    public enum Delivery: String, Sendable, Equatable {
+        /// Gmail answered with a refusal and did nothing.
+        case answered
+        /// The request never left the Mac: no connection could be made, the token could not be
+        /// had, or FalconMail held it back itself. Sending it again cannot do anything twice.
+        case notSent
+        /// It may have reached Gmail and been acted on: a timeout, a dropped connection or a
+        /// server error. A send refused this way is looked for, never sent again blindly.
+        case unknown
+    }
+
     public var kind: Kind
     public var httpStatus: Int
     /// The API's own reason code, such as `rateLimitExceeded`, kept for the log.
     public var reason: String?
-    /// The server's text. For the log only; it is never shown and never classified.
+    /// The server's text. For the log only; it is never shown.
     public var detail: String
     public var retryAfter: TimeInterval?
+    /// A 429 about how many requests the user's clients have open at once rather than how many
+    /// units they spend: fewer batch parts at a time help, and a smaller unit budget would not.
+    public var isConcurrencyLimit: Bool
+    public var delivery: Delivery
 
-    public init(kind: Kind, httpStatus: Int = 0, reason: String? = nil, detail: String = "", retryAfter: TimeInterval? = nil) {
+    public init(kind: Kind, httpStatus: Int = 0, reason: String? = nil, detail: String = "", retryAfter: TimeInterval? = nil,
+                isConcurrencyLimit: Bool = false, delivery: Delivery = .answered) {
         self.kind = kind
         self.httpStatus = httpStatus
         self.reason = reason
         self.detail = detail
         self.retryAfter = retryAfter
+        self.isConcurrencyLimit = isConcurrencyLimit
+        self.delivery = delivery
+    }
+
+    /// Whether a later try can succeed with nothing changed: Google asked FalconMail to wait, or
+    /// the network or Gmail had a moment's trouble. Anything else is a definite refusal, which a
+    /// change the owner made is put back for (§7.3 of the engine design).
+    public var waits: Bool {
+        switch kind {
+        case .rateLimited, .quotaExhausted, .temporary, .offline, .sendingLimit, .downloadLimit, .uploadLimit:
+            return true
+        case .apiDisabled, .insufficientPermissions, .needsSignIn, .clientRejected, .notFound, .historyExpired,
+             .domainPolicy, .gmailNotEnabled, .tooLarge, .other:
+            return false
+        }
     }
 }
 
@@ -91,29 +125,124 @@ public enum GoogleErrorParser {
     private static let signInReasons: Set<String> = ["autherror", "invalid_grant", "unauthenticated", "invalid_token"]
     private static let rejectedReasons: Set<String> = ["unauthorized_client", "admin_policy_enforced", "access_denied", "org_internal"]
     private static let temporaryReasons: Set<String> = ["backenderror", "internalerror", "unavailable"]
+    private static let policyReasons: Set<String> = ["domainpolicy"]
+    private static let notEnabledReasons: Set<String> = ["failedprecondition"]
+    private static let tooLargeReasons: Set<String> = ["payloadtoolarge", "uploadtoolarge", "requestentitytoolarge"]
 
     /// Classifies an HTTP answer. `retryAfter` is the raw Retry-After header.
     public static func parse(status: Int, body: Data, retryAfter header: String? = nil, now: Date = Date()) -> GoogleAPIError {
-        let envelope = try? JSONDecoder().decode(Envelope.self, from: body)
-        let api = envelope?.error
-        let reasons = ((api?.errors ?? []).compactMap(\.reason) + (api?.details ?? []).compactMap(\.reason)
+        let answer = Answer(status: status, body: body)
+        return GoogleAPIError(kind: classify(status: status, reasons: answer.reasons, apiStatus: answer.apiStatus),
+                              httpStatus: status, reason: answer.reasons.first, detail: answer.detail,
+                              retryAfter: retryAfterSeconds(header, now: now), delivery: delivery(status: status))
+    }
+
+    /// Classifies an answer to one of the Gmail engine's calls, which knows what it asked for.
+    /// Beyond `parse(status:body:)`, it tells apart what the engine handles differently: a 404
+    /// from `history.list`, which means the history has expired; a Workspace policy, Gmail not
+    /// turned on, and a message too large; and the 429s that Google gives the same status and
+    /// reason, which differ in what they pause.
+    ///
+    /// Google tells a sending limit and a concurrency limit apart from a rate limit only in its
+    /// message ("User-rate limit exceeded (Mail sending)", "Too many concurrent requests for
+    /// user"), so for a 429 alone those two documented phrases are read. Each only chooses which
+    /// wait applies; a reworded message leaves an ordinary rate-limit wait, which is always safe.
+    /// A 429 whose retry time is longer than `longRetry` is a daily allowance: downloads or
+    /// uploads by the call's direction, which comes from the call itself, not from any text.
+    public static func parse(status: Int, body: Data, retryAfter header: String?, now: Date = Date(),
+                             method: GmailMethod) -> GoogleAPIError {
+        let answer = Answer(status: status, body: body)
+        let reasons = answer.reasons
+        func has(_ set: Set<String>) -> Bool { reasons.contains { set.contains($0) } }
+        var kind = classify(status: status, reasons: reasons, apiStatus: answer.apiStatus)
+        let retry = retryAfterSeconds(header, now: now) ?? retryTime(inMessage: answer.detail, now: now)
+        var concurrent = false
+        switch kind {
+        case .notFound where method == .historyList:
+            kind = .historyExpired
+        case .other, .insufficientPermissions, .notFound:
+            if has(policyReasons) {
+                kind = .domainPolicy
+            } else if has(notEnabledReasons) || (status == 400 && answer.apiStatus == "FAILED_PRECONDITION") {
+                kind = .gmailNotEnabled
+            } else if status == 413 || has(tooLargeReasons) {
+                kind = .tooLarge
+            }
+        case .rateLimited where status == 429:
+            let text = answer.detail.lowercased()
+            if text.contains("(mail sending)") {
+                kind = .sendingLimit
+            } else if text.contains("concurrent requests") {
+                concurrent = true
+            } else if let retry, retry >= longRetry {
+                switch method.direction {
+                case .upload: kind = .uploadLimit
+                case .download: kind = .downloadLimit
+                case .change: break
+                }
+            }
+        default:
+            break
+        }
+        return GoogleAPIError(kind: kind, httpStatus: status, reason: reasons.first, detail: answer.detail,
+                              retryAfter: retry, isConcurrencyLimit: concurrent, delivery: delivery(status: status))
+    }
+
+    /// A 429 that asks for a wait this long is about a daily allowance, not the minute's rate:
+    /// Google's per-minute refusals ask for seconds, its daily ones for hours.
+    public static let longRetry: TimeInterval = 15 * 60
+
+    /// A server error may come after Gmail acted; any other answer is a refusal that did nothing.
+    private static func delivery(status: Int) -> GoogleAPIError.Delivery {
+        status >= 500 ? .unknown : .answered
+    }
+
+    private struct Answer {
+        var reasons: [String]
+        var apiStatus: String?
+        var detail: String
+
+        init(status: Int, body: Data) {
+            let envelope = try? JSONDecoder().decode(Envelope.self, from: body)
+            let api = envelope?.error
+            reasons = ((api?.errors ?? []).compactMap(\.reason) + (api?.details ?? []).compactMap(\.reason)
                        + [envelope?.oauthError].compactMap { $0 }).map { $0.lowercased() }
-        let apiStatus = api?.status?.uppercased()
-        let detail = api?.message ?? envelope?.oauthDescription ?? String(body.utf8Lossy.prefix(300))
-        let kind = classify(status: status, reasons: reasons, apiStatus: apiStatus)
-        return GoogleAPIError(kind: kind, httpStatus: status, reason: reasons.first, detail: detail,
-                              retryAfter: retryAfterSeconds(header, now: now))
+            apiStatus = api?.status?.uppercased()
+            detail = api?.message ?? envelope?.oauthDescription ?? String(body.utf8Lossy.prefix(300))
+        }
+    }
+
+    /// Gmail gives the retry time of a daily limit in its message, as "Retry after
+    /// 2026-09-25T13:00:00.000Z", rather than in a Retry-After header. It is a time, read as one;
+    /// nothing is classified by it.
+    static func retryTime(inMessage message: String, now: Date) -> TimeInterval? {
+        guard let range = message.range(of: "retry after ", options: .caseInsensitive) else { return nil }
+        let rest = message[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        let token = String(rest.prefix { !$0.isWhitespace && $0 != "(" }).trimmingCharacters(in: CharacterSet(charactersIn: ".,;)"))
+        guard let date = ISO8601DateFormatter.fractional.date(from: token) ?? ISO8601DateFormatter.archive.date(from: token) else {
+            return nil
+        }
+        return max(0, date.timeIntervalSince(now))
     }
 
     public static func parse(_ error: URLError) -> GoogleAPIError {
+        let detail = "URLError \(error.code.rawValue)"
         switch error.code {
-        case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost,
-             .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff:
-            return GoogleAPIError(kind: .offline, detail: "URLError \(error.code.rawValue)")
+        case .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .dataNotAllowed,
+             .internationalRoamingOff:
+            return GoogleAPIError(kind: .offline, detail: detail, delivery: .notSent)
+        case .networkConnectionLost:
+            // The connection was there and went: whatever was on it may have arrived.
+            return GoogleAPIError(kind: .offline, detail: detail, delivery: .unknown)
         case .timedOut:
-            return GoogleAPIError(kind: .temporary, detail: "URLError \(error.code.rawValue)")
+            return GoogleAPIError(kind: .temporary, detail: detail, delivery: .unknown)
+        case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+             .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot, .clientCertificateRejected,
+             .clientCertificateRequired, .appTransportSecurityRequiresSecureConnection, .badURL, .unsupportedURL:
+            // Refused before a byte of the request was sent.
+            return GoogleAPIError(kind: .other, detail: detail, delivery: .notSent)
         default:
-            return GoogleAPIError(kind: .other, detail: "URLError \(error.code.rawValue)")
+            return GoogleAPIError(kind: .other, detail: detail, delivery: .unknown)
         }
     }
 
