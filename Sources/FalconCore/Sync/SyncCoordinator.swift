@@ -169,7 +169,10 @@ public struct SMTPSender: MessageSender {
 
     public init(store: MailStore, tokens: TokenStore, coordinator: SyncCoordinator? = nil) {
         self.init(store: store, syncer: { await coordinator?.syncer(for: $0) }) { account, from, recipients, message in
-            try await SMTPSender.deliver(message, from: from, to: recipients, account: account, tokens: tokens)
+            try await SMTPSender.deliver(message, from: from, to: recipients, account: account,
+                                         over: SMTPClient(host: account.smtpHost, port: account.smtpPort),
+                                         password: { try await tokens.password(for: account.id) },
+                                         accessToken: { try await tokens.validAccessToken(for: account.id) })
         }
     }
 
@@ -189,18 +192,22 @@ public struct SMTPSender: MessageSender {
             // Gmail files what went out in Sent Mail itself; only that folder is synced for it.
             await syncer.messageWentOut()
         } else {
-            await appendToSentFolder(message, account: account, syncer: syncer)
+            await appendToSentFolder(SentCopy.addingBcc(to: message, envelope: recipients), account: account, syncer: syncer)
         }
     }
 
-    private static func deliver(_ message: Data, from: String, to recipients: [String], account: AccountInfo, tokens: TokenStore) async throws {
-        let smtp = SMTPClient(host: account.smtpHost, port: account.smtpPort)
+    /// One delivery of `message` over `smtp`, signed in with the account's password or its
+    /// Google token, to every address in `recipients`. The tests hand it a client for their own
+    /// server on loopback and made-up credentials.
+    static func deliver(_ message: Data, from: String, to recipients: [String], account: AccountInfo, over smtp: SMTPClient,
+                        password: @Sendable () async throws -> String,
+                        accessToken: @Sendable () async throws -> String) async throws {
         do {
             try await smtp.connect()
             if account.usesPassword {
-                try await smtp.authenticatePlain(user: account.loginName, password: try await tokens.password(for: account.id))
+                try await smtp.authenticatePlain(user: account.loginName, password: try await password())
             } else {
-                let token = try await tokens.validAccessToken(for: account.id)
+                let token = try await accessToken()
                 try await smtp.authenticateXOAuth2(user: account.email, accessToken: token)
             }
             try await smtp.send(from: from, recipients: recipients, message: message)

@@ -9,7 +9,8 @@ struct OutboxView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.subject.isEmpty ? "(no subject)" : item.subject).font(.system(size: 13, weight: .medium))
-                    Text(item.recipients.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(item.recipientSummary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .help(item.recipientSummary)
                     Text(statusText(item)).font(.caption).foregroundStyle(statusStyle(item))
                 }
                 Spacer()

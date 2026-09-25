@@ -34,7 +34,10 @@ import FalconCore
 /// alone, with `signature-import` only the Signatures pane offering an import, the import sheets
 /// for Outlook and Gmail, macOS's refusal and the pane after an import, all with made-up
 /// signatures, with `chain` the reply to the chain alone, and `stack50` times a conversation of
-/// fifty messages instead, writing how long it held up the main thread.
+/// fifty messages instead, writing how long it held up the main thread, and with
+/// `sent-recipients` a made-up message the owner sent to people in To, Cc and Bcc, as the
+/// reading pane, its own window and its conversation show it, with the Outbox, the status bar
+/// while it is sending and the compose window that wrote it.
 /// Nothing is ever put on screen or activated, so they can be measured against Outlook's while
 /// the Mac is in use; the settings windows are drawn as they look in front, as Outlook's were
 /// captured. Run it with CFFIXED_USER_HOME pointing at an empty folder, so the model reads no
@@ -64,6 +67,10 @@ enum ComposeSnapshot {
         }
         if only == "signature-import" {
             signatureImport(model, to: directory, prefix: "fm-sig-import")
+            exit(0)
+        }
+        if only == "sent-recipients" {
+            sentRecipients(model, to: directory)
             exit(0)
         }
         messageList(model, to: directory)
@@ -99,6 +106,7 @@ enum ComposeSnapshot {
         inlinePictures(model, to: directory)
         replyQuotes(model, to: directory)
         conversationStack(model, to: directory)
+        sentRecipients(model, to: directory)
         outlookChain(model, to: directory)
         // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
         privacy(model, to: directory)
@@ -182,6 +190,84 @@ enum ComposeSnapshot {
                                 .themedRoot().environment(model).environmentObject(model.updates),
                               size: NSSize(width: 917, height: 1006), appearance: appearance, style: style)
             captureWithMessages(window, appearance: appearance, to: "\(directory)/convstack-window-\(name).png")
+        }
+    }
+
+    /// A made-up reply the owner sent to two people, copying three and blind-copying two, as the
+    /// reading pane shows it in Sent, as its own window shows it, and as the second card of its
+    /// conversation; the Outbox and the status bar while it waits to go, naming every box; and the
+    /// compose window it was written in, its Bcc row showing because it names someone although the
+    /// Bcc button is off. The Bcc recipients are shown from the record written as it was sent,
+    /// since what went out, and so Gmail's copy in Sent Mail, does not name them.
+    @MainActor private static func sentRecipients(_ model: AppModel, to directory: String) {
+        let account = AccountInfo.google(email: "alex@example.com", displayName: "Alex Example")
+        model.accounts = [account]
+        let me = EmailAddress(name: "Alex Example", address: "alex@example.com")
+        let ana = EmailAddress(name: "Ana Lee", address: "ana.lee@example.com")
+        let al = EmailAddress(name: "Al Karimov", address: "al.karimov@example.com")
+        let cc = [EmailAddress(name: "Bob Stone", address: "bob.stone@example.com"), EmailAddress(name: "Ben Ng", address: "ben.ng@example.com"),
+                  EmailAddress(address: "dispatch@example.com")]
+        let bcc = [EmailAddress(name: "Cy Young", address: "cy.young@example.com"), EmailAddress(name: "Operations", address: "ops@example.com")]
+        let sentDate = Date(timeIntervalSince1970: 1_790_003_600)
+        let original = OutgoingMessage(from: ana, to: [me, al], cc: [cc[0]], subject: "Rates for the Baku run",
+                                       textBody: "Hello Alex,\n\nCould you send over the rates for the Baku run next week? Bob is copied.\n\nAna\n",
+                                       messageID: "<rates-1@example.com>", date: Date(timeIntervalSince1970: 1_790_000_000))
+        let reply = OutgoingMessage(from: me, to: [ana, al], cc: cc, bcc: bcc, subject: "Re: Rates for the Baku run",
+                                    textBody: "Hello Ana,\n\nThe rates are below; Bob, Ben and dispatch are copied so they can book the trucks.\n\nAlex\n",
+                                    inReplyTo: "<rates-1@example.com>", references: ["<rates-1@example.com>"],
+                                    messageID: "<rates-reply-1@example.com>", date: sentDate)
+        // What sending it writes down; what went out names no Bcc.
+        model.outbox.sentBcc.record(messageID: reply.messageID, bcc: reply.bcc, at: sentDate)
+        func summary(_ m: OutgoingMessage, uid: UInt32, folder: UUID) -> MessageSummary {
+            let parsed = MIMEParser.parse(MIMEBuilder.build(m))
+            let row = MessageSummary(accountID: account.id, folderID: folder, uid: uid, messageID: m.messageID, inReplyTo: m.inReplyTo ?? "",
+                                     references: m.references, subject: m.subject, from: parsed.from, to: parsed.to, cc: parsed.cc,
+                                     date: m.date, flags: [.seen], size: 2048, snippet: parsed.snippet, hasAttachments: false, hasBody: true,
+                                     threadKey: "rates")
+            model.snapshotBody(parsed, for: row.id)
+            return row
+        }
+        let inbox = summary(original, uid: 1, folder: UUID())
+        let sent = summary(reply, uid: 2, folder: UUID())
+        let style: NSWindow.StyleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        // Queued just now, so that it is still in its ten seconds to undo as it is drawn.
+        func queued() -> OutboxItem {
+            var item = OutboxItem(accountID: account.id, subject: reply.subject, recipients: reply.allRecipients, sender: me.address,
+                                  sendAt: Date().addingTimeInterval(5), undoWindow: 10)
+            item.to = reply.to
+            item.cc = reply.cc
+            item.bcc = reply.bcc
+            item.messageID = reply.messageID
+            return item
+        }
+        var draft = ComposeDraft(accountID: account.id)
+        draft.to = OutgoingRecipients.box(reply.to)
+        draft.cc = OutgoingRecipients.box(reply.cc)
+        draft.bcc = OutgoingRecipients.box(reply.bcc)
+        draft.subject = reply.subject
+        draft.body = reply.textBody
+        let draftID = model.newDraft(draft)
+        defer { model.drafts[draftID] = nil }
+        for (name, appearance) in appearances {
+            let pane = host(MessageReaderView(message: sent).environment(model).environmentObject(model.updates).themedRoot(),
+                            size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 420), appearance: appearance)
+            captureWithMessages(pane, appearance: appearance, to: "\(directory)/sent-recipients-reading-\(name).png")
+            let window = host(MessageWindowView(messageID: sent.id, message: sent).themedRoot().environment(model)
+                                .environmentObject(model.updates),
+                              size: NSSize(width: 917, height: 560), appearance: appearance, style: style)
+            captureWithMessages(window, appearance: appearance, to: "\(directory)/sent-recipients-window-\(name).png")
+            let stack = host(ConversationStackView(messages: [sent, inbox]).environment(model).environmentObject(model.updates).themedRoot(),
+                             size: NSSize(width: 1728 - OL.sidebarWidth - OL.listWidth, height: 520), appearance: appearance)
+            captureWithMessages(stack, appearance: appearance, to: "\(directory)/sent-recipients-stack-\(name).png")
+            model.outboxItems = [queued()]
+            render(OutboxView().environment(model).themedRoot(), size: NSSize(width: 900, height: 120), appearance: appearance,
+                   to: "\(directory)/sent-recipients-outbox-\(name).png")
+            render(VStack(spacing: 0) { Spacer(minLength: 0); StatusBar() }.environment(model).themedRoot(),
+                   size: NSSize(width: 1728, height: 40), appearance: appearance, to: "\(directory)/sent-recipients-status-\(name).png")
+            model.outboxItems = []
+            let compose = host(ComposeView(draftID: draftID).themedRoot().environment(model).environmentObject(model.updates),
+                               size: NSSize(width: OL.composeWindowWidth, height: 420), appearance: appearance, style: style)
+            capture(compose, appearance: appearance, to: "\(directory)/sent-recipients-compose-\(name).png")
         }
     }
 

@@ -22,6 +22,15 @@ public struct OutboxItem: Codable, Sendable, Hashable, Identifiable {
     /// must say if FalconMail stops before the send ends: held, and under the status `failed`,
     /// since the previous release has no way out of "Sending…" for one it finds after a crash.
     public var sendBegan: Bool?
+    /// Who it goes to, box by box, for the Outbox to show and a message called back to open
+    /// with, Bcc included, should its draft beside it be missing. `recipients` stays what it
+    /// goes to, all of them, as the previous release reads it; these it ignores, and items it
+    /// queued have none.
+    public var to: [EmailAddress]?
+    public var cc: [EmailAddress]?
+    public var bcc: [EmailAddress]?
+    /// The Message-ID it goes out with. Absent from items an earlier build queued.
+    public var messageID: String?
 
     public init(accountID: UUID, subject: String, recipients: [String], sender: String, sendAt: Date, undoWindow: TimeInterval) {
         self.id = UUID()
@@ -66,6 +75,8 @@ public actor Outbox {
     private let sender: MessageSender
     public var undoWindow: TimeInterval
     private var listeners: [UUID: AsyncStream<[OutboxItem]>.Continuation] = [:]
+    /// The Bcc recipients of what is sent, written down as each message is queued.
+    public nonisolated let sentBcc: SentBccStore
 
     public static func draftSidecarURL(directory: URL, id: UUID) -> URL {
         directory.appendingPathComponent("\(id.uuidString).draft.json")
@@ -75,6 +86,7 @@ public actor Outbox {
         self.directory = layout.outboxDirectory
         self.sender = sender
         self.undoWindow = undoWindow
+        self.sentBcc = SentBccStore(file: layout.sentBccFile)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var loaded: [UUID: OutboxItem] = [:]
         if let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
@@ -118,11 +130,17 @@ public actor Outbox {
     }
 
     public func enqueue(accountID: UUID, from: String, message: OutgoingMessage, sendAt: Date? = nil) throws -> OutboxItem {
+        // No Bcc header: the Bcc recipients are in `recipients`, the envelope, and nowhere else.
         let raw = MIMEBuilder.build(message)
-        let item = OutboxItem(accountID: accountID, subject: message.subject, recipients: message.allRecipients, sender: from,
+        var item = OutboxItem(accountID: accountID, subject: message.subject, recipients: message.allRecipients, sender: from,
                               sendAt: sendAt ?? Date().addingTimeInterval(undoWindow), undoWindow: undoWindow)
+        item.to = message.to
+        item.cc = message.cc
+        item.bcc = message.bcc
+        item.messageID = message.messageID
         try raw.write(to: directory.appendingPathComponent("\(item.id.uuidString).eml"), options: .atomic)
         try persist(item)
+        sentBcc.record(messageID: message.messageID, bcc: message.bcc)
         items[item.id] = item
         notify()
         startPump()
@@ -144,6 +162,10 @@ public actor Outbox {
     }
 
     public func remove(_ id: UUID) {
+        // One cancelled never went, and one called back goes again under a new Message-ID.
+        if let item = items[id], item.status == .cancelled, let messageID = item.messageID {
+            sentBcc.forget(messageID: messageID)
+        }
         items[id] = nil
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(id.uuidString).json"))
         try? FileManager.default.removeItem(at: directory.appendingPathComponent("\(id.uuidString).eml"))

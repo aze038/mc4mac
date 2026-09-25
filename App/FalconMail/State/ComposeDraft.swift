@@ -100,8 +100,8 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
                       signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         let recipients = ReplyAddressing.recipients(for: message, replyTo: parsed?.replyTo ?? [], own: account.ownAddresses, all: all)
-        d.to = recipients.to.map { $0.rfc5322 }.joined(separator: ", ")
-        if all { d.cc = recipients.cc.map { $0.rfc5322 }.joined(separator: ", ") }
+        d.to = OutgoingRecipients.box(recipients.to)
+        if all { d.cc = OutgoingRecipients.box(recipients.cc) }
         d.subject = message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: \(message.subject)"
         d.inReplyTo = message.messageID
         d.references = message.references + [message.messageID].filter { !$0.isEmpty }
@@ -164,9 +164,10 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     @MainActor
     static func from(parsed: MIMEMessage, accountID: UUID) -> ComposeDraft {
         var d = ComposeDraft(accountID: accountID)
-        d.to = parsed.to.map { $0.rfc5322 }.joined(separator: ", ")
-        d.cc = parsed.cc.map { $0.rfc5322 }.joined(separator: ", ")
-        d.bcc = AddressParser.parse(parsed.headers.first("Bcc")).map { $0.rfc5322 }.joined(separator: ", ")
+        d.to = OutgoingRecipients.box(parsed.to)
+        d.cc = OutgoingRecipients.box(parsed.cc)
+        // A draft saved to Drafts keeps its Bcc recipients in a Bcc header (see uploadDraft).
+        d.bcc = OutgoingRecipients.box(AddressParser.parse(parsed.headers.first("Bcc")))
         d.subject = parsed.subject
         d.body = parsed.bestText
         if let html = parsed.textHTML, !html.trimmed.isEmpty,
@@ -243,25 +244,24 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
                             font: ComposeFont.chosen())
     }
 
-    func outgoing(from account: AccountInfo, requireRecipients: Bool = true) throws -> OutgoingMessage {
-        let toList = AddressParser.parse(to)
-        var ccList = AddressParser.parse(cc)
-        var bccList = AddressParser.parse(bcc)
-        if Preferences.bool(Pref.autoCopySelf, default: false) {
-            let me = EmailAddress(name: account.displayName, address: account.email)
-            let alreadyThere = (toList + ccList + bccList).contains { $0.address.caseInsensitiveCompare(account.email) == .orderedSame }
-            if !alreadyThere {
-                if Preferences.string(Pref.autoCopyMode, default: "bcc") == "cc" { ccList.append(me) } else { bccList.append(me) }
+    /// The message as it goes: to everyone in To, Cc and Bcc, each box read as CcBccDeliveryTests
+    /// sends it (see OutgoingRecipients). Sending needs someone to send to and nothing in a box
+    /// that is no address; `asDraft`, the copy saved to Drafts, needs neither, and does not add
+    /// the owner as "automatically Cc or Bcc myself" does, which happens only as it is sent.
+    func outgoing(from account: AccountInfo, asDraft: Bool = false) throws -> OutgoingMessage {
+        var recipients = OutgoingRecipients(to: to, cc: cc, bcc: bcc)
+        if !asDraft {
+            try recipients.checkSendable()
+            if Preferences.bool(Pref.autoCopySelf, default: false) {
+                let mode = OutgoingRecipients.CopyMode(rawValue: Preferences.string(Pref.autoCopyMode, default: "bcc")) ?? .bcc
+                recipients.copy(EmailAddress(name: account.displayName, address: account.email), as: mode)
             }
-        }
-        guard !requireRecipients || !toList.isEmpty || !AddressParser.parse(cc).isEmpty || !AddressParser.parse(bcc).isEmpty else {
-            throw FalconError.invalidInput("Add at least one recipient.")
         }
         let date = Date()
         let content = ComposedHTML.content(rtf: bodyRTF, rtfd: bodyRTFD, plain: body, historyPlain: historyPlain,
                                            historyHTML: historyHTML, date: date, font: ComposeFont.chosen())
-        return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                               cc: ccList, bcc: bccList, subject: subject, textBody: content.plain,
+        return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: recipients.to,
+                               cc: recipients.cc, bcc: recipients.bcc, subject: subject, textBody: content.plain,
                                htmlBody: content.html, attachments: attachments + content.pictures.map(\.attachment),
                                inReplyTo: inReplyTo, references: references, date: date, importance: importance)
     }

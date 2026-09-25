@@ -52,7 +52,12 @@ public struct OutgoingMessage: Sendable, Hashable {
         self.importance = importance
     }
 
-    public var allRecipients: [String] { (to + cc + bcc).map { $0.address } }
+    /// Every address the message goes to, To, Cc and Bcc, each once however many fields name
+    /// it: the envelope a server delivers it to, one RCPT TO an address.
+    public var allRecipients: [String] {
+        var seen = Set<String>()
+        return (to + cc + bcc).map { $0.address.trimmed }.filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+    }
 
     public static func generateMessageID(domain: String) -> String {
         "<\(UUID().uuidString.lowercased()).falconmail@\(domain)>"
@@ -60,12 +65,17 @@ public struct OutgoingMessage: Sendable, Hashable {
 }
 
 public enum MIMEBuilder {
-    public static func build(_ m: OutgoingMessage) -> Data {
+    /// The message as it is sent: To and Cc in its headers, and never Bcc, whose recipients are
+    /// named only in the envelope, so no one it goes to learns of them. `keepingBcc` is for a copy
+    /// only its owner keeps, a draft saved to the Drafts folder, which must open again with its
+    /// Bcc recipients still in it, as Outlook's and Gmail's drafts do.
+    public static func build(_ m: OutgoingMessage, keepingBcc: Bool = false) -> Data {
         var out = ""
         out += "Date: \(RFC5322Date.format(m.date))\r\n"
         out += "From: \(encodeAddress(m.from))\r\n"
         if !m.to.isEmpty { out += fold("To", m.to.map(encodeAddress).joined(separator: ",\r\n ")) }
         if !m.cc.isEmpty { out += fold("Cc", m.cc.map(encodeAddress).joined(separator: ",\r\n ")) }
+        if keepingBcc, !m.bcc.isEmpty { out += fold("Bcc", m.bcc.map(encodeAddress).joined(separator: ",\r\n ")) }
         if let r = m.replyTo { out += "Reply-To: \(encodeAddress(r))\r\n" }
         out += "Subject: \(RFC2047.encode(m.subject))\r\n"
         out += "Message-ID: \(m.messageID)\r\n"

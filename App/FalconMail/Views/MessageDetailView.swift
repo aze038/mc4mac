@@ -127,16 +127,19 @@ struct MessageReaderView: View {
                     .lineLimit(1)
                     .fixedSize()
             }
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text("To:")
-                    .font(.system(size: OL.readingMetaFont, weight: .semibold))
-                    .foregroundStyle(OLColor.text)
-                Text(recipientLine(message.to))
-                    .font(.system(size: OL.readingMetaFont))
-                    .foregroundStyle(OLColor.textMuted)
-                    .lineLimit(showDetails ? nil : 1)
-                    .textSelection(.enabled)
-                    .padding(.leading, 16)
+            // As Outlook's: To, then Cc whenever there is one, then, on a message the owner sent,
+            // Bcc; each a line of names, whole with every address once clicked.
+            VStack(alignment: .leading, spacing: 4) {
+                let bcc = model.bcc(of: message, parsed: parsed)
+                if !message.to.isEmpty || (message.cc.isEmpty && bcc.isEmpty) {
+                    recipientRow("To:", message.to)
+                }
+                if !message.cc.isEmpty {
+                    recipientRow("Cc:", message.cc)
+                }
+                if !bcc.isEmpty {
+                    recipientRow("Bcc:", bcc)
+                }
             }
             .padding(.top, 12)
             .contentShape(Rectangle())
@@ -144,9 +147,6 @@ struct MessageReaderView: View {
             .help(showDetails ? "Click to hide the details" : "Click to see every recipient, the folder and the full date")
             if showDetails {
                 VStack(alignment: .leading, spacing: 4) {
-                    if !message.cc.isEmpty {
-                        Text("Cc: " + recipientLine(message.cc))
-                    }
                     Text(message.date.formatted(date: .complete, time: .standard))
                     if let folder = model.folder(message.folderID) {
                         Text("Folder: " + folder.path)
@@ -156,6 +156,20 @@ struct MessageReaderView: View {
                 .foregroundStyle(OLColor.textMuted)
                 .padding(.top, 6)
             }
+        }
+    }
+
+    private func recipientRow(_ label: LocalizedStringKey, _ list: [EmailAddress]) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(label)
+                .font(.system(size: OL.readingMetaFont, weight: .semibold))
+                .foregroundStyle(OLColor.text)
+                .frame(width: OL.readingRecipientLabel, alignment: .leading)
+            Text(recipientLine(list))
+                .font(.system(size: OL.readingMetaFont))
+                .foregroundStyle(OLColor.textMuted)
+                .lineLimit(showDetails ? nil : 1)
+                .textSelection(.enabled)
         }
     }
 

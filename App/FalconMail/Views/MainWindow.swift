@@ -314,7 +314,11 @@ struct StatusBar: View {
     private var sendingCapsules: some View {
         ForEach(model.sendingSoonItems) { item in
             HStack(spacing: 6) {
-                Text("Sending “\(item.subject.isEmpty ? "(no subject)" : item.subject)”").font(.caption)
+                Text("Sending “\(item.subject.isEmpty ? "(no subject)" : item.subject)” · \(item.recipientSummary)")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(item.recipientSummary)
                 Button("Undo") { model.cancelAndReopen(item) }.buttonStyle(.link).font(.caption)
             }
             .padding(.horizontal, 8).padding(.vertical, 3)
