@@ -2340,7 +2340,14 @@ final class AppModel {
     /// or a draft has, and the Bcc recipients written down when FalconMail sent it, which Gmail's
     /// copy in Sent Mail does not name.
     func bcc(of message: MessageSummary, parsed: MIMEMessage?) -> [EmailAddress] {
-        SentBccStore.shown(header: parsed?.headers.first("Bcc"), recorded: outbox.sentBcc.bcc(forMessageID: message.messageID))
+        recipientLines(of: message, parsed: parsed).bcc
+    }
+
+    /// The To, Cc and Bcc lines of the reading pane, a message's window and its conversation,
+    /// for stored messages and Google messages on the Gmail API alike (see ReaderRecipients).
+    func recipientLines(of message: MessageSummary, parsed: MIMEMessage?) -> ReaderRecipients {
+        let sentBcc = outbox.sentBcc
+        return ReaderRecipients(message, parsed: parsed, recorded: { sentBcc.bcc(forMessageID: $0) })
     }
 
     var sendingSoonItems: [OutboxItem] {

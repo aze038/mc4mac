@@ -130,15 +130,15 @@ struct MessageReaderView: View {
             // As Outlook's: To, then Cc whenever there is one, then, on a message the owner sent,
             // Bcc; each a line of names, whole with every address once clicked.
             VStack(alignment: .leading, spacing: 4) {
-                let bcc = model.bcc(of: message, parsed: parsed)
-                if !message.to.isEmpty || (message.cc.isEmpty && bcc.isEmpty) {
-                    recipientRow("To:", message.to)
+                let lines = model.recipientLines(of: message, parsed: parsed)
+                if !lines.to.isEmpty || (lines.cc.isEmpty && lines.bcc.isEmpty) {
+                    recipientRow("To:", lines.to)
                 }
-                if !message.cc.isEmpty {
-                    recipientRow("Cc:", message.cc)
+                if !lines.cc.isEmpty {
+                    recipientRow("Cc:", lines.cc)
                 }
-                if !bcc.isEmpty {
-                    recipientRow("Bcc:", bcc)
+                if !lines.bcc.isEmpty {
+                    recipientRow("Bcc:", lines.bcc)
                 }
             }
             .padding(.top, 12)

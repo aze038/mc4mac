@@ -281,19 +281,19 @@ struct ConversationCard: View {
                 actions
             }
             .frame(minHeight: 24)
-            let bcc = model.bcc(of: message, parsed: parsed)
-            if !message.to.isEmpty || (message.cc.isEmpty && bcc.isEmpty) {
-                recipients("To:", message.to)
+            let lines = model.recipientLines(of: message, parsed: parsed)
+            if !lines.to.isEmpty || (lines.cc.isEmpty && lines.bcc.isEmpty) {
+                recipients("To:", lines.to)
                     .padding(.top, 6)
             }
-            if !message.cc.isEmpty {
-                recipients("Cc:", message.cc)
-                    .padding(.top, message.to.isEmpty ? 6 : 3)
+            if !lines.cc.isEmpty {
+                recipients("Cc:", lines.cc)
+                    .padding(.top, lines.to.isEmpty ? 6 : 3)
             }
             // On a message the owner sent, as Outlook shows it.
-            if !bcc.isEmpty {
-                recipients("Bcc:", bcc)
-                    .padding(.top, message.to.isEmpty && message.cc.isEmpty ? 6 : 3)
+            if !lines.bcc.isEmpty {
+                recipients("Bcc:", lines.bcc)
+                    .padding(.top, lines.to.isEmpty && lines.cc.isEmpty ? 6 : 3)
             }
             if showDetails {
                 VStack(alignment: .leading, spacing: 4) {
