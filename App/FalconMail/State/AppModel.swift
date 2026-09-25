@@ -454,6 +454,15 @@ final class AppModel {
     @ObservationIgnored private var undoExpiryTask: Task<Void, Never>?
     @ObservationIgnored var openMainWindow: (@MainActor () -> Void)?
     @ObservationIgnored var openComposeWindow: (@MainActor (UUID) -> Void)?
+    /// Messages whose pictures from the web the owner loaded once in the reader, this session.
+    @ObservationIgnored var remotePicturesLoaded: Set<String> = []
+    /// Fetches the pictures from the web a quoted original or a signature shows; the snapshot
+    /// gives it one that never reaches the network.
+    @ObservationIgnored var remotePictureLoader = RemotePictureLoader.web
+    /// Drafts just opened whose quoted original's pictures from the web are to be fetched and
+    /// put in by their compose window.
+    @ObservationIgnored var picturesToFetch: Set<UUID> = []
+    @ObservationIgnored private var importingSignatures = false
     /// The drafts being written in compose windows of their own; with those in tabs, they are
     /// the drafts that are not left over.
     @ObservationIgnored var composeWindowDrafts: Set<UUID> = []
@@ -846,10 +855,23 @@ final class AppModel {
     func refreshAccounts() async {
         accounts = await store.allAccounts()
         signatures.adopt(accounts)
+        importCarriedOverSignatures()
         var map: [UUID: [FolderInfo]] = [:]
         for a in accounts { map[a.id] = await store.folders(for: a.id) }
         folders = map
         refreshDockBadge()
+    }
+
+    /// Account signatures carried over as HTML source become the signatures they describe,
+    /// with their pictures, fetched from the web once; see SignatureLibrary.
+    private func importCarriedOverSignatures() {
+        guard !importingSignatures, !signatures.book.carriedOverHTML.isEmpty else { return }
+        importingSignatures = true
+        let loader = remotePictureLoader
+        Task {
+            await signatures.importCarriedOverHTML(loader: loader)
+            importingSignatures = false
+        }
     }
 
     /// Maintained whenever folders change, so reading it from a view body costs nothing.
@@ -1182,8 +1204,7 @@ final class AppModel {
         guard let account = account(for: message) else { return }
         Task {
             let parsed = await parsedBody(for: message)
-            openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                               signature: signature(for: account, .replies)), origin: .reply)
+            openReply(to: message, parsed: parsed, account: account, all: all)
             then?()
         }
     }
@@ -1192,9 +1213,27 @@ final class AppModel {
         guard let account = account(for: message) else { return }
         Task {
             let parsed = await parsedBodyForForwarding(message)
-            openCompose(.forward(message, parsed: parsed, account: account, signature: signature(for: account, .replies)), origin: .reply)
+            openForward(message, parsed: parsed, account: account)
             then?()
         }
+    }
+
+    /// Whether pictures from the web load for `message`: always, or because the owner loaded
+    /// them for it in the reader.
+    func loadsRemotePictures(for message: MessageSummary) -> Bool {
+        loadRemoteImages || remotePicturesLoaded.contains(message.id)
+    }
+
+    /// A reply opened to be written, its original quoted with its pictures; those from the web
+    /// are fetched when they load for the message, and are otherwise empty boxes.
+    func openReply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool) {
+        openCompose(.reply(to: message, parsed: parsed, account: account, all: all, signature: signature(for: account, .replies)),
+                    origin: .reply, fetchingPictures: loadsRemotePictures(for: message))
+    }
+
+    func openForward(_ message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo) {
+        openCompose(.forward(message, parsed: parsed, account: account, signature: signature(for: account, .replies)),
+                    origin: .reply, fetchingPictures: loadsRemotePictures(for: message))
     }
 
     /// The signature a message from the account starts with, as the Signatures pane sets it.
@@ -1861,7 +1900,8 @@ final class AppModel {
             var draft = ComposeDraft.from(parsed: parsed, accountID: message.accountID)
             draft.sourceMessageID = message.id
             draft.sourceMessage = message
-            openCompose(draft, origin: .reopenedDraft)
+            // Its pictures from the web are fetched as a reply's are when they always load.
+            openCompose(draft, origin: .reopenedDraft, fetchingPictures: loadRemoteImages)
         }
     }
 
@@ -1981,8 +2021,9 @@ final class AppModel {
                 statusText = "Cancelled “\(title)”, but the message could not be reopened"
                 return
             }
-            // Where it opens follows the compose setting, as every other message being written does.
-            openCompose(draft, origin: .outboxRecall)
+            // Where it opens follows the compose setting, as every other message being written does,
+            // and its pictures from the web are fetched as a reopened draft's are.
+            openCompose(draft, origin: .outboxRecall, fetchingPictures: loadRemoteImages)
             statusText = "Reopened “\(title)” as a draft"
         }
     }
@@ -2015,15 +2056,15 @@ final class AppModel {
         let raw = await outbox.rawMessage(for: item.id)
         let url = sidecarURL(item.id)
         let accountID = item.accountID
-        return await Task.detached(priority: .userInitiated) { () -> ComposeDraft? in
-            let parsed = raw.map { MIMEParser.parse($0) }
-            let attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
-            if let sidecar = AtomicFile.readJSON(ComposeDraftSidecar.self, from: url) {
-                return sidecar.draft(attachments: attachments)
-            }
-            guard let parsed else { return nil }
-            return ComposeDraft.from(parsed: parsed, accountID: accountID)
+        let (parsed, sidecar) = await Task.detached(priority: .userInitiated) { () -> (MIMEMessage?, ComposeDraftSidecar?) in
+            (raw.map { MIMEParser.parse($0) }, AtomicFile.readJSON(ComposeDraftSidecar.self, from: url))
         }.value
+        if let sidecar {
+            return sidecar.draft(attachments: parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? [])
+        }
+        // Read on the main thread, where AppKit reads HTML.
+        guard let parsed else { return nil }
+        return ComposeDraft.from(parsed: parsed, accountID: accountID)
     }
 
     func addGoogleAccount(loginHint: String? = nil) async throws {

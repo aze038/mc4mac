@@ -10,6 +10,9 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     var subject: String = ""
     var body: String = ""
     var bodyRTF: Data?
+    /// The body with its pictures, as flat RTFD, kept only while it holds any, beside the RTF an
+    /// earlier build reads (see ComposedBody.stored).
+    var bodyRTFD: Data?
     var attachments: [OutgoingAttachment] = []
     var inReplyTo: String?
     var references: [String] = []
@@ -31,6 +34,18 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         var lead: String
         var body: String
         var bodyRTF: Data?
+        var bodyRTFD: Data?
+    }
+
+    /// The body in every form it is kept in, which the composer's text view reads and writes
+    /// as one.
+    var richBody: RichText.Body {
+        get { RichText.Body(plain: body, rtf: bodyRTF, rtfd: bodyRTFD) }
+        set {
+            body = newValue.plain
+            bodyRTF = newValue.rtf
+            bodyRTFD = newValue.rtfd
+        }
     }
 
     /// A digest of what the message held when it was opened, fresh or from the Drafts folder,
@@ -45,13 +60,27 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         let fields = [accountID.uuidString, to, cc, bcc, subject, body, importance,
                       scheduledAt.map { String($0.timeIntervalSince1970) } ?? ""]
         let attached = attachments.flatMap { [Data($0.filename.utf8), Data($0.mimeType.utf8), $0.data] }
-        return UnsentMessage.fingerprint(fields.map { Data($0.utf8) } + [bodyRTF ?? Data()] + attached)
+        // A body without pictures is fingerprinted as before, so a draft kept by an earlier
+        // build still counts as untouched.
+        let pictures = bodyRTFD.map { [$0] } ?? []
+        return UnsentMessage.fingerprint(fields.map { Data($0.utf8) } + [bodyRTF ?? Data()] + pictures + attached)
     }
 
     /// Remembers what it holds now, as it opens from `origin`, or forgets it where nothing else
     /// holds the message.
     mutating func markOpened(as origin: UnsentMessage.Origin) {
         openedDigest = origin.remembersOpening ? contentDigest : nil
+    }
+
+    /// Whether it still holds what it opened with, where something else holds that too, so that
+    /// closing it now keeps nothing.
+    var isUntouched: Bool { openedDigest != nil && openedDigest == contentDigest }
+
+    /// Takes what it holds now as what it opened with, where its opening is remembered at all:
+    /// as when the pictures from the web fetched for a message nobody has touched fill their
+    /// boxes, so that it still closes without leaving a copy in Drafts.
+    mutating func keepUntouched() {
+        if openedDigest != nil { openedDigest = contentDigest }
     }
 
     /// What closing it does: nothing is kept when nothing would be lost, else it goes to Drafts.
@@ -64,6 +93,9 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
             && body.replacingOccurrences(of: historyPlain, with: "").trimmed.isEmpty
     }
 
+    /// A reply, its original quoted as Legacy Outlook quotes it, as rich text with its pictures
+    /// (see ComposedBody.quote), or as its text when it has no HTML that can be read.
+    @MainActor
     static func reply(to message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, all: Bool,
                       signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
@@ -73,22 +105,43 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         d.subject = message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: \(message.subject)"
         d.inReplyTo = message.messageID
         d.references = message.references + [message.messageID].filter { !$0.isEmpty }
-        let h = history(message, parsed: parsed)
-        d.historyPlain = h.plain
-        d.historyHTML = h.html
-        d.open(lead: "\n\n", signature: signature, tail: h.plain)
+        d.openQuoting(message, parsed: parsed, signature: signature)
         return d
     }
 
+    @MainActor
     static func forward(_ message: MessageSummary, parsed: MIMEMessage?, account: AccountInfo, signature: Signature?) -> ComposeDraft {
         var d = ComposeDraft(accountID: account.id)
         d.subject = message.subject.lowercased().hasPrefix("fwd:") ? message.subject : "Fwd: \(message.subject)"
-        let h = history(message, parsed: parsed)
-        d.historyPlain = h.plain
-        d.historyHTML = h.html
-        d.open(lead: "\n\n", signature: signature, tail: h.plain)
+        d.openQuoting(message, parsed: parsed, signature: signature)
         d.attachments = parsed.map { ComposeDraft.outgoingAttachments(of: $0) } ?? []
         return d
+    }
+
+    /// Starts a reply's or forward's body: a blank line, the signature, then the original. The
+    /// original is quoted as rich text, its formatting, links and pictures as it was written,
+    /// every picture it would fetch from the web an empty box until it is fetched; only an
+    /// original without HTML, or HTML that cannot be read, is quoted as its text. `historyPlain`
+    /// is the quote's text, which the body ends with while the original is untouched, and is
+    /// then sent as `historyHTML`, the original's own HTML.
+    @MainActor
+    private mutating func openQuoting(_ message: MessageSummary, parsed: MIMEMessage?, signature: Signature?) {
+        let h = ComposeDraft.history(message, parsed: parsed)
+        historyHTML = h.html
+        if let html = parsed?.textHTML,
+           let quote = ComposedBody.quote(heading: h.heading, html: html, parts: parsed?.attachments ?? [],
+                                          indent: Preferences.bool(Pref.indentOriginal, default: false),
+                                          attributes: RichText.bodyAttributes) {
+            let opened = ComposedBody.opening(lead: "\n\n", signature: signature, quote: quote, attributes: RichText.bodyAttributes)
+            body = opened.plain
+            let stored = ComposedBody.stored(opened.rich)
+            bodyRTF = stored.rtf
+            bodyRTFD = stored.rtfd
+            historyPlain = quote.string
+        } else {
+            historyPlain = h.plain
+            open(lead: "\n\n", signature: signature, tail: h.plain)
+        }
     }
 
     static func forwardAsAttachment(_ message: MessageSummary, raw: Data, account: AccountInfo, signature: Signature?) -> ComposeDraft {
@@ -102,6 +155,13 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         return d
     }
 
+    /// A draft from a message kept on the server, or in the Outbox by an earlier build: its
+    /// formatting and pictures come back from its HTML, each picture from the part the HTML
+    /// shows it from, at the size it was sent at; each it shows from the web, such as the logo
+    /// in a quoted Gmail signature, is an empty box that is sent from its address again, as a
+    /// reply's quote holds it. A message without HTML, or HTML that cannot be read, opens as its
+    /// text.
+    @MainActor
     static func from(parsed: MIMEMessage, accountID: UUID) -> ComposeDraft {
         var d = ComposeDraft(accountID: accountID)
         d.to = parsed.to.map { $0.rfc5322 }.joined(separator: ", ")
@@ -109,14 +169,22 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         d.bcc = AddressParser.parse(parsed.headers.first("Bcc")).map { $0.rfc5322 }.joined(separator: ", ")
         d.subject = parsed.subject
         d.body = parsed.bestText
+        if let html = parsed.textHTML, !html.trimmed.isEmpty,
+           let rich = InlinePictures.text(fromHTML: html, parts: parsed.attachments, attributes: RichText.bodyAttributes,
+                                          remote: [:], fitting: false) {
+            d.richBody = RichText.body(of: rich)
+        }
         d.attachments = ComposeDraft.outgoingAttachments(of: parsed)
         d.inReplyTo = parsed.inReplyTo.isEmpty ? nil : parsed.inReplyTo
         d.references = parsed.references
         return d
     }
 
+    /// What a forward, or a draft opened again, carries as attachments: every part but the
+    /// pictures its HTML shows, which stay in its text.
     static func outgoingAttachments(of parsed: MIMEMessage) -> [OutgoingAttachment] {
-        parsed.attachments.filter { !$0.isInline }.map { OutgoingAttachment(filename: $0.filename, mimeType: $0.mimeType, data: $0.data) }
+        parsed.attachments.filter { !InlinePictures.isShownInText($0, html: parsed.textHTML) }
+            .map { OutgoingAttachment(filename: $0.filename, mimeType: $0.mimeType, data: $0.data) }
     }
 
     static func blank(account: AccountInfo, signature: Signature?) -> ComposeDraft {
@@ -131,26 +199,31 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
     mutating func open(lead: String, signature: Signature?, tail: String = "") {
         let opened = ComposedBody.opening(lead: lead, signature: signature, tail: tail, attributes: RichText.bodyAttributes)
         body = opened.plain
-        bodyRTF = opened.rich.flatMap { RichText.rtf(from: $0) }
+        let stored = opened.rich.map(ComposedBody.stored)
+        bodyRTF = stored?.rtf
+        bodyRTFD = stored?.rtfd
     }
 
     /// A new message's start, remembered until the body is touched.
     mutating func openNew(lead: String, signature: Signature?) {
         open(lead: lead, signature: signature)
-        autoSignature = AutoSignature(lead: lead, body: body, bodyRTF: bodyRTF)
+        autoSignature = AutoSignature(lead: lead, body: body, bodyRTF: bodyRTF, bodyRTFD: bodyRTFD)
     }
 
     /// A new message nobody has typed in yet takes the new account's signature for new
     /// messages in place of the old one's, as Outlook's does.
     mutating func changeAccount(to account: AccountInfo, signature: Signature?) {
         accountID = account.id
-        guard let auto = autoSignature, auto.body == body, auto.bodyRTF == bodyRTF else { return }
+        guard let auto = autoSignature, auto.body == body, auto.bodyRTF == bodyRTF, auto.bodyRTFD == bodyRTFD else { return }
         openNew(lead: auto.lead, signature: signature)
     }
 
     static let separatorLine = AttachmentReminder.separatorLine
 
-    static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> (plain: String, html: String) {
+    /// The original as a reply or forward quotes it: `heading`, the line and the From, Sent, To
+    /// and Subject lines; `plain`, the heading and the original's text; and `html`, what is sent
+    /// for them while the original is untouched.
+    static func history(_ message: MessageSummary, parsed: MIMEMessage?) -> (heading: String, plain: String, html: String) {
         let mode = AttributionMode(rawValue: Preferences.string(Pref.attributionMode, default: AttributionMode.standard.rawValue)) ?? .standard
         let indent = Preferences.bool(Pref.indentOriginal, default: false)
         let f = DateFormatter()
@@ -183,22 +256,22 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
             html += "<b>Subject:</b> \(HTMLText.escape(message.subject))</div>"
         }
 
+        let heading = plain
         let originalText = (parsed?.bestText ?? message.snippet).trimmed
         plain += (indent ? originalText.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n") : originalText) + "\n"
 
         let quoteStyle = indent ? "border-left:3px solid #b5b5b5;padding-left:10px;margin-left:2px" : ""
         if let original = parsed?.textHTML, !original.trimmed.isEmpty {
-            var inner = original
-            for a in parsed?.attachments ?? [] where a.contentID != nil {
-                inner = inner.replacingOccurrences(of: "cid:\(a.contentID!)", with: "data:\(a.mimeType);base64,\(a.data.base64EncodedString())", options: .caseInsensitive)
-            }
+            // The original's pictures are held in its HTML until the message goes, and are then
+            // sent as inline parts of their own (see ComposedHTML).
+            var inner = InlinePictures.resolvingCIDs(in: original, with: parsed?.attachments ?? [])
             inner = inner.replacingOccurrences(of: "(?is)<script[^>]*>.*?</script>", with: "", options: .regularExpression)
             inner = inner.replacingOccurrences(of: "(?is)<(/?)(html|head|body)[^>]*>", with: "", options: .regularExpression)
             html += "<div style=\"\(quoteStyle)\">\(inner)</div>"
         } else {
             html += "<div style=\"white-space:pre-wrap;\(quoteStyle)\">\(HTMLText.escape(originalText))</div>"
         }
-        return (plain, html)
+        return (heading, plain, html)
     }
 
     static func customAttribution(message: MessageSummary, sent: String) -> String {
@@ -222,10 +295,13 @@ struct ComposeDraft: Identifiable, Hashable, Codable, Sendable {
         guard !requireRecipients || !toList.isEmpty || !AddressParser.parse(cc).isEmpty || !AddressParser.parse(bcc).isEmpty else {
             throw FalconError.invalidInput("Add at least one recipient.")
         }
-        let html = ComposedHTML.document(rtf: bodyRTF, plain: body, historyPlain: historyPlain, historyHTML: historyHTML)
+        let date = Date()
+        let content = ComposedHTML.content(rtf: bodyRTF, rtfd: bodyRTFD, plain: body, historyPlain: historyPlain,
+                                           historyHTML: historyHTML, date: date)
         return OutgoingMessage(from: EmailAddress(name: account.displayName, address: account.email), to: toList,
-                               cc: ccList, bcc: bccList, subject: subject, textBody: body,
-                               htmlBody: html, attachments: attachments, inReplyTo: inReplyTo, references: references, importance: importance)
+                               cc: ccList, bcc: bccList, subject: subject, textBody: content.plain,
+                               htmlBody: content.html, attachments: attachments + content.pictures.map(\.attachment),
+                               inReplyTo: inReplyTo, references: references, date: date, importance: importance)
     }
 }
 
@@ -242,6 +318,10 @@ struct ComposeDraftSidecar: Codable, Sendable {
     var scheduledAt: Date?
     var historyPlain: String
     var historyHTML: String
+    /// The body's formatting and pictures, which a send called back from the Outbox opens
+    /// with again. Absent from what an earlier build wrote, whose message then opens as text.
+    var bodyRTF: Data?
+    var bodyRTFD: Data?
 
     init(_ draft: ComposeDraft) {
         id = draft.id
@@ -256,6 +336,8 @@ struct ComposeDraftSidecar: Codable, Sendable {
         scheduledAt = draft.scheduledAt
         historyPlain = draft.historyPlain
         historyHTML = draft.historyHTML
+        bodyRTF = draft.bodyRTF
+        bodyRTFD = draft.bodyRTFD
     }
 
     func draft(attachments: [OutgoingAttachment]) -> ComposeDraft {
@@ -271,6 +353,8 @@ struct ComposeDraftSidecar: Codable, Sendable {
         d.scheduledAt = scheduledAt
         d.historyPlain = historyPlain
         d.historyHTML = historyHTML
+        d.bodyRTF = bodyRTF
+        d.bodyRTFD = bodyRTFD
         return d
     }
 }

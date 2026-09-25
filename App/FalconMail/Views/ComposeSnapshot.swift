@@ -15,7 +15,10 @@ import FalconCore
 /// Notifications and Sounds pane and every other pane, the Privacy pane with its diagnostics
 /// section as a release build shows it and the sheet of data waiting to be sent, and a
 /// signature's editor window for a signature, for a new one and with ¶ showing the marks for
-/// what does not print, in both appearances into PNGs at twice their size in that directory,
+/// what does not print, a new message whose signature has a logo, replies quoting a message from
+/// Outlook with its logo and one from Gmail whose logo is fetched from the web, with pictures from
+/// the web off and on, in both appearances into PNGs at twice their size in that directory, with
+/// the messages they would send as inline-sample.eml and reply-quote-sample.eml,
 /// writes down beside them the words and buttons of the question asked before a signature is
 /// deleted, and the message list with made-up conversations, then quits. With
 /// `-FalconMailSnapshotOnly list` it draws the message list alone.
@@ -57,6 +60,8 @@ enum ComposeSnapshot {
         }
         windows(model, to: directory)
         signatures(model, to: directory)
+        inlinePictures(model, to: directory)
+        replyQuotes(model, to: directory)
         // Before the settings panes, so that the Privacy pane shows the release build's stand-in.
         privacy(model, to: directory)
         for (name, appearance) in appearances {
@@ -293,6 +298,191 @@ enum ComposeSnapshot {
         _ = model.discarded.undo(at: Date())
     }
 
+    /// A new message from an account whose signature for new messages has a logo, words typed
+    /// above it, as its compose window shows it, and the message it sends, written beside the
+    /// pictures as inline-sample.eml for Mail to open: the logo goes as an inline part in
+    /// multipart/related, which the HTML shows by cid:. Nothing is sent or saved anywhere else.
+    @MainActor private static func inlinePictures(_ model: AppModel, to directory: String) {
+        let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
+                                  imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [account]
+        var signature = Signature(name: "Formal")
+        signature.setText(formalText())
+        var draft = ComposeDraft.blank(account: account, signature: signature)
+        draft.to = "Sam Sender <sam@example.com>"
+        draft.subject = "Figures for this week"
+        if let opened = RichText.attributed(from: draft.richBody) {
+            let text = NSMutableAttributedString(attributedString: opened)
+            text.insert(NSAttributedString(string: "Hello Sam,\n\nThe figures for this week are in the shared folder.", attributes: RichText.bodyAttributes),
+                        at: 0)
+            draft.richBody = RichText.body(of: text)
+        }
+        let id = model.newDraft(draft)
+        defer { model.drafts[id] = nil }
+        for (name, appearance) in appearances {
+            let compose = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                               size: NSSize(width: OL.composeWindowWidth, height: 560), appearance: appearance,
+                               style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+            capture(compose, appearance: appearance, to: "\(directory)/compose-signature-\(name).png")
+        }
+        if let message = try? draft.outgoing(from: account) {
+            try? MIMEBuilder.build(message).write(to: URL(fileURLWithPath: "\(directory)/inline-sample.eml"))
+        }
+    }
+
+    /// Replies as their compose windows show them: to a message from Outlook, its logo sent
+    /// inline and shown by cid:, and to one from Gmail, whose signature's logo is fetched from
+    /// the web, as an empty box with pictures from the web off and as the picture with them on.
+    /// The picture is never fetched: the loader the model is given answers with one drawn here.
+    /// The Outlook reply's message is written as reply-quote-sample.eml.
+    @MainActor private static func replyQuotes(_ model: AppModel, to directory: String) {
+        let account = AccountInfo(email: "alex@example.com", displayName: "Alex Example", provider: "imap",
+                                  imapHost: "example.invalid", smtpHost: "example.invalid")
+        model.accounts = [account]
+        var signature = Signature(name: "Formal")
+        signature.setText(formalText())
+        let outlookLogo = picture("SAM & CO", colour: .systemIndigo, size: NSSize(width: 120, height: 36))
+        let gmailLogo = picture("NORTHWIND", colour: .systemOrange, size: NSSize(width: 96, height: 30))
+        let loader = model.remotePictureLoader
+        model.remotePictureLoader = RemotePictureLoader { _ in gmailLogo }
+        defer { model.remotePictureLoader = loader }
+        let cases: [(String, Data, Bool)] = [("outlook", outlookMessage(logo: outlookLogo), false),
+                                             ("gmail-off", gmailMessage(), false), ("gmail-on", gmailMessage(), true)]
+        for (file, raw, fetching) in cases {
+            let parsed = MIMEParser.parse(raw)
+            let message = MessageSummary(accountID: account.id, folderID: UUID(), uid: 1, messageID: parsed.messageID, inReplyTo: "",
+                                         references: [], subject: parsed.subject, from: parsed.from, to: parsed.to, cc: parsed.cc,
+                                         date: parsed.date ?? Date(), flags: [.seen], size: raw.count, hasAttachments: false)
+            var draft = ComposeDraft.reply(to: message, parsed: parsed, account: account, all: false, signature: signature)
+            if let opened = RichText.attributed(from: draft.richBody) {
+                let text = NSMutableAttributedString(attributedString: opened)
+                text.insert(NSAttributedString(string: "Thanks, that is what I needed.", attributes: RichText.bodyAttributes), at: 0)
+                draft.richBody = RichText.body(of: text)
+            }
+            let id = model.newDraft(draft)
+            defer { model.drafts[id] = nil }
+            for (name, appearance) in appearances {
+                // As openCompose leaves it for the window, which fetches the pictures as it opens.
+                if fetching { model.picturesToFetch.insert(id) }
+                let compose = host(ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates),
+                                   size: NSSize(width: OL.composeWindowWidth, height: 760), appearance: appearance,
+                                   style: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
+                capture(compose, appearance: appearance, to: "\(directory)/reply-quote-\(file)-\(name).png")
+            }
+            if file == "outlook", let sent = try? model.drafts[id]?.outgoing(from: account) {
+                try? MIMEBuilder.build(sent).write(to: URL(fileURLWithPath: "\(directory)/reply-quote-sample.eml"))
+            }
+        }
+    }
+
+    /// A message as Outlook for Windows sends one: its logo an inline part in multipart/related
+    /// that its HTML shows by cid:, and its plain text saying [cid:…] where the logo stands.
+    private static func outlookMessage(logo: Data) -> Data {
+        let cid = "image001.png@01DC2E5A.3F1B7C40"
+        let html = """
+        <html xmlns:o="urn:schemas-microsoft-com:office:office"><head><meta http-equiv=Content-Type content="text/html; charset=utf-8">\
+        <style>p.MsoNormal{margin:0cm;font-size:11.0pt;font-family:"Calibri",sans-serif;}</style></head>\
+        <body lang=EN-GB link="#0563C1" vlink="#954F72"><div class=WordSection1><p class=MsoNormal>Hi Alex,</p>\
+        <p class=MsoNormal>&nbsp;</p><p class=MsoNormal>The figures for this week are in the shared folder. \
+        The <a href="https://example.com/report">full report</a> is there as well.</p><p class=MsoNormal>&nbsp;</p>\
+        <p class=MsoNormal>Kind regards,</p><p class=MsoNormal><b>Sam Sender</b></p>\
+        <p class=MsoNormal><span style="color:#595959">Operations | Sam &amp; Co</span></p>\
+        <p class=MsoNormal><img width=120 height=36 style="width:1.25in;height:.375in" id="Picture_x0020_1" src="cid:\(cid)" alt="Sam &amp; Co"></p>\
+        </div></body></html>
+        """
+        let raw = """
+        From: Sam Sender <sam@example.com>\r
+        To: Alex Example <alex@example.com>\r
+        Subject: Figures for this week\r
+        Date: Thu, 24 Sep 2026 16:05:00 +0100\r
+        Message-ID: <outlook-sample@example.com>\r
+        MIME-Version: 1.0\r
+        Content-Type: multipart/related; boundary="rel"; type="multipart/alternative"\r
+        \r
+        --rel\r
+        Content-Type: multipart/alternative; boundary="alt"\r
+        \r
+        --alt\r
+        Content-Type: text/plain; charset=utf-8\r
+        \r
+        Hi Alex,\r
+        \r
+        The figures for this week are in the shared folder. The full report<https://example.com/report> is there as well.\r
+        \r
+        Kind regards,\r
+        Sam Sender\r
+        Operations | Sam & Co\r
+        [cid:\(cid)]\r
+        --alt\r
+        Content-Type: text/html; charset=utf-8\r
+        \r
+        \(html)\r
+        --alt--\r
+        --rel\r
+        Content-Type: image/png; name="image001.png"\r
+        Content-Description: image001.png\r
+        Content-Disposition: inline; filename="image001.png"\r
+        Content-ID: <\(cid)>\r
+        Content-Transfer-Encoding: base64\r
+        \r
+        \(logo.base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed]))\r
+        --rel--\r
+        """
+        return Data(raw.utf8)
+    }
+
+    /// A message as Gmail sends one: its signature's logo fetched from the web, and its plain
+    /// text saying [image: …] where the logo stands.
+    private static func gmailMessage() -> Data {
+        let logo = "https://lh3.example.invalid/mail-sig/AIorK4northwind=s96"
+        let raw = """
+        From: Jordan Lee <jordan@example.net>\r
+        To: Alex Example <alex@example.com>\r
+        Subject: Delivery on Friday\r
+        Date: Thu, 24 Sep 2026 17:40:00 +0100\r
+        Message-ID: <gmail-sample@example.net>\r
+        MIME-Version: 1.0\r
+        Content-Type: multipart/alternative; boundary="alt"\r
+        \r
+        --alt\r
+        Content-Type: text/plain; charset=utf-8\r
+        \r
+        Hi Alex,\r
+        \r
+        The delivery is booked for Friday morning.\r
+        \r
+        --\r
+        Jordan Lee\r
+        Northwind Traders\r
+        [image: Northwind Traders] <https://northwind.example/>\r
+        --alt\r
+        Content-Type: text/html; charset=utf-8\r
+        \r
+        <div dir="ltr"><div>Hi Alex,</div><div><br></div><div>The delivery is booked for <b>Friday morning</b>.</div>\
+        <div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature">\
+        <div dir="ltr"><div>Jordan Lee</div><div>Northwind Traders</div><div><a href="https://northwind.example/" target="_blank">\
+        <img src="\(logo)" alt="Northwind Traders" width="96" height="30"></a></div></div></div></div>\r
+        --alt--\r
+        """
+        return Data(raw.utf8)
+    }
+
+    /// A logo drawn here, `size` points at twice that many pixels, as a PNG.
+    @MainActor private static func picture(_ words: String, colour: NSColor, size: NSSize) -> Data {
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return Data() }
+        bitmap.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        colour.setFill()
+        NSBezierPath(roundedRect: NSRect(origin: .zero, size: size), xRadius: 5, yRadius: 5).fill()
+        NSAttributedString(string: words, attributes: [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor.white])
+            .draw(at: NSPoint(x: 10, y: (size.height - 15) / 2))
+        NSGraphicsContext.restoreGraphicsState()
+        return bitmap.representation(using: .png, properties: [:]) ?? Data()
+    }
+
     @MainActor private static func textView(in view: NSView) -> NSTextView? {
         if let text = view as? NSTextView { return text }
         for child in view.subviews {
@@ -365,7 +555,7 @@ enum ComposeSnapshot {
                           onAttachFromDrive: {}, signatures: [], onInsertSignature: { _ in }, onEditSignatures: {},
                           onInsertTableDialog: {}, onCycleBackground: {})
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
-            RichTextEditor(rtf: .constant(RichText.rtf(from: body)), plain: .constant(body.string)) { view in
+            RichTextEditor(body: .constant(RichText.body(of: body))) { view in
                 Task { @MainActor in formatter.attach(view) }
             }
         }

@@ -499,6 +499,7 @@ struct SignatureTextEditor: NSViewRepresentable {
         view.isRichText = true
         view.importsGraphics = true
         view.pastesSourceFormatting = true
+        view.fetchesPastedRemotePictures = true
         view.allowsUndo = true
         view.usesFindBar = true
         // An address typed in becomes a link, as in a message; ⌘K makes one of any text.

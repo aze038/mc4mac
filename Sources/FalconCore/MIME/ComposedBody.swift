@@ -31,8 +31,31 @@ public enum ComposedBody {
         return text.utf16.distance(from: text.utf16.startIndex, to: index.samePosition(in: text.utf16) ?? index)
     }
 
+    /// The body as a draft keeps it: RTF, which every build reads, and beside it, only while the
+    /// body holds pictures, flat RTFD, which keeps them. A build from before pictures were kept
+    /// reads the RTF alone and opens the draft with its text and formatting, the pictures left
+    /// out; a body without pictures is kept exactly as those builds kept it.
+    public static func stored(_ text: NSAttributedString) -> (rtf: Data?, rtfd: Data?) {
+        let whole = NSRange(location: 0, length: text.length)
+        let rtf = text.rtf(from: whole, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+        guard InlinePictures.hasPictures(text) else { return (rtf, nil) }
+        return (rtf, text.rtfd(from: whole, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd]))
+    }
+
+    /// The body a draft keeps, from its RTFD when it has one this build can read, else from its
+    /// RTF; nil for a plain body.
+    public static func text(rtf: Data?, rtfd: Data?) -> NSAttributedString? {
+        if let rtfd, let text = try? NSAttributedString(data: rtfd, options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                                                         documentAttributes: nil) {
+            return text
+        }
+        guard let rtf else { return nil }
+        return try? NSAttributedString(data: rtf, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+    }
+
     /// Plain text as it reads once written to RTF and read back, the trip the composer's body
-    /// makes to its draft store and to what is sent.
+    /// made to its draft store and to what is sent before drafts kept their pictures, and still
+    /// makes in a draft an earlier build kept.
     static func throughRTF(_ plain: String) -> String {
         let text = NSAttributedString(string: plain)
         guard let data = text.rtf(from: NSRange(location: 0, length: text.length),
@@ -86,6 +109,26 @@ public enum ComposedBody {
         editor.setSelectedRange(NSRange(location: location + inserted.length, length: 0))
     }
 
+    /// Puts a picture in at the caret, in place of what is selected, or above the original when
+    /// the caret is in it, as one step Undo takes back, and leaves the caret after it. Pictures
+    /// from the Pictures button, in the composer and in the signature editor, go in here.
+    @MainActor
+    public static func insertPicture(_ attachment: NSTextAttachment, into editor: NSTextView, before history: String) {
+        guard let storage = editor.textStorage else { return }
+        var range = editor.selectedRange()
+        let location = insertionPoint(for: range.location, in: storage.string, history: history)
+        if location != range.location { range = NSRange(location: location, length: 0) }
+        var own = attributes(at: location, in: editor)
+        own[.attachment] = attachment
+        let picture = NSAttributedString(string: "\u{FFFC}", attributes: own)
+        editor.breakUndoCoalescing()
+        guard editor.shouldChangeText(in: range, replacementString: picture.string) else { return }
+        storage.replaceCharacters(in: range, with: picture)
+        editor.didChangeText()
+        editor.undoManager?.setActionName("Insert Picture")
+        editor.setSelectedRange(NSRange(location: range.location + picture.length, length: 0))
+    }
+
     /// A message's body as it opens: `lead`, the signature, then `tail`, a reply's quoted
     /// original. A signature without formatting of its own gives plain text alone, exactly as an
     /// account's signature always did; one with formatting also gives the rich text, the rest of
@@ -99,6 +142,125 @@ public enum ComposedBody {
         text.append(NSAttributedString(string: tail))
         let rich = filling(text, with: attributes)
         return (rich.string, rich)
+    }
+
+    /// A reply's or forward's body as it opens with the original quoted as rich text, as
+    /// Legacy Outlook's does: `lead`, the signature, then `quote` (see `quote(heading:html:…)`).
+    /// The whole body is rich text from the start, the lead and a plain signature in
+    /// `attributes`.
+    public static func opening(lead: String, signature: Signature?, quote: NSAttributedString,
+                               attributes: [NSAttributedString.Key: Any]) -> (plain: String, rich: NSAttributedString) {
+        let text = NSMutableAttributedString(string: lead)
+        if let signature, !signature.isBlank { text.append(signature.block) }
+        text.append(quote)
+        let rich = filling(text, with: attributes)
+        return (rich.string, rich)
+    }
+
+    /// The style a message's HTML is read in, so that what it leaves unsaid is set as the
+    /// composer sets its own text, not in WebKit's Times.
+    static func readingStyle(_ attributes: [NSAttributedString.Key: Any]) -> String {
+        let size = (attributes[.font] as? NSFont)?.pointSize ?? 14
+        return "<style>body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:\(Int(size.rounded()))px}</style>"
+    }
+
+    /// The original a reply or forward quotes, as the composer shows it, as Legacy Outlook's
+    /// does: `heading`, the line and the From, Sent, To and Subject lines, in `attributes` with
+    /// their labels in bold, then the original's own HTML with its formatting, links and
+    /// pictures. Each picture it shows from `parts` by cid: or from a data: URI is a picture;
+    /// each it would fetch from the web is the picture `remote` holds for it, else an empty box
+    /// of its size (see RemotePictures); none is ever an address in the text. Text the original
+    /// sets in black, or on white, is set in the composer's own colour instead, so it reads in
+    /// either appearance. With `indent`, the original is set in from the left. The text is
+    /// given as a draft keeps it, so the body ends with exactly this once it is kept and read
+    /// back. Nil when the HTML is empty or cannot be read, and the quote is then its text.
+    ///
+    /// AppKit reads HTML through WebKit, which must be on the main thread.
+    @MainActor
+    public static func quote(heading: String, html: String, parts: [MIMEAttachment], remote: [String: Data] = [:],
+                             indent: Bool = false, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString? {
+        guard !html.trimmed.isEmpty,
+              let original = InlinePictures.text(fromHTML: readingStyle(attributes) + html, parts: parts, attributes: attributes,
+                                                 remote: remote) else { return nil }
+        let quoted = NSMutableAttributedString(attributedString: readable(original, attributes: attributes))
+        if indent { setIn(quoted, by: 12) }
+        if !quoted.string.hasSuffix("\n") { quoted.append(NSAttributedString(string: "\n", attributes: attributes)) }
+        let text = NSMutableAttributedString(attributedString: headed(heading, attributes: attributes))
+        text.append(quoted)
+        let kept = stored(text)
+        return self.text(rtf: kept.rtf, rtfd: kept.rtfd) ?? text
+    }
+
+    /// The heading in `attributes`, each From:, Sent:, To:, Cc: and Subject: that starts a line
+    /// in bold, as the HTML sent for it has them.
+    static func headed(_ heading: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: heading, attributes: attributes)
+        let font = attributes[.font] as? NSFont ?? NSFont.systemFont(ofSize: 14)
+        let bold = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+        let string = heading as NSString
+        string.enumerateSubstrings(in: NSRange(location: 0, length: string.length), options: .byLines) { line, range, _, _ in
+            guard let line else { return }
+            for label in ["From:", "Sent:", "To:", "Cc:", "Subject:"] where line.hasPrefix(label) {
+                text.addAttribute(.font, value: bold, range: NSRange(location: range.location, length: (label as NSString).length))
+            }
+        }
+        return text
+    }
+
+    /// `text` with black and near-black text in the composer's colour, which is black in light
+    /// and white in dark and is sent as no colour at all, and with white and near-white grounds,
+    /// behind text or in a table's cells, taken away, so that text in the composer's colour is
+    /// never white on white.
+    static func readable(_ text: NSAttributedString, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let output = NSMutableAttributedString(attributedString: text)
+        let whole = NSRange(location: 0, length: output.length)
+        let automatic = attributes[.foregroundColor] as? NSColor ?? .labelColor
+        output.beginEditing()
+        output.enumerateAttribute(.foregroundColor, in: whole) { value, range, _ in
+            guard let colour = value as? NSColor, !ComposedHTML.isAutomatic(colour), isGrey(colour, darkerThan: 0.25) else { return }
+            output.addAttribute(.foregroundColor, value: automatic, range: range)
+        }
+        output.enumerateAttribute(.backgroundColor, in: whole) { value, range, _ in
+            guard let colour = value as? NSColor, isGrey(colour, lighterThan: 0.9) else { return }
+            output.removeAttribute(.backgroundColor, range: range)
+        }
+        var seen = Set<ObjectIdentifier>()
+        output.enumerateAttribute(.paragraphStyle, in: whole) { value, _, _ in
+            for block in (value as? NSParagraphStyle)?.textBlocks ?? [] where seen.insert(ObjectIdentifier(block)).inserted {
+                if let ground = block.backgroundColor, isGrey(ground, lighterThan: 0.9) { block.backgroundColor = nil }
+                if let cell = block as? NSTextTableBlock, seen.insert(ObjectIdentifier(cell.table)).inserted,
+                   let ground = cell.table.backgroundColor, isGrey(ground, lighterThan: 0.9) {
+                    cell.table.backgroundColor = nil
+                }
+            }
+        }
+        output.endEditing()
+        return output
+    }
+
+    /// A colour with little hue whose brightness is below `darkerThan` or above `lighterThan`.
+    private static func isGrey(_ colour: NSColor, darkerThan dark: CGFloat = -1, lighterThan light: CGFloat = 2) -> Bool {
+        guard let rgb = colour.usingColorSpace(.sRGB), rgb.alphaComponent > 0 else { return false }
+        let values = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent]
+        guard let high = values.max(), let low = values.min(), high - low < 0.08 else { return false }
+        return high < dark || low > light
+    }
+
+    /// Every paragraph of `text` set in from the left by `points` more.
+    private static func setIn(_ text: NSMutableAttributedString, by points: CGFloat) {
+        let whole = NSRange(location: 0, length: text.length)
+        text.beginEditing()
+        var ranges: [(NSRange, NSParagraphStyle)] = []
+        text.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
+            ranges.append((range, value as? NSParagraphStyle ?? .default))
+        }
+        for (range, style) in ranges {
+            guard let moved = style.mutableCopy() as? NSMutableParagraphStyle else { continue }
+            moved.headIndent += points
+            moved.firstLineHeadIndent += points
+            text.addAttribute(.paragraphStyle, value: moved, range: range)
+        }
+        text.endEditing()
     }
 
     /// `text` with `base` wherever it says nothing of its own. A table cell in `base` holds every

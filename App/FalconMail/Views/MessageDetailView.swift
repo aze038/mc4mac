@@ -92,7 +92,11 @@ struct MessageReaderView: View {
                     .padding(.top, 10)
             }
             if !model.loadRemoteImages && !allowRemoteImages && hasRemote {
-                RemoteImagesBanner(loadOnce: { allowRemoteImages = true }, loadAlways: { model.loadRemoteImages = true })
+                RemoteImagesBanner(loadOnce: {
+                    allowRemoteImages = true
+                    // A reply or forward then quotes the message with its pictures too.
+                    model.remotePicturesLoaded.insert(message.id)
+                }, loadAlways: { model.loadRemoteImages = true })
                     .padding(.horizontal, OL.readingBodyX)
                     .padding(.top, 10)
             }
@@ -319,8 +323,7 @@ struct MessageReaderView: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBody(for: message)
-            model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)), origin: .reply)
+            model.openReply(to: message, parsed: parsed, account: account, all: all)
         }
     }
 
@@ -328,7 +331,7 @@ struct MessageReaderView: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)), origin: .reply)
+            model.openForward(message, parsed: parsed, account: account)
         }
     }
 
@@ -537,8 +540,7 @@ struct MessageWindowRibbon: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBody(for: message)
-            model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)), origin: .reply)
+            model.openReply(to: message, parsed: parsed, account: account, all: all)
             // Settings → Composing: "Close the original message window after replying or forwarding".
             if closeAfterReply { close() }
         }
@@ -548,8 +550,7 @@ struct MessageWindowRibbon: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)),
-                              origin: .reply)
+            model.openForward(message, parsed: parsed, account: account)
             if closeAfterReply { close() }
         }
     }
@@ -609,12 +610,7 @@ enum MessageRenderer {
         let head = "<meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(csp)\">\(style)"
         var body: String
         if let html = parsed.textHTML, !html.trimmed.isEmpty {
-            body = html
-            for a in parsed.attachments {
-                guard let cid = a.contentID else { continue }
-                let dataURL = "data:\(a.mimeType);base64,\(a.data.base64EncodedString())"
-                body = body.replacingOccurrences(of: "cid:\(cid)", with: dataURL, options: .caseInsensitive)
-            }
+            body = InlinePictures.resolvingCIDs(in: html, with: parsed.attachments)
             body = body.replacingOccurrences(of: "(?is)<script[^>]*>.*?</script>", with: "", options: .regularExpression)
         } else {
             body = "<pre>" + HTMLLinkify.escapeAndLink(parsed.textPlain ?? "") + "</pre>"

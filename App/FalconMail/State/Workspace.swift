@@ -22,11 +22,13 @@ extension AppModel {
 
     /// Opens `draft` to be written, in a window of its own or a tab as the owner chose.
     /// `origin` says whether anything else holds it as it opens, which decides whether closing
-    /// it unchanged keeps it.
-    func openCompose(_ draft: ComposeDraft, origin: UnsentMessage.Origin) {
+    /// it unchanged keeps it. With `fetchingPictures`, its window fetches the pictures from the
+    /// web its body shows as empty boxes and puts them in.
+    func openCompose(_ draft: ComposeDraft, origin: UnsentMessage.Origin, fetchingPictures: Bool = false) {
         var draft = draft
         draft.markOpened(as: origin)
         let id = newDraft(draft)
+        if fetchingPictures { picturesToFetch.insert(id) }
         if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
             open(id)
         } else {
@@ -137,7 +139,9 @@ extension AppModel {
             return
         }
         unsentDrafts.undoDiscard(draft)
-        openCompose(draft, origin: .undoneDiscard)
+        // Pictures from the web still empty boxes, as when it was discarded before they came, are
+        // fetched again when they always load.
+        openCompose(draft, origin: .undoneDiscard, fetchingPictures: loadRemoteImages)
     }
 
     /// Discard Draft in the Message menu, for the message being written in front: in its own

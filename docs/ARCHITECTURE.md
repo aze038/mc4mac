@@ -203,6 +203,81 @@ while it was off. The release workflow keeps each build's dSYM in
 `~/Library/Application Support/FalconMail Symbols/<version>/<build>/` on the runner,
 where the daily triage symbolicates crashes; dSYMs are never uploaded.
 
+## Pictures in messages
+
+A picture in a message, whether a signature's logo, one put in with Pictures, one pasted, or
+one in the original a reply or forward quotes, is sent the way Outlook sends it, so Gmail,
+Outlook and Apple Mail all show it in the text:
+
+```
+multipart/mixed                      only when files are attached
+├── multipart/related; type="multipart/alternative"
+│   ├── multipart/alternative
+│   │   ├── text/plain               [cid:image001.png@01DD4CC3.9581C170] where the picture was
+│   │   └── text/html                <img width="96" height="28" src="cid:image001.png@01DD4CC3.9581C170">
+│   └── image/png                    inline; image001.png; Content-ID <image001.png@01DD4CC3.9581C170>
+└── application/pdf                  attachment
+```
+
+- Each different picture goes once, named `image001.png`, `image002.jpg` and on in the order
+  it first appears. Its Content-ID is the name and, after the `@`, the time the message was
+  put together as Outlook writes it (Windows file time in hexadecimal).
+- PNG, JPEG and GIF go exactly as they are, however large. Formats readers do not show in a
+  message become one they do: HEIC photos become JPEG, anything else (a screenshot copied as
+  TIFF, BMP, PDF) becomes PNG.
+- The plain text part says `[cid:…]` where each picture stood, as Outlook writes it, and
+  carries none of its bytes.
+- A picture is never sent as a `data:` URI: Gmail shows none, and Outlook for Windows up to
+  2016 shows none ([caniemail](https://www.caniemail.com/features/image-base64/)). A quoted
+  original's pictures are held as `data:` URIs in the draft only, as earlier builds kept them,
+  and are turned into parts as the message goes (`ComposedHTML.content`).
+- Readers find the pictures through the `cid:` URLs of RFC 2392 and the multipart/related
+  structure of RFC 2387; the `type` parameter names the part a reader opens first.
+
+Drafts keep their pictures as flat RTFD in `bodyRTFD`, beside the RTF in `bodyRTF` that
+earlier builds read, which then open the draft with its text and formatting. A body without
+pictures is kept exactly as before. A draft opened again from Drafts, or a send called back
+from the Outbox, comes back with its pictures: from the RTFD the Outbox keeps beside the
+message, else from the message's HTML and its parts (`InlinePictures.text(fromHTML:)`), each
+at the size it was sent at. A picture that HTML shows from the web, such as the logo in a quoted
+Gmail signature, comes back as the empty box described below and is sent from its address
+again; with Load remote images in messages on, the compose window fetches it.
+
+A draft's RTFD keeps no size of its own for a picture, only the one its file declares. A
+picture shown smaller or larger than its pixels, as Outlook shows a logo made for Retina, has
+its PNG or JPEG made to declare that size by the resolution it states; no pixel changes.
+
+### The quoted original
+
+A reply or forward quotes its original as Legacy Outlook for Mac does: the line and the From,
+Sent, To and Subject lines, then the original's own HTML read as rich text with its
+formatting, links and pictures (`ComposedBody.quote`). Only an original without HTML, or HTML
+that cannot be read, is quoted as its text. `historyPlain` is the quote's text, which the body
+ends with while the original is untouched, and the original's own HTML (`historyHTML`) is then
+sent in its place; once the owner edits inside it, the whole body goes through the picture
+path above, the original's pictures as inline parts.
+
+- A picture the original shows from its own parts, by `cid:`, or from a `data:` URI is a
+  picture in the quote. None is ever an address or a stand-in such as `[cid:…]` or
+  `[image: …]` in the text.
+- A picture the original fetches from the web is an empty box of the size its tag gives
+  (`RemotePictures`). The box is a PNG that carries the address and that size in a text
+  chunk, so it survives the draft's RTFD and copy and paste. When pictures from the web load
+  for that message, always or because the owner loaded them in the reader, the compose window
+  fetches them once (`RemotePictureLoader`: an ephemeral session, no cache, no cookies, at most
+  10 MB a picture) and puts each in its box. A box still empty when the message goes is sent
+  as the original's tag was, from its address; its PNG is never sent.
+- Nothing is fetched while the HTML is read: scripts, frames, style sheets and fonts from the
+  web and background pictures are taken out first. Hidden pictures and tracking pixels are
+  left out. Black text and white grounds become the composer's own colour and ground, so the
+  quote reads in dark as in light.
+
+An account's own signature carried over from before signatures had names, when it is HTML
+source, becomes the signature it describes once, with its pictures, those from the web fetched
+that one time (`SignatureBook.carriedOverHTML`). A signature the owner has written or changed
+since, or one of plain words, is left as it is. The signature editor's Paste keeps the pictures
+from the web of HTML copied from a web page, fetched once; elsewhere they are left out.
+
 ## Gmail specifics
 
 - `[Gmail]/All Mail` is skipped during sync to avoid duplicates. It is offered

@@ -69,6 +69,39 @@ public struct Signature: Codable, Hashable, Sendable, Identifiable {
     /// Where a picture sits in the text.
     static let pictureMark = "\u{FFFC}"
 
+    private static let htmlTag = try! NSRegularExpression(
+        pattern: "<\\s*/?\\s*(br|div|p|img|table|tbody|tr|td|span|a|b|i|u|em|strong|font|html|body|hr|ul|ol|li|h[1-6]|center|small|sup|sub)\\b[^<>]*>",
+        options: [.caseInsensitive])
+
+    /// Whether plain text is HTML source, as an account's own signature pasted from a web page
+    /// or another mail app can be: it holds at least one of the tags such a signature is made
+    /// of. Words that merely use angle brackets, such as an address in <…>, are not HTML.
+    public static func looksLikeHTML(_ text: String) -> Bool {
+        htmlTag.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) != nil
+    }
+
+    /// A signature's HTML source as the formatted text it describes, with its pictures: each
+    /// given as a data: URI, and each it would fetch from the web that `pictures` holds, by
+    /// address; any other stays an empty box that remembers where it lives and is sent from
+    /// there. Text it sets no font or colour for takes `attributes`, and the blank lines it
+    /// ends with are left out, as the signature's own block adds them. Nil when it cannot be
+    /// read.
+    @MainActor
+    public static func text(fromHTML html: String, pictures: [String: Data],
+                            attributes: [NSAttributedString.Key: Any]) -> NSAttributedString? {
+        guard let read = InlinePictures.text(fromHTML: ComposedBody.readingStyle(attributes) + html, parts: [],
+                                             attributes: attributes, remote: pictures) else { return nil }
+        let text = NSMutableAttributedString(attributedString: ComposedBody.readable(read, attributes: attributes))
+        let string = text.string as NSString
+        var end = string.length
+        while end > 0, let scalar = Unicode.Scalar(string.character(at: end - 1)),
+              CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            end -= 1
+        }
+        text.deleteCharacters(in: NSRange(location: end, length: string.length - end))
+        return text
+    }
+
     /// What a message gets: the "-- " line other mail apps know a signature by, the signature,
     /// then a blank line. The line and the blank line carry no formatting, so they take the
     /// formatting of wherever the signature goes; for a plain signature the whole block reads
@@ -242,6 +275,33 @@ public struct SignatureBook: Codable, Hashable, Sendable {
             adopted[earlier] = adoption
         }
         return changed
+    }
+
+    /// The signatures carried over from an account's own signature that are HTML source, as
+    /// one pasted into an older build's account settings from a web page is, and are still
+    /// exactly as they were carried over: the owner has not changed them since, and they have
+    /// not been read as HTML yet. Each is given with its source.
+    public var carriedOverHTML: [(id: UUID, html: String)] {
+        adopted.compactMap { adoption -> (id: UUID, html: String)? in
+            guard let id = adoption.signatureID, let signature = signature(id), signature.rich == nil,
+                  signature.plain == adoption.text, Signature.looksLikeHTML(signature.plain) else { return nil }
+            return (id, signature.plain)
+        }
+    }
+
+    /// Replaces a carried-over signature's HTML source with `text`, the formatted signature it
+    /// describes, but only while the signature is still that source and nothing else, so it is
+    /// done once and never to a signature the owner has written or changed. Returns whether it
+    /// was replaced.
+    @discardableResult
+    public mutating func replaceCarriedOverHTML(_ id: UUID, source html: String, with text: NSAttributedString,
+                                                plainIn base: [NSAttributedString.Key: Any] = [:]) -> Bool {
+        guard carriedOverHTML.contains(where: { $0.id == id && $0.html == html }),
+              let i = signatures.firstIndex(where: { $0.id == id }) else { return false }
+        signatures[i].setText(text, plainIn: base)
+        // A signature of words alone keeps them as plain text, which is no longer the source.
+        if signatures[i].rich == nil && signatures[i].plain == html { return false }
+        return true
     }
 
     /// The account's own signature as a signature named after the account, or nothing for a
