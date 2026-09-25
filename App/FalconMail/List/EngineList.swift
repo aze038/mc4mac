@@ -154,12 +154,16 @@ final class EngineList {
             Task { await controller.toggleExpanded(row: row) }
         }
         let content = controller.content
+        // One row is read in full for the reading pane, from Gmail if need be. Several rows are
+        // read from what the Mac knows, the index and the rows' text, never fetched: selecting a
+        // thousand rows to delete them must not cost a thousand calls.
+        let fetching = rows.count == 1
         resolving = Task { [weak self] in
             var threads: [MessageThread] = []
             var ids: [String] = []
             for row in rows {
                 guard !Task.isCancelled else { return }
-                if let (thread, id) = await EngineList.thread(for: row, view: view, model: model, content: content) {
+                if let (thread, id) = await EngineList.thread(for: row, view: view, model: model, content: content, fetching: fetching) {
                     if !threads.contains(where: { $0.id == thread.id }) { threads.append(thread) }
                     ids.append(id)
                 }
@@ -366,36 +370,39 @@ final class EngineList {
 
     /// The messages a selected row stands for, newest first, and the id the app's selection knows
     /// it by: the conversation's newest message's for its row, the line's tag for a message line.
-    static func thread(for row: SelectedListRow, view: ListView, model: AppModel,
-                       content: RowContentStore) async -> (MessageThread, String)? {
+    static func thread(for row: SelectedListRow, view: ListView, model: AppModel, content: RowContentStore,
+                       fetching: Bool = true) async -> (MessageThread, String)? {
         switch row.kind {
         case .message:
-            guard let message = await summary(row.key, view: view, model: model, content: content) else { return nil }
+            guard let message = await summary(row.key, view: view, model: model, content: content, fetching: fetching) else { return nil }
             return (MessageThread(messages: [message]), message.id)
         case .conversation:
-            let messages = await members(of: row.key, view: view, model: model, content: content)
+            let messages = await members(of: row.key, view: view, model: model, content: content, fetching: fetching)
             guard !messages.isEmpty else { return nil }
             let thread = MessageThread(messages: messages)
             return (thread, thread.id)
         case .member(let parent):
-            let messages = await members(of: parent, view: view, model: model, content: content)
+            let messages = await members(of: parent, view: view, model: model, content: content, fetching: fetching)
             if let message = messages.first(where: { $0.id == row.key.stringValue }) {
                 return (MessageThread(messages: messages), ListRow.childTag(message.id))
             }
             // A message of the conversation filed in another folder, such as the owner's reply in
             // Sent: shown and acted on alone.
-            guard let message = await summary(row.key, view: view, model: model, content: content) else { return nil }
+            guard let message = await summary(row.key, view: view, model: model, content: content, fetching: fetching) else { return nil }
             return (MessageThread(messages: [message]), ListRow.childTag(message.id))
         }
     }
 
     /// A conversation's messages in the view, newest first: from the index for a Google account,
     /// whose row knows only its newest; from its row's text for stored rows, which lists them all.
-    static func members(of key: RowKey, view: ListView, model: AppModel, content: RowContentStore) async -> [MessageSummary] {
+    static func members(of key: RowKey, view: ListView, model: AppModel, content: RowContentStore,
+                        fetching: Bool = true) async -> [MessageSummary] {
         var keys: [RowKey] = []
+        var index: GmailIndexSnapshot?
         if case .gmail(let account, let id) = key, let engine = model.engine(for: account) {
-            let index = await engine.index()
-            if let record = index.record(for: id) {
+            let snapshot = await engine.index()
+            index = snapshot
+            if let record = snapshot.record(for: id) {
                 var label: GmailLabelID?
                 var known = true
                 switch view.scope {
@@ -407,7 +414,7 @@ final class EngineList {
                     known = false
                 }
                 if known {
-                    keys = index.conversationMembers(thread: record.threadID, label: label).map { .gmail(account: account, id: $0) }
+                    keys = snapshot.conversationMembers(thread: record.threadID, label: label).map { .gmail(account: account, id: $0) }
                 }
             }
         } else if let members = content.peek(key)?.conversation?.members, !members.isEmpty {
@@ -415,13 +422,24 @@ final class EngineList {
         }
         if !keys.contains(key) { keys.insert(key, at: 0) }
         var found: [Int: MessageSummary] = [:]
-        await withTaskGroup(of: (Int, MessageSummary?).self) { group in
+        if !fetching, let index {
             for (i, member) in keys.enumerated() {
-                group.addTask { @MainActor in (i, await summary(member, view: view, model: model, content: content, standIn: member == key)) }
+                found[i] = indexSummary(member, index: index, content: content, view: view, model: model)
             }
-            for await (i, message) in group { if let message { found[i] = message } }
+        } else {
+            await withTaskGroup(of: (Int, MessageSummary?).self) { group in
+                for (i, member) in keys.enumerated() {
+                    group.addTask { @MainActor in
+                        (i, await summary(member, view: view, model: model, content: content, standIn: member == key, fetching: fetching))
+                    }
+                }
+                for await (i, message) in group { if let message { found[i] = message } }
+            }
         }
         let messages = keys.indices.compactMap { found[$0] }
+        // The index gives a Google conversation newest first already, by when Gmail received each
+        // message, whatever its Date says; stored rows go by their dates.
+        if index != nil { return messages }
         return messages.sorted { ($0.internalDate ?? $0.date) > ($1.internalDate ?? $1.date) }
     }
 
@@ -429,7 +447,10 @@ final class EngineList {
     /// wait, a message not on the Mac is still shown by what its row says, so the reading pane can
     /// say it opens once back online; nil when it is gone.
     static func summary(_ key: RowKey, view: ListView, model: AppModel, content: RowContentStore,
-                        standIn: Bool = true) async -> MessageSummary? {
+                        standIn: Bool = true, fetching: Bool = true) async -> MessageSummary? {
+        if !fetching, case .gmail(let account, _) = key, let engine = model.engine(for: account) {
+            return indexSummary(key, index: await engine.index(), content: content, view: view, model: model)
+        }
         switch await model.summary(for: key, in: view) {
         case .available(let message): return message
         case .gone: return nil
@@ -437,6 +458,44 @@ final class EngineList {
             guard standIn, let row = content.peek(key), let accountID = key.accountID else { return nil }
             return standInSummary(key, row: row, accountID: accountID, view: view, model: model)
         }
+    }
+
+    /// A Google message as the Mac knows it without asking Gmail: its read state, flag, labels and
+    /// conversation from the index, and who sent it, its subject and date from its row when known.
+    /// Enough for every command on a selection of several rows; nil when it is not in the index.
+    static func indexSummary(_ key: RowKey, index: GmailIndexSnapshot, content: RowContentStore, view: ListView,
+                             model: AppModel) -> MessageSummary? {
+        guard case .gmail(let accountID, let id) = key, let slot = index.slotByID[id.raw] else { return nil }
+        let record = index.records[Int(slot)]
+        guard !record.attributes.contains(.tombstone) else { return nil }
+        let labels = index.labels(atSlot: slot)
+        let row = content.peek(key)
+        var flags = MessageFlags()
+        if !labels.contains(.unread) { flags.insert(.seen) }
+        if labels.contains(.starred) { flags.insert(.flagged) }
+        if labels.contains(.draft) { flags.insert(.draft) }
+        var message = MessageSummary(accountID: accountID, folderID: folderID(for: labels, accountID: accountID, view: view, model: model),
+                                     uid: 0, messageID: "", inReplyTo: "", references: [], subject: row?.subject ?? "",
+                                     from: row?.from ?? EmailAddress(address: ""), to: row?.to ?? [], cc: [],
+                                     date: row?.date ?? .distantPast, flags: flags, size: row?.size ?? 0, snippet: row?.preview ?? "",
+                                     hasAttachments: row?.hasAttachments ?? record.attributes.contains(.hasAttachment),
+                                     threadKey: record.gmailThreadID.threadKey)
+        message.id = key.stringValue
+        message.gmailID = id
+        message.gmailThreadID = record.gmailThreadID
+        message.labelIDs = labels.sorted()
+        return message
+    }
+
+    /// The folder a Google message is seen in: the view's own folder, or, in All Inboxes and a
+    /// search, the one its labels name first.
+    private static func folderID(for labels: Set<GmailLabelID>, accountID: UUID, view: ListView, model: AppModel) -> UUID {
+        if case .folder(let id) = view.scope { return id }
+        let folders = model.folders[accountID] ?? []
+        for label in [GmailLabelID.inbox, .draft, .sent, .trash, .spam] where labels.contains(label) {
+            if let folder = folders.first(where: { $0.gmailLabelID == label }) { return folder.id }
+        }
+        return folders.first(where: { $0.role == .all })?.id ?? folders.first?.id ?? UUID()
     }
 
     /// A message known only by its row: who sent it, its subject and date.
