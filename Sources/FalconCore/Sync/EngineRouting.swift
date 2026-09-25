@@ -185,6 +185,13 @@ extension SyncCoordinator {
     }
 }
 
+extension GmailEngineUnavailable {
+    /// "{email} isn't connected, so this wasn't done."
+    public init(account email: String, doing what: String) {
+        self.init(email: email, what: what)
+    }
+}
+
 /// Gmail answered that the message is gone.
 public struct GmailMessageGone: Error, LocalizedError, Equatable {
     public init() {}

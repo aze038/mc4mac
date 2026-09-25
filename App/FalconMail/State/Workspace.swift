@@ -96,7 +96,9 @@ extension AppModel {
     func closeUnsent(_ id: UUID) {
         guard let draft = drafts[id] else { return }
         switch draft.closing {
-        case .closeQuietly: drafts[id] = nil
+        case .closeQuietly:
+            closeEngineDraftQuietly(draft)
+            drafts[id] = nil
         case .saveToDrafts: saveDraftToServer(id)
         }
     }
@@ -113,7 +115,13 @@ extension AppModel {
         let now = Date()
         // Only the message discarded last can be brought back, so Undo is over for the one before.
         if let earlier = discarded.held { unsentDrafts.undoEnded(earlier.draft.id) }
-        unsentDrafts.discard(id, copy: UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID), at: now)
+        if usesGmailEngine(draft.accountID) {
+            // Gmail's copy goes once Undo is over, and the Gmail engine keeps the marker for it.
+            unsentDrafts.discard(id, copy: nil, at: now)
+            discardEngineDraft(draft)
+        } else {
+            unsentDrafts.discard(id, copy: UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID), at: now)
+        }
         drafts[id] = nil
         let held = discarded.discard(draft, now: now)
         discardExpiry?.cancel()
@@ -140,6 +148,7 @@ extension AppModel {
             return
         }
         unsentDrafts.undoDiscard(draft)
+        undoEngineDiscard(draft)
         // Pictures from the web still empty boxes, as when it was discarded before they came, are
         // fetched again when they always load.
         openCompose(draft, origin: .undoneDiscard, fetchingPictures: loadRemoteImages)
@@ -276,7 +285,7 @@ extension AppModel {
             switch t {
             case .compose: continue
             case .message(let id):
-                if let m = try? await store.message(id: id) {
+                if let m = await message(id: id) {
                     tabTitles[t.id] = m.subject.isEmpty ? "(no subject)" : m.subject
                     kept.append(t)
                 }

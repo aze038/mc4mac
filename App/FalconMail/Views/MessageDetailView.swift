@@ -79,7 +79,7 @@ struct MessageReaderView: View {
                     .padding(.leading, OL.readingSenderX - OL.readingAvatarX - OL.readingAvatar)
                     .padding(.trailing, OL.readingRightInset)
             }
-            if message.isServerOnly {
+            if model.fetchesAttachmentsFromGmail(message) {
                 if !serverAttachments.isEmpty {
                     ServerAttachmentStrip(message: message, stubs: serverAttachments)
                         .padding(.horizontal, OL.readingBodyX)

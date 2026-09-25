@@ -137,8 +137,9 @@ struct ArchiveSheet: View {
                 }
                 var req = request
                 req.parentID = parent
-                guard let syncer = await model.coordinator.syncer(for: id) else { throw FalconError.storage("account is not running") }
-                let outcome = try await ArchiveJob.run(request: req, account: account, source: syncer.archiveSource(),
+                // A Google account on the Gmail API archives its labels through the Gmail API.
+                let source = try await model.coordinator.archiveSource(for: account)
+                let outcome = try await ArchiveJob.run(request: req, account: account, source: source,
                                                        storage: storage) { progress in
                     Task { @MainActor in
                         switch progress {

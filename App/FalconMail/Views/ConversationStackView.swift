@@ -220,7 +220,7 @@ struct ConversationCard: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: toggle)
             .contextMenu { menu }
-            if message.isServerOnly {
+            if model.fetchesAttachmentsFromGmail(message) {
                 if parsed != nil, !model.serverAttachments(for: message).isEmpty {
                     ServerAttachmentStrip(message: message, stubs: model.serverAttachments(for: message))
                         .padding(.horizontal, OL.readingBodyX)

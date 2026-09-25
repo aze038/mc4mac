@@ -93,6 +93,7 @@ struct AccountDetail: View {
                      : "Paused. FalconMail is not contacting this mailbox at all. Turn it back on when you want mail to flow again.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            GmailEngineSection(account: account)
             // Which new mail each account announces, which Outlook's Notifications and Sounds
             // pane has no place for.
             Section("New mail alerts") {
