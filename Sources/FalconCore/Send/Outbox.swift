@@ -195,7 +195,7 @@ public actor Outbox {
         self.undoWindow = undoWindow
         self.confirmAfter = confirmAfter.isEmpty ? [0] : confirmAfter
         self.retryDelay = retryDelay
-        self.sentBcc = SentBccStore(file: layout.sentBccFile)
+        self.sentBcc = SentBccStore.shared(file: layout.sentBccFile)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var loaded: [UUID: OutboxItem] = [:]
         var unclear: [UUID] = []

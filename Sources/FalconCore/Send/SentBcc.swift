@@ -27,9 +27,27 @@ public final class SentBccStore: @unchecked Sendable {
         self.file = file
     }
 
+    private static let registryLock = NSLock()
+    private static var registry: [URL: SentBccStore] = [:]
+
+    /// The one store for `file` in this process, so that the Outbox, which the reader asks, and
+    /// the Gmail engine's sender, which writes down what goes by Gmail's own send, share what they
+    /// have read and written rather than each keeping a copy of its own.
+    public static func shared(file: URL) -> SentBccStore {
+        let key = file.standardizedFileURL
+        return registryLock.withLock {
+            if let known = registry[key] { return known }
+            let made = SentBccStore(file: key)
+            registry[key] = made
+            return made
+        }
+    }
+
     /// Writes down the Bcc recipients of the message sent as `messageID`; none, nothing.
     public func record(messageID: String, bcc: [EmailAddress], at date: Date = Date()) {
         let key = SentBccStore.key(messageID)
+        var seen = Set<String>()
+        let bcc = bcc.filter { !$0.address.trimmed.isEmpty && seen.insert($0.address.trimmed.lowercased()).inserted }
         guard !key.isEmpty, !bcc.isEmpty else { return }
         lock.withLock {
             var all = loaded()
@@ -89,6 +107,27 @@ public final class SentBccStore: @unchecked Sendable {
         } catch {
             Log.warning("Outbox", "could not write down a sent message's Bcc recipients: \(error.localizedDescription)", logAs: "send")
         }
+    }
+}
+
+/// The To, Cc and Bcc lines the reader shows for a message, the same for a message the Mac
+/// stores and for a Google message on the Gmail API (`<account>:gm:<hex>`). The row's own
+/// addresses come first; a row that stands in before Gmail has answered knows none, and then its
+/// body's headers give them. Bcc is what the message's own Bcc header names, what its copy in
+/// Sent kept on its row, and what was written down as it was sent (see SentBccStore), looked up
+/// by the row's Message-ID or, when the row has none yet, its body's.
+public struct ReaderRecipients: Equatable, Sendable {
+    public var to: [EmailAddress]
+    public var cc: [EmailAddress]
+    public var bcc: [EmailAddress]
+
+    public init(_ message: MessageSummary, parsed: MIMEMessage?, recorded: (String) -> [EmailAddress]) {
+        to = message.to.isEmpty ? (parsed?.to ?? []) : message.to
+        cc = message.cc.isEmpty ? (parsed?.cc ?? []) : message.cc
+        let messageID = message.messageID.trimmed.isEmpty
+            ? (AddressParser.messageIDs(parsed?.headers.first("Message-ID")).first ?? "")
+            : message.messageID
+        bcc = SentBccStore.shown(header: parsed?.headers.first("Bcc"), recorded: (message.bcc ?? []) + recorded(messageID))
     }
 }
 

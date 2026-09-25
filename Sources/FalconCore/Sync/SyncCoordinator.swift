@@ -124,7 +124,8 @@ public actor SyncCoordinator {
             let store = GmailFileStore(accountID: account.id, files: GmailFiles(layout: layout, accountID: account.id))
             return await GmailAccountAssembly(account: account, transport: transport, store: store, listIndex: setup.listIndex,
                                               mutes: mutes, rules: rules, settings: setup.settings, folderHints: setup.folderHints,
-                                              undoWindow: setup.undoWindow, meter: meter, events: setup.events)
+                                              undoWindow: setup.undoWindow, meter: meter,
+                                              sentBcc: SentBccStore.shared(file: layout.sentBccFile), events: setup.events)
         }
     }
 

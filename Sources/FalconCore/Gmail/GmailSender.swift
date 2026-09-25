@@ -7,6 +7,13 @@ import Foundation
 /// never to allow sending it again: an answer that leaves it unclear is looked for in the
 /// history twice by the Outbox, and held for the owner if it is not found (§8.2). Only a failure
 /// that came before any byte reached Gmail is tried again by itself.
+///
+/// What goes is the Outbox's .eml, built by `MIMEBuilder` from the compose window's message just
+/// as for SMTP: the same body, Outlook's reply heading and the original's style elements split
+/// under Gmail's limit, byte for byte. Only the attempt header and Bcc are added, and only to the
+/// upload. The recipients are checked as `OutgoingRecipients` checks them before anything is
+/// asked of Gmail, and the Bcc recipients are written down in `SentBccStore`, under Gmail's
+/// Message-ID as well when Gmail gives the message one of its own, so the reader shows them.
 public struct GmailSender: MessageSender {
     public let accountID: UUID
     public let email: String
@@ -16,6 +23,7 @@ public struct GmailSender: MessageSender {
     private let cursor: @Sendable () async -> HistoryID?
     private let wentOut: @Sendable () async -> Void
     private let keepsOwnMessageID: Bool
+    private let sentBcc: SentBccStore?
 
     /// Names the attempt in the upload, so it can be found in Gmail's records even if Gmail
     /// replaces the Message-ID. It is added to the upload only; the .eml in the Outbox is left
@@ -40,9 +48,11 @@ public struct GmailSender: MessageSender {
     ///   - keepsOwnMessageID: whether Gmail keeps FalconMail's Message-ID on what it sends, as
     ///     G1's probe finds. Until that is known, one metadata call reads Gmail's, so that the
     ///     copy kept in Sent carries it and later replies thread.
+    ///   - sentBcc: where the Bcc recipients of what is sent are written down (sentBcc.json), the
+    ///     Outbox's own store.
     public init(accountID: UUID, email: String, transport: any GmailTransport, placer: (any GmailUploadPlacing)? = nil,
                 deleteDraft: (@Sendable (String) async throws -> Void)? = nil, cursor: @escaping @Sendable () async -> HistoryID?,
-                wentOut: @escaping @Sendable () async -> Void, keepsOwnMessageID: Bool = false) {
+                wentOut: @escaping @Sendable () async -> Void, keepsOwnMessageID: Bool = false, sentBcc: SentBccStore? = nil) {
         self.accountID = accountID
         self.email = email
         self.transport = transport
@@ -51,6 +61,7 @@ public struct GmailSender: MessageSender {
         self.cursor = cursor
         self.wentOut = wentOut
         self.keepsOwnMessageID = keepsOwnMessageID
+        self.sentBcc = sentBcc
     }
 
     // MARK: - MessageSender
@@ -62,6 +73,8 @@ public struct GmailSender: MessageSender {
 
     public func prepare(_ item: OutboxItem, message: Data) async -> OutboxItem {
         var item = item
+        // One that can never go asks nothing of Gmail; `send` fails it with the compose window's words.
+        if GmailSender.recipientProblem(item) != nil { return item }
         if item.attemptID != nil, item.gmailSentID == nil, case .sent(let id) = await confirm(item) {
             // An earlier attempt failed in a way taken to mean it never reached Gmail, or the
             // owner is sending a held message again. A connection dropped during an upload can
@@ -87,6 +100,7 @@ public struct GmailSender: MessageSender {
     public func send(_ item: OutboxItem, message: Data) async throws -> OutboxItem {
         // Found in Gmail's records while the attempt was readied: it went already.
         if item.gmailSentID != nil { return item }
+        if let problem = GmailSender.recipientProblem(item) { throw problem }
         let upload = try GmailSender.upload(message, for: item)
         let answer: GmailMessage
         do {
@@ -104,9 +118,19 @@ public struct GmailSender: MessageSender {
         }
         var sent = item
         sent.gmailSentID = GmailMessageID.fromGmail(answer.id, in: "messages.send")
-        await placeSent(answer, upload: upload, item: item)
+        let blind = GmailSender.blindRecipients(in: upload)
+        recordBcc(blind, messageID: item.messageID ?? MIMEParser.parseHeaders(message).first("Message-ID"))
+        let gmails = await placeSent(answer, upload: upload, item: item)
+        if let gmails { recordBcc(blind, messageID: gmails) }
         await wentOut()
         return sent
+    }
+
+    /// Writes down who the message went to in Bcc, as the Outbox does for every message it
+    /// queues, so the reader shows them on the copy in Sent whichever Message-ID it carries.
+    private func recordBcc(_ bcc: [EmailAddress], messageID: String?) {
+        guard let sentBcc, let messageID, !bcc.isEmpty else { return }
+        sentBcc.record(messageID: messageID, bcc: bcc)
     }
 
     public func confirm(_ item: OutboxItem) async -> SendConfirmation {
@@ -147,6 +171,35 @@ public struct GmailSender: MessageSender {
         return finished
     }
 
+    // MARK: - The recipients
+
+    /// Why the item cannot go as it is, found as the compose window finds it (see
+    /// OutgoingRecipients): nobody to send it to, or an entry that is no address. Nil when it can.
+    static func recipientProblem(_ item: OutboxItem) -> SendFailure? {
+        let recipients: OutgoingRecipients
+        if item.to != nil || item.cc != nil || item.bcc != nil {
+            recipients = OutgoingRecipients(to: item.to ?? [], cc: item.cc ?? [], bcc: item.bcc ?? [])
+        } else {
+            // Queued by an earlier build, which kept the addresses alone.
+            recipients = OutgoingRecipients(to: item.recipients.map { EmailAddress(address: $0) })
+        }
+        do {
+            try recipients.checkSendable()
+            // Every address the envelope names, as the Outbox took them from the boxes.
+            if let bad = item.recipients.first(where: { !OutgoingRecipients.isAddress($0.trimmed) }) {
+                throw FalconError.invalidInput(OutgoingRecipients.Unreadable(field: .to, text: bad).sentence)
+            }
+            return nil
+        } catch {
+            return SendFailure(next: .fail, sentence: error.localizedDescription, code: "recipientRejected")
+        }
+    }
+
+    /// The Bcc header of an upload, which names everyone the message goes to unseen.
+    static func blindRecipients(in upload: Data) -> [EmailAddress] {
+        AddressParser.parse(MIMEParser.parseHeaders(upload).first("Bcc"))
+    }
+
     // MARK: - The upload
 
     /// The .eml as the Outbox keeps it, with the headers only Gmail's upload carries: the attempt,
@@ -159,15 +212,18 @@ public struct GmailSender: MessageSender {
         if attached > attachmentLimit || message.count > uploadLimit {
             throw SendFailure(next: .fail, sentence: GmailSender.tooLargeSentence, code: "tooLarge")
         }
-        let shown = Set((parsed.to + parsed.cc + AddressParser.parse(parsed.headers.first("Bcc"))).map { $0.address.lowercased() })
+        let existing = AddressParser.parse(parsed.headers.first("Bcc"))
+        let shown = Set((parsed.to + parsed.cc + existing).map { $0.address.lowercased() })
         var seen = Set<String>()
-        let blind = item.recipients.filter { !shown.contains($0.lowercased()) && seen.insert($0.lowercased()).inserted }
+        // Each address once, however many boxes named it, with its name from the Bcc box.
+        let named = Dictionary((item.bcc ?? []).map { ($0.address.trimmed.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        let blind = item.recipients.map(\.trimmed).filter { !$0.isEmpty && !shown.contains($0.lowercased()) && seen.insert($0.lowercased()).inserted }
+            .map { named[$0.lowercased()] ?? EmailAddress(address: $0) }
         var fields: [(name: String, value: String)] = []
         if let attempt = item.attemptID { fields.append((attemptHeader, attempt.uuidString.lowercased())) }
         var names: Set<String> = [attemptHeader]
         if !blind.isEmpty {
-            let existing = AddressParser.parse(parsed.headers.first("Bcc")).map(\.address)
-            fields.append(("Bcc", (existing + blind).joined(separator: ", ")))
+            fields.append(("Bcc", (existing + blind).map(MIMEBuilder.encodeAddress).joined(separator: ", ")))
             names.insert("Bcc")
         }
         return RawHeaders.setting(fields, removing: names, in: message)
@@ -177,20 +233,25 @@ public struct GmailSender: MessageSender {
 
     // MARK: - The Sent row
 
-    private func placeSent(_ answer: GmailMessage, upload: Data, item: OutboxItem) async {
-        guard let placer else { return }
+    /// Puts the sent message into Sent, and returns the Message-ID Gmail gave it when that is
+    /// not FalconMail's own.
+    @discardableResult
+    private func placeSent(_ answer: GmailMessage, upload: Data, item: OutboxItem) async -> String? {
+        guard let placer else { return nil }
         let labels = answer.labels.isEmpty ? [.sent] : answer.labels
         await placer.placeUploaded(answer, labels: labels, raw: upload, replacing: nil, messageID: nil)
-        guard !keepsOwnMessageID, let id = GmailMessageID.fromGmail(answer.id, in: "messages.send") else { return }
+        guard !keepsOwnMessageID, let id = GmailMessageID.fromGmail(answer.id, in: "messages.send") else { return nil }
         do {
             let read = try await transport.message(id, format: .metadata(headers: ["Message-ID"]), work: .interactive)
             if let gmails = read.header("Message-ID"), GmailSender.bare(gmails) != GmailSender.bare(item.messageID) {
                 await placer.placeUploaded(answer, labels: labels, raw: upload, replacing: nil, messageID: gmails)
+                return gmails
             }
         } catch {
             // The copy keeps FalconMail's Message-ID until the message is next fetched.
             Log.info("send", "\(email): could not read the Message-ID Gmail gave a sent message: \(error.localizedDescription)")
         }
+        return nil
     }
 
     // MARK: - Looking in Gmail's records

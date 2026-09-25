@@ -252,13 +252,15 @@ public struct GmailAccountAssembly: Sendable {
     ///     one's.
     ///   - meter: the app's traffic meter, which the transport's budget books into; imports then
     ///     keep to its day's allowance instead of a ledger of their own.
+    ///   - sentBcc: where the Bcc recipients of what the account sends are written down, the
+    ///     Outbox's own sentBcc.json, so the reader shows them on the copy in Sent.
     ///   - events: what the engine says, as the IMAP engine says it, for the app's coordinator.
     public init(account: AccountInfo, transport: any GmailTransport, store: any GmailStore, listIndex: ListIndex = ListIndex(),
                 mutes: MuteStore, rules: RuleStore?, settings: GmailEngineSettings = GmailEngineSettings(),
                 clock: any GmailEngineClock = SystemGmailClock(), actionClock: GmailActionClock = .system,
                 folderHints: [FolderInfo] = [], undoWindow: TimeInterval = 5, importAllowance: (any GmailImportAllowance)? = nil,
                 meter: TrafficMeter? = nil, keepsOwnMessageID: Bool = false, rowBudget: RowFetchBudget? = nil,
-                events: @escaping @Sendable (SyncEvent) -> Void) async {
+                sentBcc: SentBccStore? = nil, events: @escaping @Sendable (SyncEvent) -> Void) async {
         let reachability = ReachabilityRelay()
         let engine = GmailAccountEngine(account: account, transport: transport, store: store, settings: settings, clock: clock,
                                         folderHints: folderHints, events: { event in
@@ -283,7 +285,8 @@ public struct GmailAccountAssembly: Sendable {
         let sender = GmailSender(accountID: account.id, email: account.email, transport: transport, placer: engine,
                                  deleteDraft: { draftID in try await drafts.sent(draftID) },
                                  cursor: { await engine.historyCursor() },
-                                 wentOut: { await engine.poke(reason: .messageSent) }, keepsOwnMessageID: keepsOwnMessageID)
+                                 wentOut: { await engine.poke(reason: .messageSent) }, keepsOwnMessageID: keepsOwnMessageID,
+                                 sentBcc: sentBcc)
         let search = GmailSearchPart(list: list, store: store, transport: transport)
         engine.install(GmailEngineParts(listSource: list, actions: actions, uploads: GmailUploadsPart(drafts: drafts, importer: importer),
                                         search: search))
