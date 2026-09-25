@@ -189,12 +189,16 @@ struct MessageListView: View {
         item(anyUnread ? "Mark as Read" : "Mark as Unread") { model.markRead(model.selectedMessages, anyUnread) }
         item(allFlagged ? "Unflag" : "Flag") { model.setFlagged(model.selectedMessages, !allFlagged) }
         item("Archive", enabled: model.allowsCommand(.archive)) { model.archive(model.selectedMessages) }
-        let inJunk = model.isInJunk(model.selectedMessages)
+        // Read from the folder shown, since the rows just right-clicked may not have been read yet.
+        let inJunk = namesFolderRole == .junk
         item(inJunk ? "Not Junk" : "Move to Junk", enabled: model.allowsCommand(inJunk ? .notJunk : .junk)) {
             model.toggleJunk(model.selectedMessages)
         }
-        if rows.count == 1, let thread = model.currentConversation ?? model.currentThread {
-            item(model.isMuted(thread) ? "Unmute Conversation" : "Mute Conversation") { model.toggleMute(thread) }
+        if rows.count == 1 {
+            let shown = (model.currentConversation ?? model.currentThread).flatMap { $0.id == snapshot.rowKey(at: first)?.stringValue ? $0 : nil }
+            item(shown.map(model.isMuted) == true ? "Unmute Conversation" : "Mute Conversation") {
+                if let thread = model.currentConversation ?? model.currentThread { model.toggleMute(thread) }
+            }
         }
         item("Delete", enabled: model.allowsCommand(.delete)) { model.delete(model.selectedMessages) }
         return menu
@@ -492,6 +496,12 @@ struct MessageListView: View {
     private var isFolder: Bool {
         if case .folder = model.selection { return true }
         return false
+    }
+
+    /// The role of the folder shown, nil for All Inboxes and the smart folders.
+    private var namesFolderRole: FolderRole? {
+        guard case .folder(let id) = model.selection else { return nil }
+        return model.folder(id)?.role
     }
 
     /// Sent and Drafts name who the mail went to, as Outlook's do: their sender is always the

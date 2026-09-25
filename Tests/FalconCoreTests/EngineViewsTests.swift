@@ -80,6 +80,18 @@ final class EngineViewsTests: XCTestCase {
         XCTAssertEqual(OutlookFolderTree.gmail([inbox], accountID: account).map(\.folder.name), ["Inbox"])
     }
 
+    func testAClosedFolderHidesEverythingUnderItAndNothingElse() {
+        let nodes = OutlookFolderTree.gmail(engineFolders(), accountID: account)
+        let group = nodes[1].id
+        let clients = nodes.first { $0.folder.name == "Clients" }!.id
+        XCTAssertEqual(OutlookFolderTree.visible(nodes, collapsed: [group]).map(\.folder.name),
+                       ["Inbox", "[Gmail]", "Accounts", "Clients", "Acme"])
+        XCTAssertEqual(OutlookFolderTree.visible(nodes, collapsed: [group, clients]).map(\.folder.name),
+                       ["Inbox", "[Gmail]", "Accounts", "Clients"])
+        XCTAssertEqual(OutlookFolderTree.visible(nodes, collapsed: []).count, nodes.count)
+        XCTAssertEqual(OutlookFolderTree.visible(nodes, collapsed: [nodes[0].id]).count, nodes.count, "a folder with nothing under it hides nothing")
+    }
+
     // MARK: - What the selection shows
 
     private func key(_ i: UInt64) -> RowKey { .gmail(account: account, id: GmailMessageID(raw: i)) }
@@ -152,6 +164,16 @@ final class EngineViewsTests: XCTestCase {
                        "Archive holds every message but those in Deleted Items")
         XCTAssertEqual(index.conversationMembers(thread: thread, label: .trash), [ListFixtures.id(2)])
         XCTAssertEqual(index.conversationMembers(thread: thread, label: .inbox, limit: 1), [ListFixtures.id(0)])
+    }
+
+    func testOnlyCommandsDescribedByTheViewActOnAWholeViewAndMoveAsksWhichFolder() {
+        XCTAssertEqual(ListCommand.archive.wholeViewVerb, .archive)
+        XCTAssertEqual(ListCommand.markUnread.wholeViewVerb, .markUnread)
+        XCTAssertNil(ListCommand.move.wholeViewVerb)
+        XCTAssertNil(ListCommand.reply.wholeViewVerb)
+        for command in ListCommand.allCases where command.wholeViewVerb != nil {
+            XCTAssertTrue(command.actsOnWholeView, "\(command) is refused above 1,000 rows before it could reach the engine")
+        }
     }
 
     // MARK: - Up to date

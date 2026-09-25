@@ -32,6 +32,8 @@ final class EngineList {
     var selectionCount: Int { controller.selectionCount }
     /// Every folder the sidebar shows for the accounts on the Gmail API has been listed in full.
     private(set) var everyFolderListed = true
+    /// The selection is being read, from Gmail if need be, for the reading pane.
+    private(set) var isReading = false
 
     @ObservationIgnored private weak var model: AppModel?
     @ObservationIgnored private var shownView: ListView?
@@ -158,6 +160,7 @@ final class EngineList {
         // read from what the Mac knows, the index and the rows' text, never fetched: selecting a
         // thousand rows to delete them must not cost a thousand calls.
         let fetching = rows.count == 1
+        if !isReading { isReading = true }
         resolving = Task { [weak self] in
             var threads: [MessageThread] = []
             var ids: [String] = []
@@ -174,6 +177,7 @@ final class EngineList {
     }
 
     private func handOver(_ threads: [MessageThread], ids: [String]) {
+        if isReading { isReading = false }
         handedIDs = Set(ids)
         model?.adoptTableSelection(threads, ids: ids)
     }

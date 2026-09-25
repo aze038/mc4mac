@@ -124,7 +124,7 @@ struct MainWindow: View {
                         .id(thread.latest.id)
                 } else if selectedCount > 1 {
                     ContentUnavailableView("\(ListStatusText.number(selectedCount)) conversations selected", systemImage: "envelope.badge")
-                } else if model.engineList.isShown, model.engineList.selectionCount == 1 {
+                } else if model.engineList.isShown, model.engineList.selectionCount == 1, model.engineList.isReading {
                     // Being read from Gmail; the message shows in a moment.
                     Color.clear
                 } else {

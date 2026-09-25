@@ -105,7 +105,7 @@ struct SidebarView: View {
             // Outlook shows a container such as [Gmail] as a folder with its children under it,
             // even when the container itself holds no mail.
             let nodes = onEngine ? OutlookFolderTree.gmail(folders, accountID: account.id) : SidebarView.treeNodes(folders)
-            ForEach(SidebarView.shown(nodes, collapsed: collapsedGroups)) { node in
+            ForEach(OutlookFolderTree.visible(nodes, collapsed: Set(collapsedGroups.compactMap(UUID.init(uuidString:))))) { node in
                 folderRow(node, onEngine: onEngine)
             }
         }
@@ -165,21 +165,6 @@ struct SidebarView: View {
     /// every other folder its unread mail.
     static func count(of folder: FolderInfo) -> Int {
         folder.role == .drafts && folder.gmailLabelID != nil ? max(folder.unreadCount, folder.totalCount) : folder.unreadCount
-    }
-
-    /// The rows under open groups only: a closed group hides everything below it.
-    static func shown(_ nodes: [SidebarFolderNode], collapsed: Set<String>) -> [SidebarFolderNode] {
-        var out: [SidebarFolderNode] = []
-        var hiddenBelow: Int?
-        for node in nodes {
-            if let depth = hiddenBelow {
-                if node.depth > depth { continue }
-                hiddenBelow = nil
-            }
-            out.append(node)
-            if node.hasChildren, collapsed.contains(node.folder.id.uuidString) { hiddenBelow = node.depth }
-        }
-        return out
     }
 
     /// An IMAP account's folders in the order they have always been shown.

@@ -136,21 +136,3 @@ extension AppModel {
         return accountID
     }
 }
-
-extension ListCommand {
-    /// The engine's verb for a command on a whole view; nil for one that needs each message.
-    var wholeViewVerb: MailActionRequest.Verb? {
-        switch self {
-        case .markRead: return .markRead
-        case .markUnread: return .markUnread
-        case .flag: return .flag
-        case .unflag: return .unflag
-        case .archive: return .archive
-        case .delete: return .delete
-        case .junk: return .junk
-        case .notJunk: return .notJunk
-        // Moving asks which folder, one message or a thousand at a time.
-        default: return nil
-        }
-    }
-}

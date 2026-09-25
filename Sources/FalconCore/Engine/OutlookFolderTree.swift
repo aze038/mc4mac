@@ -60,6 +60,21 @@ public enum OutlookFolderTree {
         return nodes
     }
 
+    /// The lines under open folders only: a closed folder, or group, hides everything below it.
+    public static func visible(_ nodes: [SidebarFolderNode], collapsed: Set<UUID>) -> [SidebarFolderNode] {
+        var out: [SidebarFolderNode] = []
+        var hiddenBelow: Int?
+        for node in nodes {
+            if let depth = hiddenBelow {
+                if node.depth > depth { continue }
+                hiddenBelow = nil
+            }
+            out.append(node)
+            if node.hasChildren, collapsed.contains(node.id) { hiddenBelow = node.depth }
+        }
+        return out
+    }
+
     /// Whether the folder is one of Gmail's own, which sit in the [Gmail] group.
     static func isGmailOwn(_ folder: FolderInfo) -> Bool {
         switch folder.role {

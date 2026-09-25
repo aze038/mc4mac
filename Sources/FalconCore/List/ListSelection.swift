@@ -132,6 +132,22 @@ public enum ListCommand: String, CaseIterable, Hashable, Sendable {
         }
     }
 
+    /// The engine's verb for the command on a whole view, as after Select All; nil for a command
+    /// that needs each message, and for Move, which asks which folder a thousand at a time.
+    public var wholeViewVerb: MailActionRequest.Verb? {
+        switch self {
+        case .markRead: return .markRead
+        case .markUnread: return .markUnread
+        case .flag: return .flag
+        case .unflag: return .unflag
+        case .archive: return .archive
+        case .delete: return .delete
+        case .junk: return .junk
+        case .notJunk: return .notJunk
+        default: return nil
+        }
+    }
+
     public init?(_ verb: MailActionRequest.Verb) {
         switch verb {
         case .markRead: self = .markRead
