@@ -102,6 +102,8 @@ struct RibbonTile: View {
     let symbol: String
     var tint: Color?
     var enabled = true
+    /// The tooltip, when it should say more than the caption.
+    var help: String?
     let action: () -> Void
     @State private var hovering = false
 
@@ -113,7 +115,7 @@ struct RibbonTile: View {
         .buttonStyle(RibbonButtonStyle())
         .disabled(!enabled)
         .onHover { hovering = $0 }
-        .help(title.replacingOccurrences(of: "\n", with: " "))
+        .help(help ?? title.replacingOccurrences(of: "\n", with: " "))
     }
 }
 

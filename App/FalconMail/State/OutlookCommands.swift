@@ -159,7 +159,7 @@ extension AppModel {
             }
         }
         openMainWindow?()
-        openCompose(draft)
+        openCompose(draft, origin: .new)
     }
 
     func markAllReadEverywhere() {

@@ -1,50 +1,49 @@
 import Foundation
 import CryptoKit
 
-/// Closing a message that has not been sent, the way Legacy Outlook closes one: straight away
-/// when nothing in it would be lost, otherwise only once the alert has been answered.
+/// Closing and discarding a message that has not been sent, the owner's way rather than Legacy
+/// Outlook's: closing never asks and keeps whatever was written in the Drafts folder, and only
+/// Discard throws a message away, with a short while to take that back.
 public enum UnsentMessage {
-    public static let alertTitle = "You are closing a message that has not been sent."
-    public static let alertMessage = "To save the message, click Save as Draft. The message will be saved in your Drafts folder."
+    /// How a message came to be open for writing, which decides whether closing it as it was
+    /// opened would lose anything.
+    public enum Origin: Sendable, CaseIterable {
+        /// A new message, from New Message, a mailto link or the Compose key.
+        case new
+        /// A reply or a forward, whose quoted original and addresses the message it answers
+        /// still holds.
+        case reply
+        /// A draft opened again from the Drafts folder, which keeps its copy there.
+        case reopenedDraft
+        /// A send called back from the Outbox, of which there is no other copy anywhere.
+        case outboxRecall
+        /// A discarded message brought back by Undo, whose stored copies went with it.
+        case undoneDiscard
 
-    /// The alert's buttons, top to bottom as Outlook stacks them.
-    public enum Choice: CaseIterable, Sendable {
-        case saveAsDraft, discardChanges, continueWriting
-
-        public var title: String {
+        /// Whether the message as it was opened is held somewhere else too, or holds nothing
+        /// anyone wrote, so that closing it unchanged loses nothing.
+        public var remembersOpening: Bool {
             switch self {
-            case .saveAsDraft: return "Save as Draft"
-            case .discardChanges: return "Discard Changes"
-            case .continueWriting: return "Continue Writing"
+            case .new, .reply, .reopenedDraft: return true
+            case .outboxRecall, .undoneDiscard: return false
             }
         }
-
-        /// Return saves, as the blue default button does; Escape goes back to the message.
-        public var keyEquivalent: String {
-            switch self {
-            case .saveAsDraft: return "\r"
-            case .discardChanges: return ""
-            case .continueWriting: return "\u{1b}"
-            }
-        }
-
-        /// Whether the window or tab closes once this is chosen.
-        public var closes: Bool { self != .continueWriting }
-
-        /// Whether what was written goes on to the Drafts folder as closing always sent it.
-        public var keepsDraft: Bool { self == .saveAsDraft }
     }
 
     public enum Closing: Equatable, Sendable {
-        /// Close without asking and keep nothing of this window: the message is as it was
-        /// opened, which a fresh message or its copy in Drafts still holds, or has nothing in it.
-        case discardQuietly
-        /// Put the alert up and do what its answer says.
-        case ask
+        /// Close and keep nothing of it: it has nothing in it, or it is as it was opened, which a
+        /// fresh message, the message it answers or its copy in Drafts still holds.
+        case closeQuietly
+        /// Close and keep it in the Drafts folder, without asking.
+        case saveToDrafts
     }
 
-    public static func closing(untouched: Bool, blank: Bool) -> Closing {
-        untouched || blank ? .discardQuietly : .ask
+    /// What closing a message does. `openedDigest` is its `fingerprint` as it was opened, nil
+    /// when nothing else holds it; `digest` is its fingerprint now.
+    public static func closing(openedDigest: String?, digest: String, blank: Bool) -> Closing {
+        if blank { return .closeQuietly }
+        if let openedDigest, openedDigest == digest { return .closeQuietly }
+        return .saveToDrafts
     }
 
     /// A digest of a message's content, compared with the one taken when it was opened to tell
@@ -57,5 +56,59 @@ public enum UnsentMessage {
             hasher.update(data: part)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The stored copy in Drafts that goes when a message is saved again, sent or discarded: the
+    /// row it was reopened from, and only while that row is the one it recorded. A draft kept by
+    /// an earlier build recorded no row, and its copy is left where it is. Whether the row's UID
+    /// still names that message, after Drafts was renumbered, the store answers.
+    public static func draftCopy(openedFrom row: MessageSummary?, recordedID: String?) -> MessageSummary? {
+        guard let row, row.id == recordedID else { return nil }
+        return row
+    }
+}
+
+/// The message discarded last, held in memory so that Undo can bring it back into a compose
+/// window for a short while. Only the last is held: discarding another lets the first go.
+public struct DiscardedMessage<Draft: Sendable>: Sendable {
+    /// How long Undo is offered, as long as Outlook's banner stays.
+    public static var undoWindow: TimeInterval { 10 }
+
+    public struct Held: Sendable, Identifiable {
+        public let id: UUID
+        public let draft: Draft
+        public let until: Date
+    }
+
+    public private(set) var held: Held?
+
+    public init() {}
+
+    /// Holds `draft`, discarded at `now`, until Undo is no longer offered for it.
+    @discardableResult
+    public mutating func discard(_ draft: Draft, now: Date) -> Held {
+        let held = Held(id: UUID(), draft: draft, until: now.addingTimeInterval(Self.undoWindow))
+        self.held = held
+        return held
+    }
+
+    /// Whether Undo is still offered at `now`.
+    public func offersUndo(at now: Date) -> Bool {
+        guard let held else { return false }
+        return now < held.until
+    }
+
+    /// The message to open again, or nil when there is none or its time is up; either way it is
+    /// no longer held.
+    public mutating func undo(at now: Date) -> Draft? {
+        defer { held = nil }
+        guard let held, now < held.until else { return nil }
+        return held.draft
+    }
+
+    /// Lets go of the message held as `id`, as when its banner goes; one discarded since stays.
+    public mutating func letGo(_ id: UUID) {
+        guard held?.id == id else { return }
+        held = nil
     }
 }

@@ -317,7 +317,7 @@ struct MessageReaderView: View {
         Task {
             let parsed = await model.parsedBody(for: message)
             model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)))
+                                     signature: model.signature(for: account, .replies)), origin: .reply)
         }
     }
 
@@ -325,7 +325,7 @@ struct MessageReaderView: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
+            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)), origin: .reply)
         }
     }
 
@@ -483,7 +483,7 @@ struct MessageWindowRibbon: View {
         Task {
             let parsed = await model.parsedBody(for: message)
             model.openCompose(.reply(to: message, parsed: parsed, account: account, all: all,
-                                     signature: model.signature(for: account, .replies)))
+                                     signature: model.signature(for: account, .replies)), origin: .reply)
         }
     }
 
@@ -491,7 +491,7 @@ struct MessageWindowRibbon: View {
         guard let account = model.account(for: message) else { return }
         Task {
             let parsed = await model.parsedBodyForForwarding(message)
-            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)))
+            model.openCompose(.forward(message, parsed: parsed, account: account, signature: model.signature(for: account, .replies)), origin: .reply)
         }
     }
 }

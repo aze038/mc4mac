@@ -5,8 +5,7 @@ import FalconCore
 
 /// `-FalconMailSnapshot <directory>` draws the compose window's title band and ribbon, the
 /// ribbon over a body with ¶ showing its marks, the Table picker idle and with a size and text to
-/// convert, the address suggestions over a compose window's header, the alert on closing an
-/// unsent message, the main window's Home ribbon,
+/// convert, the address suggestions over a compose window's header, the main window's Home ribbon,
 /// which shares the compose ribbon's tiles, the Settings window's icon grid, its Signatures pane
 /// with two stand-in signatures, with none and with its notice of a damaged file set aside, its
 /// Notifications and Sounds pane and every other pane, the Privacy pane with its diagnostics
@@ -39,7 +38,6 @@ enum ComposeSnapshot {
             render(picker(hovering: TableSize(columns: 3, rows: 4), converts: true), size: menu, appearance: appearance,
                    to: "\(directory)/table-hover-\(name).png")
             suggestions(model, appearance: appearance, to: directory, name: name)
-            unsentAlert(appearance: appearance, to: "\(directory)/close-unsent-\(name).png")
             render(CommandBar().environment(model).frame(maxHeight: .infinity, alignment: .top),
                    size: NSSize(width: 1728, height: 140), appearance: appearance,
                    to: "\(directory)/home-\(name).png")
@@ -225,7 +223,7 @@ enum ComposeSnapshot {
         VStack(spacing: 0) {
             OLColor.chrome.frame(height: OL.titleRow)
             ComposeRibbon(tab: .constant(.message), formatter: formatter, showsBcc: .constant(false),
-                          importance: .constant("normal"), canSend: false, onSend: {}, onAttachFile: {},
+                          importance: .constant("normal"), canSend: false, onSend: {}, onDiscard: {}, onAttachFile: {},
                           onAttachFromDrive: {}, signatures: [], onInsertSignature: { _ in }, onEditSignatures: {},
                           onInsertTableDialog: {}, onCycleBackground: {})
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
@@ -249,7 +247,7 @@ enum ComposeSnapshot {
         return VStack(spacing: 0) {
             OLColor.chrome.frame(height: OL.titleRow)
             ComposeRibbon(tab: .constant(.message), formatter: formatter, showsBcc: .constant(false),
-                          importance: .constant("normal"), canSend: false, onSend: {}, onAttachFile: {},
+                          importance: .constant("normal"), canSend: false, onSend: {}, onDiscard: {}, onAttachFile: {},
                           onAttachFromDrive: {}, signatures: [], onInsertSignature: { _ in }, onEditSignatures: {},
                           onInsertTableDialog: {}, onCycleBackground: {})
             Rectangle().fill(OLColor.chromeLine).frame(height: 1)
@@ -340,17 +338,6 @@ enum ComposeSnapshot {
         }
         NSGraphicsContext.restoreGraphicsState()
         return rep
-    }
-
-    /// The alert's own content: its glass cannot be drawn off screen, so the content is laid on
-    /// the window background colour, and a window that is not key draws its default button grey
-    /// rather than blue.
-    @MainActor private static func unsentAlert(appearance: NSAppearance.Name, to path: String) {
-        let alert = UnsentMessageAlert.make()
-        alert.window.appearance = NSAppearance(named: appearance)
-        alert.layout()
-        guard let content = alert.window.contentView else { return }
-        capture(content, appearance: appearance, ground: .windowBackgroundColor, to: path)
     }
 
     @MainActor private static func render(_ view: some View, size: NSSize, appearance: NSAppearance.Name, to path: String) {

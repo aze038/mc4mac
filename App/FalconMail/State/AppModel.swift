@@ -296,6 +296,10 @@ final class AppModel {
         }
     }
 
+    /// The message discarded last, which the status bar offers to bring back for a while.
+    var discarded = DiscardedMessage<ComposeDraft>()
+    @ObservationIgnored var discardExpiry: Task<Void, Never>?
+
     private var draftsStorage: [UUID: ComposeDraft] = [:]
     var drafts: [UUID: ComposeDraft] {
         get { draftsStorage }
@@ -1119,7 +1123,7 @@ final class AppModel {
 
     func composeNew() {
         guard let account = accounts.first else { return }
-        openCompose(.blank(account: account, signature: signature(for: account, .newMessages)))
+        openCompose(.blank(account: account, signature: signature(for: account, .newMessages)), origin: .new)
     }
 
     func replyToSelection(all: Bool) {
@@ -1127,7 +1131,7 @@ final class AppModel {
         Task {
             let parsed = await parsedBody(for: thread.latest)
             openCompose(.reply(to: thread.latest, parsed: parsed, account: account, all: all,
-                               signature: signature(for: account, .replies)))
+                               signature: signature(for: account, .replies)), origin: .reply)
         }
     }
 
@@ -1135,7 +1139,7 @@ final class AppModel {
         guard let thread = currentThread, let account = account(for: thread.latest) else { return }
         Task {
             let parsed = await parsedBodyForForwarding(thread.latest)
-            openCompose(.forward(thread.latest, parsed: parsed, account: account, signature: signature(for: account, .replies)))
+            openCompose(.forward(thread.latest, parsed: parsed, account: account, signature: signature(for: account, .replies)), origin: .reply)
         }
     }
 
@@ -1269,14 +1273,14 @@ final class AppModel {
             }
             let signature = signature(for: account, .replies)
             if parts.count == 1, let raw = await rawBody(for: first) {
-                openCompose(.forwardAsAttachment(first, raw: raw, account: account, signature: signature))
+                openCompose(.forwardAsAttachment(first, raw: raw, account: account, signature: signature), origin: .reply)
                 return
             }
             var draft = ComposeDraft(accountID: account.id)
             draft.subject = "Fwd: \(parts.count) messages"
             draft.open(lead: "\n\n", signature: signature)
             draft.attachments = parts
-            openCompose(draft)
+            openCompose(draft, origin: .reply)
         }
     }
 
@@ -1733,7 +1737,7 @@ final class AppModel {
             var draft = ComposeDraft.from(parsed: parsed, accountID: message.accountID)
             draft.sourceMessageID = message.id
             draft.sourceMessage = message
-            openCompose(draft)
+            openCompose(draft, origin: .reopenedDraft)
         }
     }
 
@@ -1763,20 +1767,20 @@ final class AppModel {
     /// Drafts was renumbered the UID may name another draft, which is left alone, as is the copy
     /// of a draft kept by an earlier build that did not record its row.
     func purgeStoredDraft(_ draft: ComposeDraft) async {
-        guard let opened = draft.sourceMessage, opened.id == draft.sourceMessageID,
+        guard let opened = UnsentMessage.draftCopy(openedFrom: draft.sourceMessage, recordedID: draft.sourceMessageID),
               let stored = await store.currentRow(of: opened) else { return }
         removeFromList([stored])
         perform([stored], announcing: false) { try await $0.purge($1) }
     }
 
-    /// Saves to the Drafts folder the drafts that no compose window or tab holds, such as those
-    /// left from the last session. One still being written is saved only as it closes: a copy
-    /// saved from under it would be one that Discard Changes could not take back and that Save
-    /// as Draft would add a second copy beside.
+    /// Closes, as closing any message not yet sent does, the drafts that no compose window or tab
+    /// holds, such as those open at the last quit: what was written goes to the Drafts folder.
+    /// One still being written is saved only as it closes: a copy saved from under it would be
+    /// one that Discard could not take back and that closing would add a second copy beside.
     func saveLeftoverDrafts() {
         let inTabs = (tabs + minimizedTabs).compactMap { if case .compose(let id) = $0 { return id } else { return nil } }
         let open = composeWindowDrafts.union(inTabs)
-        for id in drafts.keys where !open.contains(id) { saveDraftToServer(id) }
+        for id in drafts.keys where !open.contains(id) { closeUnsent(id) }
     }
 
     private func markReadOnOpen(_ message: MessageSummary) {
@@ -1808,7 +1812,7 @@ final class AppModel {
         outboxItems.filter { $0.isSendingSoon(within: TimeInterval(undoSendSeconds)) }
     }
 
-    func cancelAndReopen(_ item: OutboxItem, openWindow: @escaping (UUID) -> Void) {
+    func cancelAndReopen(_ item: OutboxItem) {
         Task {
             let cancelled = (try? await outbox.cancel(item.id)) ?? false
             let title = outboxTitle(item)
@@ -1822,12 +1826,8 @@ final class AppModel {
                 statusText = "Cancelled “\(title)”, but the message could not be reopened"
                 return
             }
-            if openInWindowOnDoubleClick {
-                _ = newDraft(draft)
-                openWindow(draft.id)
-            } else {
-                openCompose(draft, onlyCopy: true)
-            }
+            // Where it opens follows the compose setting, as every other message being written does.
+            openCompose(draft, origin: .outboxRecall)
             statusText = "Reopened “\(title)” as a draft"
         }
     }

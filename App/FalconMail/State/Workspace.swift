@@ -20,11 +20,12 @@ extension AppModel {
         openTab(.message(message.id))
     }
 
-    /// Opens `draft` to be written. `onlyCopy` says nothing else holds what it says, as with a
-    /// send called back from the Outbox, so closing it always asks before dropping it.
-    func openCompose(_ draft: ComposeDraft, onlyCopy: Bool = false) {
+    /// Opens `draft` to be written, in a window of its own or a tab as the owner chose.
+    /// `origin` says whether anything else holds it as it opens, which decides whether closing
+    /// it unchanged keeps it.
+    func openCompose(_ draft: ComposeDraft, origin: UnsentMessage.Origin) {
         var draft = draft
-        if !onlyCopy { draft.markOpened() }
+        draft.markOpened(as: origin)
         let id = newDraft(draft)
         if Preferences.bool(Pref.composeInWindow, default: true), let open = openComposeWindow {
             open(id)
@@ -44,7 +45,7 @@ extension AppModel {
         tabs.removeAll { $0 == tab }
         minimizedTabs.removeAll { $0 == tab }
         if activeTab == tab { activeTab = tabs.last }
-        if case .compose(let id) = tab { saveDraftToServer(id) }
+        if case .compose(let id) = tab { closeUnsent(id) }
         saveSession()
     }
 
@@ -61,7 +62,7 @@ extension AppModel {
     }
 
     func closeActiveTab() {
-        if let t = activeTab { closeTabAsked(t) }
+        if let t = activeTab { closeTab(t) }
     }
 
     /// Whether Command-W has something to close: the message or compose window in front, or the
@@ -84,34 +85,65 @@ extension AppModel {
         }
     }
 
-    /// Closes `tab` as the user asked to: a message not yet sent closes as Outlook closes one,
-    /// with its alert over the mailbox window when there is something to lose.
-    func closeTabAsked(_ tab: WorkspaceTab) {
-        guard case .compose(let id) = tab else { return closeTab(tab) }
-        if mayCloseUnsent(id, over: WindowTray.shared.frontMailboxWindow, close: { [weak self] in self?.closeTab(tab) }) {
-            closeTab(tab)
+    /// Closing a message not yet sent, however it closes: the close button, Command-W, the
+    /// tray's close button, or the next launch after a quit. Nothing is asked. What was written
+    /// goes to the Drafts folder, on the server as well as here; a message with nothing in it,
+    /// or as it was opened, closes and nothing of it is kept. A message only this window holds,
+    /// as one called back from the Outbox, is always kept.
+    func closeUnsent(_ id: UUID) {
+        guard let draft = drafts[id] else { return }
+        switch draft.closing {
+        case .closeQuietly: drafts[id] = nil
+        case .saveToDrafts: saveDraftToServer(id)
         }
     }
 
-    /// Whether the compose window or tab holding draft `id` may close now. A message as it was
-    /// opened, or with nothing in it, closes at once and nothing of it is kept. Otherwise
-    /// Outlook's alert goes up over `window` and this says no. `close` runs once the answer has
-    /// kept the draft or dropped it, and closing saves whatever is still held to the Drafts
-    /// folder as it always has; Continue Writing leaves the message open.
-    func mayCloseUnsent(_ id: UUID, over window: NSWindow?, close: @escaping @MainActor () -> Void) -> Bool {
-        guard let draft = drafts[id] else { return true }
-        switch UnsentMessage.closing(untouched: draft.isUntouched, blank: draft.isBlank) {
-        case .discardQuietly:
-            drafts[id] = nil
-            return true
-        case .ask:
-            UnsentMessageAlert.ask(over: window) { [weak self] choice in
-                guard choice.closes else { return }
-                if !choice.keepsDraft { self?.drafts[id] = nil }
-                close()
-            }
-            return false
+    /// Discard, from the compose ribbon, the Message menu or a tab's bar: the message closes
+    /// and its copies go, the one kept on this Mac for the next launch and the one in Drafts it
+    /// was reopened from, while other drafts stay. It is held in memory for as long as the
+    /// mailbox window offers to bring it back. `closesWindow` is false when the compose view
+    /// closes itself.
+    func discardCompose(_ id: UUID, closesWindow: Bool = true) {
+        guard let draft = drafts[id] else { return }
+        drafts[id] = nil
+        Task { await purgeStoredDraft(draft) }
+        // Its copy in Drafts is going, so one brought back is the only copy there is.
+        var kept = draft
+        kept.sourceMessage = nil
+        kept.sourceMessageID = nil
+        let held = discarded.discard(kept, now: Date())
+        discardExpiry?.cancel()
+        discardExpiry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(DiscardedMessage<ComposeDraft>.undoWindow * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.discarded.letGo(held.id)
         }
+        if (tabs + minimizedTabs).contains(.compose(id)) { closeTab(.compose(id)) }
+        if closesWindow { WindowTray.shared.close(.compose(id)) }
+    }
+
+    /// Undo on the banner: the message discarded last opens again as it was.
+    func undoDiscard() {
+        discardExpiry?.cancel()
+        discardExpiry = nil
+        guard let draft = discarded.undo(at: Date()) else { return }
+        openCompose(draft, origin: .undoneDiscard)
+    }
+
+    /// Discard Draft in the Message menu, for the message being written in front: in its own
+    /// window, or in the tab showing in the mailbox window.
+    var frontDraftID: UUID? {
+        switch frontWindow {
+        case .popup(.compose(let id)): return id
+        case .mailbox:
+            if case .compose(let id)? = activeTab { return id }
+            return nil
+        default: return nil
+        }
+    }
+
+    func discardFrontDraft() {
+        if let id = frontDraftID { discardCompose(id) }
     }
 
     func title(for tab: WorkspaceTab) -> String {
@@ -173,7 +205,7 @@ struct WorkspaceTabStrip: View {
             if closable, let tab {
                 Button { model.minimizeTab(tab) } label: { Image(systemName: "minus").font(.caption2) }
                     .buttonStyle(.plain).help("Minimize to the tray")
-                Button { model.closeTabAsked(tab) } label: { Image(systemName: "xmark").font(.caption2) }
+                Button { model.closeTab(tab) } label: { Image(systemName: "xmark").font(.caption2) }
                     .buttonStyle(.plain).help("Close")
             }
         }

@@ -15,6 +15,7 @@ struct ComposeRibbon: View {
     var importance: Binding<String>
     var canSend: Bool
     var onSend: () -> Void
+    var onDiscard: () -> Void
     var onAttachFile: () -> Void
     var onAttachFromDrive: () -> Void
     var signatures: [Signature]
@@ -52,11 +53,14 @@ struct ComposeRibbon: View {
 
     /// Outlook's Message ribbon: Send · Paste with cut/copy/format · the two-row format block
     /// (fonts, paragraph marks above; styles, colours, alignment below) · Switch Background ·
-    /// Attach File · Table · Pictures/Signature/Link.
+    /// Attach File · Table · Pictures/Signature/Link. Discard stands beside Send, where the owner
+    /// asked for it; Outlook has none, since closing there asks instead.
     private var messageTab: some View {
         RibbonBody {
             RibbonTile(title: "Send", symbol: "paperplane", enabled: canSend, action: onSend)
                 .padding(.horizontal, OL.composeSendPad)
+            RibbonTile(title: "Discard", symbol: "trash", help: "Discard this message", action: onDiscard)
+                .padding(.trailing, OL.composeSendPad)
             RibbonSeparator()
             RibbonSplitTile(title: "Paste", symbol: "doc.on.clipboard", action: { formatter.pasteMatchingStyle() }) {
                 Button("Paste and Match FalconMail") { formatter.pasteMatchingStyle() }

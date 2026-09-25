@@ -137,7 +137,7 @@ struct FalconMailApp: App {
                 ComposeView(draftID: id).themedRoot().environment(model).environmentObject(model.updates)
             }
         }
-        .defaultSize(width: 917, height: 1006)
+        .defaultSize(width: OL.composeWindowWidth, height: OL.composeWindowHeight)
         .windowStyle(.hiddenTitleBar)
     }
 
@@ -159,6 +159,11 @@ struct FalconMailApp: App {
         if model.frontWindow == .mailbox, let tab = model.activeTab {
             Button("Minimize Tab") { model.minimizeTab(tab) }.keyboardShortcut("m", modifiers: .command)
         }
+        // No shortcut: Command-Delete is Delete, and in the message's text it deletes to the
+        // start of the line.
+        Button("Discard Draft") { model.discardFrontDraft() }
+            .disabled(model.frontDraftID == nil)
+            .help("Closes the message being written and deletes its draft. Undo brings it back for ten seconds.")
     }
 
     @ViewBuilder private var fileCommands: some View {
@@ -284,7 +289,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().delegate = self
         WindowTray.installMinimizeHook()
-        WindowTray.installCloseHook()
         #if DEBUG
         MainActor.assumeIsolated { RecipientDemo.startIfRequested() }
         #endif

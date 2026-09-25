@@ -136,7 +136,6 @@ struct MainWindow: View {
 
 struct StatusBar: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
 
     /// Outlook's wording for a quiet mailbox, and its "Connected to:" tail. Nothing is claimed
     /// to be up to date while an account cannot sync; what stops it is shown on its own.
@@ -181,6 +180,7 @@ struct StatusBar: View {
             chordCapsule
             actionErrorCapsule
             undoCapsule
+            discardCapsule
             sendingCapsules
             if let summary = model.syncingSummary {
                 ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
@@ -236,6 +236,13 @@ struct StatusBar: View {
         }
     }
 
+    /// Offered for ten seconds after Discard, so a message thrown away by mistake comes back.
+    @ViewBuilder private var discardCapsule: some View {
+        if model.discarded.held != nil {
+            DiscardedBanner(undo: { model.undoDiscard() })
+        }
+    }
+
     private func signInAgain(_ account: AccountInfo) {
         Task {
             do { try await model.addGoogleAccount(loginHint: account.email) } catch { model.showAlert(for: error) }
@@ -246,11 +253,27 @@ struct StatusBar: View {
         ForEach(model.sendingSoonItems) { item in
             HStack(spacing: 6) {
                 Text("Sending “\(item.subject.isEmpty ? "(no subject)" : item.subject)”").font(.caption)
-                Button("Undo") { model.cancelAndReopen(item) { openWindow(value: $0) } }.buttonStyle(.link).font(.caption)
+                Button("Undo") { model.cancelAndReopen(item) }.buttonStyle(.link).font(.caption)
             }
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Color.accentColor.opacity(0.12), in: Capsule())
         }
+    }
+}
+
+/// "Message discarded" with Undo, in the status bar's capsule style.
+struct DiscardedBanner: View {
+    let undo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "trash").font(.caption)
+            Text("Message discarded").font(.caption)
+            Button("Undo", action: undo).buttonStyle(.link).font(.caption)
+                .help("Open the discarded message again")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Color.secondary.opacity(0.14), in: Capsule())
     }
 }
 
