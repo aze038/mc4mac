@@ -150,6 +150,13 @@ extension GmailAccountEngine {
     func performCheck(reason: PokeReason) async -> GmailCheckReport {
         await loadIfNeeded()
         var report = GmailCheckReport(reason: reason)
+        if let until = schedule.pausedUntil, until > now() {
+            // Google asked FalconMail to wait: nothing is asked of it before then, even for Send &
+            // Receive, which would only be refused again. It says nothing, as the pause does.
+            report.skipped = true
+            report.failure = lastPause?.refusal ?? GoogleAPIError(kind: .rateLimited, retryAfter: until.timeIntervalSince(now()))
+            return report
+        }
         if reason.reportsProgress { emit(.started(accountID: accountID)) }
         let startedAt = await gmailNow()
         do {

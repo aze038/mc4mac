@@ -223,6 +223,10 @@ final class GmailSoundEventTests: XCTestCase {
         XCTAssertEqual(rig.events.names, [], "a short wait says nothing: the account stays online")
         let next = await rig.engine.schedule.nextCheck(after: clock.now())
         XCTAssertEqual(next, clock.now().addingTimeInterval(30), "nothing is asked of Gmail before the time it gave")
+        let asked = gmail.attempts[.historyList] ?? 0
+        let early = await rig.engine.check(reason: .sendAndReceive)
+        XCTAssertTrue(early.skipped)
+        XCTAssertEqual(gmail.attempts[.historyList] ?? 0, asked, "not even for Send & Receive")
         clock.advance(by: 30)
         _ = await rig.engine.check(reason: .schedule)
         XCTAssertEqual(rig.events.names, [], "and nothing when it is over")
