@@ -34,6 +34,9 @@ struct SettingsScroll<Content: View>: View {
 struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
     @AppStorage(Pref.theme) private var theme = AccentTheme.blue.rawValue
+    @AppStorage(Pref.windowStyle) private var windowStyle = WindowStyle.legacy.rawValue
+    @AppStorage(Pref.ribbonIcons) private var ribbonIcons = RibbonIconStyle.clean.rawValue
+    @AppStorage(Pref.ribbonNames) private var ribbonNames = true
     @AppStorage(Pref.transparency) private var transparency = true
     @AppStorage(Pref.textSize) private var textSize = 0
     @AppStorage(Pref.showAllAccountFolders) private var showAllFolders = true
@@ -60,6 +63,34 @@ struct GeneralSettings: View {
                         }
                     }
                 }
+            }
+
+            SettingsRow(label: "Window style:") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Picker("Window style", selection: $windowStyle) {
+                        ForEach(WindowStyle.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    Text(windowStyle == WindowStyle.glass.rawValue
+                         ? "Frosted glass panes, rounded cards and one-line button names, in light and dark."
+                         : "Outlook for Mac as it has always looked.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+            }
+
+            SettingsRow(label: "Ribbon icons:") {
+                Picker("Ribbon icons", selection: $ribbonIcons) {
+                    ForEach(RibbonIconStyle.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
+
+            SettingsRow(label: "Button names:") {
+                Toggle("Show each button's name under its icon", isOn: $ribbonNames)
             }
 
             SettingsRow(label: "Theme:") {

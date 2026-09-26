@@ -7,11 +7,15 @@ import AppKit
 struct ThemedRoot: ViewModifier {
     @AppStorage(Pref.theme) private var theme = AccentTheme.blue.rawValue
     @AppStorage(Pref.textSize) private var textSize = 0
+    @AppStorage(Pref.windowStyle) private var window = WindowStyle.legacy.rawValue
+    @AppStorage(Pref.ribbonIcons) private var icons = RibbonIconStyle.clean.rawValue
+    @AppStorage(Pref.ribbonNames) private var names = true
 
     func body(content: Content) -> some View {
         content
             .tint(AccentTheme(rawValue: theme)?.colour ?? .accentColor)
             .environment(\.appTextScale, 1 + CGFloat(textSize) * 0.06)
+            .environment(\.falconStyle, FalconStyle(window: window, icons: icons, names: names))
     }
 }
 

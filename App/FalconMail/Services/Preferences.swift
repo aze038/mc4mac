@@ -10,6 +10,12 @@ enum Preferences {
 
 enum Pref {
     static let theme = "themeColour"
+    /// "legacy" or "glass": the mailbox window's look.
+    static let windowStyle = "windowStyle"
+    /// "clean" or "tiles": the ribbon's icons.
+    static let ribbonIcons = "ribbonIconStyle"
+    /// Whether the ribbon shows each button's name under its icon.
+    static let ribbonNames = "ribbonShowsNames"
     static let transparency = "windowTransparency"
     static let textSize = "textDisplaySize"
     static let showAllAccountFolders = "showAllAccountFolders"

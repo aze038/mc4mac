@@ -6,6 +6,7 @@ import FalconCore
 /// lighter band, unread counts in blue at the right.
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.falconStyle) private var style
     @State private var showAddAccount = false
     @State private var smartExpanded = false
     @State private var localExpanded = false
@@ -25,7 +26,7 @@ struct SidebarView: View {
             Rectangle().fill(OLColor.divider).frame(height: 1)
             ModuleRail()
         }
-        .background(OLColor.sidebar)
+        .background(style.glass ? Color.clear : OLColor.sidebar)
         .sheet(isPresented: $showAddAccount) { AddAccountSheet().environment(model) }
         .onReceive(NotificationCenter.default.publisher(for: .falconAddAccount)) { _ in showAddAccount = true }
     }
@@ -363,6 +364,7 @@ struct SidebarFolderRow: View {
 /// holds the other new items the ribbon's New Items had.
 struct NewEmailButton: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.falconStyle) private var style
     @State private var hovering = false
 
     var body: some View {
@@ -390,8 +392,18 @@ struct NewEmailButton: View {
             .fixedSize()
             .help("New meeting, contact or folder")
         }
-        .foregroundStyle(Color.accentColor)
-        .background(Color.accentColor.opacity(hovering ? 0.2 : 0.13), in: Capsule())
+        .foregroundStyle(style.glass ? Color.white : Color.accentColor)
+        .background {
+            if style.glass {
+                // Glass: a glossy filled pill, as iOS's main buttons.
+                Capsule().fill(LinearGradient(colors: [Color.accentColor.opacity(hovering ? 0.95 : 0.85), Color.accentColor],
+                                              startPoint: .top, endPoint: .bottom))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.3), lineWidth: 0.5))
+                    .shadow(color: Color.accentColor.opacity(0.35), radius: 6, y: 2)
+            } else {
+                Capsule().fill(Color.accentColor.opacity(hovering ? 0.2 : 0.13))
+            }
+        }
         .contentShape(Capsule())
         .onHover { hovering = $0 }
         .contextMenu { menu }

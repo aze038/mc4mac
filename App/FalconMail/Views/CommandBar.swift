@@ -22,18 +22,28 @@ struct CommandBar: View {
         Binding(get: { AppRibbonTab(rawValue: tabRaw) ?? .home }, set: { tabRaw = $0.rawValue })
     }
 
+    @Environment(\.falconStyle) private var style
+
     var body: some View {
         VStack(spacing: 0) {
             titleRow
-            Group {
-                switch tab.wrappedValue {
-                case .home: HomeRibbon()
-                case .tools: ToolsRibbon()
+            // Search stands in the ribbon's own row, at its right end, level with the icons.
+            HStack(alignment: .center, spacing: 8) {
+                Group {
+                    switch tab.wrappedValue {
+                    case .home: HomeRibbon()
+                    case .tools: ToolsRibbon()
+                    }
                 }
+                TitleSearchField()
+                    .padding(.trailing, OL.searchRightInset)
+                    .padding(.bottom, style.showsNames ? 12 : 0)
             }
-            Rectangle().fill(OLColor.chromeLine).frame(height: 1)
+            if !style.glass {
+                Rectangle().fill(OLColor.chromeLine).frame(height: 1)
+            }
         }
-        .background(OLColor.chrome)
+        .background(style.glass ? Color.clear : OLColor.chrome)
     }
 
     /// The window's own title row: quick actions after the traffic lights, the folder and
@@ -54,7 +64,6 @@ struct CommandBar: View {
                 RibbonTabSwitch(tabs: AppRibbonTab.allCases.map { ($0, $0.title) }, selection: tab)
                     .padding(.leading, 14)
                 Spacer()
-                TitleSearchField()
             }
             .padding(.leading, OL.quickIconsStart)
             .padding(.trailing, OL.searchRightInset)
@@ -302,6 +311,7 @@ struct FilterMenuItems: View {
 /// The search box in the title row, where Outlook keeps it.
 struct TitleSearchField: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.falconStyle) private var style
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -322,9 +332,9 @@ struct TitleSearchField: View {
                     .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 6)
-        .frame(width: OL.searchWidth, height: OL.searchHeight)
-        .background(OLColor.field, in: RoundedRectangle(cornerRadius: 4))
+        .padding(.horizontal, style.glass ? 12 : 6)
+        .frame(width: OL.searchWidth, height: style.glass ? 30 : 24)
+        .modifier(SearchFieldBackground(glass: style.glass))
         .onChange(of: model.focusSearchToken) { _, _ in focused = true }
     }
 }
@@ -345,5 +355,18 @@ struct FindContactField: View {
         .frame(width: OL.findFieldWidth, height: OL.findFieldHeight)
         .background(OLColor.ribbonField, in: RoundedRectangle(cornerRadius: 3))
         .padding(.top, 1)
+    }
+}
+
+/// Legacy's grey field, or a rounded glass pill.
+private struct SearchFieldBackground: ViewModifier {
+    let glass: Bool
+
+    func body(content: Content) -> some View {
+        if glass {
+            content.glassPane(cornerRadius: 15)
+        } else {
+            content.background(OLColor.field, in: RoundedRectangle(cornerRadius: 4))
+        }
     }
 }

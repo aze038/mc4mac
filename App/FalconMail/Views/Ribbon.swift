@@ -21,12 +21,26 @@ struct RibbonGlyph: View {
     var tint: Color?
     var size: CGFloat = OL.ribbonIcon
     var box: CGFloat = OL.ribbonIconBox
+    /// Off for the small rows, which never sit on a tile.
+    var tileable = true
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: size, weight: .light))
-            .foregroundStyle(RibbonGlyph.modern(tint) ?? OLColor.ribbonIcon)
-            .frame(width: box, height: box)
+        if style.tiles, tileable {
+            // Colour tiles: the icon in its own colour on a softly tinted rounded square.
+            let colour = RibbonTileColour.colour(for: symbol, tint: tint)
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(colour)
+                .frame(width: 30, height: 30)
+                .background(colour.opacity(0.18), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .frame(width: box, height: box)
+        } else {
+            Image(systemName: symbol)
+                .font(.system(size: style.glass ? size - 2 : size, weight: .light))
+                .foregroundStyle(RibbonGlyph.modern(tint) ?? OLColor.ribbonIcon)
+                .frame(width: box, height: box)
+        }
     }
 }
 
@@ -34,17 +48,37 @@ struct RibbonGlyph: View {
 /// font's own line height, so the lines are laid out one by one.
 struct RibbonCaption: View {
     let title: String
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
-        VStack(spacing: OL.ribbonLabelPitch - 13) {
-            ForEach(Array(title.split(separator: "\n").enumerated()), id: \.offset) { _, line in
-                Text(String(line))
-                    .font(.system(size: OL.ribbonLabelFont + 0.5))
-                    .lineLimit(1)
-                    .fixedSize()
+        if !style.showsNames {
+            EmptyView()
+        } else if style.oneLineNames {
+            // Glass: every name on one line, shortened where Outlook's needs two.
+            Text(RibbonCaption.oneLine(title))
+                .font(.system(size: 10.5))
+                .lineLimit(1)
+                .fixedSize()
+                .foregroundStyle(OLColor.ribbonLabel)
+        } else {
+            VStack(spacing: OL.ribbonLabelPitch - 13) {
+                ForEach(Array(title.split(separator: "\n").enumerated()), id: \.offset) { _, line in
+                    Text(String(line))
+                        .font(.system(size: OL.ribbonLabelFont + 0.5))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
             }
+            .foregroundStyle(OLColor.ribbonLabel)
         }
-        .foregroundStyle(OLColor.ribbonLabel)
+    }
+
+    /// Outlook's two-line names as one line, the long ones shortened.
+    static func oneLine(_ title: String) -> String {
+        let flat = title.replacingOccurrences(of: "\n", with: " ")
+        let short = ["Mark All as Read": "All Read", "Send & Receive": "Sync", "Read/Unread": "Read/Unread",
+                     "Reading Pane": "Pane", "Dark / Light": "Dark/Light"]
+        return short[flat] ?? flat
     }
 }
 
@@ -55,6 +89,7 @@ private struct TileFace<Glyph: View>: View {
     var enabled: Bool
     var chevron = false
     let glyph: Glyph
+    @Environment(\.falconStyle) private var style
 
     /// A disabled tile keeps a third of its glyph and half of its caption, as Outlook's Send does
     /// before there is anyone to send to.
@@ -70,13 +105,13 @@ private struct TileFace<Glyph: View>: View {
                 }
             }
             .opacity(enabled ? 1 : OL.ribbonGlyphDimmed)
-            .padding(.top, OL.ribbonTileGlyphTop)
+            .padding(.top, style.glass || !style.showsNames ? 8 : OL.ribbonTileGlyphTop)
             RibbonCaption(title: title)
                 .opacity(enabled ? 1 : OL.ribbonCaptionDimmed)
-                .padding(.top, OL.ribbonLabelTop)
+                .padding(.top, style.glass ? 40 : OL.ribbonLabelTop)
         }
-        .padding(.horizontal, OL.ribbonTilePad)
-        .frame(height: OL.ribbon, alignment: .top)
+        .padding(.horizontal, style.glass ? 5 : OL.ribbonTilePad)
+        .frame(height: style.ribbonHeight, alignment: .top)
     }
 }
 
@@ -216,7 +251,7 @@ struct RibbonMiniItem: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil, size: OL.ribbonMiniIcon, box: OL.ribbonMiniIcon)
+                RibbonGlyph(symbol: symbol, tint: enabled ? tint : nil, size: OL.ribbonMiniIcon, box: OL.ribbonMiniIcon, tileable: false)
                 Text(title).font(.system(size: OL.ribbonMiniFont)).foregroundStyle(OLColor.ribbonLabel).lineLimit(1)
             }
             .padding(.horizontal, 4)
@@ -235,11 +270,12 @@ struct RibbonMiniItem: View {
 /// Small rows stacked to the height of a tile, top-aligned with the icons beside them.
 struct RibbonMiniColumn<Content: View>: View {
     @ViewBuilder var content: () -> Content
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
         VStack(alignment: .leading, spacing: OL.ribbonMiniGap) { content() }
             .padding(.top, OL.ribbonIconTop)
-            .frame(height: OL.ribbon, alignment: .top)
+            .frame(height: max(style.ribbonHeight, OL.ribbon), alignment: .top)
     }
 }
 
@@ -256,18 +292,26 @@ struct RibbonSeparator: View {
 /// The modern ribbon's group: its tiles on a soft rounded card, a small gap from the next.
 struct RibbonGroup<Content: View>: View {
     @ViewBuilder var content: () -> Content
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
-        HStack(alignment: .top, spacing: OL.ribbonTileGap) { content() }
-            .padding(.horizontal, 4)
-            .frame(height: OL.ribbon, alignment: .top)
-            .background {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(OLColor.ribbonCard)
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(OLColor.ribbonCardLine, lineWidth: 1))
-                    .padding(.vertical, 3)
-            }
-            .padding(.trailing, 6)
+        if style.glass {
+            // Glass: no cards; each button stands alone, groups kept apart by space alone.
+            HStack(alignment: .top, spacing: 2) { content() }
+                .frame(height: style.ribbonHeight, alignment: .top)
+                .padding(.trailing, 12)
+        } else {
+            HStack(alignment: .top, spacing: OL.ribbonTileGap) { content() }
+                .padding(.horizontal, 4)
+                .frame(height: OL.ribbon, alignment: .top)
+                .background {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(OLColor.ribbonCard)
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(OLColor.ribbonCardLine, lineWidth: 1))
+                        .padding(.vertical, 3)
+                }
+                .padding(.trailing, 6)
+        }
     }
 }
 
@@ -276,6 +320,7 @@ struct RibbonPill: View {
     let offLabel: String
     let caption: String
     @Binding var isOn: Bool
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -291,11 +336,11 @@ struct RibbonPill: View {
             }
             .buttonStyle(.plain)
             .frame(height: OL.ribbonIconBox)
-            .padding(.top, OL.ribbonIconTop)
-            RibbonCaption(title: caption).padding(.top, OL.ribbonLabelTop)
+            .padding(.top, style.glass || !style.showsNames ? 8 : OL.ribbonIconTop)
+            RibbonCaption(title: caption).padding(.top, style.glass ? 40 : OL.ribbonLabelTop)
         }
         .padding(.horizontal, OL.ribbonTilePad)
-        .frame(height: OL.ribbon, alignment: .top)
+        .frame(height: style.ribbonHeight, alignment: .top)
         .help(caption)
     }
 }
@@ -393,6 +438,7 @@ struct RibbonQuickButton: View {
 /// first icon lands at fourteen. Scrolls sideways when the window is narrower than Outlook's.
 struct RibbonBody<Content: View>: View {
     @ViewBuilder var content: () -> Content
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -400,9 +446,9 @@ struct RibbonBody<Content: View>: View {
                 content()
             }
             .padding(.horizontal, OL.ribbonInset)
-            .frame(height: OL.ribbon, alignment: .top)
+            .frame(height: style.ribbonHeight, alignment: .top)
         }
         .scrollIndicators(.never)
-        .frame(height: OL.ribbon)
+        .frame(height: style.ribbonHeight)
     }
 }

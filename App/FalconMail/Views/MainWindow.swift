@@ -18,6 +18,7 @@ struct MainWindow: View {
     @State private var fullScreenMailbox: ObjectIdentifier?
     /// Drawn as it looks filling the screen, by the debug snapshots.
     var snapshotFillsScreen = false
+    @Environment(\.falconStyle) private var style
 
     /// Whether this window fills the screen, its message and compose windows floating inside it
     /// and its status bar holding the minimised ones as tabs.
@@ -47,7 +48,7 @@ struct MainWindow: View {
             StatusBar(fillsScreen: fillsScreen)
         }
         .ignoresSafeArea(.container, edges: .top)
-        .background(OLColor.reading)
+        .background { if style.glass { GlassWindowBackground().ignoresSafeArea() } else { OLColor.reading } }
         .background(MailboxWindowAccessor { ownWindow = ObjectIdentifier($0) })
         .onReceive(WindowTray.shared.$fullScreenMailbox) { fullScreenMailbox = $0 }
         .background(KeyRouterView(model: model))
@@ -83,6 +84,7 @@ struct MainWindow: View {
             switch pane {
             case .right:
                 OutlookColumns { SidebarView() } list: { contentColumn } detail: { detailColumn }
+                    .padding(style.glass ? FalconStyle.paneGap : 0)
             case .below:
                 OutlookColumns(showList: false) { SidebarView() } list: { EmptyView() } detail: {
                     VSplitView {

@@ -11,21 +11,42 @@ struct OutlookColumns<Sidebar: View, List: View, Detail: View>: View {
     @ViewBuilder var sidebar: () -> Sidebar
     @ViewBuilder var list: () -> List
     @ViewBuilder var detail: () -> Detail
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
         HStack(spacing: 0) {
+            // Glass: the folder pane is frosted glass and the list and the message float as
+            // rounded cards, the gaps between them the dividers' grab zones.
             sidebar()
                 .frame(width: CGFloat(sidebarWidth))
                 .clipped()
+                .modifier(GlassColumn(glass: style.glass, frosted: true))
             PaneDivider(width: $sidebarWidth, range: 180...460)
             if showList {
                 list()
                     .frame(width: CGFloat(listWidth))
                     .clipped()
+                    .modifier(GlassColumn(glass: style.glass, frosted: false))
                 PaneDivider(width: $listWidth, range: 260...700)
             }
             detail()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(GlassColumn(glass: style.glass, frosted: false))
+        }
+    }
+}
+
+private struct GlassColumn: ViewModifier {
+    let glass: Bool
+    let frosted: Bool
+
+    func body(content: Content) -> some View {
+        if !glass {
+            content
+        } else if frosted {
+            content.glassPane()
+        } else {
+            content.glassCard()
         }
     }
 }
@@ -36,10 +57,12 @@ struct PaneDivider: View {
     let range: ClosedRange<Double>
     @State private var startWidth: Double?
 
+    @Environment(\.falconStyle) private var style
+
     var body: some View {
         Rectangle()
-            .fill(OLColor.divider)
-            .frame(width: OL.divider)
+            .fill(style.glass ? Color.clear : OLColor.divider)
+            .frame(width: style.glass ? FalconStyle.paneGap : OL.divider)
             .overlay {
                 Color.clear
                     .frame(width: 7)
