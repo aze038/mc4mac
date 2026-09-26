@@ -47,6 +47,12 @@ jobs:
           if [ -d "$OLD" ] && [ ! -d "$CI_CACHE" ]; then
             mkdir -p "$(dirname "$CI_CACHE")" && mv "$OLD" "$CI_CACHE"
           fi
+          # Precompiled modules remember the folder they were built in; after the move they
+          # must be built again once.
+          if [ -f "$CI_CACHE/.moved" ] || [ ! -f "$CI_CACHE/.modules-rebuilt" ]; then
+            rm -rf "$CI_CACHE/swiftpm" "$CI_CACHE/DerivedData/ModuleCache.noindex" "$CI_CACHE/DerivedData/Build/Intermediates.noindex/PrecompiledHeaders"
+            touch "$CI_CACHE/.modules-rebuilt"
+          fi
           mkdir -p "$CI_CACHE"
 
       - name: Show toolchain
