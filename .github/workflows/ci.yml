@@ -25,10 +25,13 @@ concurrency:
   cancel-in-progress: true
 
 # Builds are kept between runs outside the checkout, which the checkout wipes, so a push compiles
-# only what it changed instead of everything from scratch.
+# only what it changed instead of everything from scratch. The folder ends in ".noindex" so
+# Spotlight never lists the Debug FalconMail.app inside it as another copy of the app on the
+# owner's Mac, and scripts/ci-hide-builds.sh takes it out of Launch Services after each build.
 env:
-  SPM_CACHE: ${{ github.workspace }}/../../ci-cache/mc4mac/swiftpm
-  XCODE_CACHE: ${{ github.workspace }}/../../ci-cache/mc4mac/DerivedData
+  CI_CACHE: ${{ github.workspace }}/../../ci-cache.noindex/mc4mac
+  SPM_CACHE: ${{ github.workspace }}/../../ci-cache.noindex/mc4mac/swiftpm
+  XCODE_CACHE: ${{ github.workspace }}/../../ci-cache.noindex/mc4mac/DerivedData
 
 jobs:
   build:
@@ -37,6 +40,14 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+
+      - name: Move the build cache out of Spotlight
+        run: |
+          OLD="${{ github.workspace }}/../../ci-cache/mc4mac"
+          if [ -d "$OLD" ] && [ ! -d "$CI_CACHE" ]; then
+            mkdir -p "$(dirname "$CI_CACHE")" && mv "$OLD" "$CI_CACHE"
+          fi
+          mkdir -p "$CI_CACHE"
 
       - name: Show toolchain
         run: |
@@ -96,6 +107,10 @@ jobs:
             CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee xcodebuild.log | grep -E "error:|warning: unre|\*\* BUILD|Compiling|Linking" || true
           grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
+
+      - name: Keep build copies out of Spotlight and Launchpad
+        if: always()
+        run: bash scripts/ci-hide-builds.sh "${{ github.workspace }}/../.."
 
       - name: Collect errors
         if: failure()

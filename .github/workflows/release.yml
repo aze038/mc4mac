@@ -156,6 +156,14 @@ jobs:
             echo "NOTE=Download the .dmg, open it and drag FalconMail to Applications." >> "$GITHUB_ENV"
           fi
 
+      # The built app, its DMG copy and the checkout's build folder are on the owner's Mac;
+      # without this each release adds another FalconMail to Spotlight and Launchpad.
+      - name: Remove build copies of the app
+        if: always()
+        run: |
+          rm -rf dmg-root
+          bash scripts/ci-hide-builds.sh "${{ github.workspace }}/../.."
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
