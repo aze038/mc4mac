@@ -13,7 +13,8 @@ enum OL {
     static let titleRow: CGFloat = 28
     static let tabRow: CGFloat = 34
     static let ribbon: CGFloat = 74
-    static var chromeHeight: CGFloat { titleRow + tabRow + ribbon }
+    /// The tabs are a switch in the title row, so the chrome has no tab row.
+    static var chromeHeight: CGFloat { titleRow + ribbon }
 
     static let quickIconsStart: CGFloat = 95
     static let quickIcon: CGFloat = 14

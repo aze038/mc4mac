@@ -25,8 +25,6 @@ struct CommandBar: View {
     var body: some View {
         VStack(spacing: 0) {
             titleRow
-            RibbonTabStrip(tabs: AppRibbonTab.allCases.map { ($0, $0.title) }, selection: tab)
-                .padding(.horizontal, OL.tabInset)
             Group {
                 switch tab.wrappedValue {
                 case .home: HomeRibbon()
@@ -54,6 +52,8 @@ struct CommandBar: View {
                 RibbonQuickButton(symbol: "envelope.badge.shield.half.filled", title: "Mark all as read", enabled: model.unifiedUnreadCount > 0) {
                     model.markAllReadEverywhere()
                 }
+                RibbonTabSwitch(tabs: AppRibbonTab.allCases.map { ($0, $0.title) }, selection: tab)
+                    .padding(.leading, 14)
                 Spacer()
                 TitleSearchField()
             }
@@ -80,37 +80,12 @@ struct HomeRibbon: View {
         let first = thread?.latest
         return RibbonBody {
             RibbonGroup {
-                RibbonTile(title: "New\nEmail", symbol: "square.and.pencil", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.composeNew() }
-                RibbonMenuTile(title: "New\nItems", symbol: "envelope.badge.person.crop", enabled: !model.accounts.isEmpty) {
-                    Button("Message") { model.composeNew() }
-                    Button("Meeting") {
-                        model.showModule(.calendar)
-                        NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
-                    }
-                    Button("Contact") { model.showModule(.people) }
-                    Divider()
-                    Button("Folder…") { model.promptForNewFolder() }
-                }
-                RibbonMiniColumn {
-                    RibbonMiniItem(title: "Meeting", symbol: "calendar.badge.plus") {
-                        model.showModule(.calendar)
-                        NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
-                    }
-                    RibbonMiniItem(title: "Attachment", symbol: "paperclip", enabled: hasSingle && !model.selectionIsReadOnly) {
-                        model.onSelection(.forwardAsAttachment) { model.forwardAsAttachment(model.selectedMessages) }
-                    }
-                }
-            }
-            RibbonGroup {
                 RibbonTile(title: "Delete", symbol: "trash", enabled: can(.delete)) {
                     model.onSelection(.delete) { model.delete(model.selectedMessages) }
                 }
                 RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: can(.archive)) {
                     model.onSelection(.archive) { model.archive(model.selectedMessages) }
                 }
-            }
-            RibbonGroup {
-                RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
             }
             RibbonGroup {
                 RibbonSplitTile(title: "Move", symbol: "arrow.down.to.line.compact", tint: OLColor.forwardBlue, enabled: can(.move(to: UUID())),
@@ -140,17 +115,16 @@ struct HomeRibbon: View {
                     Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.onSelection(.flag) { model.toggleFlagOnSelection() } }
                     Button("Mark All as Read") { model.markAllReadInSelection() }
                 }
+                RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }
+            }
+            RibbonGroup {
+                ListViewTiles()
             }
             RibbonGroup {
                 RibbonMenuTile(title: "Filter\nEmails", symbol: model.filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") {
                     FilterMenuItems()
                 }
-            }
-            RibbonGroup {
-                RibbonMiniColumn {
-                    FindContactField()
-                    RibbonMiniItem(title: "Address Book", symbol: "person.text.rectangle") { model.showModule(.people) }
-                }
+                RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
             }
             RibbonGroup {
                 RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
@@ -159,7 +133,9 @@ struct HomeRibbon: View {
     }
 }
 
-struct OrganiseRibbon: View {
+/// How the list is shown: Conversations, Message Preview, Arrange by and Reading Pane, on Home
+/// and on Organise alike.
+struct ListViewTiles: View {
     @Environment(AppModel.self) private var model
     @AppStorage(Pref.readingPane) private var readingPane = ReadingPanePosition.right.rawValue
     @AppStorage(Pref.showPreview) private var showPreview = true
@@ -168,11 +144,7 @@ struct OrganiseRibbon: View {
 
     var body: some View {
         @Bindable var model = model
-        return RibbonBody {
-            RibbonGroup {
-                RibbonTile(title: "New\nFolder", symbol: "folder.badge.plus", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.promptForNewFolder() }
-            }
-            RibbonGroup {
+        return Group {
                 RibbonTile(title: "Conversations", symbol: model.groupByThread ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right",
                            tint: model.groupByThread ? .accentColor : nil) { model.groupByThread.toggle() }
                 RibbonMenuTile(title: "Message\nPreview", symbol: "text.alignleft", tint: .blue) {
@@ -209,6 +181,20 @@ struct OrganiseRibbon: View {
                     }
                     .pickerStyle(.inline)
                 }
+        }
+    }
+}
+
+struct OrganiseRibbon: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        RibbonBody {
+            RibbonGroup {
+                RibbonTile(title: "New\nFolder", symbol: "folder.badge.plus", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.promptForNewFolder() }
+            }
+            RibbonGroup {
+                ListViewTiles()
             }
             RibbonGroup {
                 RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }

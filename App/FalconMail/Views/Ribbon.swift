@@ -331,6 +331,39 @@ struct RibbonTabStrip<Tab: Hashable>: View {
     }
 }
 
+/// Home · Organise · Tools as a small switch in the title row, so the ribbon needs no tab row.
+struct RibbonTabSwitch<Tab: Hashable>: View {
+    let tabs: [(tab: Tab, title: String)]
+    @Binding var selection: Tab
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(tabs, id: \.tab) { entry in
+                let selected = selection == entry.tab
+                Button { selection = entry.tab } label: {
+                    Text(entry.title)
+                        .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? OLColor.tabSelected : OLColor.tab)
+                        .padding(.horizontal, 10)
+                        .frame(height: 18)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(OLColor.ribbonCard)
+                                    .shadow(color: .black.opacity(0.15), radius: 0.5, y: 0.5)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7))
+        .fixedSize()
+    }
+}
+
 struct RibbonQuickButton: View {
     let symbol: String
     let title: String

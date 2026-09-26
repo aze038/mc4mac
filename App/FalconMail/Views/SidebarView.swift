@@ -31,6 +31,10 @@ struct SidebarView: View {
     }
 
     @ViewBuilder private var rows: some View {
+        NewEmailButton()
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
         SidebarTopRow(title: "All Accounts",
                       expanded: Binding(get: { model.allAccountsExpanded }, set: { model.allAccountsExpanded = $0 }))
         if model.allAccountsExpanded {
@@ -352,5 +356,57 @@ struct SidebarFolderRow: View {
         .background(selected ? OLColor.sidebarSelected : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture { action() }
+    }
+}
+
+/// New Email, above All Inboxes: a soft blue pill; its menu, on the chevron or a right-click,
+/// holds the other new items the ribbon's New Items had.
+struct NewEmailButton: View {
+    @Environment(AppModel.self) private var model
+    @State private var hovering = false
+
+    var body: some View {
+        let enabled = !model.accounts.isEmpty
+        HStack(spacing: 0) {
+            Button { model.composeNew() } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "square.and.pencil").font(.system(size: 13, weight: .medium))
+                    Text("New Email").font(.system(size: 13, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Write a new message (⌘N)")
+            Menu { menu } label: {
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                    .frame(width: 28, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("New meeting, contact or folder")
+        }
+        .foregroundStyle(Color.accentColor)
+        .background(Color.accentColor.opacity(hovering ? 0.2 : 0.13), in: Capsule())
+        .contentShape(Capsule())
+        .onHover { hovering = $0 }
+        .contextMenu { menu }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+    }
+
+    @ViewBuilder private var menu: some View {
+        Button("Message") { model.composeNew() }
+        Button("Meeting") {
+            model.showModule(.calendar)
+            NotificationCenter.default.post(name: .falconNewMeeting, object: nil)
+        }
+        Button("Contact") { model.showModule(.people) }
+        Divider()
+        Button("Folder…") { model.promptForNewFolder() }
     }
 }
