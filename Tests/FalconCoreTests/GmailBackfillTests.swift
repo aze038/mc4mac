@@ -140,7 +140,14 @@ final class GmailBackfillTests: XCTestCase {
         let gmail = GmailFixtureMailbox.fixture(.large)
         var settings = GmailEngineSettings()
         settings.fillsCache = true
-        let rig = GmailEngineRig(transport: gmail, clock: ManualGmailClock(gmail.now), settings: settings)
+        // §14.6's target is the index and the newest 1,000. The app keeps more than that, filled
+        // afterwards in the background at the lowest rank, which this target does not cover.
+        var limits = GmailFileStore.Limits()
+        limits.cacheLimit = 1_000
+        limits.cacheCeiling = 1_050
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("backfill-200k-\(UUID().uuidString)", isDirectory: true)
+        let store = RecordingGmailStore(accountID: gmail.accountID, directory: directory, limits: limits)
+        let rig = GmailEngineRig(transport: gmail, store: store, clock: ManualGmailClock(gmail.now), settings: settings, directory: directory)
         await rig.engine.start()
         try await eventually(timeout: 300, "the index and the newest 1,000") {
             let complete = await rig.engine.state.backfill?.phase == .complete
