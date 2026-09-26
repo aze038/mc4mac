@@ -216,6 +216,10 @@ public actor GmailSearchPart: GmailEngineSearch {
             sessions[id] = session
         }
         await session.lookUp()
+        // Hits the index does not hold yet would be left out of the view until the first listing
+        // reached them, which on a large mailbox takes minutes: they go in now.
+        let unplaced = await session.unplacedHits()
+        if !unplaced.isEmpty { await engine.placeSearchHits(unplaced) }
         if fetchRows { await session.fetchRows() }
     }
 

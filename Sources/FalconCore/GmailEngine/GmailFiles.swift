@@ -200,9 +200,12 @@ final class GmailRecordFile<Value: Codable> {
 /// from the index at launch.
 public actor GmailFileStore: GmailStore {
     public struct Limits: Sendable {
-        public var cacheLimit = 1_000
-        public var cacheCeiling = 1_050
-        public var bodyBytesCap = 32 * 1_024 * 1_024
+        /// Messages kept on the Mac with their rows and bodies, newest first. The owner allows up to
+        /// 2 GB for mail on the Mac: 25,000 rows take about 50 MB, the bodies at most 1.5 GB.
+        public var cacheLimit = 25_000
+        /// Eviction runs once the count passes the limit by this many, not at each new message.
+        public var cacheCeiling = 25_500
+        public var bodyBytesCap = 1_536 * 1_024 * 1_024
         /// Journal records after which the snapshot is written again.
         public var compactOperations = 5_000
         /// Journal bytes after which the snapshot is written again, or the snapshot's own size if

@@ -526,6 +526,9 @@ public actor GmailSearchSession {
     private let label: GmailLabelID?
     private let pageSize: Int
     private var hits: [GmailMessageID] = []
+    /// Each hit's conversation, as the listing gave it, so a hit the index does not hold yet can
+    /// be put in it at once.
+    private var refs: [UInt64: GmailRef] = [:]
     private var pageToken: String?
     private var listed = false
     /// Why the hits came from the messages kept on the Mac, when they did.
@@ -544,6 +547,14 @@ public actor GmailSearchSession {
     }
 
     public var hasMore: Bool { !listed || pageToken != nil }
+
+    /// Hits the account's index does not hold yet, as happens while the mailbox is first listed:
+    /// the view shows only messages the index holds, so these are placed in it at once rather
+    /// than waiting for the listing to reach them.
+    public func unplacedHits() async -> [GmailRef] {
+        let snapshot = await store.index()
+        return hits.compactMap { id in snapshot.slotByID[id.raw] == nil ? refs[id.raw] : nil }
+    }
     public var hitIDs: [GmailMessageID] { hits }
 
     /// The next page of ids, newest first, which the view then shows. Offline, or while Gmail has
@@ -551,6 +562,12 @@ public actor GmailSearchSession {
     @discardableResult
     public func lookUp() async -> [GmailMessageID] {
         guard hasMore, fallback == nil else { return hits }
+        // The first page: what the Mac already holds shows at once, while Gmail is asked. Gmail's
+        // answer then takes its place, since only Gmail searches bodies and every message.
+        if !listed, hits.isEmpty {
+            let local = await store.searchCached(query, limit: pageSize)
+            if !local.isEmpty { await source.index.setSearchHits(local, search: id, account: source.accountID) }
+        }
         let spamTrash = label == .spam || label == .trash
         let request = GmailListQuery(labels: label.map { [$0] } ?? [], query: query, includeSpamTrash: spamTrash,
                                      maxResults: pageSize, pageToken: pageToken)
@@ -560,6 +577,7 @@ public actor GmailSearchSession {
             pageToken = page.nextPageToken
             let known = Set(hits)
             hits += page.refs.map(\.id).filter { !known.contains($0) }
+            for ref in page.refs { refs[ref.id.raw] = ref }
         } catch let error as GoogleAPIError {
             fallback = error
             listed = true

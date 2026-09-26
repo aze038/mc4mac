@@ -486,6 +486,33 @@ extension GmailAccountEngine {
         }
     }
 
+    /// Search hits the index does not hold yet, found while the mailbox is first listed: placed
+    /// ahead of the listing, as a folder's first page is, so the search shows them at once. Their
+    /// labels and place are settled when the listing reaches them.
+    public func placeSearchHits(_ refs: [GmailRef]) async {
+        guard state.backfill?.phase == .listing, !refs.isEmpty else { return }
+        // Their labels first, in one batch, so a hit never shows in a folder it is not in (a
+        // message placed with none would read as archived) before the listing settles it.
+        // One screen at once; the rest of the page right after, so the first rows are not held up.
+        let screen = Array(refs.prefix(30))
+        await placeWithLabels(screen)
+        let rest = Array(refs.dropFirst(30).prefix(70))
+        if !rest.isEmpty { Task { await self.placeWithLabels(rest) } }
+    }
+
+    private func placeWithLabels(_ wanted: [GmailRef]) async {
+        guard state.backfill?.phase == .listing, !wanted.isEmpty else { return }
+        let answers = await fetch(wanted.map(\.id), format: .minimal, work: .interactive)
+        var byLabels: [Set<GmailLabelID>: [GmailRef]] = [:]
+        for ref in wanted {
+            guard case .success(let message)? = answers[ref.id.raw] else { continue }
+            byLabels[message.labels, default: []].append(ref)
+        }
+        for (labels, group) in byLabels {
+            _ = await placeAhead(await withoutHeld(group, labels: labels), labels: labels)
+        }
+    }
+
     /// A folder opened while the mailbox is first listed: its newest page, listed and shown now.
     func showFirstPage(of label: GmailLabelID) async {
         guard state.backfill?.phase == .listing, firstPagesShown.insert(label).inserted else { return }

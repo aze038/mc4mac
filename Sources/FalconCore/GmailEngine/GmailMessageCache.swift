@@ -8,10 +8,11 @@ struct GmailFolderScreen: Codable, Hashable, Sendable {
     var shownAt: Date
 }
 
-/// The newest 1,000 messages of the account, kept on the Mac with their rows, reply headers and
-/// reduced bodies, so the Inbox and the folders used most recently open at once and offline.
+/// The newest messages of the account, up to the store's limit (25,000), kept on the Mac with
+/// their rows, reply headers and reduced bodies, so lists fill and messages open at once and
+/// offline. Bodies are capped in bytes; past the cap the oldest go and their rows stay.
 ///
-/// Which messages belong, in this order until 1,000 are chosen:
+/// Which messages belong, in this order until the limit is reached:
 /// 1. those pinned: drafts, messages with a change waiting, and those open in a window or tab;
 /// 2. one screen of the Inbox and of each of the 12 other folders used most recently;
 /// 3. the newest of the account.

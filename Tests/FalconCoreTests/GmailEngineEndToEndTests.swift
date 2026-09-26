@@ -249,6 +249,39 @@ final class GmailEngineEndToEndTests: XCTestCase {
         await a.engine.stop()
     }
 
+    /// A search while the mailbox is still being listed for the first time shows an old hit at
+    /// once. The view shows only messages the index holds, and the listing, newest first, takes
+    /// minutes to reach old mail on a large mailbox: the hit must not wait for it.
+    func testASearchWhileTheMailboxIsStillListedShowsOldHitsAtOnce() async throws {
+        let newest = Date(timeIntervalSince1970: 1_790_000_000)
+        let mailbox = FakeGmailMailbox.fixture(FakeGmailMailbox.FixtureSpec.typical55k.scaled(to: 20_000), now: { newest })
+        let wanted = mailbox.add(subject: "Offer from prompt.az", labels: ["INBOX"], date: newest.addingTimeInterval(-900 * 86_400))
+        // Each page of the listing takes a second: 40 pages, far longer than the search may take.
+        mailbox.setDelay(1, for: .messagesList)
+        let a = await account(mailbox, now: newest.addingTimeInterval(120))
+        await a.engine.start()
+        try await eventually(timeout: 30, "the listing has begun") { await a.engine.state.backfill?.phase == .listing }
+
+        let search = UUID()
+        let started = Date()
+        try await a.engine.search("prompt.az", id: search, fetchRows: true)
+        let view = ListView(scope: .search(search), conversations: false)
+        try await eventually(timeout: 6, "the old hit shows") {
+            await a.assembly.list.snapshot(of: view).rows.count == 1
+        }
+        let took = Date().timeIntervalSince(started)
+        let hits = await a.assembly.list.snapshot(of: view)
+        XCTAssertEqual(hits.rowKey(at: 0)?.gmailID, GmailMessageID(hex: wanted.id))
+        let phase = await a.engine.state.backfill?.phase
+        XCTAssertEqual(phase, .listing, "shown before the listing reached it")
+        XCTAssertLessThan(took, 6)
+        let wantedID = try XCTUnwrap(GmailMessageID(hex: wanted.id))
+        let labels = await a.assembly.store.labels(of: wantedID)
+        XCTAssertEqual(labels?.contains(.inbox), true, "placed with its labels, so it shows in the Inbox and not as archived")
+        await a.engine.endSearch(search)
+        await a.engine.stop()
+    }
+
     /// A Mac whose clock is an hour fast still announces new mail: the transport reads Gmail's
     /// time from the Date header of its answers, and the engine decides what is new by it (§4.3).
     /// By the Mac's clock alone, mail Gmail received now would look an hour old.
