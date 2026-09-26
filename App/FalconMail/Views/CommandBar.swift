@@ -30,7 +30,8 @@ struct CommandBar: View {
             // Search stands in the ribbon's own row, at its right end, level with the icons.
             HStack(alignment: .center, spacing: 8) {
                 Group {
-                    switch tab.wrappedValue {
+                    // Glass is one ribbon without tabs, Tools' commands under More.
+                    switch style.glass ? .home : tab.wrappedValue {
                     case .home: HomeRibbon()
                     case .tools: ToolsRibbon()
                     }
@@ -61,8 +62,10 @@ struct CommandBar: View {
                 RibbonQuickButton(symbol: "envelope.badge.shield.half.filled", title: "Mark all as read", enabled: model.unifiedUnreadCount > 0) {
                     model.markAllReadEverywhere()
                 }
-                RibbonTabSwitch(tabs: AppRibbonTab.allCases.map { ($0, $0.title) }, selection: tab)
-                    .padding(.leading, 14)
+                if !style.glass {
+                    RibbonTabSwitch(tabs: AppRibbonTab.allCases.map { ($0, $0.title) }, selection: tab)
+                        .padding(.leading, 14)
+                }
                 Spacer()
             }
             .padding(.leading, OL.quickIconsStart)
@@ -74,6 +77,7 @@ struct CommandBar: View {
 
 struct HomeRibbon: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.falconStyle) private var style
     @AppStorage(Pref.offlineMode) private var offline = false
 
     /// Actions need a selection with nothing in it that was found only on the server.
@@ -138,6 +142,10 @@ struct HomeRibbon: View {
                 RibbonPill(onLabel: "Online", offLabel: "Offline", caption: "Status",
                            isOn: Binding(get: { !offline }, set: { offline = !$0; model.setWorkOffline(!$0) }))
                 RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
+                if style.glass {
+                    // Glass has no Tools tab: its commands are here, in one menu.
+                    RibbonMenuTile(title: "More", symbol: "ellipsis.circle") { ToolsMenuItems() }
+                }
             }
         }
     }
@@ -208,6 +216,33 @@ struct ToolsRibbon: View {
                     NotificationCenter.default.post(name: .falconArchive, object: nil)
                 }
             }
+        }
+    }
+}
+
+/// The Tools tab's commands as one menu, for the tabless Glass ribbon.
+struct ToolsMenuItems: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Button("Accounts…") { SettingsWindows.shared.show(.accounts) }
+        Divider()
+        Button("Import…") { NotificationCenter.default.post(name: .falconImport, object: nil) }
+        Button("Export…") { NotificationCenter.default.post(name: .falconExport, object: nil) }
+            .disabled(!model.hasSelection)
+        Button("Archive Mail…") { NotificationCenter.default.post(name: .falconArchive, object: nil) }
+        Divider()
+        Menu("Sync Status") {
+            Text(model.statusText)
+            Divider()
+            ForEach(model.accounts) { account in
+                Text("\(account.email) — \(model.online[account.id] == false ? "offline" : "online")")
+            }
+        }
+        Menu("Sync Errors") {
+            if let error = model.actionError { Text(error) } else { Text("No sync errors") }
+            Divider()
+            Button("Retry Now") { model.syncNow() }
         }
     }
 }

@@ -110,7 +110,7 @@ private struct TileFace<Glyph: View>: View {
                 .opacity(enabled ? 1 : OL.ribbonCaptionDimmed)
                 .padding(.top, style.glass ? 40 : OL.ribbonLabelTop)
         }
-        .padding(.horizontal, style.glass ? 5 : OL.ribbonTilePad)
+        .padding(.horizontal, style.glass ? 7 : OL.ribbonTilePad)
         .frame(height: style.ribbonHeight, alignment: .top)
     }
 }
@@ -297,9 +297,9 @@ struct RibbonGroup<Content: View>: View {
     var body: some View {
         if style.glass {
             // Glass: no cards; each button stands alone, groups kept apart by space alone.
-            HStack(alignment: .top, spacing: 2) { content() }
+            // Every button the same distance from the next, whether or not a group ends there.
+            HStack(alignment: .top, spacing: 4) { content() }
                 .frame(height: style.ribbonHeight, alignment: .top)
-                .padding(.trailing, 12)
         } else {
             HStack(alignment: .top, spacing: OL.ribbonTileGap) { content() }
                 .padding(.horizontal, 4)
@@ -442,7 +442,7 @@ struct RibbonBody<Content: View>: View {
 
     var body: some View {
         ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: OL.ribbonTileGap) {
+            HStack(alignment: .top, spacing: style.glass ? 4 : OL.ribbonTileGap) {
                 content()
             }
             .padding(.horizontal, OL.ribbonInset)
