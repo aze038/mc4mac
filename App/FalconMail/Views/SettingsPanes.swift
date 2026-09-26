@@ -96,7 +96,7 @@ struct GeneralSettings: View {
             SettingsRow(label: "Theme:") {
                 HStack(spacing: 10) {
                     ForEach(AccentTheme.allCases) { item in
-                        Button { theme = item.rawValue } label: {
+                        Button { theme = item.rawValue; Theme.refresh() } label: {
                             RoundedRectangle(cornerRadius: 7)
                                 .fill(item.colour)
                                 .frame(width: 58, height: 34)
@@ -172,7 +172,7 @@ struct AppearanceCard: View {
                 preview
                     .frame(width: 96, height: 66)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Color.accentColor : Color.primary.opacity(0.2), lineWidth: selected ? 2.5 : 1))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Theme.accent : Color.primary.opacity(0.2), lineWidth: selected ? 2.5 : 1))
                 Text(mode.title).font(.system(size: 12))
             }
         }
@@ -193,7 +193,7 @@ struct AppearanceCard: View {
 
     private func miniature(background: Color, panel: Color, text: Color) -> some View {
         VStack(spacing: 0) {
-            Rectangle().fill(Color.accentColor).frame(height: 12)
+            Rectangle().fill(Theme.accent).frame(height: 12)
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(0..<3, id: \.self) { _ in
@@ -233,7 +233,7 @@ struct DensityCard: View {
                 .padding(8)
                 .frame(width: 104, height: 72)
                 .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(selected ? Color.accentColor : Color.primary.opacity(0.2), lineWidth: selected ? 2.5 : 1))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(selected ? Theme.accent : Color.primary.opacity(0.2), lineWidth: selected ? 2.5 : 1))
                 Text(density.title).font(.system(size: 12))
             }
         }
@@ -467,7 +467,7 @@ struct CategoriesSettings: View {
         HSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
-                    Circle().fill(Color.accentColor).frame(width: 26, height: 26)
+                    Circle().fill(Theme.accent).frame(width: 26, height: 26)
                         .overlay(Text("OM").font(.system(size: 10, weight: .bold)).foregroundStyle(.white))
                     Text("On my Computer").font(.system(size: 13))
                 }

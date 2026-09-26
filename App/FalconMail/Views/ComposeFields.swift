@@ -88,7 +88,7 @@ struct InlineActionFace: View {
             Image(systemName: symbol).font(.system(size: 14, weight: .light))
             Text(title).font(.system(size: 13))
         }
-        .foregroundStyle(prominent && enabled ? Color.accentColor : Color.primary.opacity(enabled ? 0.85 : 0.35))
+        .foregroundStyle(prominent && enabled ? Theme.accent : Color.primary.opacity(enabled ? 0.85 : 0.35))
         .padding(.horizontal, 6).padding(.vertical, 3)
         .background(hovering && enabled ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
         .contentShape(RoundedRectangle(cornerRadius: 5))

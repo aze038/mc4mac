@@ -265,14 +265,14 @@ struct AttachmentChip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: icon).foregroundStyle(selected ? Color.white : Color.accentColor)
+            Image(systemName: icon).foregroundStyle(selected ? Color.white : Theme.accent)
             VStack(alignment: .leading) {
                 Text(attachment.filename).font(.caption).lineLimit(1)
                 Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.size), countStyle: .file)).font(.caption2).foregroundStyle(selected ? .white.opacity(0.85) : .secondary)
             }
         }
         .padding(6)
-        .background(selected ? Color.accentColor : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+        .background(selected ? Theme.accent : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
         .foregroundStyle(selected ? Color.white : Color.primary)
         .contentShape(RoundedRectangle(cornerRadius: 6))
     }

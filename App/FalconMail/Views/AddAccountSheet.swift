@@ -29,7 +29,7 @@ struct AddAccountSheet: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "envelope.badge.person.crop").font(.system(size: 34)).foregroundStyle(Color.accentColor)
+            Image(systemName: "envelope.badge.person.crop").font(.system(size: 34)).foregroundStyle(Theme.accent)
             VStack(alignment: .leading) {
                 Text("Add an email account").font(.title2.bold())
                 Text(step == .choose ? "Choose how this mailbox connects." : email).foregroundStyle(.secondary)
@@ -156,8 +156,8 @@ struct ProviderChoice: View {
                 Image(systemName: "chevron.right").foregroundStyle(.secondary)
             }
             .padding(12)
-            .background(selected ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1.5))
+            .background(selected ? Theme.accent.opacity(0.08) : Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Theme.accent : Color.clear, lineWidth: 1.5))
             .contentShape(RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)

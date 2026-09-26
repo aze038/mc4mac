@@ -64,9 +64,9 @@ struct ComposeView: View {
         .background { ComposeFileDropTarget(targeted: $dropTargeted) { addDropped($0) } }
         .overlay {
             if dropTargeted {
-                RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor, lineWidth: 3)
-                    .background(Color.accentColor.opacity(0.06)).padding(4)
-                    .overlay(Text("Drop to attach").font(.title3).foregroundStyle(Color.accentColor))
+                RoundedRectangle(cornerRadius: 8).stroke(Theme.accent, lineWidth: 3)
+                    .background(Theme.accent.opacity(0.06)).padding(4)
+                    .overlay(Text("Drop to attach").font(.title3).foregroundStyle(Theme.accent))
                     .allowsHitTesting(false)
             }
         }
@@ -385,7 +385,7 @@ struct ComposeView: View {
                     .help("Send as soon as you press Send")
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+            .background(Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 
@@ -580,7 +580,7 @@ struct ComposeAttachmentChip: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: isEditing ? "pencil.circle.fill" : "paperclip")
-                .foregroundStyle(isEditing ? Color.accentColor : Color.primary)
+                .foregroundStyle(isEditing ? Theme.accent : Color.primary)
             Text(attachment.filename).font(.caption)
             Text(sizeText).font(.caption2).foregroundStyle(.secondary)
             Menu {

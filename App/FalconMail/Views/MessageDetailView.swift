@@ -409,10 +409,10 @@ struct ReplyRowButton: View {
                     .lineLimit(1)
                     .fixedSize()
             }
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(Theme.accent)
             .padding(.horizontal, 8)
             .frame(height: 28)
-            .background(hovering ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .background(hovering ? Theme.accent.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
             .contentShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
@@ -448,7 +448,7 @@ struct ReaderActionButton: View {
                         .fixedSize()
                 }
             }
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Theme.accent)
                 .padding(.horizontal, titled ? 8 : 0)
                 .frame(minWidth: 30, minHeight: 26)
                 .background(hovering ? Color.primary.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 5))

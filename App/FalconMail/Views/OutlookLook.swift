@@ -257,8 +257,9 @@ enum OLColor {
     static let field = dynamic(light: 0xFFFFFF, dark: 0x484848)
     static let fieldText = dynamic(light: 0x7A7A7A, dark: 0xA0A0A0)
     static let ribbonField = dynamic(light: 0xFFFFFF, dark: 0x222222)
+    /// The app's colour, from `Theme`, the one place it is chosen.
     static let unread = Color(nsColor: OLListColor.unread)
-    static let inbox = dynamic(light: 0x1E7AD0, dark: 0x52A3E0)
+    static let inbox = Theme.folder
     static let icon = dynamic(light: 0x4A4A4A, dark: 0xE1E1E1)
     static let buttonBorder = dynamic(light: 0xB0B0B0, dark: 0x707070)
     static let quoteBar = dynamic(light: 0x8A8A8A, dark: 0xCCCCCC)
@@ -289,12 +290,13 @@ enum OLListColor {
     static let secondary = OLColor.dynamicNS(light: 0x5F5F5F, dark: 0xB3B3B3)
     /// A sender on a message's own line under its conversation, brighter than the rest.
     static let childName = OLColor.dynamicNS(light: 0x000000, dark: 0xFFFFFF)
-    static let unread = OLColor.dynamicNS(light: 0x0F6CBD, dark: 0x629FF8)
+    /// Unread mail and the focused selection's words: the app's colour, from `Theme`.
+    static let unread = Theme.unreadNS
     static let separator = OLColor.dynamicNS(light: 0xC4C4C4, dark: 0x545454)
     /// The selected row while the list does not have the keyboard, or its window is behind.
     static let selection = OLColor.dynamicNS(light: 0xDCDCDC, dark: 0x454646)
     /// The selected row while the list has the keyboard; its words are then in `unread`'s blue.
-    static let focusedSelection = OLColor.dynamicNS(light: 0xCCE3F8, dark: 0x102F79)
+    static let focusedSelection = Theme.selectionNS
     static let chevron = OLColor.dynamicNS(light: 0x404040, dark: 0xD2D2D2)
     static let paperclip = OLColor.dynamicNS(light: 0x5C5C5C, dark: 0xC1C1C1)
     static let badge = OLColor.dynamicNS(light: 0xC8C8C8, dark: 0xB3B3B3)

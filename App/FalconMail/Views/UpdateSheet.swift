@@ -10,7 +10,7 @@ struct UpdateSheet: View {
             HStack(spacing: 12) {
                 Image(systemName: updates.isMandatory ? "exclamationmark.shield.fill" : "arrow.down.circle.fill")
                     .font(.system(size: 36))
-                    .foregroundStyle(updates.isMandatory ? Color.red : Color.accentColor)
+                    .foregroundStyle(updates.isMandatory ? Color.red : Theme.accent)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(updates.isMandatory ? "A required update is available" : "A new version of FalconMail is available")
                         .font(.title3.bold())

@@ -69,8 +69,8 @@ struct AttachmentCard: View {
             .help("More for this attachment")
         }
         .frame(width: AttachmentCard.width, height: AttachmentCard.height)
-        .background(selected ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 4))
-        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(selected ? Color.accentColor : OLColor.textMuted.opacity(0.45), lineWidth: 1))
+        .background(selected ? Theme.accent : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(selected ? Theme.accent : OLColor.textMuted.opacity(0.45), lineWidth: 1))
         .help(filename)
     }
 }

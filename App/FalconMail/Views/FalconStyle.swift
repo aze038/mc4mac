@@ -140,6 +140,6 @@ enum RibbonTileColour {
             ("exclamationmark", .orange), ("externaldrive", .purple), ("doc", .gray),
         ]
         for (prefix, colour) in pairs where symbol.hasPrefix(prefix) { return colour }
-        return tint ?? .accentColor
+        return tint ?? Theme.accent
     }
 }

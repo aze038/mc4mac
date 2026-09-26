@@ -15,7 +15,7 @@ struct RibbonButtonStyle: ButtonStyle {
 struct RibbonGlyph: View {
     /// The modern ribbon draws every icon in one grey line; only the accent colour, which marks
     /// the main action or a switch that is on, keeps its colour.
-    static func modern(_ tint: Color?) -> Color? { tint == .accentColor ? tint : nil }
+    static func modern(_ tint: Color?) -> Color? { tint == Theme.accent ? tint : nil }
 
     let symbol: String
     var tint: Color?
@@ -362,7 +362,7 @@ struct RibbonTabStrip<Tab: Hashable>: View {
                             .padding(.top, OL.tabTextTop)
                             .frame(height: OL.tabUnderlineTop, alignment: .top)
                         Capsule()
-                            .fill(selected ? Color.accentColor : Color.clear)
+                            .fill(selected ? Theme.accent : Color.clear)
                             .frame(height: 2)
                     }
                     .fixedSize()

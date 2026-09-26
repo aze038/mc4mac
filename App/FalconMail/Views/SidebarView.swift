@@ -392,16 +392,16 @@ struct NewEmailButton: View {
             .fixedSize()
             .help("New meeting, contact or folder")
         }
-        .foregroundStyle(style.glass ? Color.white : Color.accentColor)
+        .foregroundStyle(style.glass ? Color.white : Theme.accent)
         .background {
             if style.glass {
                 // Glass: a glossy filled pill, as iOS's main buttons.
-                Capsule().fill(LinearGradient(colors: [Color.accentColor.opacity(hovering ? 0.95 : 0.85), Color.accentColor],
+                Capsule().fill(LinearGradient(colors: [Theme.accent.opacity(hovering ? 0.95 : 0.85), Theme.accent],
                                               startPoint: .top, endPoint: .bottom))
                     .overlay(Capsule().strokeBorder(Color.white.opacity(0.3), lineWidth: 0.5))
-                    .shadow(color: Color.accentColor.opacity(0.35), radius: 6, y: 2)
+                    .shadow(color: Theme.accent.opacity(0.35), radius: 6, y: 2)
             } else {
-                Capsule().fill(Color.accentColor.opacity(hovering ? 0.2 : 0.13))
+                Capsule().fill(Theme.accent.opacity(hovering ? 0.2 : 0.13))
             }
         }
         .contentShape(Capsule())

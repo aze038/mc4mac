@@ -108,7 +108,7 @@ struct MovePalette: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(active ? Color.accentColor.opacity(0.22) : Color.clear)
+        .background(active ? Theme.accent.opacity(0.22) : Color.clear)
     }
 
     private func highlight(_ offset: Int) -> KeyPress.Result {

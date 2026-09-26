@@ -338,7 +338,7 @@ struct StatusBar: View {
             Text(hint)
                 .font(.caption.monospaced())
                 .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(Color.accentColor.opacity(0.18), in: Capsule())
+                .background(Theme.accent.opacity(0.18), in: Capsule())
                 .help("Waiting for the second key of a shortcut")
         }
     }
@@ -395,7 +395,7 @@ struct StatusBar: View {
                 Button("Undo") { model.cancelAndReopen(item) }.buttonStyle(.link).font(.caption)
             }
             .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Color.accentColor.opacity(0.12), in: Capsule())
+            .background(Theme.accent.opacity(0.12), in: Capsule())
         }
     }
 }

@@ -330,8 +330,8 @@ struct WorkspaceTabStrip: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(active ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(active ? Color.accentColor.opacity(0.5) : Color.clear))
+        .background(active ? Theme.accent.opacity(0.18) : Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(active ? Theme.accent.opacity(0.5) : Color.clear))
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onTapGesture { if let tab { model.openTab(tab) } else { model.showMail() } }
     }

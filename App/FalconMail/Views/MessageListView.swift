@@ -376,8 +376,8 @@ struct MessageListView: View {
         .font(.caption)
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(Color.accentColor.opacity(0.15), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.4)))
+        .background(Theme.accent.opacity(0.15), in: Capsule())
+        .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.4)))
     }
 
     private var pinButton: some View {
@@ -385,7 +385,7 @@ struct MessageListView: View {
             Image(systemName: model.pinFilters ? "pin.fill" : "pin.slash")
         }
         .buttonStyle(.plain)
-        .foregroundStyle(model.pinFilters ? Color.accentColor : Color.secondary)
+        .foregroundStyle(model.pinFilters ? Theme.accent : Color.secondary)
         .help("Keep these filters when switching folders")
     }
 
@@ -494,7 +494,7 @@ struct MessageListView: View {
             } label: {
                 Label(action.title, systemImage: action.symbol)
             }
-            .tint(action == .delete ? .red : (action == .flag ? .orange : .accentColor))
+            .tint(action == .delete ? .red : (action == .flag ? .orange : Theme.accent))
         }
     }
 

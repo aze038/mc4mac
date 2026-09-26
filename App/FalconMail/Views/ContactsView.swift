@@ -26,7 +26,7 @@ struct ContactsView: View {
             Divider()
             List(filtered, selection: $selected) { c in
                 HStack(spacing: 10) {
-                    Circle().fill(Color.accentColor.opacity(0.2)).frame(width: 30, height: 30)
+                    Circle().fill(Theme.accent.opacity(0.2)).frame(width: 30, height: 30)
                         .overlay(Text(String((c.name.isEmpty ? c.email : c.name).prefix(1)).uppercased()).font(.caption.bold()))
                     VStack(alignment: .leading, spacing: 1) {
                         Text(c.name.isEmpty ? c.email : c.name).font(.system(size: 13, weight: .medium))

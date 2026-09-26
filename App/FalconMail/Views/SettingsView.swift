@@ -13,7 +13,7 @@ struct AccountSettings: View {
                     HStack(spacing: 10) {
                         Image(systemName: a.isEnabled ? (a.usesPassword ? "server.rack" : "g.circle.fill") : "pause.circle")
                             .font(.title2)
-                            .foregroundStyle(!a.isEnabled ? Color.secondary : (model.online[a.id] == false ? Color.orange : Color.accentColor))
+                            .foregroundStyle(!a.isEnabled ? Color.secondary : (model.online[a.id] == false ? Color.orange : Theme.accent))
                         VStack(alignment: .leading) {
                             Text(a.displayName.isEmpty ? a.email : a.displayName).font(.headline)
                             Text(a.email).font(.caption).foregroundStyle(.secondary)

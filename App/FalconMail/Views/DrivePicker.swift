@@ -137,7 +137,7 @@ struct DrivePicker: View {
         List(browser.entries, selection: $selection) { entry in
             HStack(spacing: 8) {
                 Image(systemName: entry.isFolder ? "folder" : "doc")
-                    .foregroundStyle(entry.isFolder ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(entry.isFolder ? Theme.accent : Color.secondary)
                 Text(entry.name).lineLimit(1)
                 Spacer()
                 if let size = entry.size {

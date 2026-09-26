@@ -72,7 +72,7 @@ struct ServerAttachmentStrip: View {
                 ProgressView().controlSize(.small)
             } else {
                 Image(systemName: isLocal(stub) ? "doc" : "icloud.and.arrow.down")
-                    .foregroundStyle(selected ? Color.white : Color.accentColor)
+                    .foregroundStyle(selected ? Color.white : Theme.accent)
             }
             VStack(alignment: .leading) {
                 Text(stub.filename).font(.caption).lineLimit(1)
@@ -81,7 +81,7 @@ struct ServerAttachmentStrip: View {
             }
         }
         .padding(6)
-        .background(selected ? Color.accentColor : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+        .background(selected ? Theme.accent : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
         .foregroundStyle(selected ? Color.white : Color.primary)
         .contentShape(RoundedRectangle(cornerRadius: 6))
     }

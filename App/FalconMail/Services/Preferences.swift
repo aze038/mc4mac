@@ -154,16 +154,19 @@ enum AccentTheme: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var colour: Color {
+    /// The swatch's own colour, which `Theme` derives every app colour from.
+    var nsColor: NSColor {
         switch self {
-        case .blue: return Color(red: 0.11, green: 0.42, blue: 0.79)
-        case .purple: return Color(red: 0.64, green: 0.21, blue: 0.93)
-        case .pink: return Color(red: 0.93, green: 0.22, blue: 0.56)
-        case .orange: return Color(red: 0.95, green: 0.38, blue: 0.13)
-        case .red: return Color(red: 0.89, green: 0.13, blue: 0.31)
-        case .green: return Color(red: 0.18, green: 0.75, blue: 0.53)
+        case .blue: return NSColor(srgbRed: 0.11, green: 0.42, blue: 0.79, alpha: 1)
+        case .purple: return NSColor(srgbRed: 0.64, green: 0.21, blue: 0.93, alpha: 1)
+        case .pink: return NSColor(srgbRed: 0.93, green: 0.22, blue: 0.56, alpha: 1)
+        case .orange: return NSColor(srgbRed: 0.95, green: 0.38, blue: 0.13, alpha: 1)
+        case .red: return NSColor(srgbRed: 0.89, green: 0.13, blue: 0.31, alpha: 1)
+        case .green: return NSColor(srgbRed: 0.18, green: 0.75, blue: 0.53, alpha: 1)
         }
     }
+
+    var colour: Color { Color(nsColor: nsColor) }
 
     var title: LocalizedStringKey {
         switch self {

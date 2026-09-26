@@ -13,7 +13,8 @@ struct ThemedRoot: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .tint(AccentTheme(rawValue: theme)?.colour ?? .accentColor)
+            // Read so that a new colour re-renders the root; every colour itself comes from Theme.
+            .tint(theme.isEmpty ? Theme.accent : Theme.accent)
             .environment(\.appTextScale, 1 + CGFloat(textSize) * 0.06)
             .environment(\.falconStyle, FalconStyle(window: window, icons: icons, names: names))
     }

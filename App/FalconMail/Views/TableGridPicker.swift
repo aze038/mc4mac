@@ -166,7 +166,7 @@ private struct PickerItem<Icon: View>: View {
             .frame(width: TableGrid.width, height: TableGrid.itemRow, alignment: .topLeading)
             .background {
                 if lit {
-                    RoundedRectangle(cornerRadius: 4).fill(Color.accentColor).padding(.horizontal, TableGrid.itemHighlightInset)
+                    RoundedRectangle(cornerRadius: 4).fill(Theme.accent).padding(.horizontal, TableGrid.itemHighlightInset)
                 }
             }
             .contentShape(Rectangle())

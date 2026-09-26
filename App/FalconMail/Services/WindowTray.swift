@@ -491,7 +491,7 @@ struct WindowTrayBar: View {
                         Button { model.closeTab(tab) } label: { Image(systemName: "xmark.circle.fill").font(.caption) }.buttonStyle(.plain)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                    .background(Theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
                     .onTapGesture { model.openTab(tab) }
                 }
                 ForEach(windows) { entry in
