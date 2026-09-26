@@ -58,8 +58,18 @@ final class GmailMessageCacheTests: XCTestCase {
 
     // MARK: - The limits
 
+    /// The owner allows up to 2 GB for mail on the Mac: the store's own limits keep within it.
+    func testTheAppsLimitsStayWithinTwoGigabytes() {
+        let limits = GmailFileStore.Limits()
+        XCTAssertGreaterThanOrEqual(limits.cacheLimit, 20_000, "enough kept that lists and opens rarely wait for Gmail")
+        // A kept row with its reply headers and summary takes about 2 KB on disk.
+        let rows = Int64(limits.cacheCeiling) * 2 * 1_024
+        XCTAssertLessThanOrEqual(Int64(limits.bodyBytesCap) + rows, 2 * 1_024 * 1_024 * 1_024)
+    }
+
     func testTheCacheGoesBackToAThousandAndKeepsWhatIsPinned() async throws {
-        let store = makeStore()
+        // The eviction rule at a limit of 1,000; the app's own limit is larger (see the next test).
+        let store = makeStore(limits: limits(cache: 1_000, ceiling: 1_050))
         try await store.commit(GmailJournalBatch(changes: (1...1_050).map { place(UInt64($0)) }, cursor: HistoryID(raw: 1)))
         let oldest = ref(1).id
         await store.setPinned([oldest])
@@ -387,7 +397,7 @@ final class GmailMessageCacheTests: XCTestCase {
     /// The typical account: 55,000 messages in the index and the newest 1,000 kept with bodies of
     /// the usual size. The design allows about 20 MB.
     func testATypicalAccountTakesLessThanTwentyMegabytes() async throws {
-        let store = makeStore()
+        let store = makeStore(limits: limits(cache: 1_000, ceiling: 1_050))
         let total = 55_000
         var offset = 0
         while offset < total {
