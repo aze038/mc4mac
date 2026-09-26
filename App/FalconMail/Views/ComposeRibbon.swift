@@ -31,8 +31,7 @@ struct ComposeRibbon: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            RibbonTabStrip(tabs: ComposeTab.allCases.map { ($0, $0.title) }, selection: $tab)
-                .padding(.horizontal, OL.tabInset)
+            WindowRibbonTabs(tabs: ComposeTab.allCases.map { ($0, $0.title) }, selection: $tab)
             switch tab {
             case .message: messageTab
             case .options: optionsTab
@@ -40,8 +39,7 @@ struct ComposeRibbon: View {
         }
         // Pinned to its own frame: a background left to ignore the safe area spreads up over the
         // title row above it.
-        .background(OLColor.chrome, ignoresSafeAreaEdges: [])
-        .background(ChromeBackground())
+        .background(ChromeFill(), ignoresSafeAreaEdges: [])
         #if DEBUG
         .task {
             guard let size = ComposeRibbonDemo.tablePicker else { return }
@@ -56,7 +54,7 @@ struct ComposeRibbon: View {
     /// Attach File · Table · Pictures/Signature/Link. Discard stands beside Send, where the owner
     /// asked for it; Outlook has none, since closing there asks instead.
     private var messageTab: some View {
-        RibbonBody {
+        RibbonBody(minHeight: OL.ribbon) {
             RibbonTile(title: "Send", symbol: "paperplane", enabled: canSend, action: onSend)
                 .padding(.horizontal, OL.composeSendPad)
             RibbonTile(title: "Discard", symbol: "trash", help: "Discard this message", action: onDiscard)
@@ -177,7 +175,7 @@ struct ComposeRibbon: View {
     }
 
     private var optionsTab: some View {
-        RibbonBody {
+        RibbonBody(minHeight: OL.ribbon) {
             RibbonTile(title: "Google\nDrive", symbol: "externaldrive", action: onAttachFromDrive)
             RibbonSeparator()
             RibbonMenuTile(title: "Importance", symbol: "exclamationmark") {

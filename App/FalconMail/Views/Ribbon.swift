@@ -280,12 +280,19 @@ struct RibbonMiniColumn<Content: View>: View {
 }
 
 struct RibbonSeparator: View {
+    @Environment(\.falconStyle) private var style
+
     var body: some View {
-        Rectangle()
-            .fill(OLColor.ribbonSeparator)
-            .frame(width: 1, height: OL.ribbonSeparatorHeight - 16)
-            .padding(.top, OL.ribbonIconTop + 8)
-            .padding(.horizontal, OL.ribbonSeparatorPad)
+        if style.glass {
+            // Glass has no lines between buttons; a little space stands for them.
+            Color.clear.frame(width: 6, height: 1)
+        } else {
+            Rectangle()
+                .fill(OLColor.ribbonSeparator)
+                .frame(width: 1, height: OL.ribbonSeparatorHeight - 16)
+                .padding(.top, OL.ribbonIconTop + 8)
+                .padding(.horizontal, OL.ribbonSeparatorPad)
+        }
     }
 }
 
@@ -442,8 +449,13 @@ struct RibbonQuickButton: View {
 /// The ribbon row: tiles top-aligned, two points apart, eight points in from the edge so the
 /// first icon lands at fourteen. Scrolls sideways when the window is narrower than Outlook's.
 struct RibbonBody<Content: View>: View {
+    /// At least this tall whatever the style: the compose and message windows' ribbons hold
+    /// two- and three-row blocks that the main window's short Glass or nameless ribbon would cut.
+    var minHeight: CGFloat = 0
     @ViewBuilder var content: () -> Content
     @Environment(\.falconStyle) private var style
+
+    private var height: CGFloat { max(style.ribbonHeight, minHeight) }
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -451,9 +463,40 @@ struct RibbonBody<Content: View>: View {
                 content()
             }
             .padding(.horizontal, OL.ribbonInset)
-            .frame(height: style.ribbonHeight, alignment: .top)
+            .frame(height: height, alignment: .top)
         }
         .scrollIndicators(.never)
-        .frame(height: style.ribbonHeight)
+        .frame(height: height)
+    }
+}
+
+/// The tab row of the compose and message windows: Outlook's underlined words in Legacy, the
+/// small pill switch in Glass.
+struct WindowRibbonTabs<Tab: Hashable>: View {
+    let tabs: [(tab: Tab, title: String)]
+    @Binding var selection: Tab
+    @Environment(\.falconStyle) private var style
+
+    var body: some View {
+        if style.glass {
+            HStack {
+                if tabs.count > 1 { RibbonTabSwitch(tabs: tabs, selection: $selection) }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, tabs.count > 1 ? 6 : 2)
+        } else {
+            RibbonTabStrip(tabs: tabs, selection: $selection)
+                .padding(.horizontal, OL.tabInset)
+        }
+    }
+}
+
+/// The window chrome's fill: Outlook's grey in Legacy, frosted glass in Glass.
+struct ChromeFill: View {
+    @Environment(\.falconStyle) private var style
+
+    var body: some View {
+        if style.glass { GlassWindowBackground() } else { OLColor.chrome }
     }
 }

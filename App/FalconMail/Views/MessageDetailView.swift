@@ -625,7 +625,7 @@ struct MessageWindowView: View {
             .padding(.leading, OL.quickIconsStart)
         }
         .frame(height: OL.titleRow)
-        .background(OLColor.chrome, ignoresSafeAreaEdges: [])
+        .background(ChromeFill(), ignoresSafeAreaEdges: [])
     }
 }
 
@@ -644,9 +644,8 @@ struct MessageWindowRibbon: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            RibbonTabStrip(tabs: [(0, "Message")], selection: $tab)
-                .padding(.horizontal, OL.tabInset)
-            RibbonBody {
+            WindowRibbonTabs(tabs: [(0, "Message")], selection: $tab)
+            RibbonBody(minHeight: OL.ribbon) {
                 RibbonGroup {
                     RibbonTile(title: "Delete", symbol: "trash", enabled: canChange) { model.delete([message]); close() }
                     RibbonTile(title: "Archive", symbol: "archivebox", tint: OLColor.archiveGreen, enabled: canChange) { model.archive([message]); close() }
@@ -688,7 +687,7 @@ struct MessageWindowRibbon: View {
                 }
             }
         }
-        .background(OLColor.chrome, ignoresSafeAreaEdges: [])
+        .background(ChromeFill(), ignoresSafeAreaEdges: [])
     }
 
     /// Junk and Not Junk both take the message to another folder.
