@@ -39,7 +39,7 @@ struct ComposeRibbon: View {
         }
         // Pinned to its own frame: a background left to ignore the safe area spreads up over the
         // title row above it.
-        .background(ChromeFill(), ignoresSafeAreaEdges: [])
+        .background { ChromeFill() }
         #if DEBUG
         .task {
             guard let size = ComposeRibbonDemo.tablePicker else { return }

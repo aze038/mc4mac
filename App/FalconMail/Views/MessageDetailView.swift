@@ -625,7 +625,7 @@ struct MessageWindowView: View {
             .padding(.leading, OL.quickIconsStart)
         }
         .frame(height: OL.titleRow)
-        .background(ChromeFill(), ignoresSafeAreaEdges: [])
+        .background { ChromeFill() }
     }
 }
 
@@ -687,7 +687,7 @@ struct MessageWindowRibbon: View {
                 }
             }
         }
-        .background(ChromeFill(), ignoresSafeAreaEdges: [])
+        .background { ChromeFill() }
     }
 
     /// Junk and Not Junk both take the message to another folder.

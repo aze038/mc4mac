@@ -160,7 +160,7 @@ struct ComposeView: View {
             .padding(.leading, OL.quickIconsStart)
         }
         .frame(height: OL.titleRow)
-        .background(ChromeFill(), ignoresSafeAreaEdges: [])
+        .background { ChromeFill() }
     }
 
     private var ribbon: some View {
