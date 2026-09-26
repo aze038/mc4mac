@@ -324,24 +324,29 @@ struct RibbonPill: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Button { isOn.toggle() } label: {
-                HStack(spacing: 5) {
-                    if isOn { Text(onLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(.white) }
-                    Circle().fill(.white).frame(width: 16, height: 16).shadow(radius: 1, y: 0.5)
-                    if !isOn { Text(offLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(.white) }
-                }
-                .padding(.horizontal, 5).padding(.vertical, 3)
-                .background(isOn ? OLColor.sendGreen : Color.secondary.opacity(0.7), in: Capsule())
-                .contentShape(Capsule())
+            // A small switch with no words inside it: green and knob right when on, grey and knob
+            // left when off. What it means is in the tooltip.
+            Button { withAnimation(.easeInOut(duration: 0.15)) { isOn.toggle() } } label: {
+                Capsule()
+                    .fill(isOn ? OLColor.sendGreen : Color.secondary.opacity(0.45))
+                    .frame(width: 28, height: 16)
+                    .overlay(alignment: isOn ? .trailing : .leading) {
+                        Circle().fill(.white).frame(width: 12, height: 12)
+                            .shadow(color: .black.opacity(0.25), radius: 0.8, y: 0.5)
+                            .padding(2)
+                    }
+                    .contentShape(Capsule())
             }
             .buttonStyle(.plain)
+            .help(isOn ? "\(onLabel): click to work offline" : "\(offLabel): click to go online")
+            .accessibilityLabel(caption)
+            .accessibilityValue(isOn ? onLabel : offLabel)
             .frame(height: OL.ribbonIconBox)
             .padding(.top, style.glass || !style.showsNames ? 8 : OL.ribbonIconTop)
             RibbonCaption(title: caption).padding(.top, style.glass ? 40 : OL.ribbonLabelTop)
         }
         .padding(.horizontal, OL.ribbonTilePad)
         .frame(height: style.ribbonHeight, alignment: .top)
-        .help(caption)
     }
 }
 
