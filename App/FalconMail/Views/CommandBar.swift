@@ -133,14 +133,12 @@ struct HomeRibbon: View {
     }
 }
 
-/// How the list is shown: Conversations, Message Preview, Arrange by and Reading Pane, on Home
+/// How the list is shown: Conversations, Message Preview and Reading Pane (Arrange by is over the list), on Home
 /// and on Organise alike.
 struct ListViewTiles: View {
     @Environment(AppModel.self) private var model
     @AppStorage(Pref.readingPane) private var readingPane = ReadingPanePosition.right.rawValue
     @AppStorage(Pref.showPreview) private var showPreview = true
-
-    private var currentSort: ListSort { ListSort(rawValue: model.listSort) ?? .date }
 
     var body: some View {
         @Bindable var model = model
@@ -154,26 +152,6 @@ struct ListViewTiles: View {
                         ForEach(ListDensity.allCases) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.inline)
-                }
-                RibbonMenuTile(title: "Arrange\nby", symbol: "arrow.up.arrow.down.square", tint: .blue) {
-                    ForEach(ListSort.allCases) { sort in
-                        Button { model.listSort = sort.rawValue } label: {
-                            if model.listSort == sort.rawValue { Label(sort.title, systemImage: "checkmark") } else { Text(sort.title) }
-                        }
-                    }
-                    Divider()
-                    Button { model.sortAscending = true } label: {
-                        if model.sortAscending { Label(currentSort.ascendingTitle, systemImage: "checkmark") } else { Text(currentSort.ascendingTitle) }
-                    }
-                    Button { model.sortAscending = false } label: {
-                        if !model.sortAscending { Label(currentSort.descendingTitle, systemImage: "checkmark") } else { Text(currentSort.descendingTitle) }
-                    }
-                    Divider()
-                    Button { model.showInGroups.toggle() } label: {
-                        if model.showInGroups { Label("Show in Groups", systemImage: "checkmark") } else { Text("Show in Groups") }
-                    }
-                    Divider()
-                    Button("Restore to Defaults") { model.restoreListDefaults() }
                 }
                 RibbonMenuTile(title: "Reading\nPane", symbol: ReadingPanePosition(rawValue: readingPane)?.symbol ?? "rectangle.righthalf.inset.filled", tint: .blue) {
                     Picker("Reading Pane", selection: $readingPane) {

@@ -13,6 +13,7 @@ import FalconCore
 struct MessageTableView: NSViewRepresentable {
     let controller: ListController
     var showsPreview = true
+    var density: ListDensity = .cozy
     /// Sent and Drafts name who the mail went to, as Outlook's do.
     var namesRecipients = false
     var quickActions: [QuickAction] = []
@@ -43,7 +44,7 @@ struct MessageTableView: NSViewRepresentable {
         coordinator.parent = self
         // Reading the footers here lets SwiftUI update the view when they change.
         container.setFooters(controller.footers.map(\.text))
-        if old.showsPreview != showsPreview || old.namesRecipients != namesRecipients || old.quickActions != quickActions {
+        if old.showsPreview != showsPreview || old.density != density || old.namesRecipients != namesRecipients || old.quickActions != quickActions {
             coordinator.showsPreviewChanged()
         }
     }
@@ -175,7 +176,7 @@ struct MessageTableView: NSViewRepresentable {
 
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             guard let record = controller.record(at: row) else { return OL.listRow }
-            return MessageTableView.height(of: record, showsPreview: parent.showsPreview)
+            return MessageTableView.height(of: record, showsPreview: parent.showsPreview, density: parent.density)
         }
 
         func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { false }
@@ -236,7 +237,8 @@ struct MessageTableView: NSViewRepresentable {
             let shown = RowModelAdapter.row(
                 record, content: controller.rowContent(at: row), selection: selection, showsPreview: parent.showsPreview,
                 namesRecipients: parent.namesRecipients, categories: key.map(parent.categories) ?? [],
-                actionsWidth: MessageTableCell.actionsWidth(actions.count), isLastChild: controller.isLastChild(row))
+                actionsWidth: MessageTableCell.actionsWidth(actions.count), isLastChild: controller.isLastChild(row),
+                density: parent.density)
             // Nobody can act on a row he cannot read, so a grey row has no quick actions.
             cell.show(shown, actions: shown.isPlaceholder ? [] : actions, row: row,
                       folder: record.displayKind == .child && !shown.isPlaceholder ? controller.childFolderName(at: row) : nil,
@@ -319,13 +321,13 @@ struct MessageTableView: NSViewRepresentable {
     static let headerHeight: CGFloat = 30
 
     /// Four fixed heights, answered from the row's kind alone.
-    static func height(of record: DisplayRecord, showsPreview: Bool) -> CGFloat {
+    static func height(of record: DisplayRecord, showsPreview: Bool, density: ListDensity = .cozy) -> CGFloat {
         switch record.displayKind {
         case .header: return headerHeight
         case .child: return OL.listChildRow
         case .conversation, .message:
             let opened = record.displayKind == .conversation && record.displayBits.contains(.expanded)
-            return showsPreview && !opened ? OL.listRow : OL.listRowShort
+            return MessageRowModel.height(kind: .conversation, hasPreview: showsPreview && density.hasPreviewLine && !opened, density: density)
         }
     }
 
@@ -608,13 +610,18 @@ final class MessageTableCell: NSTableCellView {
         actions.spacing = Self.actionSpacing
         actions.translatesAutoresizingMaskIntoConstraints = false
         addSubview(actions)
+        let actionsTop = actions.topAnchor.constraint(equalTo: topAnchor, constant: OL.listBadgeTop - 1)
+        self.actionsTop = actionsTop
         NSLayoutConstraint.activate([
             actions.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -OL.listIconRight),
-            actions.topAnchor.constraint(equalTo: topAnchor, constant: OL.listBadgeTop - 1)
+            actionsTop
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// The quick actions' top, moved with the row's drawing in Roomy and Compact.
+    private var actionsTop: NSLayoutConstraint?
 
     func show(_ shown: RowModelAdapter.Row, actions wanted: [QuickAction], row: Int, folder name: String? = nil,
               toggle: String? = nil) {
@@ -629,6 +636,7 @@ final class MessageTableCell: NSTableCellView {
             setAccessibilityCustomActions([])
         }
         rowView.model = shown.model
+        actionsTop?.constant = OL.listBadgeTop - 1 + (shown.model.kind == .conversation ? shown.model.density.textShift : 0)
         folder.isHidden = name == nil
         if let name, folder.stringValue != name { folder.stringValue = name }
         folder.textColor = shown.model.selection == .focused ? OLListColor.unread : OLListColor.secondary

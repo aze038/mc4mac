@@ -44,11 +44,15 @@ struct MessageRowModel: Equatable {
     /// How wide the quick actions are while the pointer is on the row and they stand where its
     /// icons were; zero shows the icons.
     var actionsWidth: CGFloat = 0
+    /// Roomy, Cozy or Compact, from Message Preview on the ribbon or Settings.
+    var density: ListDensity = .cozy
 
-    var height: CGFloat {
+    var height: CGFloat { MessageRowModel.height(kind: kind, hasPreview: preview != nil, density: density) }
+
+    static func height(kind: Kind, hasPreview: Bool, density: ListDensity) -> CGFloat {
         switch kind {
         case .child: return OL.listChildRow
-        case .conversation: return preview == nil ? OL.listRowShort : OL.listRow
+        case .conversation: return (hasPreview ? OL.listRow : OL.listRowShort) + density.extraHeight
         }
     }
 }
@@ -58,7 +62,7 @@ extension MessageRowModel {
     /// to rather than who sent it, as Outlook does in Sent and Drafts.
     static func conversation(_ thread: MessageThread, expanded: Bool, showsPreview: Bool, selection: Selection,
                              namesRecipients: Bool = false, categories: [NSColor] = [], actionsWidth: CGFloat = 0,
-                             now: Date = Date()) -> MessageRowModel {
+                             density: ListDensity = .cozy, now: Date = Date()) -> MessageRowModel {
         let latest = thread.latest
         let many = thread.messages.count > 1
         let unread = thread.unreadCount
@@ -70,14 +74,15 @@ extension MessageRowModel {
             subject: latest.subject.isEmpty ? "(no subject)" : latest.subject,
             date: MessageListText.date(latest.date, now: now),
             // An expanded conversation drops its preview, as Outlook's does: its messages follow.
-            preview: showsPreview && !(many && expanded) ? MessageListText.preview(latest.snippet) : nil,
+            preview: showsPreview && density.hasPreviewLine && !(many && expanded) ? MessageListText.preview(latest.snippet) : nil,
             isUnread: unread > 0,
             unreadCount: many ? unread : 0,
             hasAttachments: thread.messages.contains { $0.hasAttachments },
             isFlagged: thread.messages.contains { $0.isFlagged },
             categories: categories,
             selection: selection,
-            actionsWidth: actionsWidth)
+            actionsWidth: actionsWidth,
+            density: density)
     }
 
     /// One message of an expanded conversation.
@@ -161,7 +166,11 @@ private struct MessageRowDrawing {
         // The view is flipped; CoreText draws upright only with its own matrix flipped back.
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         switch model.kind {
-        case .conversation: drawConversation(in: context)
+        case .conversation:
+            // Roomy and Compact move the whole drawing, chevron, icons and all, down or up by
+            // half the height they add or take away.
+            context.translateBy(x: 0, y: model.density.textShift)
+            drawConversation(in: context)
         case .child: drawChild(in: context)
         }
         context.restoreGState()

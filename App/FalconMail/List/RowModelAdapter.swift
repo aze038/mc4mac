@@ -29,7 +29,7 @@ enum RowModelAdapter {
     /// conversation. Headers are the table's own and never come here.
     static func row(_ record: DisplayRecord, content: MessageRowContent?, selection: MessageRowModel.Selection,
                     showsPreview: Bool, namesRecipients: Bool = false, categories: [NSColor] = [], actionsWidth: CGFloat = 0,
-                    isLastChild: Bool = false, now: Date = Date()) -> Row {
+                    isLastChild: Bool = false, density: ListDensity = .cozy, now: Date = Date()) -> Row {
         let bits = record.displayBits
         let unread = record.unread > 0 || bits.contains(.unread)
         if record.displayKind == .child {
@@ -47,11 +47,11 @@ enum RowModelAdapter {
         let expanded = bits.contains(.expanded)
         let disclosure: MessageRowModel.Disclosure = isConversation ? (expanded ? .expanded : .collapsed) : .none
         // An opened conversation drops its preview, as Outlook's does: its messages follow.
-        let preview: String? = showsPreview && !(isConversation && expanded) ? "" : nil
+        let preview: String? = showsPreview && density.hasPreviewLine && !(isConversation && expanded) ? "" : nil
         var model = MessageRowModel(kind: .conversation, disclosure: disclosure, sender: "", subject: "", date: "",
                                     preview: preview, isUnread: unread, unreadCount: isConversation ? Int(record.unread) : 0,
                                     hasAttachments: bits.contains(.hasAttachment), isFlagged: bits.contains(.flagged),
-                                    categories: categories, selection: selection, actionsWidth: 0)
+                                    categories: categories, selection: selection, actionsWidth: 0, density: density)
         guard let content else { return Row(model: model, isPlaceholder: true) }
 
         model.sender = sender(content, isConversation: isConversation, namesRecipients: namesRecipients)
@@ -123,7 +123,8 @@ enum RowModelAdapter {
                 bars.append(bar(Dummy.preview, font: text, x: OL.listTextX, baseline: baseline2 + OL.listLinePitch,
                                 limit: right - OL.listTextX))
             }
-            return bars.compactMap { $0 }
+            // Moved with the row's text in Roomy and Compact.
+            return bars.compactMap { $0?.offsetBy(dx: 0, dy: model.density.textShift) }
         }
     }
 }

@@ -80,7 +80,7 @@ struct MessageListView: View {
     private var tableList: some View {
         let list = model.engineList
         return MessageTableView(
-            controller: list.controller, showsPreview: showPreview, namesRecipients: namesRecipients, quickActions: quickActions,
+            controller: list.controller, showsPreview: showPreview, density: model.listDensity, namesRecipients: namesRecipients, quickActions: quickActions,
             categories: { key in model.categories(forKey: key).map { NSColor($0.swatch) } },
             onOpen: { key in list.open(key) { openWindow(value: $0) } },
             onQuickAction: { action, key in runQuickAction(action, on: key) },
@@ -671,6 +671,7 @@ struct ConversationRow: View {
             selection: selected ? (listHasKeyboard ? .focused : .unfocused) : .none, namesRecipients: namesRecipients,
             categories: categories.isEmpty ? [] : categories.map { NSColor($0.swatch) },
             actionsWidth: hovering ? Self.actionsWidth(quickActions.count) : 0,
+            density: model.listDensity,
             // The clock, not `today`: a night asleep may bring no notice that the day changed, and
             // today's mail must not then read as older.
             now: Date())

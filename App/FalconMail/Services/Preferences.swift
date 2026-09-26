@@ -103,6 +103,22 @@ enum ListDensity: String, CaseIterable, Identifiable {
         case .compact: return 3
         }
     }
+
+    /// Whether a row has room for the preview line at all: Compact keeps only the sender, and
+    /// the subject with the date.
+    var hasPreviewLine: Bool { self != .compact }
+
+    /// How much taller a conversation's row is than Outlook's own (Cozy); its drawing moves down
+    /// by half of it, so the extra room is shared above and below.
+    var extraHeight: CGFloat {
+        switch self {
+        case .roomy: return 12
+        case .cozy: return 0
+        case .compact: return -6
+        }
+    }
+
+    var textShift: CGFloat { extraHeight / 2 }
 }
 
 enum AppAppearance: String, CaseIterable, Identifiable {
