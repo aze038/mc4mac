@@ -185,7 +185,7 @@ struct MessageReaderView: View {
     /// Reply, Reply All and Forward as icons in a row above the subject, with the rest in a menu.
     private var actions: some View {
         ReaderReplyRow(reply: { reply(all: $0) }, forward: { forward() }) {
-            Menu { moreMenu } label: { Image(systemName: "ellipsis").font(.system(size: 14)).foregroundStyle(OLColor.icon) }
+            Menu { moreMenu } label: { Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold)).foregroundStyle(OLColor.textMuted) }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
@@ -348,14 +348,76 @@ struct ReaderReplyRow<Extra: View>: View {
     @ViewBuilder var extra: () -> Extra
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 12) {
             Spacer(minLength: 0)
-            ReaderActionButton("Reply", "arrowshape.turn.up.left", titled: true) { reply(false) }
-            ReaderActionButton("Reply to All", "arrowshape.turn.up.left.2", titled: true) { reply(true) }
-            ReaderActionButton("Forward", "arrowshape.turn.up.right", titled: true) { forward() }
+            ReplyRowButton("Reply", glyph: .reply) { reply(false) }
+            ReplyRowButton("Reply All", glyph: .replyAll) { reply(true) }
+            ReplyRowButton("Forward", glyph: .forward) { forward() }
             extra()
-                .padding(.leading, 2)
+                .padding(.leading, 6)
         }
+    }
+}
+
+/// Outlook's reply-row arrows: thin line arrows, drawn rather than taken from SF Symbols, which
+/// has no thin Reply All.
+struct ReplyArrow: Shape {
+    enum Kind { case reply, replyAll, forward }
+    let kind: Kind
+
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 16
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * s, y: rect.minY + y * s) }
+        var path = Path()
+        // Drawn pointing left; Forward is the mirror image.
+        let tailStart: CGFloat = kind == .replyAll ? 6 : 2
+        if kind == .replyAll {
+            path.move(to: p(5, 3.5)); path.addLine(to: p(1, 7.5)); path.addLine(to: p(5, 11.5))
+        }
+        path.move(to: p(tailStart + 4, 3.5)); path.addLine(to: p(tailStart, 7.5)); path.addLine(to: p(tailStart + 4, 11.5))
+        path.move(to: p(tailStart, 7.5))
+        path.addLine(to: p(10, 7.5))
+        path.addQuadCurve(to: p(15, 13), control: p(15, 7.5))
+        if kind == .forward {
+            return path.applying(CGAffineTransform(translationX: rect.minX * 2 + 16 * s, y: 0).scaledBy(x: -1, y: 1))
+        }
+        return path
+    }
+}
+
+/// One of Reply, Reply All, Forward above the subject: the thin arrow and the word, in the accent.
+struct ReplyRowButton: View {
+    let title: LocalizedStringKey
+    let glyph: ReplyArrow.Kind
+    let action: () -> Void
+    @State private var hovering = false
+
+    init(_ title: LocalizedStringKey, glyph: ReplyArrow.Kind, action: @escaping () -> Void) {
+        self.title = title
+        self.glyph = glyph
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                ReplyArrow(kind: glyph)
+                    .stroke(style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
+                    .frame(width: 16, height: 16)
+                Text(title)
+                    .font(.system(size: 14))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(hovering ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(title)
     }
 }
 
