@@ -2007,6 +2007,31 @@ final class AppModel {
         return true
     }
 
+    /// Whether Labels can act on the selection: messages of one Google account on the Gmail
+    /// engine, which is where labels exist.
+    var canLabelSelection: Bool {
+        let accounts = Set(selectedMessages.map(\.accountID))
+        guard accounts.count == 1, let account = accounts.first else { return false }
+        return usesGmailEngine(account)
+    }
+
+    /// The selected messages' account's own labels, the ones the owner made, A to Z. Gmail's
+    /// system labels (Inbox, Sent, Spam and the like) are folders with a role and are left out.
+    var labelsForSelection: [FolderInfo] {
+        guard canLabelSelection, let account = selectedMessages.first?.accountID else { return [] }
+        return (folders[account] ?? [])
+            .filter { $0.role == .other && $0.gmailLabelID != nil && !($0.gmailLabelID?.value.hasPrefix("CATEGORY_") ?? false) }
+            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    /// Adds `label` to messages, as Gmail's Label as does: they stay where they are and show in
+    /// that label too. Undo takes the label off again.
+    func addLabel(_ label: FolderInfo, to list: [MessageSummary]) {
+        let targets = actionable(list).filter { $0.accountID == label.accountID && usesGmailEngine($0.accountID) }
+        guard !targets.isEmpty else { return }
+        perform(targets, engine: .copy(to: label.id)) { _, _ in [] }
+    }
+
     func isInJunk(_ list: [MessageSummary]) -> Bool {
         !list.isEmpty && list.allSatisfy { folder($0.folderID)?.role == .junk }
     }

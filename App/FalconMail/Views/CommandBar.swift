@@ -3,12 +3,12 @@ import AppKit
 import FalconCore
 
 enum AppRibbonTab: String, CaseIterable {
-    case home, organise, tools
+    /// Organise's tools are all on Home now; a stored "organise" opens Home.
+    case home, tools
 
     var title: String {
         switch self {
         case .home: return "Home"
-        case .organise: return "Organise"
         case .tools: return "Tools"
         }
     }
@@ -28,7 +28,6 @@ struct CommandBar: View {
             Group {
                 switch tab.wrappedValue {
                 case .home: HomeRibbon()
-                case .organise: OrganiseRibbon()
                 case .tools: ToolsRibbon()
                 }
             }
@@ -66,6 +65,7 @@ struct CommandBar: View {
 
 struct HomeRibbon: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(Pref.offlineMode) private var offline = false
 
     /// Actions need a selection with nothing in it that was found only on the server.
     private var canChange: Bool { model.hasSelection && !model.selectionIsReadOnly }
@@ -107,13 +107,12 @@ struct HomeRibbon: View {
             RibbonGroup {
                 RibbonTile(title: "Read/Unread", symbol: ReadMarking.readUnreadMarksRead(model.selectedMessages) ? "envelope.open" : "envelope",
                            enabled: can(.markRead)) { model.onSelection(.markRead) { model.toggleReadOnSelection() } }
-                RibbonMenuTile(title: "Categorise", symbol: "square.grid.2x2", tint: OLColor.categoryOrange, enabled: canChange) {
-                    CategoryMenuItems()
+                RibbonMenuTile(title: "Labels", symbol: "tag", enabled: canChange && model.canLabelSelection) {
+                    LabelMenuItems()
                 }
                 RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: can(.flag),
                                 action: { model.onSelection(.flag) { model.toggleFlagOnSelection() } }) {
                     Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.onSelection(.flag) { model.toggleFlagOnSelection() } }
-                    Button("Mark All as Read") { model.markAllReadInSelection() }
                 }
                 RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }
             }
@@ -121,20 +120,21 @@ struct HomeRibbon: View {
                 ListViewTiles()
             }
             RibbonGroup {
-                RibbonMenuTile(title: "Filter\nEmails", symbol: model.filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") {
+                RibbonMenuTile(title: "Filter", symbol: model.filters.isEmpty ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") {
                     FilterMenuItems()
                 }
-                RibbonTile(title: "Switch\nBackground", symbol: "sun.max") { model.cycleAppearance() }
+                RibbonTile(title: "Dark /\nLight", symbol: "circle.lefthalf.filled") { model.cycleAppearance() }
             }
             RibbonGroup {
+                RibbonPill(onLabel: "Online", offLabel: "Offline", caption: "Status",
+                           isOn: Binding(get: { !offline }, set: { offline = !$0; model.setWorkOffline(!$0) }))
                 RibbonTile(title: "Send &\nReceive", symbol: "arrow.triangle.2.circlepath", tint: OLColor.sendGreen, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
             }
         }
     }
 }
 
-/// How the list is shown: Conversations, Message Preview and Reading Pane (Arrange by is over the list), on Home
-/// and on Organise alike.
+/// How the list is shown: Preview and Reading Pane. Arrange by and Conversations are over the list.
 struct ListViewTiles: View {
     @Environment(AppModel.self) private var model
     @AppStorage(Pref.readingPane) private var readingPane = ReadingPanePosition.right.rawValue
@@ -143,9 +143,7 @@ struct ListViewTiles: View {
     var body: some View {
         @Bindable var model = model
         return Group {
-                RibbonTile(title: "Conversations", symbol: model.groupByThread ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right",
-                           tint: model.groupByThread ? .accentColor : nil) { model.groupByThread.toggle() }
-                RibbonMenuTile(title: "Message\nPreview", symbol: "text.alignleft", tint: .blue) {
+                RibbonMenuTile(title: "Preview", symbol: "text.alignleft", tint: .blue) {
                     Toggle("Show Message Preview", isOn: $showPreview)
                     Divider()
                     Picker("Density", selection: Binding(get: { model.listDensity }, set: { model.listDensity = $0 })) {
@@ -159,32 +157,6 @@ struct ListViewTiles: View {
                     }
                     .pickerStyle(.inline)
                 }
-        }
-    }
-}
-
-struct OrganiseRibbon: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        RibbonBody {
-            RibbonGroup {
-                RibbonTile(title: "New\nFolder", symbol: "folder.badge.plus", tint: .accentColor, enabled: !model.accounts.isEmpty) { model.promptForNewFolder() }
-            }
-            RibbonGroup {
-                ListViewTiles()
-            }
-            RibbonGroup {
-                RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }
-                RibbonMenuTile(title: "Rules", symbol: "envelope.open.badge.clock") {
-                    Button("Run Rules Now") { model.runRulesNow() }
-                    Button("Edit Rules…") { SettingsWindows.shared.show(.rules) }
-                }
-                RibbonTile(title: "Delete\nAll", symbol: "trash.slash", tint: .red, enabled: model.canEmptyCurrentFolder) { model.emptyCurrentFolder() }
-            }
-            RibbonGroup {
-                RibbonTile(title: "Sync\nFolder", symbol: "arrow.clockwise.circle", tint: .green, enabled: !model.accounts.isEmpty) { model.checkForNewMail() }
-            }
         }
     }
 }
@@ -223,10 +195,6 @@ struct ToolsRibbon: View {
                 }
             }
             RibbonGroup {
-                RibbonPill(onLabel: "Online", offLabel: "Offline", caption: "Online/Offline",
-                           isOn: Binding(get: { !offline }, set: { offline = !$0; model.setWorkOffline(!$0) }))
-            }
-            RibbonGroup {
                 RibbonTile(title: "Archive\nMail", symbol: "externaldrive.badge.timemachine", tint: .purple) {
                     NotificationCenter.default.post(name: .falconArchive, object: nil)
                 }
@@ -258,6 +226,25 @@ struct MoveMenuItems: View {
         }
         Divider()
         Button("Archive") { model.afterSelectionRead { model.archive(model.selectedMessages) } }
+    }
+}
+
+/// Labels on the ribbon: Gmail's own labels of the selected messages' account, each adding
+/// that label, as Gmail's Label as does; New Label… makes one.
+struct LabelMenuItems: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let labels = model.labelsForSelection
+        if labels.isEmpty {
+            Text("No labels yet")
+        } else {
+            ForEach(labels) { folder in
+                Button(folder.path) { model.onSelection(.copy) { model.addLabel(folder, to: model.selectedMessages) } }
+            }
+        }
+        Divider()
+        Button("New Label…") { model.promptForNewFolder() }
     }
 }
 
