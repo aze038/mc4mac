@@ -46,7 +46,8 @@ struct MessageReaderView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 0) {
             actions
-                .padding(.leading, OL.readingIconX + 4)
+                .padding(.leading, OL.readingIconX)
+                .padding(.trailing, OL.readingRightInset)
                 .padding(.top, 8)
                 .padding(.bottom, -6)
             HStack(alignment: .top, spacing: 0) {
@@ -339,20 +340,21 @@ enum MessageFile {
     }
 }
 
-/// The row above a message's subject: Reply, Reply All and Forward as icons only, their names
-/// in the tooltip, then whatever the view adds (its menu of other actions).
+/// The row above a message's subject, at its right: Reply, Reply to All and Forward, each an icon
+/// with its name, then whatever the view adds (its menu of other actions).
 struct ReaderReplyRow<Extra: View>: View {
     let reply: (_ all: Bool) -> Void
     let forward: () -> Void
     @ViewBuilder var extra: () -> Extra
 
     var body: some View {
-        HStack(spacing: 2) {
-            ReaderActionButton("Reply", "arrowshape.turn.up.left") { reply(false) }
-            ReaderActionButton("Reply All", "arrowshape.turn.up.left.2") { reply(true) }
-            ReaderActionButton("Forward", "arrowshape.turn.up.right") { forward() }
+        HStack(spacing: 4) {
+            Spacer(minLength: 0)
+            ReaderActionButton("Reply", "arrowshape.turn.up.left", titled: true) { reply(false) }
+            ReaderActionButton("Reply to All", "arrowshape.turn.up.left.2", titled: true) { reply(true) }
+            ReaderActionButton("Forward", "arrowshape.turn.up.right", titled: true) { forward() }
             extra()
-                .padding(.leading, 4)
+                .padding(.leading, 2)
         }
     }
 }
@@ -360,21 +362,33 @@ struct ReaderReplyRow<Extra: View>: View {
 struct ReaderActionButton: View {
     let title: LocalizedStringKey
     let symbol: String
+    /// Whether the name shows beside the icon, not only in the tooltip.
+    var titled = false
     let action: () -> Void
     @State private var hovering = false
 
-    init(_ title: LocalizedStringKey, _ symbol: String, action: @escaping () -> Void) {
+    init(_ title: LocalizedStringKey, _ symbol: String, titled: Bool = false, action: @escaping () -> Void) {
         self.title = title
         self.symbol = symbol
+        self.titled = titled
         self.action = action
     }
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 14))
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 14))
+                if titled {
+                    Text(title)
+                        .font(.system(size: 12.5))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
                 .foregroundStyle(Color.accentColor)
-                .frame(width: 30, height: 26)
+                .padding(.horizontal, titled ? 8 : 0)
+                .frame(minWidth: 30, minHeight: 26)
                 .background(hovering ? Color.primary.opacity(0.07) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(RoundedRectangle(cornerRadius: 5))
         }

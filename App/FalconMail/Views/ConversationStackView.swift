@@ -81,7 +81,8 @@ struct ConversationStackView: View {
                 // message's own header still has its own.
                 ReaderReplyRow(reply: { all in model.reply(to: newest, all: all, then: afterReplying) },
                                forward: { model.forward(newest, then: afterReplying) }) { EmptyView() }
-                    .padding(.leading, OL.readingIconX + 4)
+                    .padding(.leading, OL.readingIconX)
+                    .padding(.trailing, OL.readingRightInset)
                     .padding(.top, 8)
                     .padding(.bottom, -6)
             }
