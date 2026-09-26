@@ -37,6 +37,12 @@ if [ -d "$WORK/ci-cache/mc4mac" ]; then
     < <(find "$WORK/ci-cache" -name 'FalconMail*.app' -type d -prune -print0 2>/dev/null)
 fi
 
+# Report every copy Spotlight lists, so the owner can see where the others come from.
+echo "FalconMail copies Spotlight knows of:"
+mdfind 'kMDItemCFBundleIdentifier == "com.falconmail.*"' 2>/dev/null | sed 's/^/  /'
+echo "Launch Services entries:"
+"$LSREGISTER" -dump 2>/dev/null | grep -E '^path: .*FalconMail[^/]*\.app' | sort -u | sed 's/^/  /' | head -60
+
 # Forget entries for copies already deleted by earlier runs.
 "$LSREGISTER" -gc >/dev/null 2>&1 || true
 echo "FalconMail build copies taken out of Launch Services: $found"
