@@ -38,6 +38,16 @@ if [ -d "$WORK" ]; then
   done < <(find "$WORK" -name 'FalconMail*.app' -type d -prune -print0 2>/dev/null)
 fi
 
+# 2b. Crash symbols: the release keeps each build's dSYM for the daily crash triage, ~60-90 MB a
+#     version. Only the newest 3 versions are kept; nobody runs older ones once updates arrive.
+SYMBOLS="$HOME/Library/Application Support/FalconMail Symbols"
+if [ -d "$SYMBOLS" ]; then
+  ls -1 "$SYMBOLS" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | awk '{ v[NR] = $0 } END { for (i = 1; i <= NR - 3; i++) print v[i] }' | while read -r old; do
+    rm -rf "${SYMBOLS:?}/$old" && echo "removed crash symbols of $old"
+  done
+  du -sh "$SYMBOLS" 2>/dev/null | sed 's/^/crash symbols kept: /'
+fi
+
 # 3. Every other copy Launch Services knows, installed app excepted.
 forgotten=0
 while IFS= read -r app; do
