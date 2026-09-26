@@ -681,8 +681,9 @@ struct MessageWindowRibbon: View {
                                 set: { _ in model.toggleCategory(category, on: [message]) }))
                         }
                     }
-                    RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: canChange, action: { model.setFlagged([message], !message.isFlagged) }) {
-                        Button(message.isFlagged ? "Clear Flag" : "Flag Message") { model.setFlagged([message], !message.isFlagged) }
+                    RibbonTile(title: "Follow\nUp", symbol: message.isFlagged ? "flag.fill" : "flag", tint: OLColor.flagRed, enabled: canChange,
+                               help: message.isFlagged ? "Clear the flag" : "Flag for follow-up") {
+                        model.setFlagged([message], !message.isFlagged)
                     }
                 }
             }

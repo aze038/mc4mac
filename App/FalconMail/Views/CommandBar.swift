@@ -110,9 +110,9 @@ struct HomeRibbon: View {
                 RibbonMenuTile(title: "Labels", symbol: "tag", enabled: canChange && model.canLabelSelection) {
                     LabelMenuItems()
                 }
-                RibbonSplitTile(title: "Follow\nUp", symbol: "flag", tint: OLColor.flagRed, enabled: can(.flag),
-                                action: { model.onSelection(.flag) { model.toggleFlagOnSelection() } }) {
-                    Button(first?.isFlagged == true ? "Clear Flag" : "Flag Message") { model.onSelection(.flag) { model.toggleFlagOnSelection() } }
+                RibbonTile(title: "Follow\nUp", symbol: first?.isFlagged == true ? "flag.fill" : "flag", tint: OLColor.flagRed, enabled: can(.flag),
+                           help: first?.isFlagged == true ? "Clear the flag" : "Flag for follow-up") {
+                    model.onSelection(.flag) { model.toggleFlagOnSelection() }
                 }
                 RibbonTile(title: "Mark All\nas Read", symbol: "envelope.open", enabled: model.unifiedUnreadCount > 0) { model.markAllReadEverywhere() }
             }
