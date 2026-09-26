@@ -78,8 +78,14 @@ struct MainWindow: View {
 
     @ViewBuilder private var moduleContent: some View {
         switch model.module {
-        case .calendar: CalendarView()
-        case .people: ContactsView()
+        // Calendar and People keep the left pane and its Mail / Calendar / People row at the bottom,
+        // so the way back is always where it was.
+        case .calendar:
+            OutlookColumns(showList: false) { ModuleSidebar(title: "Calendar") } list: { EmptyView() } detail: { CalendarView() }
+                .padding(style.glass ? FalconStyle.paneGap : 0)
+        case .people:
+            OutlookColumns(showList: false) { ModuleSidebar(title: "People") } list: { EmptyView() } detail: { ContactsView() }
+                .padding(style.glass ? FalconStyle.paneGap : 0)
         case .mail:
             switch pane {
             case .right:

@@ -5,6 +5,7 @@ import FalconCore
 /// points each, fifty-four apart, the chosen one in Outlook's blue.
 struct ModuleRail: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.falconStyle) private var style
 
     var body: some View {
         HStack(spacing: OL.railPitch - OL.railIcon) {
@@ -19,7 +20,7 @@ struct ModuleRail: View {
         }
         .padding(.leading, OL.railFirstCenter - OL.railIcon / 2)
         .frame(height: OL.rail)
-        .background(OLColor.sidebar)
+        .background(style.glass ? Color.clear : OLColor.sidebar)
     }
 }
 
@@ -53,5 +54,27 @@ struct RailButton: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .help(enabled ? Text(title) : Text("Not in FalconMail yet"))
+    }
+}
+
+/// The left pane of Calendar and People: the section's name above, the same Mail / Calendar /
+/// People row as Mail's folder pane at the bottom.
+struct ModuleSidebar: View {
+    let title: LocalizedStringKey
+    @Environment(\.falconStyle) private var style
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+            Spacer(minLength: 0)
+            Rectangle().fill(OLColor.divider).frame(height: 1)
+            ModuleRail()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(style.glass ? Color.clear : OLColor.sidebar)
     }
 }
