@@ -138,6 +138,9 @@ jobs:
             --app-drop-link 405 175 \
             --no-internet-enable \
             "$DMG" dmg-root || test -f "$DMG"
+          # create-dmg can leave its working disk mounted (/Volumes/dmg.XXXXXX), each one
+          # another FalconMail in Launchpad.
+          for v in /Volumes/dmg.*; do [ -d "$v/FalconMail.app" ] && hdiutil detach "$v" -force || true; done
           echo "DMG=$DMG" >> "$GITHUB_ENV"
           SHA=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
           MANDATORY="${{ github.event.inputs.mandatory || 'false' }}"
